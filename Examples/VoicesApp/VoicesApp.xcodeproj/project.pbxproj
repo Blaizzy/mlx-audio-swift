@@ -1,0 +1,363 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		83B551642F080541004A8FA5 /* MLXAudioTTS in Frameworks */ = {isa = PBXBuildFile; productRef = PKG001 /* MLXAudioTTS */; };
+		83B551652F080541004A8FA5 /* MLXAudioCore in Frameworks */ = {isa = PBXBuildFile; productRef = PKG002 /* MLXAudioCore */; };
+		APP001 /* VoicesApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC001 /* VoicesApp.swift */; };
+		APP002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC002 /* ContentView.swift */; };
+		APP003 /* Voice.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC003 /* Voice.swift */; };
+		APP004 /* TTSViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC004 /* TTSViewModel.swift */; };
+		APP005 /* VoicesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC005 /* VoicesView.swift */; };
+		APP006 /* AddVoiceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC006 /* AddVoiceView.swift */; };
+		APP007 /* VoiceRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC007 /* VoiceRow.swift */; };
+		APP008 /* VoiceCollectionCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC008 /* VoiceCollectionCard.swift */; };
+		APP009 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC009 /* SettingsView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		PROD001 /* VoicesApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VoicesApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		SRC001 /* VoicesApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicesApp.swift; sourceTree = "<group>"; };
+		SRC002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		SRC003 /* Voice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Voice.swift; sourceTree = "<group>"; };
+		SRC004 /* TTSViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSViewModel.swift; sourceTree = "<group>"; };
+		SRC005 /* VoicesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicesView.swift; sourceTree = "<group>"; };
+		SRC006 /* AddVoiceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddVoiceView.swift; sourceTree = "<group>"; };
+		SRC007 /* VoiceRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceRow.swift; sourceTree = "<group>"; };
+		SRC008 /* VoiceCollectionCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCollectionCard.swift; sourceTree = "<group>"; };
+		SRC009 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		FRM001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				83B551652F080541004A8FA5 /* MLXAudioCore in Frameworks */,
+				83B551642F080541004A8FA5 /* MLXAudioTTS in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		GRP001 = {
+			isa = PBXGroup;
+			children = (
+				GRP002 /* VoicesApp */,
+				GRP006 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		GRP002 /* VoicesApp */ = {
+			isa = PBXGroup;
+			children = (
+				SRC001 /* VoicesApp.swift */,
+				GRP003 /* Models */,
+				GRP004 /* ViewModels */,
+				GRP005 /* Views */,
+			);
+			path = VoicesApp;
+			sourceTree = "<group>";
+		};
+		GRP003 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				SRC003 /* Voice.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		GRP004 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				SRC004 /* TTSViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		GRP005 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				SRC002 /* ContentView.swift */,
+				SRC005 /* VoicesView.swift */,
+				SRC006 /* AddVoiceView.swift */,
+				SRC009 /* SettingsView.swift */,
+				GRP007 /* Components */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		GRP006 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				PROD001 /* VoicesApp.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		GRP007 /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				SRC007 /* VoiceRow.swift */,
+				SRC008 /* VoiceCollectionCard.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		TGT001 /* VoicesApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CFG003 /* Build configuration list for PBXNativeTarget "VoicesApp" */;
+			buildPhases = (
+				SRC010 /* Sources */,
+				FRM001 /* Frameworks */,
+				RES001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = VoicesApp;
+			packageProductDependencies = (
+				PKG001 /* MLXAudioTTS */,
+				PKG002 /* MLXAudioCore */,
+			);
+			productName = VoicesApp;
+			productReference = PROD001 /* VoicesApp.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		PRJ001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					TGT001 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = CFG001 /* Build configuration list for PBXProject "VoicesApp" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = GRP001;
+			packageReferences = (
+				PKG003 /* XCLocalSwiftPackageReference "../.." */,
+			);
+			productRefGroup = GRP006 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				TGT001 /* VoicesApp */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		RES001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		SRC010 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				APP001 /* VoicesApp.swift in Sources */,
+				APP002 /* ContentView.swift in Sources */,
+				APP003 /* Voice.swift in Sources */,
+				APP004 /* TTSViewModel.swift in Sources */,
+				APP005 /* VoicesView.swift in Sources */,
+				APP006 /* AddVoiceView.swift in Sources */,
+				APP007 /* VoiceRow.swift in Sources */,
+				APP008 /* VoiceCollectionCard.swift in Sources */,
+				APP009 /* SettingsView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		CFG002 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		CFG004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		CFG005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = WT753TG39U;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMainStoryboardFile = "";
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.mlx-audio.VoicesApp";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		CFG006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = WT753TG39U;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMainStoryboardFile = "";
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.mlx-audio.VoicesApp";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		CFG001 /* Build configuration list for PBXProject "VoicesApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CFG002 /* Debug */,
+				CFG004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		CFG003 /* Build configuration list for PBXNativeTarget "VoicesApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CFG005 /* Debug */,
+				CFG006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		PKG003 /* XCLocalSwiftPackageReference "../.." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../..;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		PKG001 /* MLXAudioTTS */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MLXAudioTTS;
+		};
+		PKG002 /* MLXAudioCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MLXAudioCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = PRJ001 /* Project object */;
+}
