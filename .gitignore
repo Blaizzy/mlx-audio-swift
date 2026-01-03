@@ -3,7 +3,10 @@
 .DS_Store
 .xcbkptlist
 .claude
+xcuserdata/*
+*.pbxproj
 *.resolved
+*.xcworkspace
 *.xcuserdata
 *.xcuserstate
 *.xcuserdatad
