@@ -698,12 +698,16 @@ public class Qwen3Model: Module, KVCacheDimensionProvider {
     ///
     /// - Parameters:
     ///   - text: The text to synthesize
-    ///   - voice: Optional voice identifier
+    ///   - voice: Optional voice name/style identifier
+    ///   - refAudio: Optional reference audio for voice cloning
+    ///   - refText: Optional transcription of the reference audio
     ///   - parameters: Generation parameters
     /// - Returns: AsyncThrowingStream of Qwen3Generation events
     public func generateStream(
         text: String,
         voice: String? = nil,
+        refAudio: MLXArray? = nil,
+        refText: String? = nil,
         cache: [KVCache]? = nil,
         parameters: GenerateParameters = GenerateParameters(
             maxTokens: 1200,
@@ -726,7 +730,12 @@ public class Qwen3Model: Module, KVCacheDimensionProvider {
                     let prompt = text.replacingOccurrences(of: "\\n", with: "\n")
                         .replacingOccurrences(of: "\\t", with: "\t")
 
-                    let (inputIds, _) = self.prepareInputIds(prompts: [prompt], voice: voice)
+                    let (inputIds, _) = self.prepareInputIds(
+                        prompts: [prompt],
+                        voice: voice,
+                        refAudio: refAudio,
+                        refText: refText
+                    )
 
                     let sampler = parameters.sampler()
                     var processor = parameters.processor()
