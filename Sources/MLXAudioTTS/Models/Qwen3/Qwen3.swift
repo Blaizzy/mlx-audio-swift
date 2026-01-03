@@ -77,7 +77,56 @@ public enum Qwen3Generation: Sendable {
 }
 
 // MARK: - Decode
-func decodeAudioFromCodes(codeList: [Int], snacModel: SNAC) -> MLXArray {
+
+/// Decode audio codes in chunks to reduce memory spikes.
+/// Uses Float array accumulation instead of MLXArray concatenation for efficiency.
+///
+/// - Parameters:
+///   - codeList: Flat list of audio codes (7 codes per group)
+///   - snacModel: The SNAC decoder model
+///   - chunkSize: Number of code groups to decode at once (default 128)
+/// - Returns: Decoded audio as MLXArray
+func decodeAudioFromCodes(codeList: [Int], snacModel: SNAC, chunkSize: Int = 50) -> MLXArray {
+    let numGroups = (codeList.count + 1) / 7
+
+    // For small inputs, decode all at once
+    if numGroups <= chunkSize {
+        let result = decodeAudioChunk(codeList: codeList, snacModel: snacModel)
+        eval(result)
+        return result
+    }
+
+    // Pre-allocate output buffer (441 samples per group at 24kHz)
+    let estimatedSamples = numGroups * snacModel.hopLength
+    var audioSamples = ContiguousArray<Float>()
+    audioSamples.reserveCapacity(estimatedSamples)
+
+    // Decode in large chunk
+    var groupStart = 0
+    while groupStart < numGroups {
+        let groupEnd = min(groupStart + chunkSize, numGroups)
+        let codeStart = groupStart * 7
+        let codeEnd = groupEnd * 7
+
+        let chunkCodes = Array(codeList[codeStart..<min(codeEnd, codeList.count)])
+
+        let audioChunk = decodeAudioChunk(codeList: chunkCodes, snacModel: snacModel)
+        eval(audioChunk)
+
+        audioSamples.append(contentsOf: audioChunk.asArray(Float.self))
+
+        // Clear GPU memory after each chunk
+        Memory.clearCache()
+
+        groupStart = groupEnd
+    }
+
+
+    return MLXArray(Array(audioSamples))
+}
+
+/// Decode a single chunk of audio codes (internal helper)
+private func decodeAudioChunk(codeList: [Int], snacModel: SNAC) -> MLXArray {
     var layer1: [Int] = []
     var layer2: [Int] = []
     var layer3: [Int] = []
@@ -340,79 +389,46 @@ public class Qwen3Model: Module, KVCacheDimensionProvider {
         }
     }
 
+    /// Parse a single row of tokens on CPU
+    public func parseOutputRow(_ tokens: [Int32]) -> [Int] {
+        let tokensI = tokens.map(Int.init)
+
+        // Find start index: first try START_OF_SPEECH (use lastIndex for latest occurrence)
+        var startIdx: Int? = tokensI.lastIndex(of: startOfSpeech)
+
+        // If not found, look for START_OF_AI and find first audio token after it
+        if startIdx == nil, let soaIdx = tokensI.lastIndex(of: startOfAI) {
+            if let firstAudio = tokensI[(soaIdx + 1)...].firstIndex(where: { $0 >= audioTokensStart }) {
+                startIdx = firstAudio - 1
+            }
+        }
+
+        // Slice from start index
+        let slice = (startIdx != nil) ? Array(tokensI[(startIdx! + 1)...]) : tokensI
+
+        // Filter out END_OF_SPEECH tokens
+        let filtered = slice.filter { $0 != endOfSpeech }
+
+        // Trim to multiple of 7
+        let newLen = (filtered.count / 7) * 7
+        guard newLen > 0 else { return [] }
+
+        // Subtract audioTokensStart
+        return filtered.prefix(newLen).map { $0 - audioTokensStart }
+    }
+
+    /// Parse output tokens for multiple batch rows using CPU-based parsing.
+    public func parseOutputBatch(_ tokensPerBatch: [[Int32]]) -> [[Int]] {
+        return tokensPerBatch.map { parseOutputRow($0) }
+    }
+
+    /// Legacy parseOutput for MLXArray input (kept for compatibility).
     public func parseOutput(_ inputIds: MLXArray) -> [[Int]] {
-        let tokenToRemove = endOfSpeech
-
-        // First try to find START_OF_SPEECH
-        var startIdx: Int? = nil
-
-        // Create mask for START_OF_SPEECH
-        let sosMask = inputIds .== startOfSpeech
-        for i in 0..<sosMask.shape[0] {
-            for j in 0..<sosMask.shape[1] {
-                if sosMask[i, j].item(Int.self) != 0 {
-                    startIdx = j
-                }
-            }
-        }
-
-        // If START_OF_SPEECH not found, look for START_OF_AI and find first audio token after it
-        if startIdx == nil {
-            let soaMask = inputIds .== startOfAI
-            var soaIdx: Int? = nil
-            for i in 0..<soaMask.shape[0] {
-                for j in 0..<soaMask.shape[1] {
-                    if soaMask[i, j].item(Int.self) != 0 {
-                        soaIdx = j
-                    }
-                }
-            }
-
-            // Find first token >= audioTokensStart after START_OF_AI
-            if let soaIdx = soaIdx {
-                let rowList = inputIds[0].asArray(Int.self)
-                for j in (soaIdx + 1)..<rowList.count {
-                    if rowList[j] >= audioTokensStart {
-                        startIdx = j - 1  // Start just before first audio token
-                        break
-                    }
-                }
-            }
-        }
-
-        var croppedTensor: MLXArray
-
-        // Check if we found a starting point
-        if let idx = startIdx {
-            croppedTensor = inputIds[0..., (idx + 1)...]
-        } else {
-            croppedTensor = inputIds
-        }
-
-        // Process each row
-        var processedRows: [MLXArray] = []
-
-        for i in 0..<croppedTensor.shape[0] {
-            let row = croppedTensor[i]
-            let rowList = row.asArray(Int.self)
-
-            // Filter out tokens to remove
-            let maskedRow = rowList.filter { $0 != tokenToRemove }
-            processedRows.append(MLXArray(maskedRow))
-        }
-
-        // Create code lists
         var codeLists: [[Int]] = []
 
-        for row in processedRows {
-            let rowLength = row.shape[0]
-            let newLength = (rowLength / 7) * 7
-            let trimmedRow = row[0..<newLength]
-
-            // Subtract AUDIO_TOKENS_START from each token
-            let trimmedList = trimmedRow.asArray(Int.self)
-            let codeList = trimmedList.map { $0 - audioTokensStart }
-            codeLists.append(codeList)
+        for i in 0..<inputIds.shape[0] {
+            let row = inputIds[i].asArray(Int32.self)
+            codeLists.append(parseOutputRow(row))
         }
 
         return codeLists
@@ -425,10 +441,9 @@ public class Qwen3Model: Module, KVCacheDimensionProvider {
         refText: String? = nil
     ) -> (MLXArray, MLXArray) {
 
-        var audioInputIds: MLXArray?
-        var audioTranscriptIds: MLXArray?
+        var refAudioCodes: [Int32]? = nil
+        var refTranscriptIds: [Int32]? = nil
 
-        // Handle reference audio and text
         if let refAudio = refAudio, let refText = refText {
             print("\u{001B}[93mWARNING: Audio cloning doesn't work reliably on this model.\u{001B}[0m")
 
@@ -437,86 +452,83 @@ public class Qwen3Model: Module, KVCacheDimensionProvider {
             }
 
             let codes = encodeAudioToCodes(audio: refAudio, snacModel: snacModel)
-            audioInputIds = codes + audioTokensStart
-            let encodedIds = tokenizer!.encode(text: refText)
-            audioTranscriptIds = MLXArray(encodedIds.map { Int32($0) }).expandedDimensions(axis: 0)
+            let codesArray = (codes + audioTokensStart).asArray(Int32.self)
+            refAudioCodes = codesArray
+            refTranscriptIds = tokenizer!.encode(text: refText).map { Int32($0) }
         }
 
         // Apply voice prefix if provided
-        var modifiedPrompts = prompts
+        let modifiedPrompts: [String]
         if let voice = voice {
             modifiedPrompts = prompts.map { "\(voice): \($0)" }
+        } else {
+            modifiedPrompts = prompts
         }
 
-        // Define special tokens
-        let startToken = MLXArray([Int32(startOfHuman)]).expandedDimensions(axis: 0)
-        let endTokens = MLXArray([Int32(endOfText), Int32(endOfHuman)]).expandedDimensions(axis: 0)
-
-        // Encode all prompts
-        var promptInputIds: [MLXArray] = []
-        for prompt in modifiedPrompts {
-            let encodedIds = tokenizer!.encode(text: prompt)
-            let encoded = MLXArray(encodedIds.map { Int32($0) }).expandedDimensions(axis: 0)
-            promptInputIds.append(encoded)
+        // Encode all prompts to CPU arrays first (avoid multiple MLXArray creations)
+        let encodedPrompts: [[Int32]] = modifiedPrompts.map { prompt in
+            tokenizer!.encode(text: prompt).map { Int32($0) }
         }
 
-        // Prepare batch with padding
-        var batchInputIds: [MLXArray] = []
-        let padToken = MLXArray([Int32(padTokenId)])
-        let maxLen = promptInputIds.map { $0.shape[1] }.max() ?? 0
+        // Find max length for padding
+        let maxPromptLen = encodedPrompts.map { $0.count }.max() ?? 0
 
-        for inputIds in promptInputIds {
-            var modifiedInputIds: [MLXArray] = []
+        // Build all input IDs on CPU, then create single MLXArray
+        var allBatchIds: [[Int32]] = []
 
-            // Add padding if needed
-            let paddingLen = maxLen - inputIds.shape[1]
+        for encodedPrompt in encodedPrompts {
+            var sequence: [Int32] = []
+
+            // Add padding if needed (at the start)
+            let paddingLen = maxPromptLen - encodedPrompt.count
             if paddingLen > 0 {
-                let padding = repeated(padToken, count: paddingLen, axis: 0)
-                    .expandedDimensions(axis: 0)
-                modifiedInputIds.append(padding)
+                sequence.append(contentsOf: [Int32](repeating: Int32(padTokenId), count: paddingLen))
             }
 
             // Add reference audio and transcript if provided
-            if let audioInputIds = audioInputIds, let audioTranscriptIds = audioTranscriptIds {
-                let audioStartTokens = MLXArray([
-                    Int32(startOfAI), Int32(startOfSpeech)
-                ]).expandedDimensions(axis: 0)
-
-                let audioEndTokens = MLXArray([
-                    Int32(endOfSpeech), Int32(endOfAI)
-                ]).expandedDimensions(axis: 0)
-
-                let refInputIds = concatenated([
-                    startToken,
-                    audioTranscriptIds,
-                    endTokens,
-                    audioStartTokens,
-                    audioInputIds,
-                    audioEndTokens
-                ], axis: 1)
-
-                modifiedInputIds.append(refInputIds)
+            if let refCodes = refAudioCodes, let refTranscript = refTranscriptIds {
+                // [START_OF_HUMAN] + transcript + [END_OF_TEXT, END_OF_HUMAN]
+                sequence.append(Int32(startOfHuman))
+                sequence.append(contentsOf: refTranscript)
+                sequence.append(Int32(endOfText))
+                sequence.append(Int32(endOfHuman))
+                // [START_OF_AI, START_OF_SPEECH] + audio codes + [END_OF_SPEECH, END_OF_AI]
+                sequence.append(Int32(startOfAI))
+                sequence.append(Int32(startOfSpeech))
+                sequence.append(contentsOf: refCodes)
+                sequence.append(Int32(endOfSpeech))
+                sequence.append(Int32(endOfAI))
             }
 
-            // Add prompt with start/end tokens
-            let onePromptInputIds = concatenated([
-                startToken,
-                inputIds,
-                endTokens
-            ], axis: 1)
+            // Add prompt: [START_OF_HUMAN] + prompt + [END_OF_TEXT, END_OF_HUMAN]
+            sequence.append(Int32(startOfHuman))
+            sequence.append(contentsOf: encodedPrompt)
+            sequence.append(Int32(endOfText))
+            sequence.append(Int32(endOfHuman))
 
-            modifiedInputIds.append(onePromptInputIds)
-
-            // Concatenate all parts for this prompt
-            let fullInputIds = concatenated(modifiedInputIds, axis: 1)
-            batchInputIds.append(fullInputIds)
+            allBatchIds.append(sequence)
         }
 
-        // Concatenate all prompts in batch
-        let finalBatchInputIds = concatenated(batchInputIds, axis: 0)
+        // Pad all sequences to same length and create single MLXArray
+        let maxLen = allBatchIds.map { $0.count }.max() ?? 0
+        var flattenedIds: [Int32] = []
+        flattenedIds.reserveCapacity(allBatchIds.count * maxLen)
 
-        // Create attention mask (False for pad tokens, True otherwise)
-        let batchMask = finalBatchInputIds .!= padToken
+        for var sequence in allBatchIds {
+            // Pad to maxLen if needed
+            let padCount = maxLen - sequence.count
+            if padCount > 0 {
+                sequence.insert(contentsOf: [Int32](repeating: Int32(padTokenId), count: padCount), at: 0)
+            }
+            flattenedIds.append(contentsOf: sequence)
+        }
+
+        // Single MLXArray creation from CPU data
+        let batchSize = allBatchIds.count
+        let finalBatchInputIds = MLXArray(flattenedIds).reshaped([batchSize, maxLen])
+
+        // Create attention mask (1 for real tokens, 0 for pad tokens)
+        let batchMask = finalBatchInputIds .!= Int32(padTokenId)
 
         return (finalBatchInputIds, batchMask)
     }
@@ -614,19 +626,22 @@ public class Qwen3Model: Module, KVCacheDimensionProvider {
             cache = self.makeCache()
         }
 
-        var generatedTokens: [Int32] = []
-        let promptTokensList = inputIds.squeezed(axis: 0).asArray(Int32.self)
-        generatedTokens.append(contentsOf: promptTokensList)
-
         let maxTokens = parameters.maxTokens ?? 1200
 
-        // Prefill: process the prompt
+        let promptTokensList = inputIds.squeezed(axis: 0).asArray(Int32.self)
+
+        var generatedOnly = ContiguousArray<Int32>()
+        generatedOnly.reserveCapacity(maxTokens)
+
+        // Prefill: process the prompt, slice immediately to [1, V]
         var logits = self(inputIds, cache: cache)
+        logits = logits[0..., -1, 0...]  // [1, V] - avoid keeping [1, L, V]
+        eval(logits)
 
         // Generate tokens
-        for i in 0..<maxTokens {
+        for _ in 0..<maxTokens {
             let tokenValue: Int = autoreleasepool {
-                var lastLogits = logits[0..., -1, 0...]
+                var lastLogits = logits
                 lastLogits = processor?.process(logits: lastLogits) ?? lastLogits
 
                 let nextToken = sampler.sample(logits: lastLogits)
@@ -637,6 +652,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider {
                 if value != endOfSpeech {
                     let nextTokenExpanded = nextToken.reshaped([1, 1])
                     logits = self(nextTokenExpanded, cache: cache)
+                    logits = logits[0..., -1, 0...]  // [1, V]
                     eval(logits)
                 }
 
@@ -647,22 +663,22 @@ public class Qwen3Model: Module, KVCacheDimensionProvider {
                 break
             }
 
-            generatedTokens.append(Int32(tokenValue))
-
-            // Periodically clear GPU cache
-            if i % 50 == 0 {
-                Memory.clearCache()
-            }
+            // Only store generated tokens (not prompt)
+            generatedOnly.append(Int32(tokenValue))
         }
 
         Memory.clearCache()
 
-        let allTokens = MLXArray(generatedTokens).expandedDimensions(axis: 0)
+        // Reconstruct full tokens only once at the end for parsing
+        var fullTokens = ContiguousArray<Int32>()
+        fullTokens.reserveCapacity(promptTokensList.count + generatedOnly.count)
+        fullTokens.append(contentsOf: promptTokensList)
+        fullTokens.append(contentsOf: generatedOnly)
 
-        // Parse output to audio codes
-        let codeLists = parseOutput(allTokens)
+        // Parse output to audio codes using CPU-based parsing
+        let codeList = parseOutputRow(Array(fullTokens))
 
-        guard let codeList = codeLists.first, !codeList.isEmpty else {
+        guard !codeList.isEmpty else {
             throw Qwen3Error.generationFailed("No audio codes generated")
         }
 
@@ -722,29 +738,33 @@ public class Qwen3Model: Module, KVCacheDimensionProvider {
                         cache = self.makeCache()
                     }
 
-                    // Collect tokens in Swift array to avoid MLXArray concatenation memory buildup
-                    var generatedTokens: [Int32] = []
-                    let promptTokensList = inputIds.squeezed(axis: 0).asArray(Int32.self)
-                    generatedTokens.append(contentsOf: promptTokensList)
-
                     let maxTokens = parameters.maxTokens ?? 1200
+
+                    // DEDUP: Pull prompt tokens ONCE to CPU - this is your anchor
+                    let promptTokensList = inputIds.squeezed(axis: 0).asArray(Int32.self)
+
+                    // Store only generated tokens (not prompt tokens) - dedup approach
+                    var generatedTokens = ContiguousArray<Int32>()
+                    generatedTokens.reserveCapacity(maxTokens)
 
                     let startTime = Date()
 
-                    // Prefill
+                    // Prefill: process the prompt, slice immediately to [1, V]
                     var tokenCount: Int = 0
                     var logits = self(inputIds, cache: cache)
+                    logits = logits[0..., -1, 0...]  // [1, V] - avoid keeping [1, L, V]
+                    eval(logits)
                     let prefillTime = Date().timeIntervalSince(startTime)
 
                     let generateStartTime = Date()
 
                     // Generate tokens
-                    for i in 0..<maxTokens {
+                    for _ in 0..<maxTokens {
                         if Task.isCancelled { break }
 
                         // Extract token value and advance - minimize intermediate tensor lifetime
                         let tokenValue: Int = autoreleasepool {
-                            var lastLogits = logits[0..., -1, 0...]
+                            var lastLogits = logits
                             lastLogits = processor?.process(logits: lastLogits) ?? lastLogits
 
                             let nextToken = sampler.sample(logits: lastLogits)
@@ -756,6 +776,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider {
                             if value != endOfSpeech {
                                 let nextTokenExpanded = nextToken.reshaped([1, 1])
                                 logits = self(nextTokenExpanded, cache: cache)
+                                logits = logits[0..., -1, 0...]  // [1, V]
                                 eval(logits)
                             }
 
@@ -770,24 +791,23 @@ public class Qwen3Model: Module, KVCacheDimensionProvider {
                             break
                         }
 
-                        // Collect token in Swift array (no MLXArray concatenation)
                         generatedTokens.append(Int32(tokenValue))
-
-                        // Clear GPU cache periodically to free intermediate tensors
-                        if i % 50 == 0 {
-                            Memory.clearCache()
-                        }
                     }
+
+                    Memory.clearCache()
 
                     let generateTime = Date().timeIntervalSince(generateStartTime)
 
+                    // Reconstruct full tokens only once at the end for parsing
+                    var fullTokens = ContiguousArray<Int32>()
+                    fullTokens.reserveCapacity(promptTokensList.count + generatedTokens.count)
+                    fullTokens.append(contentsOf: promptTokensList)
+                    fullTokens.append(contentsOf: generatedTokens)
 
-                    let allTokens = MLXArray(generatedTokens).expandedDimensions(axis: 0)
+                    // Parse output to audio codes using CPU-based parsing
+                    let codeList = self.parseOutputRow(Array(fullTokens))
 
-                    // Parse and decode audio
-                    let codeLists = self.parseOutput(allTokens)
-
-                    guard let codeList = codeLists.first, !codeList.isEmpty else {
+                    guard !codeList.isEmpty else {
                         throw Qwen3Error.generationFailed("No audio codes generated")
                     }
 

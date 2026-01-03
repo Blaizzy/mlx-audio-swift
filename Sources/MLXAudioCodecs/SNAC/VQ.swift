@@ -184,7 +184,6 @@ public class ResidualVectorQuantize: Module {
             }
 
             zQ = zQ + zQI
-
             eval(zQ)
         }
 
