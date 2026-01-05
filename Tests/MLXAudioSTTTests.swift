@@ -6,7 +6,6 @@
 //
 
 import Testing
-import XCTest
 import MLX
 import MLXNN
 
@@ -14,25 +13,25 @@ import MLXNN
 @testable import MLXAudioSTT
 
 
-final class GLMASRModuleTests: XCTestCase {
+struct GLMASRModuleSetupTests {
 
     // MARK: - Configuration Tests
 
-    func testWhisperConfigDefaults() {
+    @Test func whisperConfigDefaults() {
         let config = WhisperConfig()
 
-        XCTAssertEqual(config.modelType, "whisper")
-        XCTAssertEqual(config.activationFunction, "gelu")
-        XCTAssertEqual(config.dModel, 1280)
-        XCTAssertEqual(config.encoderAttentionHeads, 20)
-        XCTAssertEqual(config.encoderFfnDim, 5120)
-        XCTAssertEqual(config.encoderLayers, 32)
-        XCTAssertEqual(config.numMelBins, 128)
-        XCTAssertEqual(config.maxSourcePositions, 1500)
-        XCTAssertTrue(config.ropeTraditional)
+        #expect(config.modelType == "whisper")
+        #expect(config.activationFunction == "gelu")
+        #expect(config.dModel == 1280)
+        #expect(config.encoderAttentionHeads == 20)
+        #expect(config.encoderFfnDim == 5120)
+        #expect(config.encoderLayers == 32)
+        #expect(config.numMelBins == 128)
+        #expect(config.maxSourcePositions == 1500)
+        #expect(config.ropeTraditional)
     }
 
-    func testWhisperConfigCustom() {
+    @Test func whisperConfigCustom() {
         let config = WhisperConfig(
             dModel: 512,
             encoderAttentionHeads: 8,
@@ -40,49 +39,49 @@ final class GLMASRModuleTests: XCTestCase {
             numMelBins: 80
         )
 
-        XCTAssertEqual(config.dModel, 512)
-        XCTAssertEqual(config.encoderAttentionHeads, 8)
-        XCTAssertEqual(config.encoderLayers, 6)
-        XCTAssertEqual(config.numMelBins, 80)
+        #expect(config.dModel == 512)
+        #expect(config.encoderAttentionHeads == 8)
+        #expect(config.encoderLayers == 6)
+        #expect(config.numMelBins == 80)
     }
 
-    func testLlamaConfigDefaults() {
+    @Test func llamaConfigDefaults() {
         let config = LlamaConfig()
 
-        XCTAssertEqual(config.modelType, "llama")
-        XCTAssertEqual(config.vocabSize, 59264)
-        XCTAssertEqual(config.hiddenSize, 2048)
-        XCTAssertEqual(config.intermediateSize, 6144)
-        XCTAssertEqual(config.numHiddenLayers, 28)
-        XCTAssertEqual(config.numAttentionHeads, 16)
-        XCTAssertEqual(config.numKeyValueHeads, 4)
-        XCTAssertEqual(config.hiddenAct, "silu")
-        XCTAssertEqual(config.eosTokenId, [59246, 59253, 59255])
+        #expect(config.modelType == "llama")
+        #expect(config.vocabSize == 59264)
+        #expect(config.hiddenSize == 2048)
+        #expect(config.intermediateSize == 6144)
+        #expect(config.numHiddenLayers == 28)
+        #expect(config.numAttentionHeads == 16)
+        #expect(config.numKeyValueHeads == 4)
+        #expect(config.hiddenAct == "silu")
+        #expect(config.eosTokenId == [59246, 59253, 59255])
     }
 
-    func testLlamaConfigCustom() {
+    @Test func llamaConfigCustom() {
         let config = LlamaConfig(
             vocabSize: 32000,
             hiddenSize: 1024,
             numHiddenLayers: 12
         )
 
-        XCTAssertEqual(config.vocabSize, 32000)
-        XCTAssertEqual(config.hiddenSize, 1024)
-        XCTAssertEqual(config.numHiddenLayers, 12)
+        #expect(config.vocabSize == 32000)
+        #expect(config.hiddenSize == 1024)
+        #expect(config.numHiddenLayers == 12)
     }
 
-    func testGLMASRModelConfigDefaults() {
+    @Test func glmASRModelConfigDefaults() {
         let config = GLMASRModelConfig()
 
-        XCTAssertEqual(config.modelType, "glmasr")
-        XCTAssertEqual(config.adapterType, "mlp")
-        XCTAssertEqual(config.mergeFactor, 4)
-        XCTAssertTrue(config.useRope)
-        XCTAssertEqual(config.maxWhisperLength, 1500)
+        #expect(config.modelType == "glmasr")
+        #expect(config.adapterType == "mlp")
+        #expect(config.mergeFactor == 4)
+        #expect(config.useRope)
+        #expect(config.maxWhisperLength == 1500)
     }
 
-    func testGLMASRModelConfigWithNestedConfigs() {
+    @Test func glmASRModelConfigWithNestedConfigs() {
         let whisperConfig = WhisperConfig(dModel: 512, encoderLayers: 6)
         let llamaConfig = LlamaConfig(hiddenSize: 1024, numHiddenLayers: 12)
 
@@ -92,16 +91,16 @@ final class GLMASRModuleTests: XCTestCase {
             mergeFactor: 2
         )
 
-        XCTAssertEqual(config.whisperConfig.dModel, 512)
-        XCTAssertEqual(config.whisperConfig.encoderLayers, 6)
-        XCTAssertEqual(config.lmConfig.hiddenSize, 1024)
-        XCTAssertEqual(config.lmConfig.numHiddenLayers, 12)
-        XCTAssertEqual(config.mergeFactor, 2)
+        #expect(config.whisperConfig.dModel == 512)
+        #expect(config.whisperConfig.encoderLayers == 6)
+        #expect(config.lmConfig.hiddenSize == 1024)
+        #expect(config.lmConfig.numHiddenLayers == 12)
+        #expect(config.mergeFactor == 2)
     }
 
     // MARK: - Layer Tests
 
-    func testWhisperAttentionShape() {
+    @Test func whisperAttentionShape() {
         let config = WhisperConfig(
             dModel: 256,
             encoderAttentionHeads: 4,
@@ -116,10 +115,10 @@ final class GLMASRModuleTests: XCTestCase {
 
         let output = attention(hiddenStates)
 
-        XCTAssertEqual(output.shape, [batchSize, seqLen, config.dModel])
+        #expect(output.shape == [batchSize, seqLen, config.dModel])
     }
 
-    func testWhisperAttentionWithRoPE() {
+    @Test func whisperAttentionWithRoPE() {
         let config = WhisperConfig(
             dModel: 256,
             encoderAttentionHeads: 4,
@@ -135,10 +134,10 @@ final class GLMASRModuleTests: XCTestCase {
 
         let output = attention(hiddenStates)
 
-        XCTAssertEqual(output.shape, [batchSize, seqLen, config.dModel])
+        #expect(output.shape == [batchSize, seqLen, config.dModel])
     }
 
-    func testWhisperEncoderLayerShape() {
+    @Test func whisperEncoderLayerShape() {
         let config = WhisperConfig(
             dModel: 256,
             encoderAttentionHeads: 4,
@@ -154,10 +153,10 @@ final class GLMASRModuleTests: XCTestCase {
 
         let output = layer(hiddenStates)
 
-        XCTAssertEqual(output.shape, [batchSize, seqLen, config.dModel])
+        #expect(output.shape == [batchSize, seqLen, config.dModel])
     }
 
-    func testWhisperEncoderShape() {
+    @Test func whisperEncoderShape() {
         let config = WhisperConfig(
             dModel: 256,
             encoderAttentionHeads: 4,
@@ -177,12 +176,12 @@ final class GLMASRModuleTests: XCTestCase {
 
         // After conv2 with stride 2, sequence length is halved
         let expectedSeqLen = seqLen / 2
-        XCTAssertEqual(output.shape[0], batchSize)
-        XCTAssertEqual(output.shape[1], expectedSeqLen)
-        XCTAssertEqual(output.shape[2], config.dModel)
+        #expect(output.shape[0] == batchSize)
+        #expect(output.shape[1] == expectedSeqLen)
+        #expect(output.shape[2] == config.dModel)
     }
 
-    func testAdaptingMLPShape() {
+    @Test func adaptingMLPShape() {
         let inputDim = 512
         let intermediateDim = 1024
         let outputDim = 256
@@ -195,10 +194,10 @@ final class GLMASRModuleTests: XCTestCase {
 
         let output = mlp(input)
 
-        XCTAssertEqual(output.shape, [batchSize, seqLen, outputDim])
+        #expect(output.shape == [batchSize, seqLen, outputDim])
     }
 
-    func testAudioEncoderShape() {
+    @Test func audioEncoderShape() {
         let whisperConfig = WhisperConfig(
             dModel: 256,
             encoderAttentionHeads: 4,
@@ -228,12 +227,12 @@ final class GLMASRModuleTests: XCTestCase {
 
         let (output, audioLen) = audioEncoder(inputFeatures)
 
-        XCTAssertEqual(output.shape[0], batchSize)
-        XCTAssertEqual(output.shape[2], llamaConfig.hiddenSize)
-        XCTAssertGreaterThan(audioLen, 0)
+        #expect(output.shape[0] == batchSize)
+        #expect(output.shape[2] == llamaConfig.hiddenSize)
+        #expect(audioLen > 0)
     }
 
-    func testAudioEncoderBoaEoaTokens() {
+    @Test func audioEncoderBoaEoaTokens() {
         let whisperConfig = WhisperConfig(dModel: 256, encoderAttentionHeads: 4, encoderLayers: 1)
         let llamaConfig = LlamaConfig(hiddenSize: 512)
         let config = GLMASRModelConfig(whisperConfig: whisperConfig, lmConfig: llamaConfig)
@@ -242,13 +241,13 @@ final class GLMASRModuleTests: XCTestCase {
 
         let (boa, eoa) = audioEncoder.getBoaEoaTokens()
 
-        XCTAssertEqual(boa.shape, [1, llamaConfig.hiddenSize])
-        XCTAssertEqual(eoa.shape, [1, llamaConfig.hiddenSize])
+        #expect(boa.shape == [1, llamaConfig.hiddenSize])
+        #expect(eoa.shape == [1, llamaConfig.hiddenSize])
     }
 
     // MARK: - STTOutput Tests
 
-    func testSTTOutputCreation() {
+    @Test func sttOutputCreation() {
         let output = STTOutput(
             text: "Hello world",
             promptTokens: 100,
@@ -259,27 +258,27 @@ final class GLMASRModuleTests: XCTestCase {
             totalTime: 1.5
         )
 
-        XCTAssertEqual(output.text, "Hello world")
-        XCTAssertEqual(output.promptTokens, 100)
-        XCTAssertEqual(output.generationTokens, 50)
-        XCTAssertEqual(output.totalTokens, 150)
-        XCTAssertEqual(output.promptTps, 100.0)
-        XCTAssertEqual(output.generationTps, 50.0)
-        XCTAssertEqual(output.totalTime, 1.5)
+        #expect(output.text == "Hello world")
+        #expect(output.promptTokens == 100)
+        #expect(output.generationTokens == 50)
+        #expect(output.totalTokens == 150)
+        #expect(output.promptTps == 100.0)
+        #expect(output.generationTps == 50.0)
+        #expect(output.totalTime == 1.5)
     }
 
-    func testSTTOutputDefaults() {
+    @Test func sttOutputDefaults() {
         let output = STTOutput(text: "Test")
 
-        XCTAssertEqual(output.text, "Test")
-        XCTAssertNil(output.segments)
-        XCTAssertNil(output.language)
-        XCTAssertEqual(output.promptTokens, 0)
-        XCTAssertEqual(output.generationTokens, 0)
-        XCTAssertEqual(output.totalTokens, 0)
+        #expect(output.text == "Test")
+        #expect(output.segments == nil)
+        #expect(output.language == nil)
+        #expect(output.promptTokens == 0)
+        #expect(output.generationTokens == 0)
+        #expect(output.totalTokens == 0)
     }
 
-    func testSTTOutputDescription() {
+    @Test func sttOutputDescription() {
         let output = STTOutput(
             text: "Test transcription",
             language: "en",
@@ -291,16 +290,16 @@ final class GLMASRModuleTests: XCTestCase {
 
         let description = output.description
 
-        XCTAssertTrue(description.contains("Test transcription"))
-        XCTAssertTrue(description.contains("en"))
-        XCTAssertTrue(description.contains("50"))
-        XCTAssertTrue(description.contains("25"))
-        XCTAssertTrue(description.contains("75"))
+        #expect(description.contains("Test transcription"))
+        #expect(description.contains("en"))
+        #expect(description.contains("50"))
+        #expect(description.contains("25"))
+        #expect(description.contains("75"))
     }
 
     // MARK: - Config Decoding Tests
 
-    func testWhisperConfigDecoding() throws {
+    @Test func whisperConfigDecoding() throws {
         let json = """
         {
             "model_type": "whisper",
@@ -314,14 +313,14 @@ final class GLMASRModuleTests: XCTestCase {
         let data = json.data(using: .utf8)!
         let config = try JSONDecoder().decode(WhisperConfig.self, from: data)
 
-        XCTAssertEqual(config.modelType, "whisper")
-        XCTAssertEqual(config.dModel, 512)
-        XCTAssertEqual(config.encoderAttentionHeads, 8)
-        XCTAssertEqual(config.encoderLayers, 6)
-        XCTAssertEqual(config.numMelBins, 80)
+        #expect(config.modelType == "whisper")
+        #expect(config.dModel == 512)
+        #expect(config.encoderAttentionHeads == 8)
+        #expect(config.encoderLayers == 6)
+        #expect(config.numMelBins == 80)
     }
 
-    func testLlamaConfigDecoding() throws {
+    @Test func llamaConfigDecoding() throws {
         let json = """
         {
             "model_type": "llama",
@@ -335,14 +334,14 @@ final class GLMASRModuleTests: XCTestCase {
         let data = json.data(using: .utf8)!
         let config = try JSONDecoder().decode(LlamaConfig.self, from: data)
 
-        XCTAssertEqual(config.modelType, "llama")
-        XCTAssertEqual(config.vocabSize, 32000)
-        XCTAssertEqual(config.hiddenSize, 1024)
-        XCTAssertEqual(config.numHiddenLayers, 12)
-        XCTAssertEqual(config.eosTokenId, [1, 2, 3])
+        #expect(config.modelType == "llama")
+        #expect(config.vocabSize == 32000)
+        #expect(config.hiddenSize == 1024)
+        #expect(config.numHiddenLayers == 12)
+        #expect(config.eosTokenId == [1, 2, 3])
     }
 
-    func testGLMASRModelConfigDecoding() throws {
+    @Test func glmASRModelConfigDecoding() throws {
         let json = """
         {
             "model_type": "glmasr",
@@ -363,19 +362,19 @@ final class GLMASRModuleTests: XCTestCase {
         let data = json.data(using: .utf8)!
         let config = try JSONDecoder().decode(GLMASRModelConfig.self, from: data)
 
-        XCTAssertEqual(config.modelType, "glmasr")
-        XCTAssertEqual(config.adapterType, "mlp")
-        XCTAssertEqual(config.mergeFactor, 2)
-        XCTAssertTrue(config.useRope)
-        XCTAssertEqual(config.whisperConfig.dModel, 512)
-        XCTAssertEqual(config.whisperConfig.encoderLayers, 6)
-        XCTAssertEqual(config.lmConfig.hiddenSize, 1024)
-        XCTAssertEqual(config.lmConfig.numHiddenLayers, 12)
+        #expect(config.modelType == "glmasr")
+        #expect(config.adapterType == "mlp")
+        #expect(config.mergeFactor == 2)
+        #expect(config.useRope)
+        #expect(config.whisperConfig.dModel == 512)
+        #expect(config.whisperConfig.encoderLayers == 6)
+        #expect(config.lmConfig.hiddenSize == 1024)
+        #expect(config.lmConfig.numHiddenLayers == 12)
     }
 
     // MARK: - AnyCodable Tests
 
-    func testAnyCodableWithInt() throws {
+    @Test func anyCodableWithInt() throws {
         let json = """
         {"value": 42}
         """
@@ -387,10 +386,10 @@ final class GLMASRModuleTests: XCTestCase {
         let data = json.data(using: .utf8)!
         let container = try JSONDecoder().decode(Container.self, from: data)
 
-        XCTAssertEqual(container.value.value as? Int, 42)
+        #expect(container.value.value as? Int == 42)
     }
 
-    func testAnyCodableWithString() throws {
+    @Test func anyCodableWithString() throws {
         let json = """
         {"value": "hello"}
         """
@@ -402,10 +401,10 @@ final class GLMASRModuleTests: XCTestCase {
         let data = json.data(using: .utf8)!
         let container = try JSONDecoder().decode(Container.self, from: data)
 
-        XCTAssertEqual(container.value.value as? String, "hello")
+        #expect(container.value.value as? String == "hello")
     }
 
-    func testAnyCodableWithArray() throws {
+    @Test func anyCodableWithArray() throws {
         let json = """
         {"value": [1, 2, 3]}
         """
@@ -418,7 +417,7 @@ final class GLMASRModuleTests: XCTestCase {
         let container = try JSONDecoder().decode(Container.self, from: data)
 
         let array = container.value.value as? [Any]
-        XCTAssertEqual(array?.count, 3)
+        #expect(array?.count == 3)
     }
 }
 
@@ -433,7 +432,7 @@ final class GLMASRModuleTests: XCTestCase {
 struct GLMASRTests {
 
     /// Test basic transcription with GLM-ASR model
-    @Test func testGLMASRTranscribe() async throws {
+    @Test func glmASRTranscribe() async throws {
         let audioURL = Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media")!
         let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
         print("\u{001B}[33mLoaded audio: \(audioData.shape), sample rate: \(sampleRate)\u{001B}[0m")
@@ -450,7 +449,7 @@ struct GLMASRTests {
     }
 
     /// Test streaming transcription with GLM-ASR model
-    @Test func testGLMASRTranscribeStream() async throws {
+    @Test func glmASRTranscribeStream() async throws {
         let audioURL = Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media")!
         let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
         print("\u{001B}[33mLoaded audio: \(audioData.shape), sample rate: \(sampleRate)\u{001B}[0m")
