@@ -23,12 +23,16 @@ let package = Package(
             name: "MLXAudioSTT",
             dependencies: [
                 .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
             ],
             path: "mlx_audio_swift/stt/MLXAudioSTT"
         ),
         .testTarget(
             name: "MLXAudioSTTTests",
-            dependencies: ["MLXAudioSTT"],
+            dependencies: [
+                "MLXAudioSTT",
+                .product(name: "MLXNN", package: "mlx-swift"),
+            ],
             path: "mlx_audio_swift/stt/Tests"
         ),
     ]
