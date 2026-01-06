@@ -13,6 +13,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", branch: "main"),
         .package(url: "https://github.com/huggingface/swift-transformers", .upToNextMinor(from: "1.1.0")),
+        .package(url: "https://github.com/aespinilla/Tiktoken", branch: "main"),
     ],
     targets: [
         .binaryTarget(
@@ -25,6 +26,7 @@ let package = Package(
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "Transformers", package: "swift-transformers"),
+                .product(name: "Tiktoken", package: "Tiktoken"),
                 "ESpeakNG"
             ],
             path: "mlx_audio_swift/tts/MLXAudio",
