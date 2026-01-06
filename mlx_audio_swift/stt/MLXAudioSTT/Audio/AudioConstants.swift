@@ -12,7 +12,7 @@ public enum AudioConstants {
     /// Original Whisper window size (used for Hann window)
     public static let whisperWindowSize: Int = 400
 
-    /// Hop length between frames (nFFT / 2.5 = 160)
+    /// Hop length between frames (whisperWindowSize / 2.5 = 160)
     public static let hopLength: Int = 160
 
     /// Number of mel frequency bins

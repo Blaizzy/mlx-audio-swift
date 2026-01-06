@@ -6,8 +6,12 @@ struct AudioConstantsTests {
         #expect(AudioConstants.sampleRate == 16000)
     }
 
-    @Test func nFFTIs400() {
-        #expect(AudioConstants.nFFT == 400)
+    @Test func nFFTIsPowerOfTwo() {
+        #expect(AudioConstants.nFFT == 512)
+    }
+
+    @Test func whisperWindowSizeIs400() {
+        #expect(AudioConstants.whisperWindowSize == 400)
     }
 
     @Test func hopLengthIs160() {
