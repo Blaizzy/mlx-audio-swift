@@ -21,8 +21,9 @@ public enum MelSpectrogram {
         // Calculate number of frames
         let nFrames = nSamples / AudioConstants.hopLength
 
-        // Create Hann window
-        let window = hannWindow(size: AudioConstants.nFFT)
+        // Create Hann window (400 samples) zero-padded to FFT size (512)
+        let window = paddedHannWindow(
+            windowSize: AudioConstants.whisperWindowSize, fftSize: AudioConstants.nFFT)
 
         // Setup FFT
         let log2n = vDSP_Length(log2(Double(AudioConstants.nFFT)))
@@ -39,9 +40,9 @@ public enum MelSpectrogram {
 
         for frame in 0..<nFrames {
             let start = frame * AudioConstants.hopLength
-            let end = min(start + AudioConstants.nFFT, nSamples)
+            let end = min(start + AudioConstants.whisperWindowSize, nSamples)
 
-            // Extract and window frame
+            // Extract and window frame (using whisperWindowSize, rest stays zero-padded)
             var windowedFrame = [Float](repeating: 0, count: AudioConstants.nFFT)
             let frameLength = end - start
             for i in 0..<frameLength {
@@ -85,9 +86,12 @@ public enum MelSpectrogram {
 
     // MARK: - Private Helpers
 
-    private static func hannWindow(size: Int) -> [Float] {
-        var window = [Float](repeating: 0, count: size)
-        vDSP_hann_window(&window, vDSP_Length(size), Int32(vDSP_HANN_NORM))
+    private static func paddedHannWindow(windowSize: Int, fftSize: Int) -> [Float] {
+        var window = [Float](repeating: 0, count: windowSize)
+        vDSP_hann_window(&window, vDSP_Length(windowSize), Int32(vDSP_HANN_NORM))
+        if fftSize > windowSize {
+            window.append(contentsOf: [Float](repeating: 0, count: fftSize - windowSize))
+        }
         return window
     }
 
