@@ -74,15 +74,20 @@ public enum MelSpectrogram {
             }
         }
 
-        // Convert to log scale and normalize
+        // Convert to log10 scale (matches Python Whisper)
         let logMelSpec = melSpec.map { row in
-            row.map { max(log(max($0, 1e-10)), log(1e-10)) }
+            row.map { log10(max($0, 1e-10)) }
         }
 
-        // Normalize to Whisper's expected range
-        let maxVal = logMelSpec.flatMap { $0 }.max() ?? 0
-        let normalizedSpec = logMelSpec.map { row in
-            row.map { ($0 - maxVal) / 4.0 + 1.0 }
+        // Clip to max - 8.0 (Whisper's dynamic range limit)
+        let maxLogVal = logMelSpec.flatMap { $0 }.max() ?? 0
+        let clippedSpec = logMelSpec.map { row in
+            row.map { max($0, maxLogVal - 8.0) }
+        }
+
+        // Normalize to roughly [-1, 1] range (Whisper normalization)
+        let normalizedSpec = clippedSpec.map { row in
+            row.map { ($0 + 4.0) / 4.0 }
         }
 
         // Convert to MLXArray [nMels, nFrames]

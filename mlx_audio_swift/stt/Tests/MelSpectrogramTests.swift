@@ -36,11 +36,12 @@ struct MelSpectrogramTests {
         let audio = MLXArray(samples)
         let mel = try MelSpectrogram.compute(audio: audio, nMels: 80)
 
-        // Mel spectrogram should be log-scaled, typically in range [-4, 4] after normalization
+        // Mel spectrogram should be log-scaled in roughly [-2, 1] range after Whisper normalization
+        // Formula: (log10(mel) + 4.0) / 4.0 with max - 8.0 clipping
         let maxVal = MLX.max(mel).item(Float.self)
         let minVal = MLX.min(mel).item(Float.self)
-        #expect(maxVal <= 4.0)
-        #expect(minVal >= -4.0)
+        #expect(maxVal <= 2.0)
+        #expect(minVal >= -2.0)
     }
 
     @Test func handlesShortAudio() async throws {
