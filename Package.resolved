@@ -1,11 +1,11 @@
 {
   "pins" : [
     {
-      "identity" : "jinja",
+      "identity" : "eventsource",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/johnmai-dev/Jinja",
+      "location" : "https://github.com/mattt/EventSource.git",
       "state" : {
-        "revision" : "5c0a87846dfd36ca6621795ad2f09fdaab82b739",
+        "revision" : "ca2a9d90cbe49e09b92f4b6ebd922c03ebea51d0",
         "version" : "1.3.0"
       }
     },
@@ -19,12 +19,12 @@
       }
     },
     {
-      "identity" : "swift-argument-parser",
+      "identity" : "swift-asn1",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-argument-parser.git",
+      "location" : "https://github.com/apple/swift-asn1.git",
       "state" : {
-        "revision" : "0fbc8848e389af3bb55c182bc19ca9d5dc2f255b",
-        "version" : "1.4.0"
+        "revision" : "810496cf121e525d660cd0ea89a758740476b85f",
+        "version" : "1.5.1"
       }
     },
     {
@@ -34,6 +34,33 @@
       "state" : {
         "revision" : "7b847a3b7008b2dc2f47ca3110d8c782fb2e5c7e",
         "version" : "1.3.0"
+      }
+    },
+    {
+      "identity" : "swift-crypto",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-crypto.git",
+      "state" : {
+        "revision" : "6f70fa9eab24c1fd982af18c281c4525d05e3095",
+        "version" : "4.2.0"
+      }
+    },
+    {
+      "identity" : "swift-huggingface",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/huggingface/swift-huggingface.git",
+      "state" : {
+        "revision" : "49abc5179471f799b1d690790521a13cb5cffa64",
+        "version" : "0.5.0"
+      }
+    },
+    {
+      "identity" : "swift-jinja",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/huggingface/swift-jinja.git",
+      "state" : {
+        "revision" : "ba2364165002abe8f4f3992d74a7b547c635638e",
+        "version" : "2.2.1"
       }
     },
     {
@@ -50,8 +77,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/huggingface/swift-transformers",
       "state" : {
-        "revision" : "f000aa7aec0e78acd0211685e4094e1fca84cd8b",
-        "version" : "0.1.24"
+        "revision" : "573e5c9036c2f136b3a8a071da8e8907322403d0",
+        "version" : "1.1.6"
       }
     }
   ],

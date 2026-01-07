@@ -1,5 +1,5 @@
 import Foundation
-import Hub
+import HuggingFace
 import MLX
 import MLXNN
 
@@ -40,15 +40,26 @@ public enum WhisperModelLoader {
         model: WhisperModel,
         progressHandler: (@Sendable (Progress) -> Void)? = nil
     ) async throws -> LoadedModel {
-        let repoId = repoId(for: model)
-        let cacheDir = URL.homeDirectory.appending(path: ".cache/huggingface/hub")
-        let hub = HubApi(downloadBase: cacheDir)
-        let repo = Hub.Repo(id: repoId)
+        let repoIdString = repoId(for: model)
+        guard let repo = Repo.ID(rawValue: repoIdString) else {
+            throw WhisperError.invalidModelFormat("Invalid repo ID: \(repoIdString)")
+        }
 
-        let modelDirectory = try await hub.snapshot(
-            from: repo,
+        let client = HubClient.default
+        let cache = client.cache ?? HubCache.default
+
+        // Use the cache's snapshot directory structure (Python-compatible)
+        let snapshotDir = cache.snapshotsDirectory(repo: repo, kind: .model)
+            .appendingPathComponent("main")
+
+        // Create directory if needed
+        try FileManager.default.createDirectory(at: snapshotDir, withIntermediateDirectories: true)
+
+        let modelDirectory = try await client.downloadSnapshot(
+            of: repo,
+            to: snapshotDir,
             matching: ["*.safetensors", "config.json"],
-            progressHandler: progressHandler ?? { _ in }
+            progressHandler: progressHandler
         )
 
         let config = try loadConfiguration(from: modelDirectory, model: model)

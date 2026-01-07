@@ -16,8 +16,9 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/ml-explore/mlx-swift.git", from: "0.29.0"),
-        .package(url: "https://github.com/huggingface/swift-transformers.git", from: "0.1.18"),
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", from: "0.29.1"),
+        .package(url: "https://github.com/huggingface/swift-transformers.git", from: "1.1.6"),
+        .package(url: "https://github.com/huggingface/swift-huggingface.git", from: "0.5.0"),
     ],
     targets: [
         .target(
@@ -26,6 +27,7 @@ let package = Package(
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "Transformers", package: "swift-transformers"),
+                .product(name: "HuggingFace", package: "swift-huggingface"),
             ],
             path: "mlx_audio_swift/stt/MLXAudioSTT"
         ),
