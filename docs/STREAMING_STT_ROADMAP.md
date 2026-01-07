@@ -203,16 +203,88 @@ Performance on 30s audio with `whisper-large-v3-turbo`:
 - [MLX Swift](https://github.com/ml-explore/mlx-swift) - Apple's ML framework for Swift
 - [mlx-audio](https://github.com/Blaizzy/mlx-audio) - Python reference implementation
 
+## Long Audio Support (>30 seconds)
+
+### The 30-Second Limitation
+
+Whisper has a **fixed 30-second context window**:
+- Input: 3000 mel frames (30 sec × 100 fps)
+- After Conv2 stride-2: 1500 frames (`nAudioCtx`)
+- Positional embeddings: Fixed size array [1500, nAudioState]
+
+Current behavior: `AudioUtils.padOrTrim()` truncates or pads audio to exactly 30 seconds.
+
+### Solution: Sliding Window with Overlap
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    LONG AUDIO CHUNKING                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  Audio: |████████████████████████████████████████████████████| │
+│         0s        30s       60s       90s      120s            │
+│                                                                 │
+│  Chunk 1: |██████████████████████████████|                     │
+│           0s                            30s                     │
+│                                                                 │
+│  Chunk 2:          |██████████████████████████████|            │
+│                   25s                            55s            │
+│                    ↑ 5s overlap                                 │
+│                                                                 │
+│  Chunk 3:                   |██████████████████████████████|   │
+│                            50s                            80s   │
+│                             ↑ 5s overlap                        │
+│                                                                 │
+│  Merge: Align overlapping transcriptions using timestamps       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Implementation Plan
+
+```swift
+// LongAudioProcessor.swift
+
+public struct ChunkingConfig {
+    var chunkDuration: TimeInterval = 30.0  // Whisper max
+    var overlapDuration: TimeInterval = 5.0 // Overlap for seamless merge
+    var hopDuration: TimeInterval { chunkDuration - overlapDuration }  // 25s
+}
+
+public func transcribeLongAudio(
+    _ audio: MLXArray,
+    sampleRate: Int,
+    config: ChunkingConfig = .default
+) -> AsyncThrowingStream<StreamingResult, Error> {
+    // 1. Split audio into overlapping chunks
+    // 2. Process each chunk with WhisperSession
+    // 3. Merge results using word-level timestamps
+    // 4. Emit progressive results as chunks complete
+}
+```
+
+### Merge Strategy
+
+1. **Word-level timestamps** from AlignAtt cross-attention
+2. **Overlap alignment**: Match words in overlap region
+3. **Deduplication**: Remove repeated words at chunk boundaries
+4. **Confidence scoring**: Prefer higher-confidence transcriptions
+
 ## Next Steps
 
-1. [ ] Create `MLXAudioSTT` Swift package structure
-2. [ ] Port `AudioProcessor` (mel spectrogram)
-3. [ ] Port `MultiHeadAttention` with cross-attention capture
-4. [ ] Port `AudioEncoder` and `TextDecoder`
-5. [ ] Implement `StreamingDecoder` with AlignAtt
-6. [ ] Add `MicrophoneCapture` for real-time input
-7. [ ] Integration tests and benchmarks
-8. [ ] iOS/macOS demo app
+### Phase 1: Core Implementation ✅
+1. [x] Create `MLXAudioSTT` Swift package structure
+2. [x] Port `AudioProcessor` (mel spectrogram)
+3. [x] Port `MultiHeadAttention` with cross-attention capture
+4. [x] Port `AudioEncoder` and `TextDecoder`
+5. [x] Implement `StreamingDecoder` with AlignAtt
+6. [x] Basic demo working with test audio
+
+### Phase 2: Production Features
+7. [ ] **Long audio chunking** (sliding window with overlap)
+8. [ ] Add `MicrophoneCapture` for real-time input
+9. [ ] Word-level timestamps extraction
+10. [ ] Integration tests and benchmarks
+11. [ ] iOS/macOS demo app
 
 ---
 

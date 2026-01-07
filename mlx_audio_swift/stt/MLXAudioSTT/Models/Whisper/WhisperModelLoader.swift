@@ -13,7 +13,7 @@ public enum WhisperModelLoader {
         public let config: WhisperConfiguration
     }
 
-    /// HuggingFace repository IDs for each model variant
+    /// HuggingFace repository IDs for MLX weights
     public static func repoId(for model: WhisperModel) -> String {
         switch model {
         case .tiny:
@@ -28,6 +28,24 @@ public enum WhisperModelLoader {
             return "mlx-community/whisper-large-v3-mlx"
         case .largeTurbo:
             return "mlx-community/whisper-large-v3-turbo"
+        }
+    }
+
+    /// HuggingFace repository IDs for tokenizer files (OpenAI repos have tokenizers)
+    public static func tokenizerRepoId(for model: WhisperModel) -> String {
+        switch model {
+        case .tiny:
+            return "openai/whisper-tiny"
+        case .base:
+            return "openai/whisper-base"
+        case .small:
+            return "openai/whisper-small"
+        case .medium:
+            return "openai/whisper-medium"
+        case .largeV3:
+            return "openai/whisper-large-v3"
+        case .largeTurbo:
+            return "openai/whisper-large-v3-turbo"
         }
     }
 
@@ -155,7 +173,8 @@ public enum WhisperModelLoader {
         let (encoderWeights, decoderWeights) = splitAndSanitizeWeights(allWeights)
 
         let encoderParams = ModuleParameters.unflattened(encoderWeights)
-        try encoder.update(parameters: encoderParams, verify: [.all])
+        // Use .noUnusedKeys because encoder.positionalEmbedding is computed (sinusoidal), not loaded
+        try encoder.update(parameters: encoderParams, verify: [.noUnusedKeys])
 
         let decoderParams = ModuleParameters.unflattened(decoderWeights)
         try decoder.update(parameters: decoderParams, verify: [.all])
@@ -193,7 +212,6 @@ public enum WhisperModelLoader {
         newKey = newKey.replacingOccurrences(of: "cross_attn", with: "crossAttn")
         newKey = newKey.replacingOccurrences(of: "mlp_ln", with: "mlpLn")
         newKey = newKey.replacingOccurrences(of: "token_embedding", with: "tokenEmbedding")
-        newKey = newKey.replacingOccurrences(of: "positional_embedding", with: "positionalEmbedding")
 
         if newKey.contains("mlp.0.") {
             newKey = newKey.replacingOccurrences(of: "mlp.0.", with: "mlp1.")

@@ -7,7 +7,9 @@ import MLXNN
 public class AudioEncoder: Module {
     @ModuleInfo public var conv1: Conv1d
     @ModuleInfo public var conv2: Conv1d
-    @ParameterInfo(key: "positional_embedding") public var positionalEmbedding: MLXArray
+    // Whisper encoder uses computed sinusoidal positional embeddings (not learned from weights)
+    // See: https://github.com/openai/whisper/discussions/697
+    public var positionalEmbedding: MLXArray
     @ModuleInfo(key: "blocks") public var blocks: [ResidualAttentionBlock]
     @ModuleInfo(key: "ln_post") public var ln: LayerNorm
 
@@ -35,8 +37,8 @@ public class AudioEncoder: Module {
             padding: 1
         )
 
-        // Sinusoidal positional embedding
-        self._positionalEmbedding.wrappedValue = Self.sinusoidalPositionalEmbedding(
+        // Sinusoidal positional embedding (computed, not loaded from weights)
+        self.positionalEmbedding = Self.sinusoidalPositionalEmbedding(
             maxLen: config.nAudioCtx,
             dims: config.nAudioState
         )
