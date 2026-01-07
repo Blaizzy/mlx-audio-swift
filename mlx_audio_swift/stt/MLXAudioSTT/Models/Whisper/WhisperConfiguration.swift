@@ -72,16 +72,20 @@ public struct WhisperConfiguration: Codable, Sendable {
         nTextHead = try container.decode(Int.self, forKey: .nTextHead)
         nTextLayer = try container.decode(Int.self, forKey: .nTextLayer)
 
-        let headsArray = try container.decode([[Int]].self, forKey: .alignmentHeads)
-        alignmentHeads = try headsArray.map { head in
-            guard head.count == 2 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .alignmentHeads,
-                    in: container,
-                    debugDescription: "Each alignment head must have exactly 2 elements (layer, head)"
-                )
+        // alignment_heads is optional in HuggingFace configs - fallback to empty (use WhisperAlignmentHeads)
+        if let headsArray = try container.decodeIfPresent([[Int]].self, forKey: .alignmentHeads) {
+            alignmentHeads = try headsArray.map { head in
+                guard head.count == 2 else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .alignmentHeads,
+                        in: container,
+                        debugDescription: "Each alignment head must have exactly 2 elements (layer, head)"
+                    )
+                }
+                return (head[0], head[1])
             }
-            return (head[0], head[1])
+        } else {
+            alignmentHeads = []
         }
     }
 

@@ -35,7 +35,10 @@ let package = Package(
                 "MLXAudioSTT",
                 .product(name: "MLXNN", package: "mlx-swift"),
             ],
-            path: "mlx_audio_swift/stt/Tests"
+            path: "mlx_audio_swift/stt/Tests",
+            resources: [
+                .copy("Resources")
+            ]
         ),
     ]
 )
