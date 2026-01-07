@@ -180,7 +180,8 @@ public final class WhisperSession: @unchecked Sendable {
                                     emittedText += newText
                                     lastEmittedIndex = tokens.count
 
-                                    let frameTime = Double(mostAttendedFrame) / 100.0
+                                    // Convert frame index to seconds using actual audio duration and encoder frame count
+                                    let frameTime = audioDuration * Double(mostAttendedFrame) / Double(totalFrames)
 
                                     continuation.yield(StreamingResult(
                                         text: emittedText.trimmingCharacters(in: .whitespaces),
