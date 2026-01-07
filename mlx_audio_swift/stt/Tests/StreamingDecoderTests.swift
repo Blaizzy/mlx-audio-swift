@@ -8,9 +8,9 @@ struct StreamingDecoderTests {
     @Test func getMostAttendedFrame_findsMaxAttention() throws {
         // Given: Cross-attention weights with known peak
         // Shape: [batch, heads, tokens, frames]
-        var weights = MLXArray.zeros([1, 8, 1, 100])
+        var weights = MLXArray.zeros([1, 8, 1, 100], dtype: .float32)
         // Set peak at frame 42
-        weights[0, 0, 0, 42] = MLXArray([1.0])
+        weights[0, 0, 0, 42] = MLXArray([Float(1.0)])
 
         let crossQK: [MLXArray?] = [weights]
         let alignmentHeads = [(layer: 0, head: 0)]
@@ -27,11 +27,11 @@ struct StreamingDecoderTests {
 
     @Test func getMostAttendedFrame_averagesAcrossHeads() throws {
         // Given: Two heads with different peaks
-        var weights = MLXArray.zeros([1, 8, 1, 100])
+        var weights = MLXArray.zeros([1, 8, 1, 100], dtype: .float32)
         // Head 0 peak at frame 40
-        weights[0, 0, 0, 40] = MLXArray([1.0])
+        weights[0, 0, 0, 40] = MLXArray([Float(1.0)])
         // Head 1 peak at frame 60
-        weights[0, 1, 0, 60] = MLXArray([1.0])
+        weights[0, 1, 0, 60] = MLXArray([Float(1.0)])
 
         let crossQK: [MLXArray?] = [weights]
         let alignmentHeads = [(layer: 0, head: 0), (layer: 0, head: 1)]
@@ -49,7 +49,7 @@ struct StreamingDecoderTests {
 
     @Test func getMostAttendedFrame_handlesEmptyAlignmentHeads() throws {
         // Given: Empty alignment heads
-        let weights = MLXArray.zeros([1, 8, 1, 100])
+        let weights = MLXArray.zeros([1, 8, 1, 100], dtype: .float32)
         let crossQK: [MLXArray?] = [weights]
         let alignmentHeads: [(layer: Int, head: Int)] = []
 
@@ -65,8 +65,8 @@ struct StreamingDecoderTests {
 
     @Test func getMostAttendedFrame_handlesNilLayers() throws {
         // Given: Some layers are nil
-        var weights = MLXArray.zeros([1, 8, 1, 100])
-        weights[0, 0, 0, 50] = MLXArray([1.0])
+        var weights = MLXArray.zeros([1, 8, 1, 100], dtype: .float32)
+        weights[0, 0, 0, 50] = MLXArray([Float(1.0)])
 
         let crossQK: [MLXArray?] = [nil, weights, nil]
         let alignmentHeads = [(layer: 0, head: 0), (layer: 1, head: 0), (layer: 2, head: 0)]
@@ -83,8 +83,8 @@ struct StreamingDecoderTests {
 
     @Test func getMostAttendedFrame_handlesOutOfBoundsLayer() throws {
         // Given: Layer index beyond crossQK array
-        var weights = MLXArray.zeros([1, 8, 1, 100])
-        weights[0, 0, 0, 30] = MLXArray([1.0])
+        var weights = MLXArray.zeros([1, 8, 1, 100], dtype: .float32)
+        weights[0, 0, 0, 30] = MLXArray([Float(1.0)])
 
         let crossQK: [MLXArray?] = [weights]
         let alignmentHeads = [(layer: 0, head: 0), (layer: 5, head: 0)]

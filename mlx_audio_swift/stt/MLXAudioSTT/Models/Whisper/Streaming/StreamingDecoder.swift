@@ -18,18 +18,19 @@ public enum StreamingDecoder {
         for (layer, head) in alignmentHeads {
             guard layer < crossQK.count, let layerQK = crossQK[layer] else { continue }
             // Extract last token's attention: [batch, head, -1, frames] -> [frames]
-            let attention = layerQK[0, head, -1, 0...]
+            // Ensure float32 to avoid GPU float64 errors
+            let attention = layerQK[0, head, -1, 0...].asType(.float32)
             weights.append(attention)
         }
 
         guard !weights.isEmpty else { return 0 }
 
-        // Average across heads
-        let stacked = MLX.stacked(weights, axis: 0)
+        // Average across heads (ensure float32 to avoid GPU float64 error)
+        let stacked = MLX.stacked(weights, axis: 0).asType(.float32)
         let avgAttention = stacked.mean(axis: 0)
 
         // Find max
-        return Int(MLX.argMax(avgAttention).item(Int.self))
+        return Int(MLX.argMax(avgAttention).item(Int32.self))
     }
 
     /// Determine if the current token should be emitted based on attention stability.
