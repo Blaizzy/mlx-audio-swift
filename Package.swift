@@ -14,6 +14,10 @@ let package = Package(
             name: "MLXAudioSTT",
             targets: ["MLXAudioSTT"]
         ),
+        .executable(
+            name: "stt-demo",
+            targets: ["STTDemo"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift.git", from: "0.29.1"),
@@ -41,6 +45,14 @@ let package = Package(
             resources: [
                 .copy("Resources")
             ]
+        ),
+        .executableTarget(
+            name: "STTDemo",
+            dependencies: [
+                "MLXAudioSTT",
+                .product(name: "MLX", package: "mlx-swift"),
+            ],
+            path: "mlx_audio_swift/stt/STTDemo"
         ),
     ]
 )
