@@ -11,6 +11,7 @@ public enum WhisperModelLoader {
         public let encoder: AudioEncoder
         public let decoder: TextDecoder
         public let config: WhisperConfiguration
+        public let tokenizerDirectory: URL
     }
 
     /// HuggingFace repository IDs for MLX weights
@@ -70,13 +71,41 @@ public enum WhisperModelLoader {
         let snapshotDir = cache.snapshotsDirectory(repo: repo, kind: .model)
             .appendingPathComponent("main")
 
-        // Create directory if needed
-        try FileManager.default.createDirectory(at: snapshotDir, withIntermediateDirectories: true)
+        // Check if model files already exist (skip network request if cached)
+        let configPath = snapshotDir.appendingPathComponent("config.json")
+        let modelDirectory: URL
+        if FileManager.default.fileExists(atPath: configPath.path) {
+            // Check for safetensors files
+            let contents = try? FileManager.default.contentsOfDirectory(at: snapshotDir, includingPropertiesForKeys: nil)
+            let hasSafetensors = contents?.contains { $0.pathExtension == "safetensors" } ?? false
+            if hasSafetensors {
+                modelDirectory = snapshotDir
+            } else {
+                // Need to download
+                try FileManager.default.createDirectory(at: snapshotDir, withIntermediateDirectories: true)
+                modelDirectory = try await client.downloadSnapshot(
+                    of: repo,
+                    to: snapshotDir,
+                    matching: ["*.safetensors", "config.json"],
+                    progressHandler: progressHandler
+                )
+            }
+        } else {
+            // Need to download
+            try FileManager.default.createDirectory(at: snapshotDir, withIntermediateDirectories: true)
+            modelDirectory = try await client.downloadSnapshot(
+                of: repo,
+                to: snapshotDir,
+                matching: ["*.safetensors", "config.json"],
+                progressHandler: progressHandler
+            )
+        }
 
-        let modelDirectory = try await client.downloadSnapshot(
-            of: repo,
-            to: snapshotDir,
-            matching: ["*.safetensors", "config.json"],
+        // Download tokenizer files from OpenAI repo (cached separately)
+        let tokenizerDirectory = try await downloadTokenizer(
+            for: model,
+            client: client,
+            cache: cache,
             progressHandler: progressHandler
         )
 
@@ -93,17 +122,24 @@ public enum WhisperModelLoader {
 
         eval(encoder, decoder)
 
-        return LoadedModel(encoder: encoder, decoder: decoder, config: config)
+        return LoadedModel(
+            encoder: encoder,
+            decoder: decoder,
+            config: config,
+            tokenizerDirectory: tokenizerDirectory
+        )
     }
 
     /// Load a Whisper model from a local directory
     /// - Parameters:
     ///   - directory: Local directory containing model files
     ///   - model: The Whisper model variant (for alignment heads lookup)
+    ///   - tokenizerDirectory: Directory containing tokenizer files (defaults to model directory)
     /// - Returns: A tuple containing the encoder, decoder, and configuration
     public static func load(
         from directory: URL,
-        model: WhisperModel
+        model: WhisperModel,
+        tokenizerDirectory: URL? = nil
     ) throws -> LoadedModel {
         let config = try loadConfiguration(from: directory, model: model)
 
@@ -118,7 +154,53 @@ public enum WhisperModelLoader {
 
         eval(encoder, decoder)
 
-        return LoadedModel(encoder: encoder, decoder: decoder, config: config)
+        return LoadedModel(
+            encoder: encoder,
+            decoder: decoder,
+            config: config,
+            tokenizerDirectory: tokenizerDirectory ?? directory
+        )
+    }
+
+    // MARK: - Tokenizer Download
+
+    private static func downloadTokenizer(
+        for model: WhisperModel,
+        client: HubClient,
+        cache: HubCache,
+        progressHandler: (@Sendable (Progress) -> Void)?
+    ) async throws -> URL {
+        let tokenizerRepoIdString = tokenizerRepoId(for: model)
+        guard let tokenizerRepo = Repo.ID(rawValue: tokenizerRepoIdString) else {
+            throw WhisperError.invalidModelFormat("Invalid tokenizer repo ID: \(tokenizerRepoIdString)")
+        }
+
+        let tokenizerSnapshotDir = cache.snapshotsDirectory(repo: tokenizerRepo, kind: .model)
+            .appendingPathComponent("main")
+
+        // Check if tokenizer files already exist (skip network request if cached)
+        let tokenizerJsonPath = tokenizerSnapshotDir.appendingPathComponent("tokenizer.json")
+        if FileManager.default.fileExists(atPath: tokenizerJsonPath.path) {
+            return tokenizerSnapshotDir
+        }
+
+        try FileManager.default.createDirectory(at: tokenizerSnapshotDir, withIntermediateDirectories: true)
+
+        let tokenizerDirectory = try await client.downloadSnapshot(
+            of: tokenizerRepo,
+            to: tokenizerSnapshotDir,
+            matching: [
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "vocab.json",
+                "merges.txt",
+                "special_tokens_map.json",
+                "added_tokens.json"
+            ],
+            progressHandler: progressHandler
+        )
+
+        return tokenizerDirectory
     }
 
     // MARK: - Configuration Loading

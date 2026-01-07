@@ -49,8 +49,8 @@ public final class WhisperSession: @unchecked Sendable {
 
         progressHandler?(.loading(0.9))
 
-        // Load tokenizer from OpenAI repo (mlx-community repos don't have tokenizer files)
-        let tokenizer = try await WhisperTokenizer(pretrained: WhisperModelLoader.tokenizerRepoId(for: model))
+        // Load tokenizer from cached directory (downloaded alongside model weights)
+        let tokenizer = try await WhisperTokenizer(modelFolder: loaded.tokenizerDirectory)
 
         progressHandler?(.loading(1.0))
 
