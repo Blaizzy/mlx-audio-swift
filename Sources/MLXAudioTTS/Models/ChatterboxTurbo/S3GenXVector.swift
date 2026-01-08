@@ -751,4 +751,81 @@ final class CAMPPlus: Module {
         features = features - mean
         return callAsFunction(features)
     }
+
+    func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+        var sanitized: [String: MLXArray] = [:]
+
+        let blockRegex = try? NSRegularExpression(pattern: "block(\\d+)\\.tdnnd(\\d+)")
+        let transitRegex = try? NSRegularExpression(pattern: "transit(\\d+)")
+
+        for (key, value) in weights {
+            if key.contains("num_batches_tracked") {
+                continue
+            }
+
+            var newKey = key
+
+            if newKey.hasPrefix("xvector.") {
+                newKey = String(newKey.dropFirst("xvector.".count))
+                newKey = newKey.replacingOccurrences(of: "tdnn.nonlinear.batchnorm", with: "tdnn.bn")
+
+                if let blockRegex {
+                    let range = NSRange(newKey.startIndex..<newKey.endIndex, in: newKey)
+                    if let match = blockRegex.firstMatch(in: newKey, range: range) {
+                        let blockRange = match.range(at: 1)
+                        let layerRange = match.range(at: 2)
+                        if let blockRange = Range(blockRange, in: newKey),
+                           let layerRange = Range(layerRange, in: newKey),
+                           let blockIdx = Int(newKey[blockRange]),
+                           let layerIdx = Int(newKey[layerRange])
+                        {
+                            let old = "block\(blockIdx).tdnnd\(layerIdx)"
+                            let replacement = "blocks.\(blockIdx - 1).layers.\(layerIdx - 1)"
+                            newKey = newKey.replacingOccurrences(of: old, with: replacement)
+                        }
+                    }
+                }
+
+                if let transitRegex {
+                    let range = NSRange(newKey.startIndex..<newKey.endIndex, in: newKey)
+                    if let match = transitRegex.firstMatch(in: newKey, range: range) {
+                        let transitRange = match.range(at: 1)
+                        if let transitRange = Range(transitRange, in: newKey),
+                           let transitIdx = Int(newKey[transitRange])
+                        {
+                            let old = "transit\(transitIdx)"
+                            let replacement = "transits.\(transitIdx - 1)"
+                            newKey = newKey.replacingOccurrences(of: old, with: replacement)
+                        }
+                    }
+                }
+
+                newKey = newKey.replacingOccurrences(of: "nonlinear.batchnorm", with: "bn")
+                newKey = newKey.replacingOccurrences(of: "nonlinear1.batchnorm", with: "bn1")
+                newKey = newKey.replacingOccurrences(of: "nonlinear2.batchnorm", with: "bn2")
+                newKey = newKey.replacingOccurrences(of: "out_nonlinear.batchnorm", with: "out_bn")
+                newKey = newKey.replacingOccurrences(of: "dense.nonlinear.batchnorm", with: "dense.bn")
+            } else if newKey.hasPrefix("head.") {
+                newKey = newKey.replacingOccurrences(of: "shortcut.0", with: "shortcut_conv")
+                newKey = newKey.replacingOccurrences(of: "shortcut.1", with: "shortcut_bn")
+            }
+
+            var newValue = value
+            if newKey.contains("weight"), value.ndim >= 3 {
+                if value.ndim == 4 {
+                    if value.shape[2] == value.shape[3] {
+                        newValue = value.transposed(0, 2, 3, 1)
+                    }
+                } else if value.ndim == 3 {
+                    if value.shape[1] > value.shape[2] {
+                        newValue = value.transposed(0, 2, 1)
+                    }
+                }
+            }
+
+            sanitized[newKey] = newValue
+        }
+
+        return sanitized
+    }
 }

@@ -295,6 +295,19 @@ struct ChatterboxTurboTokenizerTests {
         #expect(codes.ndim == 2)
         #expect(lengths.shape == [1])
     }
+
+    @Test func testTokenizerMatchesHFIds() async throws {
+        let model = try await ChatterboxTurboTTS.fromPretrained()
+        guard let tokenizer = model.tokenizer else {
+            Issue.record("Tokenizer not loaded for Chatterbox Turbo")
+            return
+        }
+
+        let text = "Quick quality check. Does this sound natural?"
+        let ids = tokenizer.encode(text: text)
+        let expected = [21063, 3081, 2198, 13, 8314, 428, 2128, 3288, 30]
+        #expect(ids == expected)
+    }
 }
 
 struct ChatterboxTurboVoiceEncoderTests {

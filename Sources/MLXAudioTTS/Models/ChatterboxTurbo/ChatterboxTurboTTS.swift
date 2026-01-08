@@ -10,6 +10,7 @@ import Foundation
 import MLXNN
 import MLXLMCommon
 import HuggingFace
+import Hub
 import Tokenizers
 import MLXAudioCore
 
@@ -57,14 +58,31 @@ public final class ChatterboxTurboTTS: Module {
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var sanitized: [String: MLXArray] = [:]
         var s3genWeights: [String: MLXArray] = [:]
+        let expectedShapes = Dictionary(uniqueKeysWithValues: parameters().flattened().map { ($0.0, $0.1.shape) })
 
         for (key, value) in weights {
             if key.hasPrefix("gen.") {
                 continue
             }
+            if key.hasPrefix("tokenizer.") {
+                continue
+            }
             if key.hasPrefix("s3gen.") {
                 let stripped = String(key.dropFirst(6))
+                if stripped.hasPrefix("tokenizer.") {
+                    continue
+                }
                 s3genWeights[stripped] = value
+                continue
+            }
+            if key.hasPrefix("t3.tfmr.h."),
+               key.hasSuffix(".weight"),
+               (key.contains("attn.c_attn.weight")
+                    || key.contains("attn.c_proj.weight")
+                    || key.contains("mlp.c_fc.weight")
+                    || key.contains("mlp.c_proj.weight"))
+            {
+                sanitized[key] = value.transposed()
                 continue
             }
             sanitized[key] = value
@@ -77,6 +95,18 @@ public final class ChatterboxTurboTTS: Module {
             }
         }
 
+        for (key, value) in sanitized {
+            guard let expected = expectedShapes[key], value.shape != expected else {
+                continue
+            }
+            if value.ndim == 2 {
+                let transposed = value.transposed()
+                if transposed.shape == expected {
+                    sanitized[key] = transposed
+                }
+            }
+        }
+
         return sanitized
     }
 
@@ -84,7 +114,17 @@ public final class ChatterboxTurboTTS: Module {
         localPath = modelDir
 
         if tokenizer == nil {
-            tokenizer = try await AutoTokenizer.from(modelFolder: modelDir)
+            do {
+                tokenizer = try await AutoTokenizer.from(modelFolder: modelDir)
+            } catch let error as Hub.HubClientError {
+                if case .configurationMissing(let missing) = error, missing == "tokenizer.json" {
+                    tokenizer = try loadLegacyTokenizer(from: modelDir)
+                } else {
+                    throw error
+                }
+            } catch {
+                throw error
+            }
         }
 
         if s3Tokenizer == nil {
@@ -147,6 +187,96 @@ public final class ChatterboxTurboTTS: Module {
         }
     }
 
+    private func loadLegacyTokenizer(from modelDir: URL) throws -> Tokenizer {
+        let tokenizerConfigURL = modelDir.appendingPathComponent("tokenizer_config.json")
+        guard FileManager.default.fileExists(atPath: tokenizerConfigURL.path) else {
+            throw ChatterboxTurboError.invalidInput("Missing tokenizer_config.json in \(modelDir.path)")
+        }
+
+        let tokenizerConfig = try HubApi.shared.configuration(fileURL: tokenizerConfigURL)
+
+        let vocabURL = modelDir.appendingPathComponent("vocab.json")
+        guard FileManager.default.fileExists(atPath: vocabURL.path) else {
+            throw ChatterboxTurboError.invalidInput("Missing vocab.json in \(modelDir.path)")
+        }
+        let vocabData = try Data(contentsOf: vocabURL)
+        guard let vocabJson = try JSONSerialization.jsonObject(with: vocabData) as? [String: Any] else {
+            throw ChatterboxTurboError.invalidInput("Invalid vocab.json format")
+        }
+
+        var vocabDict: [NSString: Any] = [:]
+        for (token, value) in vocabJson {
+            if let intValue = value as? Int {
+                vocabDict[token as NSString] = intValue
+            } else if let numValue = value as? NSNumber {
+                vocabDict[token as NSString] = numValue.intValue
+            }
+        }
+
+        let mergesURL = modelDir.appendingPathComponent("merges.txt")
+        guard FileManager.default.fileExists(atPath: mergesURL.path) else {
+            throw ChatterboxTurboError.invalidInput("Missing merges.txt in \(modelDir.path)")
+        }
+        let mergesText = try String(contentsOf: mergesURL, encoding: .utf8)
+        let merges: [[String]] = mergesText
+            .split(whereSeparator: \.isNewline)
+            .filter { !$0.hasPrefix("#") }
+            .compactMap { line in
+                let parts = line.split(separator: " ")
+                guard parts.count >= 2 else { return nil }
+                return [String(parts[0]), String(parts[1])]
+            }
+
+        let addPrefixSpace = tokenizerConfig.addPrefixSpace.boolean(or: false)
+        let decoderConfig: [NSString: Any] = [
+            "type": "ByteLevel",
+            "add_prefix_space": addPrefixSpace,
+            "trim_offsets": true,
+            "use_regex": true
+        ]
+        let preTokenizerConfig: [NSString: Any] = [
+            "type": "ByteLevel",
+            "add_prefix_space": addPrefixSpace,
+            "use_regex": true
+        ]
+
+        var tokenizerDataDict: [NSString: Any] = [
+            "model": [
+                "vocab": vocabDict,
+                "merges": merges
+            ],
+            "pre_tokenizer": preTokenizerConfig,
+            "decoder": decoderConfig
+        ]
+
+        let addedTokensURL = modelDir.appendingPathComponent("added_tokens.json")
+        if FileManager.default.fileExists(atPath: addedTokensURL.path) {
+            let addedData = try Data(contentsOf: addedTokensURL)
+            if let addedJson = try JSONSerialization.jsonObject(with: addedData) as? [String: Any] {
+                var addedTokens: [[NSString: Any]] = []
+                for (token, value) in addedJson {
+                    let id: Int?
+                    if let intValue = value as? Int {
+                        id = intValue
+                    } else if let numValue = value as? NSNumber {
+                        id = numValue.intValue
+                    } else {
+                        id = nil
+                    }
+                    if let id {
+                        addedTokens.append(["content": token as NSString, "id": id])
+                    }
+                }
+                if !addedTokens.isEmpty {
+                    tokenizerDataDict["addedTokens"] = addedTokens
+                }
+            }
+        }
+
+        let tokenizerData = Config(tokenizerDataDict)
+        return try AutoTokenizer.from(tokenizerConfig: tokenizerConfig, tokenizerData: tokenizerData, strict: false)
+    }
+
     public static func fromPretrained(_ modelRepo: String = repoId) async throws -> ChatterboxTurboTTS {
         let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
             ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
@@ -172,7 +302,7 @@ public final class ChatterboxTurboTTS: Module {
 
         let model = ChatterboxTurboTTS()
 
-        let weights = try loadChatterboxWeights(from: modelDir)
+        let weights = try loadChatterboxWeights(from: modelDir, meanflow: true)
         let sanitized = model.sanitize(weights: weights)
         try model.update(parameters: ModuleParameters.unflattened(sanitized), verify: [.all])
         eval(model)
@@ -460,16 +590,72 @@ public final class ChatterboxTurboTTS: Module {
     }
 }
 
-private func loadChatterboxWeights(from directory: URL) throws -> [String: MLXArray] {
-    let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-    let safetensorFiles = files.filter { $0.pathExtension == "safetensors" }
+private func loadChatterboxWeights(from directory: URL, meanflow: Bool) throws -> [String: MLXArray] {
+    let t3URL = directory.appendingPathComponent("t3_turbo_v1.safetensors")
+    let veURL = directory.appendingPathComponent("ve.safetensors")
+    let s3genName = meanflow ? "s3gen_meanflow.safetensors" : "s3gen.safetensors"
+    let s3genURL = directory.appendingPathComponent(s3genName)
 
     var weights: [String: MLXArray] = [:]
-    for file in safetensorFiles {
-        let fileWeights = try MLX.loadArrays(url: file)
-        weights.merge(fileWeights) { _, new in new }
+    let mapping: [(URL, String)] = [
+        (t3URL, "t3."),
+        (s3genURL, "s3gen.")
+    ]
+
+    for (url, prefix) in mapping {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw ChatterboxTurboError.invalidInput("Missing weights file: \(url.lastPathComponent)")
+        }
+        let fileWeights = try MLX.loadArrays(url: url)
+        for (key, value) in fileWeights {
+            weights["\(prefix)\(key)"] = value
+        }
     }
+
+    guard FileManager.default.fileExists(atPath: veURL.path) else {
+        throw ChatterboxTurboError.invalidInput("Missing weights file: \(veURL.lastPathComponent)")
+    }
+    let veWeights = try MLX.loadArrays(url: veURL)
+    let mappedVeWeights = mapVoiceEncoderWeights(veWeights)
+    weights.merge(mappedVeWeights) { _, new in new }
+
     return weights
+}
+
+private func mapVoiceEncoderWeights(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+    var mapped: [String: MLXArray] = [:]
+
+    if let projWeight = weights["proj.weight"] {
+        mapped["ve.proj.weight"] = projWeight
+    }
+    if let projBias = weights["proj.bias"] {
+        mapped["ve.proj.bias"] = projBias
+    }
+
+    for index in 0..<3 {
+        let layer = "lstm\(index + 1)"
+        let ih = weights["lstm.weight_ih_l\(index)"]
+        let hh = weights["lstm.weight_hh_l\(index)"]
+        let biasIh = weights["lstm.bias_ih_l\(index)"]
+        let biasHh = weights["lstm.bias_hh_l\(index)"]
+
+        if let ih {
+            mapped["ve.\(layer).Wx"] = ih
+        }
+        if let hh {
+            mapped["ve.\(layer).Wh"] = hh
+        }
+
+        if let biasIh, let biasHh {
+            mapped["ve.\(layer).bias"] = biasIh + biasHh
+        } else if let biasIh {
+            mapped["ve.\(layer).bias"] = biasIh
+        } else if let biasHh {
+            mapped["ve.\(layer).bias"] = biasHh
+        }
+    }
+
+    return mapped
 }
 
 private func resolveOrDownloadChatterboxModel(

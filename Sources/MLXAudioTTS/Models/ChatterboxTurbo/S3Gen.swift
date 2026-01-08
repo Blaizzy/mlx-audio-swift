@@ -45,7 +45,7 @@ class S3Token2Mel: Module {
     let preLookaheadLen: Int = 3
 
     @ModuleInfo(key: "input_embedding") private var inputEmbedding: Embedding
-    @ModuleInfo(key: "speaker_encoder") private var speakerEncoder: CAMPPlus
+    @ModuleInfo(key: "speaker_encoder") fileprivate var speakerEncoder: CAMPPlus
     @ModuleInfo(key: "spk_embed_affine_layer") private var spkEmbedAffineLayer: Linear
     @ModuleInfo(key: "encoder") private var encoder: UpsampleConformerEncoder
     @ModuleInfo(key: "encoder_proj") private var encoderProj: Linear
@@ -239,7 +239,7 @@ class S3Token2Mel: Module {
 
 final class S3Token2Wav: S3Token2Mel {
     @ModuleInfo(key: "mel2wav") private var mel2wav: HiFTGenerator
-    private let trimFade: MLXArray
+    private let trimFade: [Float]
 
     override init(meanflow: Bool = false) {
         self._mel2wav.wrappedValue = HiFTGenerator(
@@ -255,7 +255,7 @@ final class S3Token2Wav: S3Token2Mel {
         for i in 0..<nTrim {
             fade[nTrim + i] = (cosf(Float.pi * (Float(nTrim - i) / Float(nTrim))) + 1) / 2
         }
-        self.trimFade = MLXArray(fade)
+        self.trimFade = fade
         super.init(meanflow: meanflow)
     }
 
@@ -279,9 +279,9 @@ final class S3Token2Wav: S3Token2Mel {
         let melForVocoder = outputMels.transposed(0, 2, 1)
         var (wav, src) = mel2wav.inference(melForVocoder, nil)
 
-        let fadeLen = trimFade.shape[0]
+        let fadeLen = trimFade.count
         if wav.shape[1] >= fadeLen {
-            let fade = trimFade.expandedDimensions(axis: 0)
+            let fade = MLXArray(trimFade).expandedDimensions(axis: 0)
             let fadedStart = wav[0..., 0..<fadeLen] * fade
             wav = MLX.concatenated([fadedStart, wav[0..., fadeLen...]], axis: 1)
         }
@@ -302,9 +302,9 @@ final class S3Token2Wav: S3Token2Mel {
         var (wav, _) = mel2wav.inference(melForVocoder, nil)
 
         if prevAudioSamples == 0 {
-            let fadeLen = trimFade.shape[0]
+            let fadeLen = trimFade.count
             if wav.shape[1] >= fadeLen {
-                let fade = trimFade.expandedDimensions(axis: 0)
+                let fade = MLXArray(trimFade).expandedDimensions(axis: 0)
                 let fadedStart = wav[0..., 0..<fadeLen] * fade
                 wav = MLX.concatenated([fadedStart, wav[0..., fadeLen...]], axis: 1)
             }
@@ -324,27 +324,220 @@ final class S3Token2Wav: S3Token2Mel {
     }
 
     func sanitize(_ weights: [String: MLXArray]) -> [String: MLXArray] {
-        var newWeights: [String: MLXArray] = [:]
+        let flattenedParams = self.parameters().flattened()
+        let paramKeys = Set(flattenedParams.map { $0.0 })
+        let expectedShapes = Dictionary(uniqueKeysWithValues: flattenedParams.map { ($0.0, $0.1.shape) })
+        let paramValues = Dictionary(uniqueKeysWithValues: flattenedParams.map { ($0.0, $0.1) })
+        var pending: [(String, MLXArray)] = []
+        var weightNorm: [String: (g: MLXArray?, v: MLXArray?)] = [:]
+
         for (key, value) in weights {
             if key.contains("num_batches_tracked") {
                 continue
             }
+            if key.hasPrefix("tokenizer.") {
+                continue
+            }
 
-            var v = value
-            if key.contains("weight"), value.ndim >= 3 {
-                if value.ndim == 4 {
-                    if value.shape[2] == value.shape[3] {
-                        v = value.transposed(0, 2, 3, 1)
-                    }
-                } else if value.ndim == 3 {
-                    if value.shape[2] <= 7 && value.shape[1] > value.shape[2] {
-                        v = value.transposed(0, 2, 1)
+            if key.contains(".parametrizations.weight.original0")
+                || key.contains(".parametrizations.weight.original1")
+            {
+                let base = key
+                    .replacingOccurrences(of: ".parametrizations.weight.original0", with: "")
+                    .replacingOccurrences(of: ".parametrizations.weight.original1", with: "")
+                var entry = weightNorm[base] ?? (g: nil, v: nil)
+                if key.contains("original0") {
+                    entry.g = value
+                } else {
+                    entry.v = value
+                }
+                weightNorm[base] = entry
+                continue
+            }
+
+            pending.append((key, value))
+        }
+
+        for (base, pair) in weightNorm {
+            guard let g = pair.g, let v = pair.v else {
+                continue
+            }
+            if v.ndim <= 1 {
+                pending.append((base + ".weight", v))
+                continue
+            }
+
+            var vNorm = v.square()
+            for axis in 1..<v.ndim {
+                vNorm = MLX.sum(vNorm, axis: axis, keepDims: true)
+            }
+            vNorm = MLX.sqrt(vNorm)
+            pending.append((base + ".weight", v * (g / vNorm)))
+        }
+
+        func mapKey(_ key: String) -> String {
+            var components = key.split(separator: ".").map(String.init)
+
+            func mapBlocks(_ root: String, mapping: [String: String]) {
+                for index in 0..<components.count where components[index] == root {
+                    let mappedIndex = index + 2
+                    if components.indices.contains(mappedIndex),
+                       let mapped = mapping[components[mappedIndex]]
+                    {
+                        components[mappedIndex] = mapped
                     }
                 }
             }
-            newWeights[key] = v
+
+            func mapEmbed(_ name: String) {
+                var index = 0
+                while index + 2 < components.count {
+                    if components[index] == name && components[index + 1] == "out" {
+                        let outIndex = components[index + 2]
+                        if outIndex == "0" {
+                            components[index + 1] = "linear"
+                            components.remove(at: index + 2)
+                        } else if outIndex == "1" {
+                            components[index + 1] = "norm"
+                            components.remove(at: index + 2)
+                        }
+                    }
+                    index += 1
+                }
+            }
+
+            mapBlocks("down_blocks", mapping: ["0": "resnet", "1": "transformer_blocks", "2": "downsample"])
+            mapBlocks("mid_blocks", mapping: ["0": "resnet", "1": "transformer_blocks"])
+            mapBlocks("up_blocks", mapping: ["0": "resnet", "1": "transformer_blocks", "2": "upsample"])
+
+            mapEmbed("embed")
+            mapEmbed("up_embed")
+
+            var index = 0
+            while index + 2 < components.count {
+                if components[index] == "ff",
+                   components[index + 1] == "net",
+                   components[index + 2] == "2"
+                {
+                    components[index + 2] = "1"
+                }
+                index += 1
+            }
+
+            index = 0
+            while index + 1 < components.count {
+                if components[index] == "mlp", components[index + 1] == "1" {
+                    components[index + 1] = "0"
+                }
+                index += 1
+            }
+
+            let condnetMap: [String: String] = ["0": "0", "2": "1", "4": "2", "6": "3", "8": "4"]
+            index = 0
+            while index + 1 < components.count {
+                if components[index] == "condnet",
+                   let mapped = condnetMap[components[index + 1]]
+                {
+                    components[index + 1] = mapped
+                }
+                index += 1
+            }
+
+            index = 0
+            while index + 2 < components.count {
+                let name = components[index]
+                if (name == "block1" || name == "block2" || name == "final_block"),
+                   components[index + 1] == "block"
+                {
+                    if components[index + 2] == "0" {
+                        components[index + 1] = "conv"
+                        components[index + 2] = "conv"
+                    } else if components[index + 2] == "2" {
+                        components[index + 1] = "norm"
+                        components.remove(at: index + 2)
+                    }
+                }
+                index += 1
+            }
+
+            return components.joined(separator: ".")
         }
-        return newWeights
+
+        func resolveKey(_ key: String) -> String? {
+            if paramKeys.contains(key) {
+                return key
+            }
+            guard key.hasSuffix(".weight") || key.hasSuffix(".bias") else {
+                return nil
+            }
+            let suffix = key.hasSuffix(".weight") ? ".weight" : ".bias"
+            let base = String(key.dropLast(suffix.count))
+            let candidates = [
+                base + ".conv" + suffix,
+                base + ".conv.conv" + suffix
+            ]
+            for candidate in candidates where paramKeys.contains(candidate) {
+                return candidate
+            }
+            return nil
+        }
+
+        func adjustToExpectedShape(_ value: MLXArray, key: String) -> MLXArray {
+            guard let expected = expectedShapes[key] else {
+                return value
+            }
+            if value.shape == expected {
+                return value
+            }
+            if value.ndim == 4 {
+                let t = value.transposed(0, 2, 3, 1)
+                if t.shape == expected {
+                    return t
+                }
+            } else if value.ndim == 3 {
+                let t1 = value.transposed(0, 2, 1)
+                if t1.shape == expected {
+                    return t1
+                }
+                let t2 = value.transposed(1, 2, 0)
+                if t2.shape == expected {
+                    return t2
+                }
+            }
+            return value
+        }
+
+        var sanitized: [String: MLXArray] = [:]
+
+        for (rawKey, value) in pending {
+            if rawKey.hasPrefix("speaker_encoder.") {
+                let stripped = String(rawKey.dropFirst("speaker_encoder.".count))
+                let mapped = speakerEncoder.sanitize(weights: [stripped: value])
+                for (mappedKey, mappedValue) in mapped {
+                    let fullKey = "speaker_encoder.\(mappedKey)"
+                    if let resolved = resolveKey(fullKey) {
+                        sanitized[resolved] = adjustToExpectedShape(mappedValue, key: resolved)
+                    }
+                }
+                continue
+            }
+
+            var newKey = rawKey
+            if newKey.hasPrefix("flow.") {
+                newKey = String(newKey.dropFirst("flow.".count))
+            }
+
+            newKey = mapKey(newKey)
+            if let resolved = resolveKey(newKey) {
+                sanitized[resolved] = adjustToExpectedShape(value, key: resolved)
+            }
+        }
+
+        if sanitized["mel2wav.stftWindow"] == nil, let stftWindow = paramValues["mel2wav.stftWindow"] {
+            sanitized["mel2wav.stftWindow"] = stftWindow
+        }
+
+        return sanitized
     }
 }
 

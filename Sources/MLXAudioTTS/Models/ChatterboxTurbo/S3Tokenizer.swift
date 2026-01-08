@@ -526,6 +526,28 @@ final class S3TokenizerV2: Module {
 
     func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var sanitized: [String: MLXArray] = [:]
+        let paramShapes = Dictionary(uniqueKeysWithValues: self.parameters().flattened().map { ($0.0, $0.1.shape) })
+
+        func adjustToExpectedShape(_ value: MLXArray, key: String) -> MLXArray {
+            guard let expected = paramShapes[key] else {
+                return value
+            }
+            if value.shape == expected {
+                return value
+            }
+            if value.ndim == 4 {
+                let t = value.transposed(0, 2, 3, 1)
+                if t.shape == expected {
+                    return t
+                }
+            } else if value.ndim == 3 {
+                let t = value.transposed(0, 2, 1)
+                if t.shape == expected {
+                    return t
+                }
+            }
+            return value
+        }
 
         for (key, value) in weights {
             if key.contains("freqs_cis") || key.contains("_mel_filters") {
@@ -544,15 +566,15 @@ final class S3TokenizerV2: Module {
                 newKey = regex.stringByReplacingMatches(in: newKey, range: range, withTemplate: ".mlp.layers.$1.")
             }
 
-            if (newKey.contains(".conv1.") || newKey.contains(".conv2.") || newKey.contains(".fsmn_block.")),
-               newKey.contains("weight"),
-               value.ndim == 3,
-               value.shape[1] > value.shape[2]
-            {
-                sanitized[newKey] = value.transposed(0, 2, 1)
-            } else {
-                sanitized[newKey] = value
-            }
+            sanitized[newKey] = adjustToExpectedShape(value, key: newKey)
+        }
+
+        let paramValues = Dictionary(uniqueKeysWithValues: self.parameters().flattened().map { ($0.0, $0.1) })
+        if sanitized["encoder.freqsCis.0"] == nil, let cos = paramValues["encoder.freqsCis.0"] {
+            sanitized["encoder.freqsCis.0"] = cos
+        }
+        if sanitized["encoder.freqsCis.1"] == nil, let sin = paramValues["encoder.freqsCis.1"] {
+            sanitized["encoder.freqsCis.1"] = sin
         }
 
         return sanitized

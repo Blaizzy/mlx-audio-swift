@@ -126,8 +126,11 @@ func s3LogMelSpectrogram(
     }
 
     let window = hanningWindow(size: nFft)
-    let freqs = stft(audio: signal, window: window, nFft: nFft, hopLength: hopLength).transposed()
-    let magnitudes = MLX.abs(freqs).square()
+    var spec = stft(audio: signal, window: window, nFft: nFft, hopLength: hopLength)
+    if spec.shape[0] > 1 {
+        spec = spec[0..<(spec.shape[0] - 1), 0...]
+    }
+    let magnitudes = MLX.abs(spec).square()
 
     let filters = s3MelFilters(
         sampleRate: sampleRate,
@@ -139,7 +142,7 @@ func s3LogMelSpectrogram(
         melScale: .slaney
     )
 
-    let melSpec = MLX.matmul(filters, magnitudes)
+    let melSpec = MLX.matmul(filters, magnitudes.transposed())
     var logSpec = MLX.maximum(melSpec, MLXArray(Float(1e-10)))
     logSpec = MLX.log10(logSpec)
     logSpec = MLX.maximum(logSpec, logSpec.max() - MLXArray(Float(8.0)))

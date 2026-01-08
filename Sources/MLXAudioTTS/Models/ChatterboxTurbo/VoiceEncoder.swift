@@ -139,6 +139,93 @@ private func preemphasis(_ wav: [Float], coeff: Float) -> [Float] {
     return output.map { min(max($0, -1.0), 1.0) }
 }
 
+private func voiceEncoderHannWindow(size: Int) -> MLXArray {
+    guard size > 0 else { return MLXArray([]) }
+    let denom = Float(size)
+    var window = [Float](repeating: 0, count: size)
+    for n in 0..<size {
+        window[n] = 0.5 - 0.5 * cos(2 * Float.pi * Float(n) / denom)
+    }
+    return MLXArray(window)
+}
+
+private func voiceEncoderReverseArray(_ arr: MLXArray) -> MLXArray {
+    let len = arr.shape[0]
+    var indices = [Int32]()
+    indices.reserveCapacity(len)
+    for i in 0..<len {
+        indices.append(Int32(len - 1 - i))
+    }
+    return arr[MLXArray(indices)]
+}
+
+private func voiceEncoderReflectPad(_ signal: MLXArray, padLeft: Int, padRight: Int) -> MLXArray {
+    guard padLeft > 0 || padRight > 0 else { return signal }
+    let length = signal.shape[0]
+    var prefix = MLXArray([])
+    var suffix = MLXArray([])
+
+    if padLeft > 0 {
+        let end = min(padLeft + 1, length)
+        let slice = signal[1..<end]
+        prefix = voiceEncoderReverseArray(slice)
+    }
+
+    if padRight > 0 {
+        let start = max(0, length - padRight - 1)
+        let end = max(1, length - 1)
+        let slice = signal[start..<end]
+        suffix = voiceEncoderReverseArray(slice)
+    }
+
+    if padLeft > 0 && padRight > 0 {
+        return MLX.concatenated([prefix, signal, suffix])
+    }
+    if padLeft > 0 {
+        return MLX.concatenated([prefix, signal])
+    }
+    return MLX.concatenated([signal, suffix])
+}
+
+private func voiceEncoderStft(
+    _ audio: MLXArray,
+    window: MLXArray,
+    nFft: Int,
+    hopLength: Int,
+    pad: Bool
+) -> MLXArray {
+    var signal = audio
+    if pad {
+        let padding = nFft / 2
+        signal = voiceEncoderReflectPad(signal, padLeft: padding, padRight: padding)
+    }
+
+    let audioLen = signal.shape[0]
+    if audioLen < nFft {
+        return MLXArray.zeros([0, nFft / 2 + 1], type: Float.self)
+    }
+
+    let numFrames = 1 + (audioLen - nFft) / hopLength
+    var frames: [MLXArray] = []
+    frames.reserveCapacity(numFrames)
+
+    for i in 0..<numFrames {
+        let start = i * hopLength
+        let frame = signal[start..<(start + nFft)]
+        frames.append(frame)
+    }
+
+    let stacked = MLX.stacked(frames, axis: 0)
+    var win = window
+    if win.shape[0] < nFft {
+        let padSize = nFft - win.shape[0]
+        let pad = MLXArray.zeros([padSize], type: Float.self)
+        win = MLX.concatenated([win, pad], axis: 0)
+    }
+    let windowed = stacked * win
+    return MLXFFT.rfft(windowed, axis: 1)
+}
+
 private func melspectrogram(_ wav: [Float], hp: VoiceEncConfig, pad: Bool) -> MLXArray {
     var signal = wav
     if hp.preemphasis > 0 {
@@ -146,8 +233,8 @@ private func melspectrogram(_ wav: [Float], hp: VoiceEncConfig, pad: Bool) -> ML
     }
 
     let audio = MLXArray(signal)
-    let window = hanningWindow(size: hp.winSize)
-    let spec = stft(audio: audio, window: window, nFft: hp.nFft, hopLength: hp.hopSize)
+    let window = voiceEncoderHannWindow(size: hp.winSize)
+    let spec = voiceEncoderStft(audio, window: window, nFft: hp.nFft, hopLength: hp.hopSize, pad: pad)
     var magnitudes = MLX.abs(spec)
 
     if hp.melPower != 1.0 {
@@ -229,15 +316,12 @@ final class VoiceEncoder: Module {
     @ModuleInfo(key: "lstm3") private var lstm3: LSTM
     @ModuleInfo(key: "proj") private var proj: Linear
 
-    private let similarityWeight = MLXArray([Float(10.0)])
-    private let similarityBias = MLXArray([Float(-5.0)])
-
     init(_ hp: VoiceEncConfig = VoiceEncConfig()) {
         self.hp = hp
         self._lstm1.wrappedValue = LSTM(inputSize: hp.numMels, hiddenSize: hp.veHiddenSize)
         self._lstm2.wrappedValue = LSTM(inputSize: hp.veHiddenSize, hiddenSize: hp.veHiddenSize)
         self._lstm3.wrappedValue = LSTM(inputSize: hp.veHiddenSize, hiddenSize: hp.veHiddenSize)
-        self._proj.wrappedValue = Linear(hp.veHiddenSize, hp.speakerEmbedSize)
+        self._proj.wrappedValue = Linear(hp.veHiddenSize, hp.speakerEmbedSize, bias: true)
     }
 
     func callAsFunction(_ mels: MLXArray) -> MLXArray {

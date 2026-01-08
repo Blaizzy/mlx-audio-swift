@@ -119,6 +119,45 @@ struct Qwen3TTSTests {
 
 }
 
+struct ChatterboxTurboTTSTests {
+    @Test func testChatterboxTurboGenerate() async throws {
+        let model = try await ChatterboxTurboTTS.fromPretrained()
+
+        let refURL = Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media")!
+        let (sampleRate, audioData) = try loadAudioArray(from: refURL)
+        var refSamples = audioData.asArray(Float.self)
+
+        if sampleRate != S3GenSampleRate {
+            refSamples = s3ResampleLinear(refSamples, from: sampleRate, to: S3GenSampleRate)
+        }
+
+        let targetSamples = S3GenSampleRate * 6
+        if refSamples.count < targetSamples {
+            var tiled: [Float] = []
+            while tiled.count < targetSamples {
+                tiled.append(contentsOf: refSamples)
+            }
+            refSamples = Array(tiled.prefix(targetSamples))
+        } else {
+            refSamples = Array(refSamples.prefix(targetSamples))
+        }
+
+        let refAudio = MLXArray(refSamples)
+        let audio = try model.generate(
+            text: "Quick quality check. Does this sound natural?",
+            refAudio: refAudio,
+            sampleRate: S3GenSampleRate,
+            splitPattern: nil,
+            maxTokens: 200
+        )
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chatterbox_turbo_test_output.wav")
+        try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+        print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
+    }
+}
+
 
 // Run LlamaTTS tests with:  xcodebuild test \
 // -scheme MLXAudio-Package \
