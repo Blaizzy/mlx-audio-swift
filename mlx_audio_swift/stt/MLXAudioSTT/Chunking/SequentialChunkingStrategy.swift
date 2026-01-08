@@ -73,6 +73,33 @@ public final class SequentialChunkingStrategy: ChunkingStrategy, @unchecked Send
         }
     }
 
+    public func processStreaming(
+        audio: MLXArray,
+        sampleRate: Int,
+        transcriber: ChunkTranscriber,
+        limits: ProcessingLimits,
+        telemetry: ChunkingTelemetry?
+    ) -> AsyncThrowingStream<ChunkStreamingResult, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    try await processSequentiallyStreaming(
+                        audio: audio,
+                        sampleRate: sampleRate,
+                        transcriber: transcriber,
+                        limits: limits,
+                        telemetry: telemetry,
+                        continuation: continuation
+                    )
+                    continuation.finish()
+                } catch {
+                    telemetry?.error(error)
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
     private func processSequentially(
         audio: MLXArray,
         sampleRate: Int,
@@ -160,6 +187,101 @@ public final class SequentialChunkingStrategy: ChunkingStrategy, @unchecked Send
             telemetry?.chunkCompleted(index: chunkIndex, duration: processingDuration, text: adjustedResult.text)
             continuation.yield(adjustedResult)
 
+            chunkIndex += 1
+        }
+
+        let totalDuration = Date().timeIntervalSince(startTime)
+        telemetry?.strategyCompleted(totalChunks: chunkIndex, totalDuration: totalDuration)
+    }
+
+    private func processSequentiallyStreaming(
+        audio: MLXArray,
+        sampleRate: Int,
+        transcriber: ChunkTranscriber,
+        limits: ProcessingLimits,
+        telemetry: ChunkingTelemetry?,
+        continuation: AsyncThrowingStream<ChunkStreamingResult, Error>.Continuation
+    ) async throws {
+        let totalSamples = audio.shape[0]
+        let audioDuration = TimeInterval(totalSamples) / TimeInterval(sampleRate)
+        let samplesPerChunk = Int(config.maxChunkDuration * Double(sampleRate))
+
+        telemetry?.strategyStarted(name, audioDuration: audioDuration)
+
+        var currentPosition: TimeInterval = 0
+        var chunkIndex = 0
+        let startTime = Date()
+
+        while currentPosition < audioDuration {
+            try Task.checkCancellation()
+
+            if let totalTimeout = limits.totalTimeout {
+                let elapsed = Date().timeIntervalSince(startTime)
+                if elapsed >= totalTimeout {
+                    throw ChunkingError.totalTimeoutExceeded(
+                        processedDuration: currentPosition,
+                        totalDuration: audioDuration
+                    )
+                }
+            }
+
+            let startSample = Int(currentPosition * Double(sampleRate))
+            let endSample = min(startSample + samplesPerChunk, totalSamples)
+            let chunkEndTime = min(currentPosition + config.maxChunkDuration, audioDuration)
+            let timeRange = currentPosition...chunkEndTime
+
+            telemetry?.chunkStarted(index: chunkIndex, timeRange: timeRange)
+            let chunkStartTime = Date()
+
+            let chunkAudio = audio[startSample..<endSample]
+            let timeOffset = currentPosition
+
+            let streamingTranscription = transcriber.transcribeStreaming(
+                audio: chunkAudio,
+                sampleRate: sampleRate,
+                previousTokens: nil,
+                timeOffset: timeOffset
+            )
+
+            var lastTimestamp: ClosedRange<TimeInterval> = timeRange
+
+            do {
+                for try await partialResult in streamingTranscription {
+                    try Task.checkCancellation()
+
+                    // Check chunk timeout
+                    let chunkElapsed = Date().timeIntervalSince(chunkStartTime)
+                    if chunkElapsed >= limits.chunkTimeout {
+                        throw TimeoutError(timeout: limits.chunkTimeout)
+                    }
+
+                    let streamingResult = ChunkStreamingResult(
+                        text: partialResult.text,
+                        timestamp: partialResult.timestamp,
+                        isPartial: !partialResult.isFinal,
+                        isChunkFinal: partialResult.isFinal,
+                        chunkIndex: chunkIndex
+                    )
+                    continuation.yield(streamingResult)
+
+                    if partialResult.isFinal {
+                        lastTimestamp = partialResult.timestamp
+                    }
+                }
+            } catch is TimeoutError {
+                throw ChunkingError.chunkTimeout(chunkIndex: chunkIndex, timeRange: timeRange)
+            } catch {
+                throw ChunkingError.chunkTranscriptionFailed(
+                    chunkIndex: chunkIndex,
+                    timeRange: timeRange,
+                    underlying: error
+                )
+            }
+
+            let processingDuration = Date().timeIntervalSince(chunkStartTime)
+            telemetry?.chunkCompleted(index: chunkIndex, duration: processingDuration, text: "")
+
+            currentPosition = lastTimestamp.upperBound
             chunkIndex += 1
         }
 

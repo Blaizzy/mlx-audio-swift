@@ -224,11 +224,12 @@ public final class LongAudioProcessor: @unchecked Sendable {
         let audioDuration = TimeInterval(totalSamples) / TimeInterval(sampleRate)
 
         var accumulatedText = ""
+        var currentChunkText = ""
         var accumulatedWords: [WordTimestamp] = []
-        var chunkIndex = 0
+        var currentChunkIndex = 0
         var totalChunks = estimateTotalChunks(audioDuration: audioDuration)
 
-        let chunkStream = strategy.process(
+        let streamingChunkStream = strategy.processStreaming(
             audio: audio,
             sampleRate: sampleRate,
             transcriber: transcriber,
@@ -236,50 +237,76 @@ public final class LongAudioProcessor: @unchecked Sendable {
             telemetry: telemetry
         )
 
-        for try await chunkResult in chunkStream {
+        for try await streamingResult in streamingChunkStream {
             try Task.checkCancellation()
 
+            if streamingResult.chunkIndex != currentChunkIndex {
+                currentChunkIndex = streamingResult.chunkIndex
+                currentChunkText = ""
+            }
+
             let processedText = mergeConfig.normalizeText
-                ? chunkResult.text.trimmingCharacters(in: .whitespaces)
-                : chunkResult.text
+                ? streamingResult.text.trimmingCharacters(in: .whitespaces)
+                : streamingResult.text
 
-            if !processedText.isEmpty {
-                if !accumulatedText.isEmpty {
-                    accumulatedText += " "
+            if streamingResult.isPartial {
+                currentChunkText = processedText
+
+                let displayText: String
+                if accumulatedText.isEmpty {
+                    displayText = currentChunkText
+                } else {
+                    displayText = accumulatedText + " " + currentChunkText
                 }
-                accumulatedText += processedText
+
+                let progress = TranscriptionProgress(
+                    text: displayText,
+                    chunkText: currentChunkText,
+                    words: accumulatedWords.isEmpty ? nil : accumulatedWords,
+                    isFinal: false,
+                    isPartial: true,
+                    processedDuration: streamingResult.timestamp.upperBound,
+                    audioDuration: audioDuration,
+                    chunkIndex: currentChunkIndex,
+                    totalChunks: totalChunks
+                )
+
+                continuation.yield(progress)
+            } else {
+                if !processedText.isEmpty {
+                    if !accumulatedText.isEmpty {
+                        accumulatedText += " "
+                    }
+                    accumulatedText += processedText
+                }
+                currentChunkText = ""
+
+                let progress = TranscriptionProgress(
+                    text: accumulatedText,
+                    chunkText: processedText,
+                    words: accumulatedWords.isEmpty ? nil : accumulatedWords,
+                    isFinal: false,
+                    isPartial: false,
+                    processedDuration: streamingResult.timestamp.upperBound,
+                    audioDuration: audioDuration,
+                    chunkIndex: currentChunkIndex,
+                    totalChunks: totalChunks
+                )
+
+                continuation.yield(progress)
+                totalChunks = max(totalChunks, currentChunkIndex + 2)
             }
-
-            if let words = chunkResult.words {
-                let filteredWords = mergeConfig.deduplicateOverlap
-                    ? filterDuplicateWords(words, existing: accumulatedWords)
-                    : words
-                accumulatedWords.append(contentsOf: filteredWords)
-            }
-
-            let progress = TranscriptionProgress(
-                text: accumulatedText,
-                words: accumulatedWords.isEmpty ? nil : accumulatedWords,
-                isFinal: false,
-                processedDuration: chunkResult.timeRange.upperBound,
-                audioDuration: audioDuration,
-                chunkIndex: chunkIndex,
-                totalChunks: totalChunks
-            )
-
-            continuation.yield(progress)
-            chunkIndex += 1
-            totalChunks = max(totalChunks, chunkIndex + 1)
         }
 
         let finalProgress = TranscriptionProgress(
             text: accumulatedText,
             words: accumulatedWords.isEmpty ? nil : accumulatedWords,
             isFinal: true,
+            isPartial: false,
             processedDuration: audioDuration,
             audioDuration: audioDuration,
-            chunkIndex: chunkIndex,
-            totalChunks: chunkIndex
+            chunkIndex: currentChunkIndex,
+            totalChunks: currentChunkIndex + 1
         )
 
         continuation.yield(finalProgress)
@@ -388,5 +415,37 @@ final class WhisperSessionTranscriber: ChunkTranscriber, @unchecked Sendable {
             confidence: 1.0,
             words: nil
         )
+    }
+
+    func transcribeStreaming(
+        audio: MLXArray,
+        sampleRate: Int,
+        previousTokens: [Int]?,
+        timeOffset: TimeInterval
+    ) -> AsyncThrowingStream<ChunkPartialResult, Error> {
+        let whisperStream: AsyncThrowingStream<StreamingResult, Error> = session.transcribe(
+            audio,
+            sampleRate: sampleRate,
+            options: .default
+        )
+
+        return AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    for try await result in whisperStream {
+                        let adjustedTimestamp = (result.timestamp.lowerBound + timeOffset)...(result.timestamp.upperBound + timeOffset)
+                        let partialResult = ChunkPartialResult(
+                            text: result.text,
+                            timestamp: adjustedTimestamp,
+                            isFinal: result.isFinal
+                        )
+                        continuation.yield(partialResult)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
     }
 }

@@ -1,13 +1,35 @@
 import Foundation
 import MLX
 
+/// Partial result during chunk transcription (AlignAtt streaming)
+public struct ChunkPartialResult: Sendable {
+    public let text: String
+    public let timestamp: ClosedRange<TimeInterval>
+    public let isFinal: Bool
+
+    public init(text: String, timestamp: ClosedRange<TimeInterval>, isFinal: Bool) {
+        self.text = text
+        self.timestamp = timestamp
+        self.isFinal = isFinal
+    }
+}
+
 /// Abstraction for transcribing a single ≤30s chunk
 public protocol ChunkTranscriber: Sendable {
+    /// Blocking transcription - returns only final result
     func transcribe(
         audio: MLXArray,
         sampleRate: Int,
         previousTokens: [Int]?
     ) async throws -> ChunkResult
+
+    /// Streaming transcription - yields partial results as tokens are decoded
+    func transcribeStreaming(
+        audio: MLXArray,
+        sampleRate: Int,
+        previousTokens: [Int]?,
+        timeOffset: TimeInterval
+    ) -> AsyncThrowingStream<ChunkPartialResult, Error>
 }
 
 /// Result from processing a single chunk
@@ -128,9 +150,14 @@ public struct CancellationPolicy: Sendable {
 
 /// Progress update during transcription
 public struct TranscriptionProgress: Sendable {
+    /// Accumulated text from all chunks so far
     public let text: String
+    /// Text from the current chunk only (for streaming display)
+    public let chunkText: String
     public let words: [WordTimestamp]?
     public let isFinal: Bool
+    /// Whether this is a partial result from AlignAtt streaming (word-level updates within a chunk)
+    public let isPartial: Bool
     public let processedDuration: TimeInterval
     public let audioDuration: TimeInterval
     public let chunkIndex: Int
@@ -143,16 +170,20 @@ public struct TranscriptionProgress: Sendable {
 
     public init(
         text: String,
+        chunkText: String = "",
         words: [WordTimestamp]?,
         isFinal: Bool,
+        isPartial: Bool = false,
         processedDuration: TimeInterval,
         audioDuration: TimeInterval,
         chunkIndex: Int,
         totalChunks: Int
     ) {
         self.text = text
+        self.chunkText = chunkText
         self.words = words
         self.isFinal = isFinal
+        self.isPartial = isPartial
         self.processedDuration = processedDuration
         self.audioDuration = audioDuration
         self.chunkIndex = chunkIndex

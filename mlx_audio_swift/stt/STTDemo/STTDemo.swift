@@ -55,6 +55,7 @@ struct STTDemo {
         var strategy: ChunkingStrategy = .auto
         var language: String?
         var fast: Bool = false
+        var verbose: Bool = false
 
         static let autoThresholdSeconds: Double = 30.0
     }
@@ -101,7 +102,8 @@ struct STTDemo {
                     model: model,
                     strategy: config.strategy,
                     language: config.language,
-                    fast: config.fast
+                    fast: config.fast,
+                    verbose: config.verbose
                 )
             }
 
@@ -156,7 +158,8 @@ struct STTDemo {
         model: WhisperModel,
         strategy: ChunkingStrategy,
         language: String?,
-        fast: Bool
+        fast: Bool,
+        verbose: Bool
     ) async throws {
         let loadingOptions = fast ? ModelLoadingOptions.fast : ModelLoadingOptions.default
         let processor = try await LongAudioProcessor.create(
@@ -189,10 +192,24 @@ struct STTDemo {
             let timeInfo = String(format: "%.1f/%.1fs", progress.processedDuration, progress.audioDuration)
 
             if progress.isFinal {
+                if verbose {
+                    print("")  // Newline after streaming output
+                }
                 print("\r\u{1B}[K") // Clear line
                 print("Progress: 100% \(chunkInfo) \(timeInfo)")
                 print("─────────────────────────────────────────")
-                print(progress.text)
+                if !verbose {
+                    print(progress.text)
+                }
+            } else if verbose {
+                if progress.isPartial {
+                    // AlignAtt streaming: show word-by-word updates within a chunk
+                    print("\r\u{1B}[K\u{1B}[90m[\(progress.chunkIndex + 1)]\u{1B}[0m \(progress.chunkText)", terminator: "")
+                    fflush(stdout)
+                } else {
+                    // Chunk completed
+                    print("\r\u{1B}[K\u{1B}[90m[\(progress.chunkIndex + 1)]\u{1B}[0m \(progress.chunkText)")
+                }
             } else {
                 print("\rProgress: \(percent)% \(chunkInfo) \(timeInfo)", terminator: "")
                 fflush(stdout)

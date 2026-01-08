@@ -99,6 +99,36 @@ public final class MockChunkTranscriber: ChunkTranscriber, @unchecked Sendable {
         }
     }
 
+    public func transcribeStreaming(
+        audio: MLXArray,
+        sampleRate: Int,
+        previousTokens: [Int]?,
+        timeOffset: TimeInterval
+    ) -> AsyncThrowingStream<ChunkPartialResult, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    let result = try await self.transcribe(
+                        audio: audio,
+                        sampleRate: sampleRate,
+                        previousTokens: previousTokens
+                    )
+
+                    let adjustedTimestamp = (result.timeRange.lowerBound + timeOffset)...(result.timeRange.upperBound + timeOffset)
+                    let partialResult = ChunkPartialResult(
+                        text: result.text,
+                        timestamp: adjustedTimestamp,
+                        isFinal: true
+                    )
+                    continuation.yield(partialResult)
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
     public func reset() {
         lock.withLock {
             _transcribeCalls.removeAll()

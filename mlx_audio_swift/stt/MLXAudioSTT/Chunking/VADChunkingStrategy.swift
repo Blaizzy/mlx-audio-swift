@@ -65,6 +65,33 @@ public final class VADChunkingStrategy: ChunkingStrategy, Sendable {
         }
     }
 
+    public func processStreaming(
+        audio: MLXArray,
+        sampleRate: Int,
+        transcriber: ChunkTranscriber,
+        limits: ProcessingLimits,
+        telemetry: ChunkingTelemetry?
+    ) -> AsyncThrowingStream<ChunkStreamingResult, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    try await processWithVADStreaming(
+                        audio: audio,
+                        sampleRate: sampleRate,
+                        transcriber: transcriber,
+                        limits: limits,
+                        telemetry: telemetry,
+                        continuation: continuation
+                    )
+                    continuation.finish()
+                } catch {
+                    telemetry?.error(error)
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
     private func processWithVAD(
         audio: MLXArray,
         sampleRate: Int,
@@ -122,6 +149,114 @@ public final class VADChunkingStrategy: ChunkingStrategy, Sendable {
                 audioDuration: audioDuration,
                 continuation: continuation
             )
+        }
+
+        let totalDuration = Date().timeIntervalSince(startTime)
+        telemetry?.strategyCompleted(totalChunks: processedSegments.count, totalDuration: totalDuration)
+    }
+
+    private func processWithVADStreaming(
+        audio: MLXArray,
+        sampleRate: Int,
+        transcriber: ChunkTranscriber,
+        limits: ProcessingLimits,
+        telemetry: ChunkingTelemetry?,
+        continuation: AsyncThrowingStream<ChunkStreamingResult, Error>.Continuation
+    ) async throws {
+        let totalSamples = audio.shape[0]
+        let audioDuration = Double(totalSamples) / Double(sampleRate)
+
+        telemetry?.strategyStarted(name, audioDuration: audioDuration)
+
+        let speechSegments: [SpeechSegment]
+        do {
+            speechSegments = try await vadProvider.detectSpeech(in: audio, sampleRate: sampleRate)
+        } catch {
+            throw ChunkingError.vadFailed(underlying: error)
+        }
+
+        guard !speechSegments.isEmpty else {
+            telemetry?.vadSegmentsDetected(count: 0, totalSpeechDuration: 0)
+            telemetry?.strategyCompleted(totalChunks: 0, totalDuration: 0)
+            return
+        }
+
+        let processedSegments = prepareSegments(speechSegments, audioDuration: audioDuration)
+
+        let totalSpeechDuration = processedSegments.reduce(0) { $0 + $1.duration }
+        telemetry?.vadSegmentsDetected(count: processedSegments.count, totalSpeechDuration: totalSpeechDuration)
+
+        let startTime = Date()
+
+        for (index, segment) in processedSegments.enumerated() {
+            try Task.checkCancellation()
+
+            if let timeout = limits.totalTimeout {
+                let elapsed = Date().timeIntervalSince(startTime)
+                if elapsed >= timeout {
+                    throw ChunkingError.totalTimeoutExceeded(
+                        processedDuration: segment.start,
+                        totalDuration: audioDuration
+                    )
+                }
+            }
+
+            let timeRange = segment.start...segment.end
+            telemetry?.chunkStarted(index: index, timeRange: timeRange)
+            let chunkStartTime = Date()
+
+            let startSample = Int(segment.start * Double(sampleRate))
+            let endSample = Int(segment.end * Double(sampleRate))
+            let clampedEndSample = min(endSample, audio.shape[0])
+            let clampedStartSample = min(startSample, clampedEndSample)
+
+            guard clampedEndSample > clampedStartSample else { continue }
+
+            let chunkAudio = audio[clampedStartSample..<clampedEndSample]
+            let timeOffset = segment.start
+
+            let streamingTranscription = transcriber.transcribeStreaming(
+                audio: chunkAudio,
+                sampleRate: sampleRate,
+                previousTokens: nil,
+                timeOffset: timeOffset
+            )
+
+            do {
+                for try await partialResult in streamingTranscription {
+                    try Task.checkCancellation()
+
+                    // Check chunk timeout
+                    let chunkElapsed = Date().timeIntervalSince(chunkStartTime)
+                    if chunkElapsed >= limits.chunkTimeout {
+                        throw TimeoutError(timeout: limits.chunkTimeout)
+                    }
+
+                    let streamingResult = ChunkStreamingResult(
+                        text: partialResult.text,
+                        timestamp: partialResult.timestamp,
+                        isPartial: !partialResult.isFinal,
+                        isChunkFinal: partialResult.isFinal,
+                        chunkIndex: index
+                    )
+                    continuation.yield(streamingResult)
+                }
+            } catch is TimeoutError {
+                throw ChunkingError.chunkTimeout(chunkIndex: index, timeRange: timeRange)
+            } catch {
+                telemetry?.chunkFailed(index: index, error: error)
+                if limits.abortOnFirstFailure {
+                    throw ChunkingError.chunkTranscriptionFailed(
+                        chunkIndex: index,
+                        timeRange: timeRange,
+                        underlying: error
+                    )
+                }
+                continue
+            }
+
+            let chunkDuration = Date().timeIntervalSince(chunkStartTime)
+            telemetry?.chunkCompleted(index: index, duration: chunkDuration, text: "")
         }
 
         let totalDuration = Date().timeIntervalSince(startTime)
