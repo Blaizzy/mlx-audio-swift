@@ -12,6 +12,7 @@ public final class SlidingWindowChunkingStrategy: ChunkingStrategy, Sendable {
         public var windowDuration: TimeInterval
         public var overlapDuration: TimeInterval
         public var mergeStrategy: MergeStrategy
+        public var deduplicationStrategy: (any DeduplicationStrategy)?
 
         public var hopDuration: TimeInterval { windowDuration - overlapDuration }
 
@@ -24,11 +25,16 @@ public final class SlidingWindowChunkingStrategy: ChunkingStrategy, Sendable {
         public init(
             windowDuration: TimeInterval = 30.0,
             overlapDuration: TimeInterval = 5.0,
-            mergeStrategy: MergeStrategy = .timestampAlignment
+            mergeStrategy: MergeStrategy = .timestampAlignment,
+            deduplicationStrategy: (any DeduplicationStrategy)? = nil
         ) {
             self.windowDuration = windowDuration
             self.overlapDuration = overlapDuration
             self.mergeStrategy = mergeStrategy
+            // Default to composite strategy with overlap end calculated from window config
+            self.deduplicationStrategy = deduplicationStrategy ?? CompositeDeduplicationStrategy(
+                overlapEnd: windowDuration - overlapDuration
+            )
         }
 
         public static let `default` = SlidingWindowConfig()
