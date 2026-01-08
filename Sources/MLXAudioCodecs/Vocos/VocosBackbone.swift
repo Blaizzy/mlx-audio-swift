@@ -9,26 +9,6 @@ import Foundation
 import MLX
 import MLXNN
 
-// MARK: - Normalization Wrapper
-
-/// Wrapper to handle both LayerNorm and AdaLayerNorm uniformly.
-public enum NormType {
-    case layerNorm(LayerNorm)
-    case adaLayerNorm(AdaLayerNorm)
-
-    public func callAsFunction(_ x: MLXArray, condEmbeddingId: MLXArray? = nil) -> MLXArray {
-        switch self {
-        case .layerNorm(let norm):
-            return norm(x)
-        case .adaLayerNorm(let norm):
-            guard let cond = condEmbeddingId else {
-                fatalError("AdaLayerNorm requires condEmbeddingId")
-            }
-            return norm(x, condEmbedding: cond)
-        }
-    }
-}
-
 // MARK: - ConvNeXt Block
 
 /// ConvNeXt block for the Vocos backbone.
@@ -37,9 +17,7 @@ public enum NormType {
 /// Supports optional adaptive normalization for conditional generation.
 public class ConvNeXtBlock: Module {
     @ModuleInfo(key: "dwconv") var dwconv: MLXNN.Conv1d
-    let normType: NormType
-    @ModuleInfo(key: "norm") var normModule: LayerNorm?
-    @ModuleInfo(key: "norm") var adaNormModule: AdaLayerNorm?
+    @ModuleInfo(key: "norm") var norm: Module
     @ModuleInfo(key: "pwconv1") var pwconv1: Linear
     @ModuleInfo(key: "pwconv2") var pwconv2: Linear
     let gamma: MLXArray?
@@ -65,15 +43,9 @@ public class ConvNeXtBlock: Module {
 
         // Normalization (either LayerNorm or AdaLayerNorm)
         if let numEmbeddings = adanormNumEmbeddings {
-            let adaNorm = AdaLayerNorm(numEmbeddings: numEmbeddings, embeddingDim: dim, eps: 1e-6)
-            self.normType = .adaLayerNorm(adaNorm)
-            self._adaNormModule.wrappedValue = adaNorm
-            self._normModule.wrappedValue = nil
+            self._norm.wrappedValue = AdaLayerNorm(numEmbeddings: numEmbeddings, embeddingDim: dim, eps: 1e-6)
         } else {
-            let norm = LayerNorm(dimensions: dim, eps: 1e-6)
-            self.normType = .layerNorm(norm)
-            self._normModule.wrappedValue = norm
-            self._adaNormModule.wrappedValue = nil
+            self._norm.wrappedValue = LayerNorm(dimensions: dim, eps: 1e-6)
         }
 
         // Pointwise/1x1 convs, implemented with linear layers
@@ -95,7 +67,20 @@ public class ConvNeXtBlock: Module {
         var h = dwconv(x)
 
         // Normalization (conditional or regular)
-        h = normType(h, condEmbeddingId: condEmbeddingId)
+        if useAdaNorm {
+            guard let cond = condEmbeddingId else {
+                fatalError("AdaLayerNorm requires condEmbeddingId")
+            }
+            guard let adaNorm = norm as? AdaLayerNorm else {
+                fatalError("Expected AdaLayerNorm in ConvNeXtBlock")
+            }
+            h = adaNorm(h, condEmbedding: cond)
+        } else {
+            guard let layerNorm = norm as? LayerNorm else {
+                fatalError("Expected LayerNorm in ConvNeXtBlock")
+            }
+            h = layerNorm(h)
+        }
 
         // Pointwise convs with GELU
         h = pwconv1(h)
@@ -123,9 +108,7 @@ public class VocosBackbone: Module {
     let inputChannels: Int
     let useAdaNorm: Bool
     @ModuleInfo(key: "embed") var embed: MLXNN.Conv1d
-    let normType: NormType
-    @ModuleInfo(key: "norm") var normModule: LayerNorm?
-    @ModuleInfo(key: "norm") var adaNormModule: AdaLayerNorm?
+    @ModuleInfo(key: "norm") var norm: Module
     @ModuleInfo(key: "convnext") var convnext: [ConvNeXtBlock]
     @ModuleInfo(key: "final_layer_norm") var finalLayerNorm: LayerNorm
 
@@ -153,15 +136,9 @@ public class VocosBackbone: Module {
 
         // Initial normalization (either LayerNorm or AdaLayerNorm)
         if let numEmbeddings = adanormNumEmbeddings {
-            let adaNorm = AdaLayerNorm(numEmbeddings: numEmbeddings, embeddingDim: dim, eps: 1e-6)
-            self.normType = .adaLayerNorm(adaNorm)
-            self._adaNormModule.wrappedValue = adaNorm
-            self._normModule.wrappedValue = nil
+            self._norm.wrappedValue = AdaLayerNorm(numEmbeddings: numEmbeddings, embeddingDim: dim, eps: 1e-6)
         } else {
-            let norm = LayerNorm(dimensions: dim, eps: 1e-6)
-            self.normType = .layerNorm(norm)
-            self._normModule.wrappedValue = norm
-            self._adaNormModule.wrappedValue = nil
+            self._norm.wrappedValue = LayerNorm(dimensions: dim, eps: 1e-6)
         }
 
         // Calculate layer scale init value
@@ -195,7 +172,20 @@ public class VocosBackbone: Module {
         h = embed(h)
 
         // Initial norm (conditional or regular)
-        h = normType(h, condEmbeddingId: bandwidthId)
+        if useAdaNorm {
+            guard let cond = bandwidthId else {
+                fatalError("AdaLayerNorm requires bandwidthId")
+            }
+            guard let adaNorm = norm as? AdaLayerNorm else {
+                fatalError("Expected AdaLayerNorm in VocosBackbone")
+            }
+            h = adaNorm(h, condEmbedding: cond)
+        } else {
+            guard let layerNorm = norm as? LayerNorm else {
+                fatalError("Expected LayerNorm in VocosBackbone")
+            }
+            h = layerNorm(h)
+        }
 
         // ConvNeXt blocks
         for block in convnext {

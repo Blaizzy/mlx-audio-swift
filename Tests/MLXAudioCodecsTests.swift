@@ -35,43 +35,41 @@ import Foundation
 struct SNACTests {
 
     @Test func testSNACEncodeDecodeCycle() async throws {
-        try await withCPU {
-                    // 1. Load audio from file
-                    let audioURL = Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media")!
-                    let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
-                    print("Loaded audio: \(audioData.shape), sample rate: \(sampleRate)")
+        // 1. Load audio from file
+        let audioURL = Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media")!
+        let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
+        print("Loaded audio: \(audioData.shape), sample rate: \(sampleRate)")
 
-                    // 2. Load SNAC model from HuggingFace (24kHz model)
-                    print("\u{001B}[33mLoading SNAC model...\u{001B}[0m")
-                    let snac = try await SNAC.fromPretrained("mlx-community/snac_24khz")
-                    print("\u{001B}[32mSNAC model loaded!\u{001B}[0m")
+        // 2. Load SNAC model from HuggingFace (24kHz model)
+        print("\u{001B}[33mLoading SNAC model...\u{001B}[0m")
+        let snac = try await SNAC.fromPretrained("mlx-community/snac_24khz")
+        print("\u{001B}[32mSNAC model loaded!\u{001B}[0m")
 
-                    // 3. Reshape audio for SNAC: [batch, channels, samples]
-                    let audioInput = audioData.reshaped([1, 1, audioData.shape[0]])
-                    print("Audio input shape: \(audioInput.shape)")
+        // 3. Reshape audio for SNAC: [batch, channels, samples]
+        let audioInput = audioData.reshaped([1, 1, audioData.shape[0]])
+        print("Audio input shape: \(audioInput.shape)")
 
-                    // 4. Encode audio to codes
-                    print("\u{001B}[33mEncoding audio...\u{001B}[0m")
-                    let codes = snac.encode(audioInput)
-                    print("Encoded to \(codes.count) codebook levels:")
-                    for (i, code) in codes.enumerated() {
-                        print("  Level \(i): \(code.shape)")
-                    }
-
-                    // 5. Decode codes back to audio
-                    print("\u{001B}[33mDecoding audio...\u{001B}[0m")
-                    let reconstructed = snac.decode(codes)
-                    print("Reconstructed audio shape: \(reconstructed.shape)")
-
-                    // 6. Save reconstructed audio to the same media folder as input
-                    let outputURL = audioURL.deletingLastPathComponent().appendingPathComponent("intention_snac_reconstructed.wav")
-                    let outputAudio = reconstructed.squeezed()  // Remove batch/channel dims
-                    try saveAudioArray(outputAudio, sampleRate: Double(snac.samplingRate), to: outputURL)
-                    print("\u{001B}[32mSaved reconstructed audio to\u{001B}[0m: \(outputURL.path)")
-
-                    // Basic check: output should have samples
-                    #expect(reconstructed.shape.last! > 0)
+        // 4. Encode audio to codes
+        print("\u{001B}[33mEncoding audio...\u{001B}[0m")
+        let codes = snac.encode(audioInput)
+        print("Encoded to \(codes.count) codebook levels:")
+        for (i, code) in codes.enumerated() {
+            print("  Level \(i): \(code.shape)")
         }
+
+        // 5. Decode codes back to audio
+        print("\u{001B}[33mDecoding audio...\u{001B}[0m")
+        let reconstructed = snac.decode(codes)
+        print("Reconstructed audio shape: \(reconstructed.shape)")
+
+        // 6. Save reconstructed audio to the same media folder as input
+        let outputURL = audioURL.deletingLastPathComponent().appendingPathComponent("intention_snac_reconstructed.wav")
+        let outputAudio = reconstructed.squeezed()  // Remove batch/channel dims
+        try saveAudioArray(outputAudio, sampleRate: Double(snac.samplingRate), to: outputURL)
+        print("\u{001B}[32mSaved reconstructed audio to\u{001B}[0m: \(outputURL.path)")
+
+        // Basic check: output should have samples
+        #expect(reconstructed.shape.last! > 0)
     }
 }
 
@@ -87,46 +85,44 @@ struct SNACTests {
 struct MimiTests {
 
     @Test func testMimiEncodeDecodeCycle() async throws {
-        try await withCPU {
-                    // 1. Load audio from file
-                    let audioURL = Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media")!
-                    let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
-                    print("Loaded audio: \(audioData.shape), sample rate: \(sampleRate)")
+        // 1. Load audio from file
+        let audioURL = Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media")!
+        let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
+        print("Loaded audio: \(audioData.shape), sample rate: \(sampleRate)")
 
-                    // 2. Load Mimi model from HuggingFace
-                    print("\u{001B}[33mLoading Mimi model...\u{001B}[0m")
-                    let mimi = try await Mimi.fromPretrained(
-                        repoId: "kyutai/moshiko-pytorch-bf16",
-                        filename: "tokenizer-e351c8d8-checkpoint125.safetensors"
-                    ) { progress in
-                        print("Download progress: \(progress.fractionCompleted * 100)%")
-                    }
-                    print("\u{001B}[32mMimi model loaded!\u{001B}[0m")
-
-                    // 3. Reshape audio for Mimi: [batch, channels, samples]
-                    let audioInput = audioData.reshaped([1, 1, audioData.shape[0]])
-                    print("Audio input shape: \(audioInput.shape)")
-
-                    // 4. Encode audio to codes
-                    print("\u{001B}[33mEncoding audio...\u{001B}[0m")
-                    let codes = mimi.encode(audioInput)
-                    print("Encoded to codes shape: \(codes.shape)")
-
-                    // 5. Decode codes back to audio
-                    print("\u{001B}[33mDecoding audio...\u{001B}[0m")
-                    let reconstructed = mimi.decode(codes)
-                    Memory.clearCache()
-                    print("Reconstructed audio shape: \(reconstructed.shape)")
-
-                    // 6. Save reconstructed audio
-                    let outputURL = audioURL.deletingLastPathComponent().appendingPathComponent("intention_mimi_reconstructed.wav")
-                    let outputAudio = reconstructed.squeezed()  // Remove batch/channel dims
-                    try saveAudioArray(outputAudio, sampleRate: mimi.sampleRate, to: outputURL)
-                    print("\u{001B}[32mSaved reconstructed audio to\u{001B}[0m: \(outputURL.path)")
-
-                    // Basic check: output should have samples
-                    #expect(reconstructed.shape.last! > 0)
+        // 2. Load Mimi model from HuggingFace
+        print("\u{001B}[33mLoading Mimi model...\u{001B}[0m")
+        let mimi = try await Mimi.fromPretrained(
+            repoId: "kyutai/moshiko-pytorch-bf16",
+            filename: "tokenizer-e351c8d8-checkpoint125.safetensors"
+        ) { progress in
+            print("Download progress: \(progress.fractionCompleted * 100)%")
         }
+        print("\u{001B}[32mMimi model loaded!\u{001B}[0m")
+
+        // 3. Reshape audio for Mimi: [batch, channels, samples]
+        let audioInput = audioData.reshaped([1, 1, audioData.shape[0]])
+        print("Audio input shape: \(audioInput.shape)")
+
+        // 4. Encode audio to codes
+        print("\u{001B}[33mEncoding audio...\u{001B}[0m")
+        let codes = mimi.encode(audioInput)
+        print("Encoded to codes shape: \(codes.shape)")
+
+        // 5. Decode codes back to audio
+        print("\u{001B}[33mDecoding audio...\u{001B}[0m")
+        let reconstructed = mimi.decode(codes)
+        Memory.clearCache()
+        print("Reconstructed audio shape: \(reconstructed.shape)")
+
+        // 6. Save reconstructed audio
+        let outputURL = audioURL.deletingLastPathComponent().appendingPathComponent("intention_mimi_reconstructed.wav")
+        let outputAudio = reconstructed.squeezed()  // Remove batch/channel dims
+        try saveAudioArray(outputAudio, sampleRate: mimi.sampleRate, to: outputURL)
+        print("\u{001B}[32mSaved reconstructed audio to\u{001B}[0m: \(outputURL.path)")
+
+        // Basic check: output should have samples
+        #expect(reconstructed.shape.last! > 0)
     }
 }
 
@@ -142,224 +138,208 @@ struct MimiTests {
 struct VocosTests {
 
     @Test func testConvNeXtBlock() async throws {
-        try await withCPU {
-                    // Test basic ConvNeXtBlock forward pass
-                    let dim = 64
-                    let intermediateDim = 192
-                    let block = ConvNeXtBlock(
-                        dim: dim,
-                        intermediateDim: intermediateDim,
-                        layerScaleInitValue: 0.125,
-                        dwKernelSize: 7
-                    )
+        // Test basic ConvNeXtBlock forward pass
+        let dim = 64
+        let intermediateDim = 192
+        let block = ConvNeXtBlock(
+            dim: dim,
+            intermediateDim: intermediateDim,
+            layerScaleInitValue: 0.125,
+            dwKernelSize: 7
+        )
 
-                    // Input shape: (batch, length, channels)
-                    let input = MLXRandom.normal([1, 100, dim])
-                    let output = block(input)
+        // Input shape: (batch, length, channels)
+        let input = MLXRandom.normal([1, 100, dim])
+        let output = block(input)
 
-                    // Output should have same shape as input (residual connection)
-                    #expect(output.shape == input.shape)
-                    print("ConvNeXtBlock output shape: \(output.shape)")
-        }
+        // Output should have same shape as input (residual connection)
+        #expect(output.shape == input.shape)
+        print("ConvNeXtBlock output shape: \(output.shape)")
     }
 
     @Test func testConvNeXtBlockWithAdaNorm() async throws {
-        try await withCPU {
-                    // Test ConvNeXtBlock with adaptive normalization
-                    let dim = 64
-                    let intermediateDim = 192
-                    let numEmbeddings = 4
+        // Test ConvNeXtBlock with adaptive normalization
+        let dim = 64
+        let intermediateDim = 192
+        let numEmbeddings = 4
 
-                    let block = ConvNeXtBlock(
-                        dim: dim,
-                        intermediateDim: intermediateDim,
-                        layerScaleInitValue: 0.125,
-                        adanormNumEmbeddings: numEmbeddings,
-                        dwKernelSize: 7
-                    )
+        let block = ConvNeXtBlock(
+            dim: dim,
+            intermediateDim: intermediateDim,
+            layerScaleInitValue: 0.125,
+            adanormNumEmbeddings: numEmbeddings,
+            dwKernelSize: 7
+        )
 
-                    // Input shape: (batch, length, channels)
-                    let input = MLXRandom.normal([1, 100, dim])
-                    let condEmbedding = MLXRandom.normal([1, numEmbeddings])
+        // Input shape: (batch, length, channels)
+        let input = MLXRandom.normal([1, 100, dim])
+        let condEmbedding = MLXRandom.normal([1, numEmbeddings])
 
-                    let output = block(input, condEmbeddingId: condEmbedding)
+        let output = block(input, condEmbeddingId: condEmbedding)
 
-                    // Output should have same shape as input
-                    #expect(output.shape == input.shape)
-                    print("ConvNeXtBlock with AdaNorm output shape: \(output.shape)")
-        }
+        // Output should have same shape as input
+        #expect(output.shape == input.shape)
+        print("ConvNeXtBlock with AdaNorm output shape: \(output.shape)")
     }
 
     @Test func testVocosBackbone() async throws {
-        try await withCPU {
-                    // Test VocosBackbone forward pass
-                    let inputChannels = 100
-                    let dim = 512
-                    let intermediateDim = 1536
-                    let numLayers = 8
+        // Test VocosBackbone forward pass
+        let inputChannels = 100
+        let dim = 512
+        let intermediateDim = 1536
+        let numLayers = 8
 
-                    let backbone = VocosBackbone(
-                        inputChannels: inputChannels,
-                        dim: dim,
-                        intermediateDim: intermediateDim,
-                        numLayers: numLayers
-                    )
+        let backbone = VocosBackbone(
+            inputChannels: inputChannels,
+            dim: dim,
+            intermediateDim: intermediateDim,
+            numLayers: numLayers
+        )
 
-                    // Input shape: (batch, length, input_channels)
-                    let input = MLXRandom.normal([1, 50, inputChannels])
-                    let output = backbone(input)
+        // Input shape: (batch, length, input_channels)
+        let input = MLXRandom.normal([1, 50, inputChannels])
+        let output = backbone(input)
 
-                    // Output should have shape (batch, length, dim)
-                    #expect(output.shape[0] == 1)
-                    #expect(output.shape[1] == 50)
-                    #expect(output.shape[2] == dim)
-                    print("VocosBackbone output shape: \(output.shape)")
-        }
+        // Output should have shape (batch, length, dim)
+        #expect(output.shape[0] == 1)
+        #expect(output.shape[1] == 50)
+        #expect(output.shape[2] == dim)
+        print("VocosBackbone output shape: \(output.shape)")
     }
 
     @Test func testVocosBackboneWithAdaNorm() async throws {
-        try await withCPU {
-                    // Test VocosBackbone with adaptive normalization
-                    let inputChannels = 100
-                    let dim = 256
-                    let intermediateDim = 768
-                    let numLayers = 4
-                    let numEmbeddings = 4
+        // Test VocosBackbone with adaptive normalization
+        let inputChannels = 100
+        let dim = 256
+        let intermediateDim = 768
+        let numLayers = 4
+        let numEmbeddings = 4
 
-                    let backbone = VocosBackbone(
-                        inputChannels: inputChannels,
-                        dim: dim,
-                        intermediateDim: intermediateDim,
-                        numLayers: numLayers,
-                        adanormNumEmbeddings: numEmbeddings
-                    )
+        let backbone = VocosBackbone(
+            inputChannels: inputChannels,
+            dim: dim,
+            intermediateDim: intermediateDim,
+            numLayers: numLayers,
+            adanormNumEmbeddings: numEmbeddings
+        )
 
-                    // Input shape: (batch, length, input_channels)
-                    let input = MLXRandom.normal([1, 50, inputChannels])
-                    let bandwidthId = MLXRandom.normal([1, numEmbeddings])
+        // Input shape: (batch, length, input_channels)
+        let input = MLXRandom.normal([1, 50, inputChannels])
+        let bandwidthId = MLXRandom.normal([1, numEmbeddings])
 
-                    let output = backbone(input, bandwidthId: bandwidthId)
+        let output = backbone(input, bandwidthId: bandwidthId)
 
-                    // Output should have shape (batch, length, dim)
-                    #expect(output.shape[0] == 1)
-                    #expect(output.shape[1] == 50)
-                    #expect(output.shape[2] == dim)
-                    print("VocosBackbone with AdaNorm output shape: \(output.shape)")
-        }
+        // Output should have shape (batch, length, dim)
+        #expect(output.shape[0] == 1)
+        #expect(output.shape[1] == 50)
+        #expect(output.shape[2] == dim)
+        print("VocosBackbone with AdaNorm output shape: \(output.shape)")
     }
 
     @Test func testISTFTHead() async throws {
-        try await withCPU {
-                    // Test ISTFTHead forward pass
-                    let dim = 512
-                    let nFft = 1024
-                    let hopLength = 256
+        // Test ISTFTHead forward pass
+        let dim = 512
+        let nFft = 1024
+        let hopLength = 256
 
-                    let head = MLXAudioCodecs.ISTFTHead(dim: dim, nFft: nFft, hopLength: hopLength)
+        let head = MLXAudioCodecs.ISTFTHead(dim: dim, nFft: nFft, hopLength: hopLength)
 
-                    // Input shape: (batch, length, dim)
-                    let numFrames = 100
-                    let input = MLXRandom.normal([1, numFrames, dim])
+        // Input shape: (batch, length, dim)
+        let numFrames = 100
+        let input = MLXRandom.normal([1, numFrames, dim])
 
-                    let output = head(input)
+        let output = head(input)
 
-                    // Output should be audio waveform
-                    // Expected length: approximately (numFrames - 1) * hopLength after trimming
-                    #expect(output.ndim == 1 || output.ndim == 2)
-                    print("ISTFTHead output shape: \(output.shape)")
-        }
+        // Output should be audio waveform
+        // Expected length: approximately (numFrames - 1) * hopLength after trimming
+        #expect(output.ndim == 1 || output.ndim == 2)
+        print("ISTFTHead output shape: \(output.shape)")
     }
 
     @Test func testAdaLayerNorm() async throws {
-        try await withCPU {
-                    // Test AdaLayerNorm
-                    let numEmbeddings = 4
-                    let embeddingDim = 256
+        // Test AdaLayerNorm
+        let numEmbeddings = 4
+        let embeddingDim = 256
 
-                    let adaNorm = AdaLayerNorm(
-                        numEmbeddings: numEmbeddings,
-                        embeddingDim: embeddingDim
-                    )
+        let adaNorm = AdaLayerNorm(
+            numEmbeddings: numEmbeddings,
+            embeddingDim: embeddingDim
+        )
 
-                    // Input shape: (batch, length, dim)
-                    let input = MLXRandom.normal([2, 50, embeddingDim])
-                    let condEmbedding = MLXRandom.normal([2, numEmbeddings])
+        // Input shape: (batch, length, dim)
+        let input = MLXRandom.normal([2, 50, embeddingDim])
+        let condEmbedding = MLXRandom.normal([2, numEmbeddings])
 
-                    let output = adaNorm(input, condEmbedding: condEmbedding)
+        let output = adaNorm(input, condEmbedding: condEmbedding)
 
-                    // Output should have same shape as input
-                    #expect(output.shape == input.shape)
-                    print("AdaLayerNorm output shape: \(output.shape)")
-        }
+        // Output should have same shape as input
+        #expect(output.shape == input.shape)
+        print("AdaLayerNorm output shape: \(output.shape)")
     }
 
     @Test func testVocosModel() async throws {
-        try await withCPU {
-                    // Test full Vocos model
-                    let inputChannels = 100
-                    let dim = 256
-                    let intermediateDim = 768
-                    let numLayers = 4
-                    let nFft = 1024
-                    let hopLength = 256
+        // Test full Vocos model
+        let inputChannels = 100
+        let dim = 256
+        let intermediateDim = 768
+        let numLayers = 4
+        let nFft = 1024
+        let hopLength = 256
 
-                    let backbone = VocosBackbone(
-                        inputChannels: inputChannels,
-                        dim: dim,
-                        intermediateDim: intermediateDim,
-                        numLayers: numLayers
-                    )
+        let backbone = VocosBackbone(
+            inputChannels: inputChannels,
+            dim: dim,
+            intermediateDim: intermediateDim,
+            numLayers: numLayers
+        )
 
-                    let head = MLXAudioCodecs.ISTFTHead(dim: dim, nFft: nFft, hopLength: hopLength)
+        let head = MLXAudioCodecs.ISTFTHead(dim: dim, nFft: nFft, hopLength: hopLength)
 
-                    let vocos = Vocos(backbone: backbone, head: head)
+        let vocos = Vocos(backbone: backbone, head: head)
 
-                    // Input shape: (batch, length, input_channels)
-                    let numFrames = 50
-                    let input = MLXRandom.normal([1, numFrames, inputChannels])
+        // Input shape: (batch, length, input_channels)
+        let numFrames = 50
+        let input = MLXRandom.normal([1, numFrames, inputChannels])
 
-                    let output = vocos(input)
+        let output = vocos(input)
 
-                    // Output should be audio waveform
-                    print("Vocos output shape: \(output.shape)")
-                    #expect(output.shape.count >= 1)
-        }
+        // Output should be audio waveform
+        print("Vocos output shape: \(output.shape)")
+        #expect(output.shape.count >= 1)
     }
 
     @Test func testVocosDecodeWithBandwidthId() async throws {
-        try await withCPU {
-                    // Test Vocos decode with bandwidth conditioning
-                    let inputChannels = 128
-                    let dim = 256
-                    let intermediateDim = 768
-                    let numLayers = 4
-                    let numEmbeddings = 4
-                    let nFft = 1024
-                    let hopLength = 256
+        // Test Vocos decode with bandwidth conditioning
+        let inputChannels = 128
+        let dim = 256
+        let intermediateDim = 768
+        let numLayers = 4
+        let numEmbeddings = 4
+        let nFft = 1024
+        let hopLength = 256
 
-                    let backbone = VocosBackbone(
-                        inputChannels: inputChannels,
-                        dim: dim,
-                        intermediateDim: intermediateDim,
-                        numLayers: numLayers,
-                        adanormNumEmbeddings: numEmbeddings
-                    )
+        let backbone = VocosBackbone(
+            inputChannels: inputChannels,
+            dim: dim,
+            intermediateDim: intermediateDim,
+            numLayers: numLayers,
+            adanormNumEmbeddings: numEmbeddings
+        )
 
-                    let head = MLXAudioCodecs.ISTFTHead(dim: dim, nFft: nFft, hopLength: hopLength)
+        let head = MLXAudioCodecs.ISTFTHead(dim: dim, nFft: nFft, hopLength: hopLength)
 
-                    let vocos = Vocos(backbone: backbone, head: head)
+        let vocos = Vocos(backbone: backbone, head: head)
 
-                    // Input shape: (batch, length, input_channels)
-                    let numFrames = 50
-                    let input = MLXRandom.normal([1, numFrames, inputChannels])
-                    let bandwidthId = MLXRandom.normal([1, numEmbeddings])
+        // Input shape: (batch, length, input_channels)
+        let numFrames = 50
+        let input = MLXRandom.normal([1, numFrames, inputChannels])
+        let bandwidthId = MLXRandom.normal([1, numEmbeddings])
 
-                    let output = vocos.decode(input, bandwidthId: bandwidthId)
+        let output = vocos.decode(input, bandwidthId: bandwidthId)
 
-                    // Output should be audio waveform
-                    print("Vocos decode with bandwidthId output shape: \(output.shape)")
-                    #expect(output.shape.count >= 1)
-        }
+        // Output should be audio waveform
+        print("Vocos decode with bandwidthId output shape: \(output.shape)")
+        #expect(output.shape.count >= 1)
     }
 }
 
@@ -375,145 +355,131 @@ struct VocosTests {
 struct EncodecTests {
 
     @Test func testEncodecConfig() async throws {
-        try await withCPU {
-                    // Test default config
-                    let config = EncodecConfig()
+        // Test default config
+        let config = EncodecConfig()
 
-                    #expect(config.audioChannels == 1)
-                    #expect(config.numFilters == 32)
-                    #expect(config.codebookSize == 1024)
-                    #expect(config.codebookDim == 128)
-                    #expect(config.hiddenSize == 128)
-                    #expect(config.numLstmLayers == 2)
-                    #expect(config.samplingRate == 24000)
-                    #expect(config.upsamplingRatios == [8, 5, 4, 2])
+        #expect(config.audioChannels == 1)
+        #expect(config.numFilters == 32)
+        #expect(config.codebookSize == 1024)
+        #expect(config.codebookDim == 128)
+        #expect(config.hiddenSize == 128)
+        #expect(config.numLstmLayers == 2)
+        #expect(config.samplingRate == 24000)
+        #expect(config.upsamplingRatios == [8, 5, 4, 2])
 
-                    print("EncodecConfig default values verified")
-        }
+        print("EncodecConfig default values verified")
     }
 
     @Test func testEncodecConv1d() async throws {
-        try await withCPU {
-                    // Test EncodecConv1d layer
-                    let config = EncodecConfig()
-                    let conv = EncodecConv1d(
-                        config: config,
-                        inChannels: 32,
-                        outChannels: 64,
-                        kernelSize: 7
-                    )
+        // Test EncodecConv1d layer
+        let config = EncodecConfig()
+        let conv = EncodecConv1d(
+            config: config,
+            inChannels: 32,
+            outChannels: 64,
+            kernelSize: 7
+        )
 
-                    // Input shape: (batch, length, channels)
-                    let input = MLXRandom.normal([1, 100, 32])
-                    let output = conv(input)
+        // Input shape: (batch, length, channels)
+        let input = MLXRandom.normal([1, 100, 32])
+        let output = conv(input)
 
-                    #expect(output.shape[0] == 1)
-                    #expect(output.shape[2] == 64)
-                    print("EncodecConv1d output shape: \(output.shape)")
-        }
+        #expect(output.shape[0] == 1)
+        #expect(output.shape[2] == 64)
+        print("EncodecConv1d output shape: \(output.shape)")
     }
 
     @Test func testEncodecLSTM() async throws {
-        try await withCPU {
-                    // Test EncodecLSTM layer
-                    let lstm = EncodecLSTM(inputSize: 64, hiddenSize: 64)
+        // Test EncodecLSTM layer
+        let lstm = EncodecLSTM(inputSize: 64, hiddenSize: 64)
 
-                    // Input shape: (batch, length, channels)
-                    let input = MLXRandom.normal([1, 50, 64])
-                    let output = lstm(input)
+        // Input shape: (batch, length, channels)
+        let input = MLXRandom.normal([1, 50, 64])
+        let output = lstm(input)
 
-                    #expect(output.shape[0] == 1)
-                    #expect(output.shape[1] == 50)
-                    #expect(output.shape[2] == 64)
-                    print("EncodecLSTM output shape: \(output.shape)")
-        }
+        #expect(output.shape[0] == 1)
+        #expect(output.shape[1] == 50)
+        #expect(output.shape[2] == 64)
+        print("EncodecLSTM output shape: \(output.shape)")
     }
 
     @Test func testEncodecResnetBlock() async throws {
-        try await withCPU {
-                    // Test EncodecResnetBlock
-                    let config = EncodecConfig()
-                    let block = EncodecResnetBlock(
-                        config: config,
-                        dim: 64,
-                        dilations: [1, 1]
-                    )
+        // Test EncodecResnetBlock
+        let config = EncodecConfig()
+        let block = EncodecResnetBlock(
+            config: config,
+            dim: 64,
+            dilations: [1, 1]
+        )
 
-                    // Input shape: (batch, length, channels)
-                    let input = MLXRandom.normal([1, 100, 64])
-                    let output = block(input)
+        // Input shape: (batch, length, channels)
+        let input = MLXRandom.normal([1, 100, 64])
+        let output = block(input)
 
-                    // Output should have same shape (residual connection)
-                    #expect(output.shape == input.shape)
-                    print("EncodecResnetBlock output shape: \(output.shape)")
-        }
+        // Output should have same shape (residual connection)
+        #expect(output.shape == input.shape)
+        print("EncodecResnetBlock output shape: \(output.shape)")
     }
 
     @Test func testEncodecEuclideanCodebook() async throws {
-        try await withCPU {
-                    // Test codebook quantization
-                    let config = EncodecConfig()
-                    let codebook = EncodecEuclideanCodebook(config: config)
+        // Test codebook quantization
+        let config = EncodecConfig()
+        let codebook = EncodecEuclideanCodebook(config: config)
 
-                    // Input shape: (batch, length, dim)
-                    let input = MLXRandom.normal([1, 50, config.codebookDim])
-                    let indices = codebook.encode(input)
+        // Input shape: (batch, length, dim)
+        let input = MLXRandom.normal([1, 50, config.codebookDim])
+        let indices = codebook.encode(input)
 
-                    #expect(indices.shape[0] == 1)
-                    #expect(indices.shape[1] == 50)
-                    print("EncodecEuclideanCodebook indices shape: \(indices.shape)")
+        #expect(indices.shape[0] == 1)
+        #expect(indices.shape[1] == 50)
+        print("EncodecEuclideanCodebook indices shape: \(indices.shape)")
 
-                    // Decode back
-                    let decoded = codebook.decode(indices)
-                    #expect(decoded.shape[0] == 1)
-                    #expect(decoded.shape[1] == 50)
-                    #expect(decoded.shape[2] == config.codebookDim)
-                    print("EncodecEuclideanCodebook decoded shape: \(decoded.shape)")
-        }
+        // Decode back
+        let decoded = codebook.decode(indices)
+        #expect(decoded.shape[0] == 1)
+        #expect(decoded.shape[1] == 50)
+        #expect(decoded.shape[2] == config.codebookDim)
+        print("EncodecEuclideanCodebook decoded shape: \(decoded.shape)")
     }
 
     @Test func testEncodecRVQ() async throws {
-        try await withCPU {
-                    // Test Residual Vector Quantizer
-                    let config = EncodecConfig()
-                    let rvq = EncodecResidualVectorQuantizer(config: config)
+        // Test Residual Vector Quantizer
+        let config = EncodecConfig()
+        let rvq = EncodecResidualVectorQuantizer(config: config)
 
-                    // Input shape: (batch, length, dim)
-                    let input = MLXRandom.normal([1, 50, config.codebookDim])
-                    let codes = rvq.encode(input, bandwidth: 1.5)
+        // Input shape: (batch, length, dim)
+        let input = MLXRandom.normal([1, 50, config.codebookDim])
+        let codes = rvq.encode(input, bandwidth: 1.5)
 
-                    // Codes shape should be (batch, num_quantizers, length)
-                    #expect(codes.shape[0] == 1)
-                    print("EncodecRVQ codes shape: \(codes.shape)")
+        // Codes shape should be (batch, num_quantizers, length)
+        #expect(codes.shape[0] == 1)
+        print("EncodecRVQ codes shape: \(codes.shape)")
 
-                    // Decode
-                    let decoded = rvq.decode(codes)
-                    #expect(decoded.shape[0] == 1)
-                    #expect(decoded.shape[1] == 50)
-                    print("EncodecRVQ decoded shape: \(decoded.shape)")
-        }
+        // Decode
+        let decoded = rvq.decode(codes)
+        #expect(decoded.shape[0] == 1)
+        #expect(decoded.shape[1] == 50)
+        print("EncodecRVQ decoded shape: \(decoded.shape)")
     }
 
     @Test func testEncodecModel() async throws {
-        try await withCPU {
-                    // Test full Encodec model
-                    let config = EncodecConfig()
-                    let model = Encodec(config: config)
+        // Test full Encodec model
+        let config = EncodecConfig()
+        let model = Encodec(config: config)
 
-                    // Input shape: (batch, length, channels)
-                    let audio = MLXRandom.normal([1, 1000, 1])
+        // Input shape: (batch, length, channels)
+        let audio = MLXRandom.normal([1, 1000, 1])
 
-                    // Encode
-                    let (codes, scales) = model.encode(audio, bandwidth: 1.5)
-                    print("Encodec codes shape: \(codes.shape)")
-                    #expect(codes.shape[0] >= 1)
+        // Encode
+        let (codes, scales) = model.encode(audio, bandwidth: 1.5)
+        print("Encodec codes shape: \(codes.shape)")
+        #expect(codes.shape[0] >= 1)
 
-                    // Decode
-                    let decoded = model.decode(codes, scales)
-                    print("Encodec decoded shape: \(decoded.shape)")
-                    #expect(decoded.shape[0] == 1)
-                    #expect(decoded.shape[2] == 1)
-        }
+        // Decode
+        let decoded = model.decode(codes, scales)
+        print("Encodec decoded shape: \(decoded.shape)")
+        #expect(decoded.shape[0] == 1)
+        #expect(decoded.shape[2] == 1)
     }
 }
 
@@ -529,176 +495,158 @@ struct EncodecTests {
 struct DACVAETests {
 
     @Test func testDACVAEConfig() async throws {
-        try await withCPU {
-                    // Test default config
-                    let config = DACVAEConfig()
+        // Test default config
+        let config = DACVAEConfig()
 
-                    #expect(config.encoderDim == 64)
-                    #expect(config.encoderRates == [2, 8, 10, 12])
-                    #expect(config.latentDim == 1024)
-                    #expect(config.decoderDim == 1536)
-                    #expect(config.decoderRates == [12, 10, 8, 2])
-                    #expect(config.codebookDim == 128)
-                    #expect(config.sampleRate == 48000)
-                    #expect(config.hopLength == 1920)  // 2 * 8 * 10 * 12
+        #expect(config.encoderDim == 64)
+        #expect(config.encoderRates == [2, 8, 10, 12])
+        #expect(config.latentDim == 1024)
+        #expect(config.decoderDim == 1536)
+        #expect(config.decoderRates == [12, 10, 8, 2])
+        #expect(config.codebookDim == 128)
+        #expect(config.sampleRate == 48000)
+        #expect(config.hopLength == 1920)  // 2 * 8 * 10 * 12
 
-                    print("DACVAEConfig default values verified")
-        }
+        print("DACVAEConfig default values verified")
     }
 
     @Test func testDACVAESnake1d() async throws {
-        try await withCPU {
-                    // Test Snake activation
-                    let channels = 64
-                    let snake = DACVAESnake1d(channels: channels)
+        // Test Snake activation
+        let channels = 64
+        let snake = DACVAESnake1d(channels: channels)
 
-                    // Input shape: (batch, length, channels)
-                    let input = MLXRandom.normal([1, 100, channels])
-                    let output = snake(input)
+        // Input shape: (batch, length, channels)
+        let input = MLXRandom.normal([1, 100, channels])
+        let output = snake(input)
 
-                    // Output should have same shape
-                    #expect(output.shape == input.shape)
-                    print("DACVAESnake1d output shape: \(output.shape)")
-        }
+        // Output should have same shape
+        #expect(output.shape == input.shape)
+        print("DACVAESnake1d output shape: \(output.shape)")
     }
 
     @Test func testDACVAEWNConv1d() async throws {
-        try await withCPU {
-                    // Test weight-normalized Conv1d
-                    let conv = DACVAEWNConv1d(
-                        inChannels: 32,
-                        outChannels: 64,
-                        kernelSize: 7,
-                        padding: 3
-                    )
+        // Test weight-normalized Conv1d
+        let conv = DACVAEWNConv1d(
+            inChannels: 32,
+            outChannels: 64,
+            kernelSize: 7,
+            padding: 3
+        )
 
-                    // Input shape: (batch, length, channels)
-                    let input = MLXRandom.normal([1, 100, 32])
-                    let output = conv(input)
+        // Input shape: (batch, length, channels)
+        let input = MLXRandom.normal([1, 100, 32])
+        let output = conv(input)
 
-                    #expect(output.shape[0] == 1)
-                    #expect(output.shape[2] == 64)
-                    print("DACVAEWNConv1d output shape: \(output.shape)")
-        }
+        #expect(output.shape[0] == 1)
+        #expect(output.shape[2] == 64)
+        print("DACVAEWNConv1d output shape: \(output.shape)")
     }
 
     @Test func testDACVAEResidualUnit() async throws {
-        try await withCPU {
-                    // Test ResidualUnit
-                    let dim = 64
-                    let unit = DACVAEResidualUnit(dim: dim, dilation: 1)
+        // Test ResidualUnit
+        let dim = 64
+        let unit = DACVAEResidualUnit(dim: dim, dilation: 1)
 
-                    // Input shape: (batch, length, channels)
-                    let input = MLXRandom.normal([1, 100, dim])
-                    let output = unit(input)
+        // Input shape: (batch, length, channels)
+        let input = MLXRandom.normal([1, 100, dim])
+        let output = unit(input)
 
-                    // Output should have similar shape (may differ slightly due to padding)
-                    #expect(output.shape[0] == 1)
-                    #expect(output.shape[2] == dim)
-                    print("DACVAEResidualUnit output shape: \(output.shape)")
-        }
+        // Output should have similar shape (may differ slightly due to padding)
+        #expect(output.shape[0] == 1)
+        #expect(output.shape[2] == dim)
+        print("DACVAEResidualUnit output shape: \(output.shape)")
     }
 
     @Test func testDACVAEEncoderBlock() async throws {
-        try await withCPU {
-                    // Test encoder block
-                    let dim = 128
-                    let block = DACVAEEncoderBlock(dim: dim, stride: 2)
+        // Test encoder block
+        let dim = 128
+        let block = DACVAEEncoderBlock(dim: dim, stride: 2)
 
-                    // Input shape: (batch, length, channels)
-                    let input = MLXRandom.normal([1, 100, dim / 2])
-                    let output = block(input)
+        // Input shape: (batch, length, channels)
+        let input = MLXRandom.normal([1, 100, dim / 2])
+        let output = block(input)
 
-                    #expect(output.shape[0] == 1)
-                    #expect(output.shape[2] == dim)
-                    print("DACVAEEncoderBlock output shape: \(output.shape)")
-        }
+        #expect(output.shape[0] == 1)
+        #expect(output.shape[2] == dim)
+        print("DACVAEEncoderBlock output shape: \(output.shape)")
     }
 
     @Test func testDACVAEEncoder() async throws {
-        try await withCPU {
-                    // Test full encoder
-                    let encoder = DACVAEEncoder(
-                        dModel: 64,
-                        strides: [2, 4],
-                        dLatent: 128
-                    )
+        // Test full encoder
+        let encoder = DACVAEEncoder(
+            dModel: 64,
+            strides: [2, 4],
+            dLatent: 128
+        )
 
-                    // Input shape: (batch, length, 1)
-                    let input = MLXRandom.normal([1, 1000, 1])
-                    let output = encoder(input)
+        // Input shape: (batch, length, 1)
+        let input = MLXRandom.normal([1, 1000, 1])
+        let output = encoder(input)
 
-                    #expect(output.shape[0] == 1)
-                    #expect(output.shape[2] == 128)
-                    print("DACVAEEncoder output shape: \(output.shape)")
-        }
+        #expect(output.shape[0] == 1)
+        #expect(output.shape[2] == 128)
+        print("DACVAEEncoder output shape: \(output.shape)")
     }
 
     @Test func testDACVAEQuantizerProj() async throws {
-        try await withCPU {
-                    // Test quantizer projections
-                    let inProj = DACVAEQuantizerInProj(inDim: 128, outDim: 64)
-                    let outProj = DACVAEQuantizerOutProj(inDim: 64, outDim: 128)
+        // Test quantizer projections
+        let inProj = DACVAEQuantizerInProj(inDim: 128, outDim: 64)
+        let outProj = DACVAEQuantizerOutProj(inDim: 64, outDim: 128)
 
-                    // Input shape: (batch, length, dim)
-                    let input = MLXRandom.normal([1, 50, 128])
-                    let projected = inProj(input)
+        // Input shape: (batch, length, dim)
+        let input = MLXRandom.normal([1, 50, 128])
+        let projected = inProj(input)
 
-                    // Should project to 2*outDim (mean + logvar)
-                    #expect(projected.shape[0] == 1)
-                    #expect(projected.shape[2] == 128)  // 64 * 2
-                    print("DACVAEQuantizerInProj output shape: \(projected.shape)")
+        // Should project to 2*outDim (mean + logvar)
+        #expect(projected.shape[0] == 1)
+        #expect(projected.shape[2] == 128)  // 64 * 2
+        print("DACVAEQuantizerInProj output shape: \(projected.shape)")
 
-                    // Take mean (first half)
-                    let mean = MLXRandom.normal([1, 50, 64])
-                    let unprojected = outProj(mean)
+        // Take mean (first half)
+        let mean = MLXRandom.normal([1, 50, 64])
+        let unprojected = outProj(mean)
 
-                    #expect(unprojected.shape[0] == 1)
-                    #expect(unprojected.shape[2] == 128)
-                    print("DACVAEQuantizerOutProj output shape: \(unprojected.shape)")
-        }
+        #expect(unprojected.shape[0] == 1)
+        #expect(unprojected.shape[2] == 128)
+        print("DACVAEQuantizerOutProj output shape: \(unprojected.shape)")
     }
 
     @Test func testDACVAEModel() async throws {
-        try await withCPU {
-                    // Test full DACVAE model with smaller config for faster testing
-                    let config = DACVAEConfig(
-                        encoderDim: 32,
-                        encoderRates: [2, 4],
-                        latentDim: 64,
-                        decoderDim: 64,
-                        decoderRates: [4, 2],
-                        codebookDim: 32
-                    )
-                    let model = DACVAE(config: config)
+        // Test full DACVAE model with smaller config for faster testing
+        let config = DACVAEConfig(
+            encoderDim: 32,
+            encoderRates: [2, 4],
+            latentDim: 64,
+            decoderDim: 64,
+            decoderRates: [4, 2],
+            codebookDim: 32
+        )
+        let model = DACVAE(config: config)
 
-                    // Input shape: (batch, 1, length) for callAsFunction
-                    let audio = MLXRandom.normal([1, 1, 800])
+        // Input shape: (batch, 1, length) for callAsFunction
+        let audio = MLXRandom.normal([1, 1, 800])
 
-                    // Encode to codebook space
-                    let encoded = model(audio)
-                    print("DACVAE encoded shape: \(encoded.shape)")
-                    #expect(encoded.shape[0] == 1)
-                    #expect(encoded.shape[1] == config.codebookDim)
+        // Encode to codebook space
+        let encoded = model(audio)
+        print("DACVAE encoded shape: \(encoded.shape)")
+        #expect(encoded.shape[0] == 1)
+        #expect(encoded.shape[1] == config.codebookDim)
 
-                    // Decode back to audio
-                    let decoded = model.decode(encoded)
-                    print("DACVAE decoded shape: \(decoded.shape)")
-                    #expect(decoded.shape[0] == 1)
-                    #expect(decoded.shape[2] == 1)
-        }
+        // Decode back to audio
+        let decoded = model.decode(encoded)
+        print("DACVAE decoded shape: \(decoded.shape)")
+        #expect(decoded.shape[0] == 1)
+        #expect(decoded.shape[2] == 1)
     }
 
     @Test func testDACVAEHopLength() async throws {
-        try await withCPU {
-                    // Test hop length calculation
-                    let config1 = DACVAEConfig(encoderRates: [2, 4, 8])
-                    #expect(config1.hopLength == 64)  // 2 * 4 * 8
+        // Test hop length calculation
+        let config1 = DACVAEConfig(encoderRates: [2, 4, 8])
+        #expect(config1.hopLength == 64)  // 2 * 4 * 8
 
-                    let config2 = DACVAEConfig(encoderRates: [2, 8, 10, 12])
-                    #expect(config2.hopLength == 1920)  // 2 * 8 * 10 * 12
+        let config2 = DACVAEConfig(encoderRates: [2, 8, 10, 12])
+        #expect(config2.hopLength == 1920)  // 2 * 8 * 10 * 12
 
-                    print("DACVAEConfig hopLength verified")
-        }
+        print("DACVAEConfig hopLength verified")
     }
 }
