@@ -178,3 +178,39 @@ public struct LevenshteinDeduplicationStrategy: DeduplicationStrategy {
         return prev[n]
     }
 }
+
+/// Timestamp-based deduplication strategy
+/// Filters words based on their end timestamp relative to the overlap boundary
+public struct TimestampDeduplicationStrategy: DeduplicationStrategy {
+    public var name: String { "timestamp" }
+
+    private let overlapEnd: TimeInterval
+
+    public init(overlapEnd: TimeInterval) {
+        self.overlapEnd = overlapEnd
+    }
+
+    public func deduplicate(
+        currentText: String,
+        previousEndWords: [String],
+        currentWords: [WordTimestamp]?
+    ) -> DeduplicationResult {
+        guard let words = currentWords, !words.isEmpty else {
+            return DeduplicationResult(
+                text: currentText,
+                wordsRemoved: 0,
+                method: "timestamp-fallback"
+            )
+        }
+
+        let filteredWords = words.filter { $0.end > overlapEnd }
+        let wordsRemoved = words.count - filteredWords.count
+        let deduplicatedText = filteredWords.map(\.word).joined(separator: " ")
+
+        return DeduplicationResult(
+            text: deduplicatedText,
+            wordsRemoved: wordsRemoved,
+            method: name
+        )
+    }
+}

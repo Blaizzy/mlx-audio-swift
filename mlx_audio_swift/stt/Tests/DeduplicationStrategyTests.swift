@@ -174,4 +174,178 @@ struct DeduplicationStrategyTests {
         #expect(result.text == "how are you")
         #expect(result.wordsRemoved == 1)
     }
+
+    // MARK: - TimestampDeduplicationStrategy Tests
+
+    @Test func testTimestampDeduplication() {
+        let strategy = TimestampDeduplicationStrategy(overlapEnd: 5.0)
+        let words: [WordTimestamp] = [
+            WordTimestamp(word: "hello", start: 4.5, end: 4.8, confidence: 0.9),
+            WordTimestamp(word: "world", start: 4.9, end: 5.2, confidence: 0.9),
+            WordTimestamp(word: "how", start: 5.3, end: 5.5, confidence: 0.9),
+        ]
+        let result = strategy.deduplicate(
+            currentText: "hello world how",
+            previousEndWords: [],
+            currentWords: words
+        )
+        #expect(result.text == "world how")
+        #expect(result.wordsRemoved == 1)
+        #expect(result.method == "timestamp")
+    }
+
+    @Test func testTimestampDeduplicationNoWordsRemoved() {
+        let strategy = TimestampDeduplicationStrategy(overlapEnd: 4.0)
+        let words: [WordTimestamp] = [
+            WordTimestamp(word: "hello", start: 4.5, end: 4.8, confidence: 0.9),
+            WordTimestamp(word: "world", start: 4.9, end: 5.2, confidence: 0.9),
+        ]
+        let result = strategy.deduplicate(
+            currentText: "hello world",
+            previousEndWords: [],
+            currentWords: words
+        )
+        #expect(result.text == "hello world")
+        #expect(result.wordsRemoved == 0)
+        #expect(result.method == "timestamp")
+    }
+
+    @Test func testTimestampDeduplicationAllWordsRemoved() {
+        let strategy = TimestampDeduplicationStrategy(overlapEnd: 6.0)
+        let words: [WordTimestamp] = [
+            WordTimestamp(word: "hello", start: 4.5, end: 4.8, confidence: 0.9),
+            WordTimestamp(word: "world", start: 4.9, end: 5.2, confidence: 0.9),
+        ]
+        let result = strategy.deduplicate(
+            currentText: "hello world",
+            previousEndWords: [],
+            currentWords: words
+        )
+        #expect(result.text == "")
+        #expect(result.wordsRemoved == 2)
+        #expect(result.method == "timestamp")
+    }
+
+    @Test func testTimestampDeduplicationFallbackWhenNoTimestamps() {
+        let strategy = TimestampDeduplicationStrategy(overlapEnd: 5.0)
+        let result = strategy.deduplicate(
+            currentText: "hello world",
+            previousEndWords: [],
+            currentWords: nil
+        )
+        #expect(result.text == "hello world")
+        #expect(result.wordsRemoved == 0)
+        #expect(result.method == "timestamp-fallback")
+    }
+
+    @Test func testTimestampDeduplicationFallbackWhenEmptyTimestamps() {
+        let strategy = TimestampDeduplicationStrategy(overlapEnd: 5.0)
+        let result = strategy.deduplicate(
+            currentText: "hello world",
+            previousEndWords: [],
+            currentWords: []
+        )
+        #expect(result.text == "hello world")
+        #expect(result.wordsRemoved == 0)
+        #expect(result.method == "timestamp-fallback")
+    }
+
+    @Test func testTimestampStrategyName() {
+        let strategy = TimestampDeduplicationStrategy(overlapEnd: 5.0)
+        #expect(strategy.name == "timestamp")
+    }
+
+    @Test func testTimestampDeduplicationExactBoundary() {
+        let strategy = TimestampDeduplicationStrategy(overlapEnd: 5.0)
+        let words: [WordTimestamp] = [
+            WordTimestamp(word: "hello", start: 4.5, end: 5.0, confidence: 0.9),
+            WordTimestamp(word: "world", start: 5.0, end: 5.5, confidence: 0.9),
+        ]
+        let result = strategy.deduplicate(
+            currentText: "hello world",
+            previousEndWords: [],
+            currentWords: words
+        )
+        // word.end > overlapEnd means end=5.0 is NOT > 5.0, so "hello" is removed
+        #expect(result.text == "world")
+        #expect(result.wordsRemoved == 1)
+    }
+
+    // MARK: - CompositeDeduplicationStrategy Tests
+
+    @Test func testCompositeUsesTimestampsWhenAvailable() {
+        let strategy = CompositeDeduplicationStrategy(overlapEnd: 5.0)
+        let words = [
+            WordTimestamp(word: "hello", start: 4.5, end: 4.8, confidence: 0.9),
+            WordTimestamp(word: "world", start: 5.1, end: 5.4, confidence: 0.9)
+        ]
+        let result = strategy.deduplicate(
+            currentText: "hello world",
+            previousEndWords: ["hello"],
+            currentWords: words
+        )
+        #expect(result.method == "timestamp")
+    }
+
+    @Test func testCompositeFallsBackToLevenshtein() {
+        let strategy = CompositeDeduplicationStrategy(overlapEnd: 5.0)
+        let result = strategy.deduplicate(
+            currentText: "world how are you",
+            previousEndWords: ["hello", "world"],
+            currentWords: nil
+        )
+        #expect(result.text == "how are you")
+        #expect(result.method == "levenshtein")
+    }
+
+    @Test func testCompositeStrategyName() {
+        let strategy = CompositeDeduplicationStrategy()
+        #expect(strategy.name == "composite")
+    }
+
+    @Test func testCompositeFallsBackToNoOpWhenNoPreviousWords() {
+        let strategy = CompositeDeduplicationStrategy()
+        let result = strategy.deduplicate(
+            currentText: "hello world",
+            previousEndWords: [],
+            currentWords: nil
+        )
+        #expect(result.text == "hello world")
+        #expect(result.method == "noop")
+    }
+
+    @Test func testCompositeWithoutOverlapEndUsesLevenshtein() {
+        let strategy = CompositeDeduplicationStrategy(overlapEnd: nil)
+        let words = [
+            WordTimestamp(word: "hello", start: 4.5, end: 4.8, confidence: 0.9),
+            WordTimestamp(word: "world", start: 5.1, end: 5.4, confidence: 0.9)
+        ]
+        let result = strategy.deduplicate(
+            currentText: "world how are you",
+            previousEndWords: ["hello", "world"],
+            currentWords: words
+        )
+        #expect(result.method == "levenshtein")
+    }
+
+    @Test func testCompositeWithEmptyTimestampsUsesLevenshtein() {
+        let strategy = CompositeDeduplicationStrategy(overlapEnd: 5.0)
+        let result = strategy.deduplicate(
+            currentText: "world how are you",
+            previousEndWords: ["hello", "world"],
+            currentWords: []
+        )
+        #expect(result.method == "levenshtein")
+    }
+
+    @Test func testCompositeMaxLookbackParameter() {
+        let strategy = CompositeDeduplicationStrategy(overlapEnd: nil, maxLookback: 2)
+        let result = strategy.deduplicate(
+            currentText: "world today",
+            previousEndWords: ["one", "two", "three", "hello", "world"],
+            currentWords: nil
+        )
+        #expect(result.text == "today")
+        #expect(result.wordsRemoved == 1)
+    }
 }
