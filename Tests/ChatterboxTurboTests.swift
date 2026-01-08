@@ -19,8 +19,19 @@ struct ChatterboxTurboTextUtilsTests {
         #expect(ChatterboxTurboTextUtils.puncNorm("hello world") == "Hello world.")
     }
 
+    @Test func testPuncNormKeepsExistingPunctuation() async throws {
+        #expect(ChatterboxTurboTextUtils.puncNorm("Hello world!") .hasSuffix("!"))
+        #expect(ChatterboxTurboTextUtils.puncNorm("Hello world?") .hasSuffix("?"))
+        #expect(ChatterboxTurboTextUtils.puncNorm("Hello world.") .hasSuffix("."))
+    }
+
     @Test func testPuncNormWhitespaceCollapse() async throws {
         #expect(ChatterboxTurboTextUtils.puncNorm("  hello   world  ") == "hello world.")
+    }
+
+    @Test func testPuncNormRemovesMultipleSpaces() async throws {
+        let result = ChatterboxTurboTextUtils.puncNorm("Hello    world")
+        #expect(!result.contains("  "))
     }
 
     @Test func testPuncNormReplacements() async throws {
@@ -31,6 +42,18 @@ struct ChatterboxTurboTextUtilsTests {
 }
 
 struct ChatterboxTurboConfigTests {
+    @Test func testT3Defaults() async throws {
+        let config = T3Config()
+
+        #expect(config.textTokensDictSize == 50276)
+        #expect(config.speechTokensDictSize == 6563)
+        #expect(config.llamaConfigName == "GPT2_medium")
+        #expect(config.speakerEmbedSize == 256)
+        #expect(config.speechCondPromptLen == 375)
+        #expect(config.emotionAdv == false)
+        #expect(config.usePerceiverResampler == false)
+    }
+
     @Test func testT3TurboDefaults() async throws {
         let config = T3Config.turbo()
 
@@ -42,6 +65,14 @@ struct ChatterboxTurboConfigTests {
         #expect(config.nChannels == 1024)
     }
 
+    @Test func testT3IsMultilingual() async throws {
+        let turbo = T3Config.turbo()
+        #expect(turbo.isMultilingual == false)
+
+        let multilingual = T3Config(textTokensDictSize: 2454)
+        #expect(multilingual.isMultilingual == true)
+    }
+
     @Test func testGPT2MediumDefaults() async throws {
         let config = GPT2Config.medium
 
@@ -50,6 +81,69 @@ struct ChatterboxTurboConfigTests {
         #expect(config.nEmbeddings == 1024)
         #expect(config.nLayer == 24)
         #expect(config.nHead == 16)
+    }
+}
+
+struct ChatterboxTurboSanitizeTests {
+    @Test func testSanitizeRoutesPrefixedWeights() async throws {
+        let model = ChatterboxTurboTTS()
+
+        let weights: [String: MLXArray] = [
+            "ve.lstm.weight": MLXArray.zeros([2, 2], type: Float.self),
+            "t3.tfmr.weight": MLXArray.zeros([2, 2], type: Float.self),
+            "s3gen.flow.weight": MLXArray.zeros([2, 2], type: Float.self),
+        ]
+
+        let sanitized = model.sanitize(weights: weights)
+
+        #expect(sanitized.keys.contains("ve.lstm.weight"))
+        #expect(sanitized.keys.contains("t3.tfmr.weight"))
+        #expect(sanitized.keys.contains("s3gen.flow.weight"))
+    }
+
+    @Test func testSanitizeKeepsOtherWeights() async throws {
+        let model = ChatterboxTurboTTS()
+
+        let weights: [String: MLXArray] = [
+            "ve.lstm.weight": MLXArray.zeros([2, 2], type: Float.self),
+            "unknown.param": MLXArray.zeros([1, 1], type: Float.self),
+        ]
+
+        let sanitized = model.sanitize(weights: weights)
+
+        #expect(sanitized.keys.contains("ve.lstm.weight"))
+        #expect(sanitized.keys.contains("unknown.param"))
+    }
+}
+
+struct ChatterboxTurboConditionalsTests {
+    @Test func testConditionalsInit() async throws {
+        let t3Cond = T3Cond(
+            speakerEmb: MLXArray.zeros([1, 256], type: Float.self),
+            clapEmb: nil,
+            condPromptSpeechTokens: MLXArray.zeros([1, 375], type: Int32.self),
+            condPromptSpeechEmb: nil,
+            emotionAdv: nil
+        )
+
+        let genRef = S3GenReference(
+            promptToken: MLXArray.zeros([1, 1], type: Int32.self),
+            promptTokenLen: MLXArray([Int32(1)]),
+            promptFeat: MLXArray.zeros([1, 80, 1], type: Float.self),
+            promptFeatLen: MLXArray([Int32(1)]),
+            embedding: MLXArray.zeros([1, 256], type: Float.self)
+        )
+
+        let conds = ChatterboxTurboConditionals(t3: t3Cond, gen: genRef)
+
+        #expect(conds.t3.speakerEmb.shape == [1, 256])
+        #expect(conds.gen.embedding.shape == [1, 256])
+    }
+}
+
+struct ChatterboxTurboModelAliasTests {
+    @Test func testModelAlias() async throws {
+        #expect(Model.self == ChatterboxTurboTTS.self)
     }
 }
 

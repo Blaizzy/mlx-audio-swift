@@ -16,6 +16,7 @@ import MLXAudioCore
 public typealias ChatterboxTurboError = AudioGenerationError
 public typealias ChatterboxTurboGeneration = AudioGeneration
 public typealias ChatterboxTurboGenerationInfo = AudioGenerationInfo
+public typealias Model = ChatterboxTurboTTS
 
 struct ChatterboxTurboConditionals {
     let t3: T3Cond
