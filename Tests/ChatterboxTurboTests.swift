@@ -6,6 +6,7 @@
 //
 
 import Testing
+import MLX
 
 @testable import MLXAudioTTS
 
@@ -49,5 +50,55 @@ struct ChatterboxTurboConfigTests {
         #expect(config.nEmbeddings == 1024)
         #expect(config.nLayer == 24)
         #expect(config.nHead == 16)
+    }
+}
+
+struct ChatterboxTurboModelTests {
+    @Test func testT3CondEncShape() {
+        let hp = T3Config.turbo()
+        let condEnc = T3CondEnc(hp)
+        let speakerEmb = MLXArray.ones([1, hp.speakerEmbedSize])
+        let cond = T3Cond(
+            speakerEmb: speakerEmb,
+            clapEmb: nil,
+            condPromptSpeechTokens: nil,
+            condPromptSpeechEmb: nil,
+            emotionAdv: nil
+        )
+
+        let output = condEnc(cond)
+        #expect(output.shape == [1, 1, hp.nChannels])
+    }
+
+    @Test func testGPT2ModelOutputShape() {
+        let config = GPT2Config(
+            vocabSize: 16,
+            nPositions: 8,
+            nEmbeddings: 8,
+            nLayer: 2,
+            nHead: 2,
+            nInner: nil,
+            activationFunction: "gelu_new",
+            residPdrop: 0.1,
+            embdPdrop: 0.1,
+            attnPdrop: 0.1,
+            layerNormEpsilon: 1e-5
+        )
+
+        let model = GPT2Model(config)
+        let inputIds = MLXArray([[Int32(1), 2, 3]])
+        let (hiddenStates, cache) = model(inputIds: inputIds, inputsEmbeds: nil, cache: nil)
+
+        #expect(hiddenStates.shape == [1, 3, 8])
+        #expect(cache.count == 2)
+    }
+
+    @Test func testVoiceEncoderOutputShape() {
+        let encoder = VoiceEncoder()
+        let hp = VoiceEncConfig()
+        let mels = MLXArray.zeros([1, hp.vePartialFrames, hp.numMels], type: Float.self)
+        let output = encoder(mels)
+
+        #expect(output.shape == [1, hp.speakerEmbedSize])
     }
 }
