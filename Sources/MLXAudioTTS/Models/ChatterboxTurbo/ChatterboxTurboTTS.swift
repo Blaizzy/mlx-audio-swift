@@ -591,6 +591,34 @@ public final class ChatterboxTurboTTS: Module {
 }
 
 private func loadChatterboxWeights(from directory: URL, meanflow: Bool) throws -> [String: MLXArray] {
+    let mergedURL = directory.appendingPathComponent("model.safetensors")
+    if FileManager.default.fileExists(atPath: mergedURL.path) {
+        var weights = try MLX.loadArrays(url: mergedURL)
+
+        let hasPrefixedKeys = weights.keys.contains { key in
+            key.hasPrefix("t3.") || key.hasPrefix("s3gen.") || key.hasPrefix("ve.")
+        }
+        if !hasPrefixedKeys {
+            throw ChatterboxTurboError.invalidInput("model.safetensors missing expected prefixes (t3./s3gen./ve.)")
+        }
+
+        let hasRawVoiceEncoderKeys = weights.keys.contains { key in
+            key == "proj.weight"
+                || key == "proj.bias"
+                || key.hasPrefix("lstm.weight_")
+                || key.hasPrefix("lstm.bias_")
+        }
+        if hasRawVoiceEncoderKeys {
+            let mappedVeWeights = mapVoiceEncoderWeights(weights)
+            for key in weights.keys where key.hasPrefix("lstm.") || key.hasPrefix("proj.") {
+                weights.removeValue(forKey: key)
+            }
+            weights.merge(mappedVeWeights) { _, new in new }
+        }
+
+        return weights
+    }
+
     let t3URL = directory.appendingPathComponent("t3_turbo_v1.safetensors")
     let veURL = directory.appendingPathComponent("ve.safetensors")
     let s3genName = meanflow ? "s3gen_meanflow.safetensors" : "s3gen.safetensors"
