@@ -7,6 +7,8 @@
 
 import Testing
 import MLX
+import Hub
+import Foundation
 
 @testable import MLXAudioTTS
 
@@ -307,6 +309,36 @@ struct ChatterboxTurboTokenizerTests {
         let ids = tokenizer.encode(text: text)
         let expected = [21063, 3081, 2198, 13, 8314, 428, 2128, 3288, 30]
         #expect(ids == expected)
+    }
+}
+
+struct ChatterboxTurboMergedSafetensorsTests {
+    @Test func testFromPretrainedMergedSafetensorsIfCached() async throws {
+        guard let repoID = Repo.ID(rawValue: "mlx-community/Chatterbox-Turbo-TTS-4bit") else {
+            Issue.record("Invalid repo ID for merged safetensors test.")
+            return
+        }
+
+        let cache = HubCache.default
+        guard let cachedConfig = cache.cachedFilePath(
+            repo: repoID,
+            kind: .model,
+            revision: "main",
+            filename: "config.json"
+        ) else {
+            Issue.record("Skipping merged safetensors test; HF cache not present.")
+            return
+        }
+
+        let modelDir = cachedConfig.deletingLastPathComponent()
+        let merged = modelDir.appendingPathComponent("model.safetensors")
+        guard FileManager.default.fileExists(atPath: merged.path) else {
+            Issue.record("Skipping merged safetensors test; model.safetensors not cached.")
+            return
+        }
+
+        let model = try await ChatterboxTurboTTS.fromPretrained(repoID.description)
+        #expect(model.sampleRate == S3GenSampleRate)
     }
 }
 
