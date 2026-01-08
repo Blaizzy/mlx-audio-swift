@@ -1,5 +1,6 @@
 import Foundation
 import MLX
+import MLXFast
 import MLXNN
 
 /// Multi-head attention with optional cross-attention weight capture for Whisper STT.
@@ -74,25 +75,34 @@ public class WhisperMultiHeadAttention: Module {
         let kReshaped = k.reshaped([batchSize, kvSeq, nHead, headDim]).transposed(0, 2, 1, 3)
         let vReshaped = v.reshaped([batchSize, kvSeq, nHead, headDim]).transposed(0, 2, 1, 3)
 
-        // Scaled dot-product attention
         let scale = Float(1.0 / sqrt(Double(headDim)))
-        var scores = matmul(qReshaped, kReshaped.transposed(0, 1, 3, 2)) * scale
+        let attended: MLXArray
+        let returnWeights: MLXArray?
 
-        // Apply mask if provided
-        if let mask = mask {
-            scores = scores + mask.asType(scores.dtype)
+        if xa != nil {
+            // Cross-attention: use manual attention to capture weights for AlignAtt streaming
+            var scores = matmul(qReshaped, kReshaped.transposed(0, 1, 3, 2)) * scale
+            if let mask = mask {
+                scores = scores + mask.asType(scores.dtype)
+            }
+            let weights = softmax(scores, axis: -1)
+            attended = matmul(weights, vReshaped)
+            returnWeights = weights
+        } else {
+            // Self-attention: use fused kernel (30-50% faster)
+            attended = MLXFast.scaledDotProductAttention(
+                queries: qReshaped,
+                keys: kReshaped,
+                values: vReshaped,
+                scale: scale,
+                mask: mask
+            )
+            returnWeights = nil
         }
-
-        let weights = softmax(scores, axis: -1)
-        let attended = matmul(weights, vReshaped)
 
         // Reshape back: [batch, nHead, seq, headDim] -> [batch, seq, nState]
         let outputReshaped = attended.transposed(0, 2, 1, 3).reshaped([batchSize, qSeq, nState])
         let result = out(outputReshaped)
-
-        // Return cross-attention weights for AlignAtt streaming
-        // Only cross-attention (xa != nil) returns weights
-        let returnWeights = xa != nil ? weights : nil
 
         return (result, returnWeights)
     }
