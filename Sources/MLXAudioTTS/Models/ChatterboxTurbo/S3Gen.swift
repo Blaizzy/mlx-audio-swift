@@ -328,6 +328,7 @@ final class S3Token2Wav: S3Token2Mel {
         let paramKeys = Set(flattenedParams.map { $0.0 })
         let expectedShapes = Dictionary(uniqueKeysWithValues: flattenedParams.map { ($0.0, $0.1.shape) })
         let paramValues = Dictionary(uniqueKeysWithValues: flattenedParams.map { ($0.0, $0.1) })
+        let hasContiguousCondnet = weights.keys.contains { $0.contains("condnet.1.") }
         var pending: [(String, MLXArray)] = []
         var weightNorm: [String: (g: MLXArray?, v: MLXArray?)] = [:]
 
@@ -432,15 +433,17 @@ final class S3Token2Wav: S3Token2Mel {
                 index += 1
             }
 
-            let condnetMap: [String: String] = ["0": "0", "2": "1", "4": "2", "6": "3", "8": "4"]
-            index = 0
-            while index + 1 < components.count {
-                if components[index] == "condnet",
-                   let mapped = condnetMap[components[index + 1]]
-                {
-                    components[index + 1] = mapped
+            if !hasContiguousCondnet {
+                let condnetMap: [String: String] = ["0": "0", "2": "1", "4": "2", "6": "3", "8": "4"]
+                index = 0
+                while index + 1 < components.count {
+                    if components[index] == "condnet",
+                       let mapped = condnetMap[components[index + 1]]
+                    {
+                        components[index + 1] = mapped
+                    }
+                    index += 1
                 }
-                index += 1
             }
 
             index = 0
@@ -451,8 +454,13 @@ final class S3Token2Wav: S3Token2Mel {
                 {
                     if components[index + 2] == "0" {
                         components[index + 1] = "conv"
-                        components[index + 2] = "conv"
-                    } else if components[index + 2] == "2" {
+                        let nextIndex = index + 3
+                        if components.indices.contains(nextIndex), components[nextIndex] == "conv" {
+                            components.remove(at: index + 2)
+                        } else {
+                            components[index + 2] = "conv"
+                        }
+                    } else if components[index + 2] == "1" || components[index + 2] == "2" {
                         components[index + 1] = "norm"
                         components.remove(at: index + 2)
                     }

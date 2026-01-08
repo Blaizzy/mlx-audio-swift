@@ -61,6 +61,9 @@ public final class ChatterboxTurboTTS: Module {
         let expectedShapes = Dictionary(uniqueKeysWithValues: parameters().flattened().map { ($0.0, $0.1.shape) })
 
         for (key, value) in weights {
+            if key.hasPrefix("ve.similarity_") {
+                continue
+            }
             if key.hasPrefix("gen.") {
                 continue
             }
@@ -82,8 +85,11 @@ public final class ChatterboxTurboTTS: Module {
                     || key.contains("mlp.c_fc.weight")
                     || key.contains("mlp.c_proj.weight"))
             {
-                sanitized[key] = value.transposed()
-                continue
+                let base = String(key.dropLast(".weight".count))
+                if weights["\(base).scales"] == nil {
+                    sanitized[key] = value.transposed()
+                    continue
+                }
             }
             sanitized[key] = value
         }
@@ -169,11 +175,12 @@ public final class ChatterboxTurboTTS: Module {
                 let promptToken = genMap["prompt_token"],
                 let promptTokenLen = genMap["prompt_token_len"],
                 let promptFeat = genMap["prompt_feat"],
-                let promptFeatLen = genMap["prompt_feat_len"],
                 let embedding = genMap["embedding"]
             else {
                 throw ChatterboxTurboError.invalidInput("conds.safetensors missing S3Gen reference keys")
             }
+            let promptFeatLen = genMap["prompt_feat_len"]
+                ?? MLXArray([Int32(promptFeat.shape.last ?? 0)])
 
             let genRef = S3GenReference(
                 promptToken: promptToken,
@@ -304,6 +311,14 @@ public final class ChatterboxTurboTTS: Module {
 
         let weights = try loadChatterboxWeights(from: modelDir, meanflow: true)
         let sanitized = model.sanitize(weights: weights)
+        if let quantization = loadChatterboxQuantization(from: modelDir) {
+            quantize(model: model) { path, _ in
+                if weights["\(path).scales"] != nil {
+                    return (quantization.groupSize, quantization.bits, quantization.mode)
+                }
+                return nil
+            }
+        }
         try model.update(parameters: ModuleParameters.unflattened(sanitized), verify: [.all])
         eval(model)
 
@@ -648,6 +663,39 @@ private func loadChatterboxWeights(from directory: URL, meanflow: Bool) throws -
     weights.merge(mappedVeWeights) { _, new in new }
 
     return weights
+}
+
+private struct ChatterboxTurboQuantization {
+    let bits: Int
+    let groupSize: Int
+    let mode: QuantizationMode
+}
+
+private struct ChatterboxTurboConfig: Decodable {
+    struct Quantization: Decodable {
+        let bits: Int
+        let groupSize: Int
+
+        private enum CodingKeys: String, CodingKey {
+            case bits
+            case groupSize = "group_size"
+        }
+    }
+
+    let quantization: Quantization?
+}
+
+private func loadChatterboxQuantization(from directory: URL) -> ChatterboxTurboQuantization? {
+    let configURL = directory.appendingPathComponent("config.json")
+    guard let data = try? Data(contentsOf: configURL) else {
+        return nil
+    }
+    guard let config = try? JSONDecoder().decode(ChatterboxTurboConfig.self, from: data),
+          let quant = config.quantization
+    else {
+        return nil
+    }
+    return ChatterboxTurboQuantization(bits: quant.bits, groupSize: quant.groupSize, mode: .affine)
 }
 
 private func mapVoiceEncoderWeights(_ weights: [String: MLXArray]) -> [String: MLXArray] {

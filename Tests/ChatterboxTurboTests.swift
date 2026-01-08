@@ -7,7 +7,7 @@
 
 import Testing
 import MLX
-import Hub
+import Foundation
 import Foundation
 
 @testable import MLXAudioTTS
@@ -314,30 +314,29 @@ struct ChatterboxTurboTokenizerTests {
 
 struct ChatterboxTurboMergedSafetensorsTests {
     @Test func testFromPretrainedMergedSafetensorsIfCached() async throws {
-        guard let repoID = Repo.ID(rawValue: "mlx-community/Chatterbox-Turbo-TTS-4bit") else {
-            Issue.record("Invalid repo ID for merged safetensors test.")
-            return
-        }
+        let repo = "mlx-community/Chatterbox-Turbo-TTS-4bit"
+        let cacheRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache")
+            .appendingPathComponent("huggingface")
+            .appendingPathComponent("hub")
+            .appendingPathComponent("models--mlx-community--Chatterbox-Turbo-TTS-4bit")
 
-        let cache = HubCache.default
-        guard let cachedConfig = cache.cachedFilePath(
-            repo: repoID,
-            kind: .model,
-            revision: "main",
-            filename: "config.json"
-        ) else {
+        guard FileManager.default.fileExists(atPath: cacheRoot.path) else {
             Issue.record("Skipping merged safetensors test; HF cache not present.")
             return
         }
 
-        let modelDir = cachedConfig.deletingLastPathComponent()
-        let merged = modelDir.appendingPathComponent("model.safetensors")
-        guard FileManager.default.fileExists(atPath: merged.path) else {
+        let snapshots = cacheRoot.appendingPathComponent("snapshots")
+        let contents = (try? FileManager.default.contentsOfDirectory(at: snapshots, includingPropertiesForKeys: nil)) ?? []
+        let hasMerged = contents.contains { url in
+            FileManager.default.fileExists(atPath: url.appendingPathComponent("model.safetensors").path)
+        }
+        guard hasMerged else {
             Issue.record("Skipping merged safetensors test; model.safetensors not cached.")
             return
         }
 
-        let model = try await ChatterboxTurboTTS.fromPretrained(repoID.description)
+        let model = try await ChatterboxTurboTTS.fromPretrained(repo)
         #expect(model.sampleRate == S3GenSampleRate)
     }
 }

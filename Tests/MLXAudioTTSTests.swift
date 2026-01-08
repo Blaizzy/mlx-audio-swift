@@ -156,6 +156,42 @@ struct ChatterboxTurboTTSTests {
         try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
         print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
     }
+
+    @Test func testChatterboxTurboGenerateMergedModel() async throws {
+        let repo = "mlx-community/Chatterbox-Turbo-TTS-4bit"
+        let cacheRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache")
+            .appendingPathComponent("huggingface")
+            .appendingPathComponent("hub")
+            .appendingPathComponent("models--mlx-community--Chatterbox-Turbo-TTS-4bit")
+
+        guard FileManager.default.fileExists(atPath: cacheRoot.path) else {
+            Issue.record("Skipping merged model test; HF cache missing.")
+            return
+        }
+
+        let snapshots = cacheRoot.appendingPathComponent("snapshots")
+        let contents = (try? FileManager.default.contentsOfDirectory(at: snapshots, includingPropertiesForKeys: nil)) ?? []
+        let hasMerged = contents.contains { url in
+            FileManager.default.fileExists(atPath: url.appendingPathComponent("model.safetensors").path)
+        }
+        guard hasMerged else {
+            Issue.record("Skipping merged model test; model.safetensors missing.")
+            return
+        }
+
+        let model = try await ChatterboxTurboTTS.fromPretrained(repo)
+        let audio = try model.generate(
+            text: "Quick quality check. Does this sound natural?",
+            splitPattern: nil,
+            maxTokens: 200
+        )
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chatterbox_turbo_mlx_4bit_output.wav")
+        try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+        print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
+    }
 }
 
 
