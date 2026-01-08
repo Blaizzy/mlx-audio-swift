@@ -15,7 +15,7 @@ let S3TokenHop = 640
 let S3TokenRate = 25
 let S3SpeechVocabSize = 6_561
 
-private enum S3MelScale {
+enum S3MelScale {
     case htk
     case slaney
 }
@@ -56,7 +56,7 @@ private func s3MelToHz(_ mel: Float, melScale: S3MelScale) -> Float {
     }
 }
 
-private func s3MelFilters(
+func s3MelFilters(
     sampleRate: Int,
     nFft: Int,
     nMels: Int,
@@ -156,12 +156,12 @@ func s3MakeNonPadMask(lengths: MLXArray, maxLen: Int = 0) -> MLXArray {
         maxLenVal = Int(lengths.max().item(Int32.self))
     }
 
-    let seqRange = MLXArray.arange(start: 0, stop: maxLenVal, dtype: .int32)
+    let seqRange = MLXArray.arange(0, maxLenVal, dtype: .int32)
     let seqRangeExpand = seqRange.expandedDimensions(axis: 0).broadcasted(to: [batch, maxLenVal])
     let seqLengthExpand = lengths.expandedDimensions(axis: -1)
     let mask = seqRangeExpand .>= seqLengthExpand
-    let inverted = MLXArray(Int32(1)) - mask.asType(.int32)
-    return inverted.asType(.bool)
+    let inverted = MLXArray(Int32(1)) - mask.asType(DType.int32)
+    return inverted.asType(DType.bool)
 }
 
 func s3MaskToBias(_ mask: MLXArray, dtype: DType = .float32) -> MLXArray {

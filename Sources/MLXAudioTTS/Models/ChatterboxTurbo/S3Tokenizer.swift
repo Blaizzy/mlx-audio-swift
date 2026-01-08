@@ -25,9 +25,9 @@ private func precomputeFreqsCis(
     theta: Float = 10_000.0,
     scaling: Float? = nil
 ) -> (MLXArray, MLXArray) {
-    let inv = MLXArray.arange(start: 0.0, stop: Float(dim), step: 2.0, dtype: .float32)
+    let inv = MLXArray.arange(0.0, Double(dim), step: 2.0, dtype: .float32)
     let freqs = MLXArray(Float(1.0)) / MLX.pow(MLXArray(theta), inv / Float(dim))
-    var t = MLXArray.arange(start: 0.0, stop: Float(end), step: 1.0, dtype: .float32)
+    var t = MLXArray.arange(0.0, Double(end), step: 1.0, dtype: .float32)
     if let scaling {
         t = t * scaling
     }
@@ -65,7 +65,7 @@ final class GELULayer: Module, UnaryLayer {
     }
 }
 
-final class S3MultiHeadAttention: Module {
+class S3MultiHeadAttention: Module {
     let nHead: Int
 
     @ModuleInfo(key: "query") var query: Linear
@@ -120,14 +120,14 @@ final class S3MultiHeadAttention: Module {
 }
 
 final class S3FSMNMultiHeadAttention: S3MultiHeadAttention {
-    @ModuleInfo(key: "fsmn_block") var fsmnBlock: Conv1d
+    @ModuleInfo(key: "fsmn_block") var fsmnBlock: MLXNN.Conv1d
     private let leftPadding: Int
     private let rightPadding: Int
 
     init(nState: Int, nHead: Int, kernelSize: Int = 31) {
         self.leftPadding = (kernelSize - 1) / 2
         self.rightPadding = kernelSize - 1 - leftPadding
-        self._fsmnBlock.wrappedValue = Conv1d(
+        self._fsmnBlock.wrappedValue = MLXNN.Conv1d(
             inputChannels: nState,
             outputChannels: nState,
             kernelSize: kernelSize,
@@ -208,13 +208,13 @@ final class S3FSMNMultiHeadAttention: S3MultiHeadAttention {
 final class S3ResidualAttentionBlock: Module {
     @ModuleInfo(key: "attn") var attn: S3FSMNMultiHeadAttention
     @ModuleInfo(key: "attn_ln") var attnLn: LayerNorm
-    @ModuleInfo(key: "mlp") var mlp: Sequential
+    @ModuleInfo(key: "mlp") var mlp: MLXNN.Sequential
     @ModuleInfo(key: "mlp_ln") var mlpLn: LayerNorm
 
     init(nState: Int, nHead: Int, kernelSize: Int = 31) {
         self._attn.wrappedValue = S3FSMNMultiHeadAttention(nState: nState, nHead: nHead, kernelSize: kernelSize)
         self._attnLn.wrappedValue = LayerNorm(dimensions: nState, eps: 1e-6)
-        self._mlp.wrappedValue = Sequential([
+        self._mlp.wrappedValue = MLXNN.Sequential(layers: [
             Linear(nState, nState * 4),
             GELULayer(),
             Linear(nState * 4, nState)
@@ -251,8 +251,8 @@ final class S3ResidualAttentionBlock: Module {
 final class S3AudioEncoderV2: Module {
     let stride: Int
 
-    @ModuleInfo(key: "conv1") var conv1: Conv1d
-    @ModuleInfo(key: "conv2") var conv2: Conv1d
+    @ModuleInfo(key: "conv1") var conv1: MLXNN.Conv1d
+    @ModuleInfo(key: "conv2") var conv2: MLXNN.Conv1d
 
     let freqsCis: (MLXArray, MLXArray)
     let blocks: [S3ResidualAttentionBlock]
@@ -265,14 +265,14 @@ final class S3AudioEncoderV2: Module {
         stride: Int
     ) {
         self.stride = stride
-        self._conv1.wrappedValue = Conv1d(
+        self._conv1.wrappedValue = MLXNN.Conv1d(
             inputChannels: nMels,
             outputChannels: nState,
             kernelSize: 3,
             stride: stride,
             padding: 1
         )
-        self._conv2.wrappedValue = Conv1d(
+        self._conv2.wrappedValue = MLXNN.Conv1d(
             inputChannels: nState,
             outputChannels: nState,
             kernelSize: 3,
@@ -340,7 +340,7 @@ final class S3FSQCodebook: Module {
         h = MLX.round(h) + MLXArray(Float(1.0))
 
         let powerCount = 1 << level
-        let powers = MLX.pow(MLXArray(Float(level)), MLXArray.arange(start: 0, stop: powerCount, dtype: .float32))
+        let powers = MLX.pow(MLXArray(Float(level)), MLXArray.arange(0, powerCount, dtype: .float32))
         let mu = MLX.sum(h * powers.expandedDimensions(axis: 0), axis: -1)
         return mu.reshaped(xShape[0], xShape[1]).asType(.int32)
     }

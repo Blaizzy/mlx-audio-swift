@@ -141,7 +141,7 @@ final class GPT2Model: Module {
         let length = hiddenStates.dim(1)
 
         let cacheOffset = cache?.first?.offset ?? 0
-        let positions = MLXArray.arange(start: cacheOffset, stop: cacheOffset + length, dtype: .int32)
+        let positions = MLXArray.arange(cacheOffset, cacheOffset + length, dtype: .int32)
         let posEmbeds = wpe(positions).expandedDimensions(axis: 0)
         var h = hiddenStates + posEmbeds.broadcasted(to: [batch, length, config.nEmbeddings])
 

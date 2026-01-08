@@ -86,7 +86,7 @@ struct ChatterboxTurboModelTests {
         )
 
         let model = GPT2Model(config)
-        let inputIds = MLXArray([[Int32(1), 2, 3]])
+        let inputIds = MLXArray([Int32(1), Int32(2), Int32(3)]).reshaped([1, 3])
         let (hiddenStates, cache) = model(inputIds: inputIds, inputsEmbeds: nil, cache: nil)
 
         #expect(hiddenStates.shape == [1, 3, 8])
@@ -100,5 +100,30 @@ struct ChatterboxTurboModelTests {
         let output = encoder(mels)
 
         #expect(output.shape == [1, hp.speakerEmbedSize])
+    }
+
+    @Test func testUpsampleConformerEncoderShape() {
+        let encoder = UpsampleConformerEncoder(
+            inputSize: 8,
+            outputSize: 8,
+            attentionHeads: 2,
+            linearUnits: 16,
+            numBlocks: 1,
+            dropoutRate: 0.0
+        )
+        let xs = MLXArray.zeros([1, 4, 8], type: Float.self)
+        let lens = MLXArray([Int32(4)])
+        let (out, mask) = encoder(xs, xsLens: lens)
+
+        #expect(out.shape == [1, 8, 8])
+        #expect(mask.shape == [1, 1, 8])
+    }
+
+    @Test func testF0PredictorOutputShape() {
+        let predictor = F0Predictor()
+        let mel = MLXArray.zeros([1, 80, 10], type: Float.self)
+        let f0 = predictor(mel)
+
+        #expect(f0.shape == [1, 10])
     }
 }

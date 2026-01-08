@@ -118,7 +118,6 @@ final class T3: Module {
                     )
 
                     generatedTokens.append(sampled)
-                    allTokens.append(sampled)
 
                     currentToken = MLXArray(Int32(sampled)).reshaped([1, 1])
                     chunkBuffer.append(currentToken)
