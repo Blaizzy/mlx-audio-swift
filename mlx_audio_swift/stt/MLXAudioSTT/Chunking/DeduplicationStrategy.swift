@@ -53,3 +53,128 @@ public struct NoOpDeduplicationStrategy: DeduplicationStrategy {
         )
     }
 }
+
+/// Levenshtein distance-based deduplication strategy
+/// Uses edit distance to detect overlapping text between chunks
+/// Suitable when word timestamps are unavailable (~1ms computation time)
+public struct LevenshteinDeduplicationStrategy: DeduplicationStrategy {
+    public var name: String { "levenshtein" }
+
+    private let maxLookback: Int
+
+    public init(maxLookback: Int = 10) {
+        self.maxLookback = maxLookback
+    }
+
+    public func deduplicate(
+        currentText: String,
+        previousEndWords: [String],
+        currentWords: [WordTimestamp]?
+    ) -> DeduplicationResult {
+        guard !currentText.isEmpty, !previousEndWords.isEmpty else {
+            return DeduplicationResult(text: currentText, wordsRemoved: 0, method: name)
+        }
+
+        let currentWords = currentText.split(separator: " ").map(String.init)
+        guard !currentWords.isEmpty else {
+            return DeduplicationResult(text: currentText, wordsRemoved: 0, method: name)
+        }
+
+        let lookbackWords = Array(previousEndWords.suffix(maxLookback))
+
+        var bestMatchLength = 0
+
+        for prefixLength in 1...min(currentWords.count, lookbackWords.count) {
+            let currentPrefix = Array(currentWords.prefix(prefixLength))
+            let previousSuffix = Array(lookbackWords.suffix(prefixLength))
+
+            let distance = editDistance(previousSuffix, currentPrefix)
+            // 20% threshold: for sequences < 5 words, require exact match (distance 0)
+            // unless words are character-similar
+            let threshold = prefixLength / 5
+
+            if distance <= threshold {
+                bestMatchLength = prefixLength
+            } else if distance == 1 && prefixLength <= 2 {
+                // For short sequences with 1 word difference, check character similarity
+                if areWordsSimilar(previousSuffix, currentPrefix) {
+                    bestMatchLength = prefixLength
+                }
+            }
+        }
+
+        if bestMatchLength > 0 {
+            let remainingWords = Array(currentWords.dropFirst(bestMatchLength))
+            let deduplicatedText = remainingWords.joined(separator: " ")
+            return DeduplicationResult(
+                text: deduplicatedText,
+                wordsRemoved: bestMatchLength,
+                method: name
+            )
+        }
+
+        return DeduplicationResult(text: currentText, wordsRemoved: 0, method: name)
+    }
+
+    private func editDistance(_ a: [String], _ b: [String]) -> Int {
+        let m = a.count
+        let n = b.count
+        if m == 0 { return n }
+        if n == 0 { return m }
+
+        var prev = Array(0...n)
+        var curr = [Int](repeating: 0, count: n + 1)
+
+        for i in 1...m {
+            curr[0] = i
+            for j in 1...n {
+                let cost = a[i - 1].lowercased() == b[j - 1].lowercased() ? 0 : 1
+                curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
+            }
+            swap(&prev, &curr)
+        }
+        return prev[n]
+    }
+
+    private func areWordsSimilar(_ a: [String], _ b: [String]) -> Bool {
+        guard a.count == b.count else { return false }
+        for (wordA, wordB) in zip(a, b) {
+            if !isWordSimilar(wordA, wordB) {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func isWordSimilar(_ a: String, _ b: String) -> Bool {
+        let aLower = a.lowercased()
+        let bLower = b.lowercased()
+        if aLower == bLower { return true }
+
+        let distance = charEditDistance(Array(aLower), Array(bLower))
+        let maxLen = max(aLower.count, bLower.count)
+        // Allow up to 20% character difference
+        let threshold = max(1, maxLen / 5)
+        return distance <= threshold
+    }
+
+    private func charEditDistance(_ a: [Character], _ b: [Character]) -> Int {
+        let m = a.count
+        let n = b.count
+        if m == 0 { return n }
+        if n == 0 { return m }
+
+        var prev = Array(0...n)
+        var curr = [Int](repeating: 0, count: n + 1)
+
+        for i in 1...m {
+            curr[0] = i
+            for j in 1...n {
+                let cost = a[i - 1] == b[j - 1] ? 0 : 1
+                curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
+            }
+            swap(&prev, &curr)
+        }
+        return prev[n]
+    }
+}

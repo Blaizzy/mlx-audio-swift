@@ -74,4 +74,104 @@ struct DeduplicationStrategyTests {
         #expect(result1 == result2)
         #expect(result1 != result3)
     }
+
+    // MARK: - LevenshteinDeduplicationStrategy Tests
+
+    @Test func testLevenshteinDeduplicationWithExactMatch() {
+        let strategy = LevenshteinDeduplicationStrategy()
+        let result = strategy.deduplicate(
+            currentText: "world how are you",
+            previousEndWords: ["hello", "world"],
+            currentWords: nil
+        )
+        // "world" should be removed as it matches end of previous chunk
+        #expect(result.text == "how are you")
+        #expect(result.wordsRemoved == 1)
+        #expect(result.method == "levenshtein")
+    }
+
+    @Test func testLevenshteinDeduplicationWithPartialMatch() {
+        let strategy = LevenshteinDeduplicationStrategy()
+        let result = strategy.deduplicate(
+            currentText: "hello world today",
+            previousEndWords: ["say", "hello", "world"],
+            currentWords: nil
+        )
+        // "hello world" should be removed
+        #expect(result.text == "today")
+        #expect(result.wordsRemoved == 2)
+    }
+
+    @Test func testLevenshteinDeduplicationCaseInsensitive() {
+        let strategy = LevenshteinDeduplicationStrategy()
+        let result = strategy.deduplicate(
+            currentText: "World how are you",
+            previousEndWords: ["hello", "world"],
+            currentWords: nil
+        )
+        #expect(result.text == "how are you")
+    }
+
+    @Test func testLevenshteinDeduplicationNoMatch() {
+        let strategy = LevenshteinDeduplicationStrategy()
+        let result = strategy.deduplicate(
+            currentText: "completely different text",
+            previousEndWords: ["hello", "world"],
+            currentWords: nil
+        )
+        #expect(result.text == "completely different text")
+        #expect(result.wordsRemoved == 0)
+    }
+
+    @Test func testLevenshteinDeduplicationEmptyPreviousWords() {
+        let strategy = LevenshteinDeduplicationStrategy()
+        let result = strategy.deduplicate(
+            currentText: "hello world",
+            previousEndWords: [],
+            currentWords: nil
+        )
+        #expect(result.text == "hello world")
+        #expect(result.wordsRemoved == 0)
+    }
+
+    @Test func testLevenshteinDeduplicationEmptyCurrentText() {
+        let strategy = LevenshteinDeduplicationStrategy()
+        let result = strategy.deduplicate(
+            currentText: "",
+            previousEndWords: ["hello", "world"],
+            currentWords: nil
+        )
+        #expect(result.text == "")
+        #expect(result.wordsRemoved == 0)
+    }
+
+    @Test func testLevenshteinStrategyName() {
+        let strategy = LevenshteinDeduplicationStrategy()
+        #expect(strategy.name == "levenshtein")
+    }
+
+    @Test func testLevenshteinDeduplicationWithMaxLookback() {
+        let strategy = LevenshteinDeduplicationStrategy(maxLookback: 2)
+        let result = strategy.deduplicate(
+            currentText: "world today is nice",
+            previousEndWords: ["one", "two", "three", "hello", "world"],
+            currentWords: nil
+        )
+        // Only last 2 words ["hello", "world"] should be considered
+        #expect(result.text == "today is nice")
+        #expect(result.wordsRemoved == 1)
+    }
+
+    @Test func testLevenshteinDeduplicationWithFuzzyMatch() {
+        let strategy = LevenshteinDeduplicationStrategy()
+        let result = strategy.deduplicate(
+            currentText: "wrld how are you",  // typo: "wrld" instead of "world"
+            previousEndWords: ["hello", "world"],
+            currentWords: nil
+        )
+        // Edit distance of 1 for single word, threshold = max(1, 1/5) = 1
+        // Should still match since distance <= threshold
+        #expect(result.text == "how are you")
+        #expect(result.wordsRemoved == 1)
+    }
 }
