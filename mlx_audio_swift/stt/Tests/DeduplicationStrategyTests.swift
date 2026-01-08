@@ -20,9 +20,7 @@ struct DeduplicationStrategyTests {
 
     @Test func testNoOpDeduplicationWithPreviousWords() {
         let strategy = NoOpDeduplicationStrategy()
-        let previousWords = [
-            WordTimestamp(word: "previous", start: 0.0, end: 0.5, confidence: 0.9)
-        ]
+        let previousWords = ["previous"]
         let result = strategy.deduplicate(
             currentText: "Hello world",
             previousEndWords: previousWords,

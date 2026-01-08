@@ -26,7 +26,7 @@ public protocol DeduplicationStrategy: Sendable {
     /// - Returns: Deduplicated result
     func deduplicate(
         currentText: String,
-        previousEndWords: [WordTimestamp],
+        previousEndWords: [String],
         currentWords: [WordTimestamp]?
     ) -> DeduplicationResult
 
@@ -43,7 +43,7 @@ public struct NoOpDeduplicationStrategy: DeduplicationStrategy {
 
     public func deduplicate(
         currentText: String,
-        previousEndWords: [WordTimestamp],
+        previousEndWords: [String],
         currentWords: [WordTimestamp]?
     ) -> DeduplicationResult {
         DeduplicationResult(
