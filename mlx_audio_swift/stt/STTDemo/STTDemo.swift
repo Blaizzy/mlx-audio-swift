@@ -63,10 +63,17 @@ struct STTDemo {
     static func main() async {
         let args = CommandLine.arguments
 
+        if args.contains("--version") || args.contains("-V") {
+            print("stt-demo \(BuildInfo.full)")
+            return
+        }
+
         guard args.count >= 2, args[1] != "--help", args[1] != "-h" else {
             printUsage()
             return
         }
+
+        print("stt-demo v\(BuildInfo.full)")
 
         guard let config = parseArguments(args) else {
             return
@@ -170,7 +177,6 @@ struct STTDemo {
         )
 
         if fast {
-            // Wait for background loading to complete
             _ = try await processor.waitUntilReady()
         }
 
@@ -365,6 +371,7 @@ struct STTDemo {
                                     auto       - Auto-select best strategy (default)
           --language, -l <code>   Language code (e.g., en, ja, zh)
           --help, -h              Show this help message
+          --version, -V           Show version information
 
         Examples:
           # Short audio (uses WhisperSession directly)

@@ -47,7 +47,8 @@ public final class VADChunkingStrategy: ChunkingStrategy, Sendable {
         sampleRate: Int,
         transcriber: ChunkTranscriber,
         limits: ProcessingLimits,
-        telemetry: ChunkingTelemetry?
+        telemetry: ChunkingTelemetry?,
+        options: TranscriptionOptions
     ) -> AsyncThrowingStream<ChunkResult, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -58,6 +59,7 @@ public final class VADChunkingStrategy: ChunkingStrategy, Sendable {
                         transcriber: transcriber,
                         limits: limits,
                         telemetry: telemetry,
+                        options: options,
                         continuation: continuation
                     )
                     continuation.finish()
@@ -74,7 +76,8 @@ public final class VADChunkingStrategy: ChunkingStrategy, Sendable {
         sampleRate: Int,
         transcriber: ChunkTranscriber,
         limits: ProcessingLimits,
-        telemetry: ChunkingTelemetry?
+        telemetry: ChunkingTelemetry?,
+        options: TranscriptionOptions
     ) -> AsyncThrowingStream<ChunkStreamingResult, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -85,6 +88,7 @@ public final class VADChunkingStrategy: ChunkingStrategy, Sendable {
                         transcriber: transcriber,
                         limits: limits,
                         telemetry: telemetry,
+                        options: options,
                         continuation: continuation
                     )
                     continuation.finish()
@@ -102,6 +106,7 @@ public final class VADChunkingStrategy: ChunkingStrategy, Sendable {
         transcriber: ChunkTranscriber,
         limits: ProcessingLimits,
         telemetry: ChunkingTelemetry?,
+        options: TranscriptionOptions,
         continuation: AsyncThrowingStream<ChunkResult, Error>.Continuation
     ) async throws {
         let totalSamples = audio.shape[0]
@@ -139,6 +144,7 @@ public final class VADChunkingStrategy: ChunkingStrategy, Sendable {
                 telemetry: telemetry,
                 startTime: startTime,
                 audioDuration: audioDuration,
+                options: options,
                 continuation: continuation
             )
         } else {
@@ -151,6 +157,7 @@ public final class VADChunkingStrategy: ChunkingStrategy, Sendable {
                 telemetry: telemetry,
                 startTime: startTime,
                 audioDuration: audioDuration,
+                options: options,
                 continuation: continuation
             )
         }
@@ -165,6 +172,7 @@ public final class VADChunkingStrategy: ChunkingStrategy, Sendable {
         transcriber: ChunkTranscriber,
         limits: ProcessingLimits,
         telemetry: ChunkingTelemetry?,
+        options: TranscriptionOptions,
         continuation: AsyncThrowingStream<ChunkStreamingResult, Error>.Continuation
     ) async throws {
         let totalSamples = audio.shape[0]
@@ -223,7 +231,8 @@ public final class VADChunkingStrategy: ChunkingStrategy, Sendable {
                 audio: chunkAudio,
                 sampleRate: sampleRate,
                 previousTokens: nil,
-                timeOffset: timeOffset
+                timeOffset: timeOffset,
+                options: options
             )
 
             do {
@@ -327,6 +336,7 @@ public final class VADChunkingStrategy: ChunkingStrategy, Sendable {
         telemetry: ChunkingTelemetry?,
         startTime: Date,
         audioDuration: TimeInterval,
+        options: TranscriptionOptions,
         continuation: AsyncThrowingStream<ChunkResult, Error>.Continuation
     ) async throws {
         for (index, segment) in segments.enumerated() {
@@ -353,7 +363,8 @@ public final class VADChunkingStrategy: ChunkingStrategy, Sendable {
                 sampleRate: sampleRate,
                 transcriber: transcriber,
                 limits: limits,
-                telemetry: telemetry
+                telemetry: telemetry,
+                options: options
             )
 
             let chunkDuration = Date().timeIntervalSince(chunkStartTime)
@@ -371,6 +382,7 @@ public final class VADChunkingStrategy: ChunkingStrategy, Sendable {
         telemetry: ChunkingTelemetry?,
         startTime: Date,
         audioDuration: TimeInterval,
+        options: TranscriptionOptions,
         continuation: AsyncThrowingStream<ChunkResult, Error>.Continuation
     ) async throws {
         let indexedResults = try await withThrowingTaskGroup(
@@ -408,7 +420,8 @@ public final class VADChunkingStrategy: ChunkingStrategy, Sendable {
                             sampleRate: sampleRate,
                             transcriber: transcriber,
                             limits: limits,
-                            telemetry: nil
+                            telemetry: nil,
+                            options: options
                         )
                         let chunkDuration = Date().timeIntervalSince(chunkStartTime)
                         telemetry?.chunkCompleted(index: currentIndex, duration: chunkDuration, text: result.text)
@@ -443,7 +456,8 @@ public final class VADChunkingStrategy: ChunkingStrategy, Sendable {
         sampleRate: Int,
         transcriber: ChunkTranscriber,
         limits: ProcessingLimits,
-        telemetry: ChunkingTelemetry?
+        telemetry: ChunkingTelemetry?,
+        options: TranscriptionOptions
     ) async throws -> ChunkResult {
         let startSample = Int(segment.start * Double(sampleRate))
         let endSample = Int(segment.end * Double(sampleRate))
@@ -469,7 +483,8 @@ public final class VADChunkingStrategy: ChunkingStrategy, Sendable {
                 try await transcriber.transcribe(
                     audio: chunkAudio,
                     sampleRate: sampleRate,
-                    previousTokens: nil
+                    previousTokens: nil,
+                    options: options
                 )
             }
         } catch is TimeoutError {

@@ -49,7 +49,8 @@ public final class SlidingWindowChunkingStrategy: ChunkingStrategy, Sendable {
         sampleRate: Int,
         transcriber: ChunkTranscriber,
         limits: ProcessingLimits,
-        telemetry: ChunkingTelemetry?
+        telemetry: ChunkingTelemetry?,
+        options: TranscriptionOptions
     ) -> AsyncThrowingStream<ChunkResult, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -60,6 +61,7 @@ public final class SlidingWindowChunkingStrategy: ChunkingStrategy, Sendable {
                         transcriber: transcriber,
                         limits: limits,
                         telemetry: telemetry,
+                        options: options,
                         continuation: continuation
                     )
                     continuation.finish()
@@ -76,7 +78,8 @@ public final class SlidingWindowChunkingStrategy: ChunkingStrategy, Sendable {
         sampleRate: Int,
         transcriber: ChunkTranscriber,
         limits: ProcessingLimits,
-        telemetry: ChunkingTelemetry?
+        telemetry: ChunkingTelemetry?,
+        options: TranscriptionOptions
     ) -> AsyncThrowingStream<ChunkStreamingResult, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -87,6 +90,7 @@ public final class SlidingWindowChunkingStrategy: ChunkingStrategy, Sendable {
                         transcriber: transcriber,
                         limits: limits,
                         telemetry: telemetry,
+                        options: options,
                         continuation: continuation
                     )
                     continuation.finish()
@@ -104,6 +108,7 @@ public final class SlidingWindowChunkingStrategy: ChunkingStrategy, Sendable {
         transcriber: ChunkTranscriber,
         limits: ProcessingLimits,
         telemetry: ChunkingTelemetry?,
+        options: TranscriptionOptions,
         continuation: AsyncThrowingStream<ChunkResult, Error>.Continuation
     ) async throws {
         let totalSamples = audio.shape[0]
@@ -148,7 +153,8 @@ public final class SlidingWindowChunkingStrategy: ChunkingStrategy, Sendable {
                     try await transcriber.transcribe(
                         audio: chunkAudio,
                         sampleRate: sampleRate,
-                        previousTokens: nil
+                        previousTokens: nil,
+                        options: options
                     )
                 }
             } catch {
@@ -193,6 +199,7 @@ public final class SlidingWindowChunkingStrategy: ChunkingStrategy, Sendable {
         transcriber: ChunkTranscriber,
         limits: ProcessingLimits,
         telemetry: ChunkingTelemetry?,
+        options: TranscriptionOptions,
         continuation: AsyncThrowingStream<ChunkStreamingResult, Error>.Continuation
     ) async throws {
         let totalSamples = audio.shape[0]
@@ -235,7 +242,8 @@ public final class SlidingWindowChunkingStrategy: ChunkingStrategy, Sendable {
                 audio: chunkAudio,
                 sampleRate: sampleRate,
                 previousTokens: nil,
-                timeOffset: timeOffset
+                timeOffset: timeOffset,
+                options: options
             )
 
             do {

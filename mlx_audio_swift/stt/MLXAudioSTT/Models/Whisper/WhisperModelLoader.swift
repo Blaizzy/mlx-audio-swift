@@ -72,13 +72,17 @@ public enum WhisperModelLoader {
         model: WhisperModel,
         progressHandler: (@Sendable (Progress) -> Void)? = nil
     ) async throws -> LoadedModel {
+        print("[DEBUG] WhisperModelLoader.load() START"); fflush(stdout)
         let repoIdString = repoId(for: model)
+        print("[DEBUG] repoIdString: \(repoIdString)"); fflush(stdout)
         guard let repo = Repo.ID(rawValue: repoIdString) else {
             throw WhisperError.invalidModelFormat("Invalid repo ID: \(repoIdString)")
         }
-
+        print("[DEBUG] Creating HubClient..."); fflush(stdout)
         let client = HubClient.default
+        print("[DEBUG] Got HubClient, getting cache..."); fflush(stdout)
         let cache = client.cache ?? HubCache.default
+        print("[DEBUG] Got cache"); fflush(stdout)
 
         // Use the cache's snapshot directory structure (Python-compatible)
         let snapshotDir = cache.snapshotsDirectory(repo: repo, kind: .model)
@@ -87,11 +91,20 @@ public enum WhisperModelLoader {
         // Check if model files already exist (skip network request if cached)
         let configPath = snapshotDir.appendingPathComponent("config.json")
         let modelDirectory: URL
+
+        // DEBUG: Print cache check info
+        print("[DEBUG] Cache check for model:")
+        print("[DEBUG]   snapshotDir: \(snapshotDir.path)")
+        print("[DEBUG]   configPath: \(configPath.path)")
+        print("[DEBUG]   configExists: \(FileManager.default.fileExists(atPath: configPath.path))")
+
         if FileManager.default.fileExists(atPath: configPath.path) {
             // Check for safetensors files
             let contents = try? FileManager.default.contentsOfDirectory(at: snapshotDir, includingPropertiesForKeys: nil)
             let hasSafetensors = contents?.contains { $0.pathExtension == "safetensors" } ?? false
+            print("[DEBUG]   hasSafetensors: \(hasSafetensors)")
             if hasSafetensors {
+                print("[DEBUG]   Using cached model at: \(snapshotDir.path)")
                 modelDirectory = snapshotDir
             } else {
                 // Need to download
@@ -206,6 +219,7 @@ public enum WhisperModelLoader {
 
         let configPath = snapshotDir.appendingPathComponent("config.json")
         let modelDirectory: URL
+
         if FileManager.default.fileExists(atPath: configPath.path) {
             let contents = try? FileManager.default.contentsOfDirectory(at: snapshotDir, includingPropertiesForKeys: nil)
             let hasSafetensors = contents?.contains { $0.pathExtension == "safetensors" } ?? false
@@ -238,6 +252,7 @@ public enum WhisperModelLoader {
         )
 
         let config = try loadConfiguration(from: modelDirectory, model: model)
+
         let encoder = AudioEncoder(config: config)
         let decoder = TextDecoder(config: config)
 
@@ -302,6 +317,7 @@ public enum WhisperModelLoader {
 
         // Check if tokenizer files already exist (skip network request if cached)
         let tokenizerJsonPath = tokenizerSnapshotDir.appendingPathComponent("tokenizer.json")
+
         if FileManager.default.fileExists(atPath: tokenizerJsonPath.path) {
             return tokenizerSnapshotDir
         }

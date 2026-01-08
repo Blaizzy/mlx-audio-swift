@@ -20,7 +20,8 @@ public protocol ChunkTranscriber: Sendable {
     func transcribe(
         audio: MLXArray,
         sampleRate: Int,
-        previousTokens: [Int]?
+        previousTokens: [Int]?,
+        options: TranscriptionOptions
     ) async throws -> ChunkResult
 
     /// Streaming transcription - yields partial results as tokens are decoded
@@ -28,7 +29,8 @@ public protocol ChunkTranscriber: Sendable {
         audio: MLXArray,
         sampleRate: Int,
         previousTokens: [Int]?,
-        timeOffset: TimeInterval
+        timeOffset: TimeInterval,
+        options: TranscriptionOptions
     ) -> AsyncThrowingStream<ChunkPartialResult, Error>
 }
 

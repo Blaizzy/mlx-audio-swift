@@ -32,7 +32,8 @@ public protocol ChunkingStrategy: Sendable {
         sampleRate: Int,
         transcriber: ChunkTranscriber,
         limits: ProcessingLimits,
-        telemetry: ChunkingTelemetry?
+        telemetry: ChunkingTelemetry?,
+        options: TranscriptionOptions
     ) -> AsyncThrowingStream<ChunkResult, Error>
 
     /// Process long audio with streaming - yields partial results as tokens are decoded
@@ -41,7 +42,8 @@ public protocol ChunkingStrategy: Sendable {
         sampleRate: Int,
         transcriber: ChunkTranscriber,
         limits: ProcessingLimits,
-        telemetry: ChunkingTelemetry?
+        telemetry: ChunkingTelemetry?,
+        options: TranscriptionOptions
     ) -> AsyncThrowingStream<ChunkStreamingResult, Error>
 
     /// Strategy identifier for logging/debugging

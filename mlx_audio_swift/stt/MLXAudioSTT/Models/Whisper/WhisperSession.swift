@@ -286,12 +286,14 @@ public final class WhisperSession: @unchecked Sendable {
 
                         try Task.checkCancellation()
 
+                        // Calculate audio duration for timestamps
+                        let audioDuration = Double(audio.shape[0]) / Double(sampleRate)
+
                         // 1. Pad/trim audio to 30 seconds
                         let paddedAudio = AudioUtils.padOrTrim(audio, length: AudioConstants.nSamples)
 
                         // 2. Compute mel spectrogram
                         let mel = try MelSpectrogram.compute(audio: paddedAudio, nMels: self.config.nMels)
-                        // Add batch dimension: [nMels, nFrames] -> [1, nMels, nFrames]
                         let melBatched = mel.expandedDimensions(axis: 0)
 
                         // 3. Encode audio (COMPILED)
@@ -314,7 +316,6 @@ public final class WhisperSession: @unchecked Sendable {
 
                         // 5. Decoding loop
                         let maxTokens = self.config.nTextCtx - tokens.count
-                        let audioDuration = Double(audio.shape[0]) / Double(AudioConstants.sampleRate)
 
                         for step in 0..<maxTokens {
                             try Task.checkCancellation()

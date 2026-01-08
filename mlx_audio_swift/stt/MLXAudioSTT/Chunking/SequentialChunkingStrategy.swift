@@ -51,7 +51,8 @@ public final class SequentialChunkingStrategy: ChunkingStrategy, @unchecked Send
         sampleRate: Int,
         transcriber: ChunkTranscriber,
         limits: ProcessingLimits,
-        telemetry: ChunkingTelemetry?
+        telemetry: ChunkingTelemetry?,
+        options: TranscriptionOptions
     ) -> AsyncThrowingStream<ChunkResult, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -62,6 +63,7 @@ public final class SequentialChunkingStrategy: ChunkingStrategy, @unchecked Send
                         transcriber: transcriber,
                         limits: limits,
                         telemetry: telemetry,
+                        options: options,
                         continuation: continuation
                     )
                     continuation.finish()
@@ -78,7 +80,8 @@ public final class SequentialChunkingStrategy: ChunkingStrategy, @unchecked Send
         sampleRate: Int,
         transcriber: ChunkTranscriber,
         limits: ProcessingLimits,
-        telemetry: ChunkingTelemetry?
+        telemetry: ChunkingTelemetry?,
+        options: TranscriptionOptions
     ) -> AsyncThrowingStream<ChunkStreamingResult, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -89,6 +92,7 @@ public final class SequentialChunkingStrategy: ChunkingStrategy, @unchecked Send
                         transcriber: transcriber,
                         limits: limits,
                         telemetry: telemetry,
+                        options: options,
                         continuation: continuation
                     )
                     continuation.finish()
@@ -106,6 +110,7 @@ public final class SequentialChunkingStrategy: ChunkingStrategy, @unchecked Send
         transcriber: ChunkTranscriber,
         limits: ProcessingLimits,
         telemetry: ChunkingTelemetry?,
+        options: TranscriptionOptions,
         continuation: AsyncThrowingStream<ChunkResult, Error>.Continuation
     ) async throws {
         let totalSamples = audio.shape[0]
@@ -155,7 +160,8 @@ public final class SequentialChunkingStrategy: ChunkingStrategy, @unchecked Send
                     try await transcriber.transcribe(
                         audio: chunkAudio,
                         sampleRate: sampleRate,
-                        previousTokens: tokensForContext
+                        previousTokens: tokensForContext,
+                        options: options
                     )
                 }
             } catch is TimeoutError {
@@ -200,6 +206,7 @@ public final class SequentialChunkingStrategy: ChunkingStrategy, @unchecked Send
         transcriber: ChunkTranscriber,
         limits: ProcessingLimits,
         telemetry: ChunkingTelemetry?,
+        options: TranscriptionOptions,
         continuation: AsyncThrowingStream<ChunkStreamingResult, Error>.Continuation
     ) async throws {
         let totalSamples = audio.shape[0]
@@ -240,7 +247,8 @@ public final class SequentialChunkingStrategy: ChunkingStrategy, @unchecked Send
                 audio: chunkAudio,
                 sampleRate: sampleRate,
                 previousTokens: nil,
-                timeOffset: timeOffset
+                timeOffset: timeOffset,
+                options: options
             )
 
             var lastTimestamp: ClosedRange<TimeInterval> = timeRange

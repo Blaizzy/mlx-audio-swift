@@ -57,7 +57,8 @@ public final class MockChunkTranscriber: ChunkTranscriber, @unchecked Sendable {
     public func transcribe(
         audio: MLXArray,
         sampleRate: Int,
-        previousTokens: [Int]?
+        previousTokens: [Int]?,
+        options: TranscriptionOptions
     ) async throws -> ChunkResult {
         let call = TranscribeCall(
             audio: audio,
@@ -103,7 +104,8 @@ public final class MockChunkTranscriber: ChunkTranscriber, @unchecked Sendable {
         audio: MLXArray,
         sampleRate: Int,
         previousTokens: [Int]?,
-        timeOffset: TimeInterval
+        timeOffset: TimeInterval,
+        options: TranscriptionOptions
     ) -> AsyncThrowingStream<ChunkPartialResult, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -111,7 +113,8 @@ public final class MockChunkTranscriber: ChunkTranscriber, @unchecked Sendable {
                     let result = try await self.transcribe(
                         audio: audio,
                         sampleRate: sampleRate,
-                        previousTokens: previousTokens
+                        previousTokens: previousTokens,
+                        options: options
                     )
 
                     let adjustedTimestamp = (result.timeRange.lowerBound + timeOffset)...(result.timeRange.upperBound + timeOffset)

@@ -308,7 +308,8 @@ public final class LongAudioProcessor: @unchecked Sendable {
             sampleRate: sampleRate,
             transcriber: transcriber,
             limits: limits,
-            telemetry: telemetry
+            telemetry: telemetry,
+            options: options
         )
 
         for try await streamingResult in streamingChunkStream {
@@ -356,6 +357,11 @@ public final class LongAudioProcessor: @unchecked Sendable {
                             previousEndWords: previousChunkEndWords,
                             currentWords: nil
                         )
+                        // DEBUG
+                        print("[DEBUG] Chunk \(currentChunkIndex): dedup '\(result.method)' removed \(result.wordsRemoved) words")
+                        print("[DEBUG] previousEndWords: \(previousChunkEndWords)")
+                        print("[DEBUG] processedText: \(processedText.prefix(100))...")
+                        print("[DEBUG] textToAccumulate: \(result.text.prefix(100))...")
                         textToAccumulate = result.text
                     } else if !previousChunkEndWords.isEmpty {
                         textToAccumulate = deduplicateOverlapText(
@@ -505,7 +511,8 @@ final class WhisperSessionTranscriber: ChunkTranscriber, @unchecked Sendable {
     func transcribe(
         audio: MLXArray,
         sampleRate: Int,
-        previousTokens: [Int]?
+        previousTokens: [Int]?,
+        options: TranscriptionOptions
     ) async throws -> ChunkResult {
         var finalText = ""
         var finalTimestamp: ClosedRange<TimeInterval> = 0...0
@@ -513,7 +520,7 @@ final class WhisperSessionTranscriber: ChunkTranscriber, @unchecked Sendable {
         let stream: AsyncThrowingStream<StreamingResult, Error> = session.transcribe(
             audio,
             sampleRate: sampleRate,
-            options: .default
+            options: options
         )
 
         for try await result in stream {
@@ -536,12 +543,13 @@ final class WhisperSessionTranscriber: ChunkTranscriber, @unchecked Sendable {
         audio: MLXArray,
         sampleRate: Int,
         previousTokens: [Int]?,
-        timeOffset: TimeInterval
+        timeOffset: TimeInterval,
+        options: TranscriptionOptions
     ) -> AsyncThrowingStream<ChunkPartialResult, Error> {
         let whisperStream: AsyncThrowingStream<StreamingResult, Error> = session.transcribe(
             audio,
             sampleRate: sampleRate,
-            options: .default
+            options: options
         )
 
         return AsyncThrowingStream { continuation in
