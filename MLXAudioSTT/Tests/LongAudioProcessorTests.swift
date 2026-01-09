@@ -389,14 +389,15 @@ final class TestLongAudioProcessor: @unchecked Sendable {
             sampleRate: sampleRate,
             transcriber: transcriber,
             limits: limits,
-            telemetry: telemetry
+            telemetry: telemetry,
+            options: .default
         )
 
         for try await chunkResult in chunkStream {
             try Task.checkCancellation()
 
             let processedText = mergeConfig.normalizeText
-                ? chunkResult.text.trimmingCharacters(in: .whitespaces)
+                ? chunkResult.text.trimmingCharacters(in: CharacterSet.whitespaces)
                 : chunkResult.text
 
             if !processedText.isEmpty {

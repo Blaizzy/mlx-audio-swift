@@ -141,4 +141,61 @@ struct WhisperSessionTests {
         // Check for key words from the audio (allowing for minor transcription variations)
         #expect(finalText.contains("quick") || finalText.contains("fox") || finalText.contains("dog") || finalText.contains("test"))
     }
+
+    // MARK: - SDK v1 API Tests
+
+    @Test func generateStream_validAudio_emitsEvents() async throws {
+        let session = try await WhisperSession.fromPretrained(model: .largeTurbo)
+        let audio = MLXArray.zeros([AudioConstants.nSamples])
+
+        var tokens: [String] = []
+        var info: STTGenerationInfo?
+        var result: STTOutput?
+
+        for try await event in session.generateStream(audio: audio) {
+            switch event {
+            case .token(let text):
+                tokens.append(text)
+            case .info(let generationInfo):
+                info = generationInfo
+            case .result(let output):
+                result = output
+            }
+        }
+
+        // Should produce a result
+        #expect(result != nil)
+        #expect(info != nil)
+
+        // Verify metrics are tracked
+        if let info = info {
+            #expect(info.promptTokenCount > 0)
+            #expect(info.tokensPerSecond >= 0)
+        }
+    }
+
+    @Test func generate_validAudio_returnsOutput() async throws {
+        let session = try await WhisperSession.fromPretrained(model: .largeTurbo)
+        let audio = MLXArray.zeros([AudioConstants.nSamples])
+
+        let output = try await session.generate(audio: audio)
+
+        // Verify output structure
+        #expect(output.promptTokens > 0)
+        #expect(output.totalTime >= 0)
+    }
+
+    @Test func generateStream_withTemperature_usesSampling() async throws {
+        let session = try await WhisperSession.fromPretrained(model: .largeTurbo)
+        let audio = MLXArray.zeros([AudioConstants.nSamples])
+
+        var result: STTOutput?
+        for try await event in session.generateStream(audio: audio, maxTokens: 100, temperature: 0.5) {
+            if case .result(let output) = event {
+                result = output
+            }
+        }
+
+        #expect(result != nil)
+    }
 }

@@ -34,7 +34,8 @@ struct VADChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mockTranscriber,
             limits: .default,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }
@@ -82,7 +83,8 @@ struct VADChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mockTranscriber,
             limits: limits,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }
@@ -124,7 +126,8 @@ struct VADChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mockTranscriber,
             limits: .default,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }
@@ -167,7 +170,8 @@ struct VADChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mockTranscriber,
             limits: limits,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }
@@ -192,7 +196,8 @@ struct VADChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mockTranscriber,
             limits: .default,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }
@@ -235,7 +240,8 @@ struct VADChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mockTranscriber,
             limits: .default,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }
@@ -276,7 +282,8 @@ struct VADChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mockTranscriber,
             limits: .default,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }
@@ -306,7 +313,8 @@ struct VADChunkingStrategyTests {
                 sampleRate: sampleRate,
                 transcriber: mockTranscriber,
                 limits: .default,
-                telemetry: nil
+                telemetry: nil,
+                options: .default
             ) {}
         } catch {
             caughtError = error
@@ -355,7 +363,8 @@ struct VADChunkingStrategyTests {
                 sampleRate: sampleRate,
                 transcriber: mockTranscriber,
                 limits: limits,
-                telemetry: nil
+                telemetry: nil,
+                options: .default
             ) {}
         } catch {
             caughtError = error
@@ -404,7 +413,8 @@ struct VADChunkingStrategyTests {
                 sampleRate: sampleRate,
                 transcriber: mockTranscriber,
                 limits: limits,
-                telemetry: nil
+                telemetry: nil,
+                options: .default
             ) {}
         } catch {
             caughtError = error
@@ -452,7 +462,8 @@ struct VADChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mockTranscriber,
             limits: limits,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }
@@ -518,7 +529,8 @@ struct VADChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mockTranscriber,
             limits: .default,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }
@@ -550,7 +562,8 @@ struct VADChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mockTranscriber,
             limits: .default,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }
@@ -585,7 +598,8 @@ struct VADChunkingStrategyTests {
                 sampleRate: sampleRate,
                 transcriber: mockTranscriber,
                 limits: limits,
-                telemetry: nil
+                telemetry: nil,
+                options: .default
             ) {}
         } catch {
             caughtError = error
@@ -627,7 +641,8 @@ struct VADChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mockTranscriber,
             limits: limits,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }

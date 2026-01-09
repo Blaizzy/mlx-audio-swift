@@ -34,7 +34,8 @@ struct SlidingWindowChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mockTranscriber,
             limits: .default,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         )
 
         var results: [ChunkResult] = []
@@ -82,7 +83,8 @@ struct SlidingWindowChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mockTranscriber,
             limits: .default,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         )
 
         var results: [ChunkResult] = []
@@ -128,7 +130,8 @@ struct SlidingWindowChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mockTranscriber,
             limits: .default,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         )
 
         var receivedOrder: [String] = []
@@ -172,7 +175,8 @@ struct SlidingWindowChunkingStrategyTests {
                 sampleRate: sampleRate,
                 transcriber: mockTranscriber,
                 limits: .default,
-                telemetry: nil
+                telemetry: nil,
+                options: .default
             )
             for try await _ in stream {
                 count += 1
@@ -230,7 +234,8 @@ struct SlidingWindowChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mockTranscriber,
             limits: limits,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         )
 
         var didTimeout = false
@@ -282,7 +287,8 @@ struct SlidingWindowChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mockTranscriber,
             limits: .default,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         )
 
         var results: [ChunkResult] = []
@@ -311,7 +317,8 @@ struct SlidingWindowChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mockTranscriber,
             limits: .default,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         )
 
         var results: [ChunkResult] = []

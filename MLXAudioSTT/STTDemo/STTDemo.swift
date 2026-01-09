@@ -148,28 +148,49 @@ struct STTDemo {
         )
 
         if fast {
-            // Wait for background loading to complete
             _ = try await session.waitUntilReady()
         }
-
-        var transcriptionOptions = TranscriptionOptions.default
-        transcriptionOptions.language = language
 
         terminal.output("")
         terminal.output("Transcribing...".consoleText(.info))
         terminal.output("─────────────────────────────────────────".consoleText(.plain))
 
-        for try await result in session.transcribe(audio, sampleRate: AudioConstants.sampleRate, options: transcriptionOptions) {
-            if result.isFinal {
-                print("\r\u{1B}[K", terminator: "")
-                terminal.output(result.text.consoleText(.success))
-            } else {
-                print("\r\u{1B}[K\(result.text)...", terminator: "")
+        var currentText = ""
+        var generationInfo: STTGenerationInfo?
+
+        for try await event in session.generateStream(audio: audio) {
+            switch event {
+            case .token(let token):
+                currentText += token
+                print("\r\u{1B}[K\(currentText)...", terminator: "")
                 fflush(stdout)
+            case .info(let info):
+                generationInfo = info
+            case .result(let output):
+                print("\r\u{1B}[K", terminator: "")
+                terminal.output(output.text.consoleText(.success))
             }
         }
 
         terminal.output("─────────────────────────────────────────".consoleText(.plain))
+
+        if let info = generationInfo {
+            terminal.output(
+                "Tokens: ".consoleText(.plain) +
+                "\(info.promptTokenCount) prompt".consoleText() +
+                ", \(info.generationTokenCount) generated".consoleText()
+            )
+            terminal.output(
+                "Speed: ".consoleText(.plain) +
+                String(format: "%.1f", info.tokensPerSecond).consoleText(.success) +
+                " tok/s".consoleText()
+            )
+            terminal.output(
+                "Time: ".consoleText(.plain) +
+                String(format: "%.2fs", info.prefillTime + info.generateTime).consoleText()
+            )
+        }
+
         terminal.output("✓ Done!".consoleText(.success))
     }
 

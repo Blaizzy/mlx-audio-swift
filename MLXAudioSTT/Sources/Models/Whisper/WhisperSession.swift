@@ -513,14 +513,265 @@ public final class WhisperSession: @unchecked Sendable {
     }
 }
 
-// MARK: - STTSession Conformance
+// MARK: - STTSessionProtocol Conformance
 
-extension WhisperSession: STTSession {
-    public func transcribe(_ audio: MLXArray, sampleRate: Int) -> AsyncThrowingStream<StreamingResult, Error> {
-        transcribe(audio, sampleRate: sampleRate, options: .default)
+extension WhisperSession: STTSessionProtocol {
+    public func generate(
+        audio: MLXArray,
+        maxTokens: Int,
+        temperature: Float
+    ) async throws -> STTOutput {
+        var output: STTOutput?
+        for try await event in generateStream(audio: audio, maxTokens: maxTokens, temperature: temperature) {
+            if case .result(let result) = event {
+                output = result
+            }
+        }
+        guard let finalOutput = output else {
+            throw STTError.generationFailed("No result produced")
+        }
+        return finalOutput
     }
 
-    public func transcribe(_ audio: MLXArray, sampleRate: Int) async throws -> String {
-        try await transcribe(audio, sampleRate: sampleRate, options: .default)
+    public func generateStream(
+        audio: MLXArray,
+        maxTokens: Int,
+        temperature: Float
+    ) -> AsyncThrowingStream<STTGeneration, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.onTermination = { [weak self] _ in
+                self?.taskLock.withLock {
+                    self?.currentTask?.cancel()
+                    self?.currentTask = nil
+                }
+            }
+
+            self.taskLock.withLock {
+                self.currentTask = Task {
+                    do {
+                        let startTime = CFAbsoluteTimeGetCurrent()
+
+                        // Calculate audio duration
+                        let audioDuration = Double(audio.shape[0]) / Double(AudioConstants.sampleRate)
+
+                        // 1. Pad/trim audio to 30 seconds
+                        let paddedAudio = AudioUtils.padOrTrim(audio, length: AudioConstants.nSamples)
+
+                        // 2. Compute mel spectrogram
+                        let mel = try MelSpectrogram.compute(audio: paddedAudio, nMels: self.config.nMels)
+                        let melBatched = mel.expandedDimensions(axis: 0)
+
+                        // 3. Encode audio (COMPILED) - this is the "prefill" phase
+                        let prefillStart = CFAbsoluteTimeGetCurrent()
+                        let encoderOutput = self.compiledEncode([melBatched])[0]
+                        eval(encoderOutput)
+                        let prefillTime = CFAbsoluteTimeGetCurrent() - prefillStart
+
+                        let totalFrames = encoderOutput.shape[1]
+                        let promptTokenCount = totalFrames  // Encoder output frames as "prompt tokens"
+
+                        // 4. Initialize decoder state
+                        var tokens = self.tokenizer.initialTokens(
+                            language: nil,
+                            task: .transcribe
+                        )
+
+                        // Reset preallocated KV caches
+                        for cache in self.kvCaches {
+                            cache.reset()
+                        }
+
+                        var emittedText = ""
+                        var lastEmittedIndex = tokens.count
+                        var didEmitFinal = false
+                        var generationTokenCount = 0
+
+                        // 5. Decoding loop - "generation" phase
+                        let generateStart = CFAbsoluteTimeGetCurrent()
+                        let effectiveMaxTokens = min(maxTokens, self.config.nTextCtx - tokens.count)
+
+                        for step in 0..<effectiveMaxTokens {
+                            try Task.checkCancellation()
+
+                            let tokenArray: MLXArray
+                            if step == 0 {
+                                tokenArray = MLXArray(tokens).expandedDimensions(axis: 0)
+                            } else {
+                                tokenArray = MLXArray([tokens.last!]).expandedDimensions(axis: 0)
+                            }
+
+                            let outputs = self.compiledDecode([tokenArray, encoderOutput])
+                            let logits = outputs[0]
+                            let crossQKArrays = Array(outputs.dropFirst())
+                            let crossQK: [MLXArray?] = crossQKArrays.map { $0 }
+
+                            // Sample next token
+                            let nextToken: Int
+                            if temperature == 0 {
+                                nextToken = Int(MLX.argMax(logits[0, -1]).item(Int.self))
+                            } else {
+                                // Categorical sampling with temperature
+                                let scaledLogits = logits[0, -1] / temperature
+                                let probs = softmax(scaledLogits)
+                                nextToken = Int(MLX.argMax(MLXRandom.categorical(expandedDimensions(log(probs), axis: 0))).item(Int.self))
+                            }
+
+                            generationTokenCount += 1
+
+                            // Check for end of transcription
+                            if nextToken == WhisperTokenizer.eotToken {
+                                let finalTokens = Array(tokens.dropFirst(lastEmittedIndex))
+                                let finalText = self.tokenizer.decode(finalTokens)
+                                let fullText = (emittedText + finalText).trimmingCharacters(in: .whitespaces)
+                                didEmitFinal = true
+
+                                let generateTime = CFAbsoluteTimeGetCurrent() - generateStart
+                                let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+                                let tokensPerSecond = Double(generationTokenCount) / max(generateTime, 0.001)
+
+                                let output = STTOutput(
+                                    text: fullText,
+                                    segments: [STTSegment(text: fullText, start: 0, end: audioDuration)],
+                                    language: nil,
+                                    promptTokens: promptTokenCount,
+                                    generationTokens: generationTokenCount,
+                                    totalTokens: promptTokenCount + generationTokenCount,
+                                    promptTps: Double(promptTokenCount) / max(prefillTime, 0.001),
+                                    generationTps: tokensPerSecond,
+                                    totalTime: totalTime,
+                                    peakMemoryUsage: 0.0  // MLX Swift doesn't expose memory API
+                                )
+
+                                continuation.yield(.info(STTGenerationInfo(
+                                    promptTokenCount: promptTokenCount,
+                                    generationTokenCount: generationTokenCount,
+                                    prefillTime: prefillTime,
+                                    generateTime: generateTime,
+                                    tokensPerSecond: tokensPerSecond,
+                                    peakMemoryUsage: 0.0
+                                )))
+                                continuation.yield(.result(output))
+                                break
+                            }
+
+                            tokens.append(nextToken)
+
+                            // Emit token
+                            let tokenText = self.tokenizer.decode([nextToken])
+                            if !tokenText.isEmpty {
+                                continuation.yield(.token(tokenText))
+                            }
+
+                            // Hallucination detection
+                            if step % 5 == 4 && self.detectRepetitionFast(tokens: tokens) {
+                                let finalTokens = Array(tokens.dropFirst(lastEmittedIndex).dropLast())
+                                let finalText = self.tokenizer.decode(finalTokens)
+                                let fullText = (emittedText + finalText).trimmingCharacters(in: .whitespaces)
+                                didEmitFinal = true
+
+                                let generateTime = CFAbsoluteTimeGetCurrent() - generateStart
+                                let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+                                let tokensPerSecond = Double(generationTokenCount) / max(generateTime, 0.001)
+
+                                let output = STTOutput(
+                                    text: fullText,
+                                    segments: [STTSegment(text: fullText, start: 0, end: audioDuration)],
+                                    language: nil,
+                                    promptTokens: promptTokenCount,
+                                    generationTokens: generationTokenCount,
+                                    totalTokens: promptTokenCount + generationTokenCount,
+                                    promptTps: Double(promptTokenCount) / max(prefillTime, 0.001),
+                                    generationTps: tokensPerSecond,
+                                    totalTime: totalTime,
+                                    peakMemoryUsage: 0.0
+                                )
+
+                                continuation.yield(.info(STTGenerationInfo(
+                                    promptTokenCount: promptTokenCount,
+                                    generationTokenCount: generationTokenCount,
+                                    prefillTime: prefillTime,
+                                    generateTime: generateTime,
+                                    tokensPerSecond: tokensPerSecond,
+                                    peakMemoryUsage: 0.0
+                                )))
+                                continuation.yield(.result(output))
+                                break
+                            }
+
+                            // AlignAtt streaming check
+                            let mostAttendedFrame = StreamingDecoder.getMostAttendedFrame(
+                                crossQK: crossQK,
+                                alignmentHeads: self.alignmentHeads
+                            )
+
+                            let shouldEmit = StreamingDecoder.shouldEmit(
+                                mostAttendedFrame: mostAttendedFrame,
+                                totalContentFrames: totalFrames,
+                                threshold: self.streamingConfig.frameThreshold
+                            )
+
+                            if shouldEmit && self.streamingConfig.emitPartial {
+                                let newTokens = Array(tokens[lastEmittedIndex...])
+                                let newText = self.tokenizer.decode(newTokens)
+
+                                if !newText.isEmpty {
+                                    emittedText += newText
+                                    lastEmittedIndex = tokens.count
+                                }
+                            }
+                        }
+
+                        // Emit final result if loop ended without EOT
+                        if !didEmitFinal {
+                            let remainingTokens = Array(tokens[lastEmittedIndex...])
+                            let remainingText = self.tokenizer.decode(remainingTokens)
+                            let fullText = (emittedText + remainingText).trimmingCharacters(in: .whitespaces)
+
+                            let generateTime = CFAbsoluteTimeGetCurrent() - generateStart
+                            let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+                            let tokensPerSecond = Double(generationTokenCount) / max(generateTime, 0.001)
+
+                            let output = STTOutput(
+                                text: fullText,
+                                segments: [STTSegment(text: fullText, start: 0, end: audioDuration)],
+                                language: nil,
+                                promptTokens: promptTokenCount,
+                                generationTokens: generationTokenCount,
+                                totalTokens: promptTokenCount + generationTokenCount,
+                                promptTps: Double(promptTokenCount) / max(prefillTime, 0.001),
+                                generationTps: tokensPerSecond,
+                                totalTime: totalTime,
+                                peakMemoryUsage: 0.0
+                            )
+
+                            continuation.yield(.info(STTGenerationInfo(
+                                promptTokenCount: promptTokenCount,
+                                generationTokenCount: generationTokenCount,
+                                prefillTime: prefillTime,
+                                generateTime: generateTime,
+                                tokensPerSecond: tokensPerSecond,
+                                peakMemoryUsage: 0.0
+                            )))
+                            continuation.yield(.result(output))
+                        }
+
+                        self.taskLock.withLock {
+                            self.currentTask = nil
+                        }
+                        continuation.finish()
+                    } catch is CancellationError {
+                        self.taskLock.withLock {
+                            self.currentTask = nil
+                        }
+                        continuation.finish(throwing: WhisperError.cancelled)
+                    } catch {
+                        self.taskLock.withLock {
+                            self.currentTask = nil
+                        }
+                        continuation.finish(throwing: error)
+                    }
+                }
+            }
+        }
     }
 }

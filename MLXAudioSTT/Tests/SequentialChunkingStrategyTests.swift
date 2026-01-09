@@ -24,7 +24,8 @@ struct SequentialChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mock,
             limits: limits,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }
@@ -63,7 +64,8 @@ struct SequentialChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mock,
             limits: limits,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }
@@ -97,7 +99,8 @@ struct SequentialChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mock,
             limits: limits,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }
@@ -143,7 +146,8 @@ struct SequentialChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mock,
             limits: limits,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }
@@ -188,7 +192,8 @@ struct SequentialChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mock,
             limits: limits,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }
@@ -220,7 +225,8 @@ struct SequentialChunkingStrategyTests {
                 sampleRate: sampleRate,
                 transcriber: mock,
                 limits: limits,
-                telemetry: nil
+                telemetry: nil,
+                options: .default
             ) {}
         } catch {
             caughtError = error
@@ -256,7 +262,8 @@ struct SequentialChunkingStrategyTests {
                 sampleRate: sampleRate,
                 transcriber: mock,
                 limits: limits,
-                telemetry: nil
+                telemetry: nil,
+                options: .default
             ) {
                 resultCount += 1
             }
@@ -297,7 +304,8 @@ struct SequentialChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mock,
             limits: limits,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }
@@ -330,7 +338,8 @@ struct SequentialChunkingStrategyTests {
             sampleRate: sampleRate,
             transcriber: mock,
             limits: limits,
-            telemetry: nil
+            telemetry: nil,
+            options: .default
         ) {
             results.append(result)
         }
