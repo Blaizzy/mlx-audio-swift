@@ -169,6 +169,18 @@ public class KVCache {
     public func reset() {
         lock.withLock {
             offset = 0
+            // Zero out the cache arrays to prevent stale data leakage
+            keys = MLXArray.zeros([keys.shape[0], maxSequenceLength, dim])
+            values = MLXArray.zeros([values.shape[0], maxSequenceLength, dim])
+        }
+    }
+
+    /// Debug: Get current cache state for diagnostics
+    public var debugState: String {
+        lock.withLock {
+            let keysMax = keys.max().item(Float.self)
+            let valuesMax = values.max().item(Float.self)
+            return "offset=\(offset), keysMax=\(String(format: "%.4f", keysMax)), valuesMax=\(String(format: "%.4f", valuesMax))"
         }
     }
 }
