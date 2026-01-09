@@ -50,7 +50,7 @@ let package = Package(
                 .product(name: "Transformers", package: "swift-transformers"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
             ],
-            path: "mlx_audio_swift/stt/MLXAudioSTT"
+            path: "MLXAudioSTT/Sources"
         ),
         .testTarget(
             name: "MLXAudioSTTTests",
@@ -58,7 +58,7 @@ let package = Package(
                 "MLXAudioSTT",
                 .product(name: "MLXNN", package: "mlx-swift"),
             ],
-            path: "mlx_audio_swift/stt/Tests",
+            path: "MLXAudioSTT/Tests",
             resources: [
                 .copy("Resources")
             ]
@@ -70,7 +70,7 @@ let package = Package(
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "ConsoleKitTerminal", package: "console-kit"),
             ],
-            path: "mlx_audio_swift/stt/STTDemo"
+            path: "MLXAudioSTT/STTDemo"
         ),
     ]
 )

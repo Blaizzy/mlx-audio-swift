@@ -4,7 +4,7 @@ vars:
   BUILD_DIR: .build/xcode
   DEBUG_BIN: '{{.BUILD_DIR}}/Build/Products/Debug'
   RELEASE_BIN: '{{.BUILD_DIR}}/Build/Products/Release'
-  TEST_RESOURCES: mlx_audio_swift/stt/Tests/Resources
+  TEST_RESOURCES: MLXAudioSTT/Tests/Resources
 
 tasks:
   default:
