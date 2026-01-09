@@ -1,2 +1,5 @@
 .build/
 docs/
+.serena/
+claudedocs/
+.DS_Store
