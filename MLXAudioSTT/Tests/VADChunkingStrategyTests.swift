@@ -22,7 +22,8 @@ struct VADChunkingStrategyTests {
 
         let config = VADChunkingStrategy.VADConfig(
             speechPadding: 0.1,
-            parallelProcessing: false
+            parallelProcessing: false,
+            packSegments: false
         )
         let strategy = VADChunkingStrategy(vadProvider: mockVAD, config: config)
 
@@ -69,7 +70,8 @@ struct VADChunkingStrategyTests {
 
         let config = VADChunkingStrategy.VADConfig(
             speechPadding: 0.0,
-            parallelProcessing: true
+            parallelProcessing: true,
+            packSegments: false
         )
         let strategy = VADChunkingStrategy(vadProvider: mockVAD, config: config)
 
@@ -114,7 +116,8 @@ struct VADChunkingStrategyTests {
 
         let config = VADChunkingStrategy.VADConfig(
             speechPadding: 0.0,
-            parallelProcessing: false
+            parallelProcessing: false,
+            packSegments: false
         )
         let strategy = VADChunkingStrategy(vadProvider: mockVAD, config: config)
 
@@ -157,7 +160,8 @@ struct VADChunkingStrategyTests {
 
         let config = VADChunkingStrategy.VADConfig(
             speechPadding: 0.0,
-            parallelProcessing: true
+            parallelProcessing: true,
+            packSegments: false
         )
         let strategy = VADChunkingStrategy(vadProvider: mockVAD, config: config)
 
@@ -399,7 +403,8 @@ struct VADChunkingStrategyTests {
 
         let config = VADChunkingStrategy.VADConfig(
             speechPadding: 0.0,
-            parallelProcessing: false
+            parallelProcessing: false,
+            packSegments: false
         )
         let strategy = VADChunkingStrategy(vadProvider: mockVAD, config: config)
 
@@ -449,7 +454,8 @@ struct VADChunkingStrategyTests {
 
         let config = VADChunkingStrategy.VADConfig(
             speechPadding: 0.0,
-            parallelProcessing: true
+            parallelProcessing: true,
+            packSegments: false
         )
         let strategy = VADChunkingStrategy(vadProvider: mockVAD, config: config)
 
@@ -628,7 +634,8 @@ struct VADChunkingStrategyTests {
 
         let config = VADChunkingStrategy.VADConfig(
             speechPadding: 0.0,
-            parallelProcessing: false
+            parallelProcessing: false,
+            packSegments: false
         )
         let strategy = VADChunkingStrategy(vadProvider: mockVAD, config: config)
 

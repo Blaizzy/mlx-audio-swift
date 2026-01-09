@@ -39,7 +39,8 @@ public final class EnergyVADProvider: VADProvider, @unchecked Sendable {
 
     public func detectSpeech(in audio: MLXArray, sampleRate: Int) async throws -> [SpeechSegment] {
         let probabilities = try await speechProbabilities(in: audio, sampleRate: sampleRate)
-        return segmentFromProbabilities(probabilities, threshold: config.speechThreshold, config: segmentConfig)
+        // Probabilities are already normalized to threshold (1.0 = at threshold level)
+        return segmentFromProbabilities(probabilities, threshold: 1.0, config: segmentConfig)
     }
 
     public func speechProbabilities(in audio: MLXArray, sampleRate: Int) async throws -> [(time: TimeInterval, probability: Float)] {

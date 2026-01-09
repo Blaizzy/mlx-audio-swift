@@ -9,9 +9,9 @@ struct SequentialChunkingStrategyTests {
     @Test func processesAudioSequentially() async throws {
         let mock = MockChunkTranscriber()
         mock.sequentialResults = [
-            ChunkResult(text: "First chunk", tokens: [1, 2, 3], timeRange: 0...10, confidence: 0.9),
-            ChunkResult(text: "Second chunk", tokens: [4, 5, 6], timeRange: 0...10, confidence: 0.9),
-            ChunkResult(text: "Third chunk", tokens: [7, 8, 9], timeRange: 0...10, confidence: 0.9),
+            ChunkResult(text: "First chunk", tokens: [1, 2, 3], timeRange: 0...30, confidence: 0.9),
+            ChunkResult(text: "Second chunk", tokens: [4, 5, 6], timeRange: 0...30, confidence: 0.9),
+            ChunkResult(text: "Third chunk", tokens: [7, 8, 9], timeRange: 0...30, confidence: 0.9),
         ]
 
         let audio = MLXArray.zeros([sampleRate * 90])
@@ -135,7 +135,7 @@ struct SequentialChunkingStrategyTests {
             ),
         ]
 
-        let audio = MLXArray.zeros([sampleRate * 45])
+        let audio = MLXArray.zeros([sampleRate * 35])  // 35s = 2 chunks (seek to 15, then 15+20=35)
         let config = SequentialChunkingStrategy.SequentialConfig(maxChunkDuration: 30.0)
         let strategy = SequentialChunkingStrategy(config: config)
         let limits = ProcessingLimits(chunkTimeout: 10)
@@ -181,7 +181,7 @@ struct SequentialChunkingStrategyTests {
             ),
         ]
 
-        let audio = MLXArray.zeros([sampleRate * 60])
+        let audio = MLXArray.zeros([sampleRate * 33])  // 33s = 2 chunks (seek to 25, then 25+8=33)
         let config = SequentialChunkingStrategy.SequentialConfig(maxChunkDuration: 30.0)
         let strategy = SequentialChunkingStrategy(config: config)
         let limits = ProcessingLimits(chunkTimeout: 10)
