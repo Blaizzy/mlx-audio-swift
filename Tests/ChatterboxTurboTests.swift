@@ -93,14 +93,14 @@ struct ChatterboxTurboSanitizeTests {
         let weights: [String: MLXArray] = [
             "ve.lstm.weight": MLXArray.zeros([2, 2], type: Float.self),
             "t3.tfmr.weight": MLXArray.zeros([2, 2], type: Float.self),
-            "s3gen.flow.weight": MLXArray.zeros([2, 2], type: Float.self),
+            "s3gen.encoder.pre_lookahead_layer.conv1.weight": MLXArray.zeros([2, 2, 2], type: Float.self),
         ]
 
         let sanitized = model.sanitize(weights: weights)
 
         #expect(sanitized.keys.contains("ve.lstm.weight"))
         #expect(sanitized.keys.contains("t3.tfmr.weight"))
-        #expect(sanitized.keys.contains("s3gen.flow.weight"))
+        #expect(sanitized.keys.contains("s3gen.encoder.pre_lookahead_layer.conv1.weight"))
     }
 
     @Test func testSanitizeKeepsOtherWeights() async throws {
@@ -519,14 +519,22 @@ struct ChatterboxTurboGenerationTests {
 
     @Test func testS3Token2WavSanitizeTransposesWeights() async throws {
         let model = S3Token2Wav(meanflow: true)
+        let key = "decoder.estimator.final_proj.conv.weight"
+        let expectedShapes = Dictionary(uniqueKeysWithValues: model.parameters().flattened().map { ($0.0, $0.1.shape) })
+        guard let expected = expectedShapes[key], expected.count == 3 else {
+            Issue.record("Missing expected conv weight shape for \(key)")
+            return
+        }
+
+        let transposedShape = [expected[0], expected[2], expected[1]]
         let weights: [String: MLXArray] = [
-            "conv.weight": MLXArray.zeros([2, 16, 3], type: Float.self),
+            key: MLXArray.zeros(transposedShape, type: Float.self),
             "bn.num_batches_tracked": MLXArray.zeros([1], type: Float.self)
         ]
 
         let sanitized = model.sanitize(weights)
 
         #expect(!sanitized.keys.contains("bn.num_batches_tracked"))
-        #expect(sanitized["conv.weight"]?.shape == [2, 3, 16])
+        #expect(sanitized[key]?.shape == expected)
     }
 }

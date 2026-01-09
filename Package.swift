@@ -28,6 +28,9 @@ let package = Package(
             name: "MLXAudio",
             targets: ["MLXAudioCore", "MLXAudioCodecs", "MLXAudioTTS", "MLXAudioSTT", "MLXAudioSTS", "MLXAudioUI"]
         ),
+
+        // Tooling
+        .executable(name: "ChatterboxTurboCompare", targets: ["ChatterboxTurboCompare"]),
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift.git", branch: "main"),
@@ -136,6 +139,15 @@ let package = Package(
             resources: [
                 .copy("media")
             ]
+        ),
+
+        // MARK: - Tools
+        .executableTarget(
+            name: "ChatterboxTurboCompare",
+            dependencies: [
+                "MLXAudioTTS",
+            ],
+            path: "Sources/ChatterboxTurboCompare"
         ),
     ]
 )

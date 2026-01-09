@@ -258,7 +258,7 @@ final class PreLookaheadLayer: Module {
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         var out = MLX.padded(x, widths: [.init(0), .init((0, preLookaheadLen)), .init(0)])
-        out = leakyRelu(conv1(out), negativeSlope: 0.1)
+        out = leakyRelu(conv1(out), negativeSlope: 0.01)
         out = MLX.padded(out, widths: [.init(0), .init((2, 0)), .init(0)])
         out = conv2(out)
         return out + x

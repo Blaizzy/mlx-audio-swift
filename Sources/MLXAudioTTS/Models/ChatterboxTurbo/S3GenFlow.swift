@@ -10,13 +10,6 @@ import Foundation
 import MLXNN
 import MLXRandom
 
-private func s3Linspace(start: Float, end: Float, count: Int) -> MLXArray {
-    guard count > 1 else { return MLXArray([start]) }
-    let step = (end - start) / Float(count - 1)
-    let values = (0..<count).map { start + Float($0) * step }
-    return MLXArray(values)
-}
-
 class ConditionalCFM: Module {
     let inChannels: Int
     let sigmaMin: Float
@@ -55,7 +48,7 @@ class ConditionalCFM: Module {
             z = MLX.concatenated([prefix, noisedMels], axis: 2)
         }
 
-        var tSpan = s3Linspace(start: 0, end: 1, count: nTimesteps + 1)
+        var tSpan = linspace(Float(0.0), Float(1.0), count: nTimesteps + 1)
         if !meanflow, tScheduler == "cosine" {
             tSpan = MLXArray(Float(1.0)) - MLX.cos(tSpan * MLXArray(Float(0.5 * Float.pi)))
         }
@@ -76,10 +69,10 @@ class ConditionalCFM: Module {
         cond: MLXArray?
     ) -> MLXArray {
         var state = x
-        let span = tSpan.asArray(Float.self)
-        for i in 0..<(span.count - 1) {
-            let t = MLXArray([span[i]])
-            let r = MLXArray([span[i + 1]])
+        let count = tSpan.shape[0]
+        for i in 0..<(count - 1) {
+            let t = tSpan[i..<(i + 1)]
+            let r = tSpan[(i + 1)..<(i + 2)]
             let dxdt = estimator(
                 x: state,
                 mask: mask,
@@ -105,12 +98,12 @@ class ConditionalCFM: Module {
         meanflow: Bool
     ) -> MLXArray {
         var state = x
-        let span = tSpan.asArray(Float.self)
         let batch = mu.shape[0]
 
-        for i in 0..<(span.count - 1) {
-            let t = MLXArray([span[i]])
-            let r = MLXArray([span[i + 1]])
+        let count = tSpan.shape[0]
+        for i in 0..<(count - 1) {
+            let t = tSpan[i..<(i + 1)]
+            let r = tSpan[(i + 1)..<(i + 2)]
 
             let xIn = MLX.concatenated([state, state], axis: 0)
             let maskIn = MLX.concatenated([mask, mask], axis: 0)

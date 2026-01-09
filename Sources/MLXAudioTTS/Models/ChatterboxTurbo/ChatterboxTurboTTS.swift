@@ -25,7 +25,7 @@ struct ChatterboxTurboConditionals {
 }
 
 public final class ChatterboxTurboTTS: Module {
-    public static let repoId = "ResembleAI/chatterbox-turbo"
+    public static let repoId = "mlx-community/Chatterbox-Turbo-TTS-4bit"
     public static let s3TokenizerRepo = "mlx-community/S3TokenizerV2"
 
     public let sampleRate: Int = S3GenSampleRate
@@ -334,7 +334,7 @@ public final class ChatterboxTurboTTS: Module {
     ) throws {
         var refWav24k = refAudio.asArray(Float.self)
         if sampleRate != S3GenSampleRate {
-            refWav24k = s3ResampleLinear(refWav24k, from: sampleRate, to: S3GenSampleRate)
+            refWav24k = chatterboxResample(refWav24k, from: sampleRate, to: S3GenSampleRate)
         }
 
         if Double(refWav24k.count) / Double(S3GenSampleRate) <= 5.0 {
@@ -342,10 +342,14 @@ public final class ChatterboxTurboTTS: Module {
         }
 
         if normLoudness {
-            refWav24k = simpleRmsNormalize(refWav24k, targetDb: -27.0)
+            refWav24k = chatterboxNormalizeLoudness(
+                refWav24k,
+                sampleRate: S3GenSampleRate,
+                targetLufs: -27.0
+            )
         }
 
-        let refWav16k = s3ResampleLinear(refWav24k, from: S3GenSampleRate, to: S3SampleRate)
+        let refWav16k = chatterboxResample(refWav24k, from: S3GenSampleRate, to: S3SampleRate)
         let refWav24kTrimmed = Array(refWav24k.prefix(decCondLen))
 
         let (genRef, t3Tokens) = extractConditionals(
@@ -423,6 +427,94 @@ public final class ChatterboxTurboTTS: Module {
         }
 
         return MLX.concatenated(audioChunks, axis: 0)
+    }
+
+    /// Generate Turbo speech tokens (S3 speech vocabulary) for a prompt.
+    ///
+    /// This is primarily intended for debugging and parity testing against the Python reference.
+    public func generateSpeechTokens(
+        text: String,
+        repetitionPenalty: Float = 1.2,
+        topP: Float = 0.95,
+        temperature: Float = 0.8,
+        topK: Int = 1000,
+        refAudio: MLXArray? = nil,
+        sampleRate: Int? = nil,
+        normLoudness: Bool = true,
+        splitPattern: String? = "(?<=[.!?])\\s+",
+        maxTokens: Int = 800
+    ) throws -> MLXArray {
+        if let refAudio, let sampleRate {
+            try prepareConditionals(refAudio: refAudio, sampleRate: sampleRate, normLoudness: normLoudness)
+        }
+
+        guard let conds else {
+            throw ChatterboxTurboError.modelNotInitialized("Conditionals not prepared")
+        }
+
+        let normalized = ChatterboxTurboTextUtils.puncNorm(text)
+        let chunks = splitText(normalized, splitPattern: splitPattern, maxTokens: maxTokens)
+
+        var tokenChunks: [MLXArray] = []
+        tokenChunks.reserveCapacity(chunks.count)
+
+        for chunk in chunks {
+            let textTokens = tokenize(chunk)
+            var speechTokens = t3.inferenceTurbo(
+                cond: conds.t3,
+                textTokens: textTokens,
+                temperature: temperature,
+                topK: topK,
+                topP: topP,
+                repetitionPenalty: repetitionPenalty,
+                maxGenLen: maxTokens
+            )
+
+            speechTokens = speechTokens.reshaped([-1])
+            let filtered = dropInvalidTokens(speechTokens)
+            let silence = MLXArray([Int32(S3GenSilenceToken), Int32(S3GenSilenceToken), Int32(S3GenSilenceToken)])
+            let combined = MLX.concatenated([filtered, silence], axis: 0)
+            tokenChunks.append(combined)
+            Memory.clearCache()
+        }
+
+        let merged = tokenChunks.count == 1 ? tokenChunks[0] : MLX.concatenated(tokenChunks, axis: 0)
+        return merged.expandedDimensions(axis: 0)
+    }
+
+    /// Run S3Gen inference given Turbo speech tokens and prepared conditionals.
+    ///
+    /// This is primarily intended for debugging and parity testing against the Python reference.
+    public func generateWav(
+        speechTokens: MLXArray,
+        nCfmTimesteps: Int = 2
+    ) throws -> MLXArray {
+        guard let conds else {
+            throw ChatterboxTurboError.modelNotInitialized("Conditionals not prepared")
+        }
+
+        let (wav, _) = s3gen.inference(
+            speechTokens: speechTokens,
+            refDict: conds.gen,
+            nCfmTimesteps: nCfmTimesteps
+        )
+
+        return wav.ndim == 2 ? wav.squeezed(axis: 0) : wav
+    }
+
+    /// Run S3Token2Mel given Turbo speech tokens and prepared conditionals.
+    ///
+    /// This is primarily intended for debugging and parity testing against the Python reference.
+    public func generateMel(
+        speechTokens: MLXArray,
+        nCfmTimesteps: Int = 2
+    ) throws -> MLXArray {
+        guard let conds else {
+            throw ChatterboxTurboError.modelNotInitialized("Conditionals not prepared")
+        }
+
+        let mels = s3gen(speechTokens, refDict: conds.gen, nCfmTimesteps: nCfmTimesteps, finalize: true)
+        return mels
     }
 
     public func generateStream(
@@ -594,15 +686,6 @@ public final class ChatterboxTurboTTS: Module {
         return MLXArray(filtered)
     }
 
-    private func simpleRmsNormalize(_ wav: [Float], targetDb: Float) -> [Float] {
-        guard !wav.isEmpty else { return wav }
-        let rms = sqrt(wav.reduce(0) { $0 + $1 * $1 } / Float(wav.count))
-        guard rms > 0 else { return wav }
-        let target = powf(10.0, targetDb / 20.0)
-        let gain = target / rms
-        guard gain.isFinite, gain > 0 else { return wav }
-        return wav.map { $0 * gain }
-    }
 }
 
 private func loadChatterboxWeights(from directory: URL, meanflow: Bool) throws -> [String: MLXArray] {

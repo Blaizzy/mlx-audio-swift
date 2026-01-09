@@ -467,7 +467,7 @@ final class VoiceEncoder: Module {
         var processed: [[Float]] = wavs
 
         if sampleRate != hp.sampleRate {
-            processed = processed.map { resampleLinear($0, from: sampleRate, to: hp.sampleRate) }
+            processed = processed.map { chatterboxResample($0, from: sampleRate, to: hp.sampleRate) }
         }
 
         if let trimTopDb {
@@ -505,23 +505,6 @@ final class VoiceEncoder: Module {
 
         return MLXArray(packed).reshaped([mels.count, maxLen, melBins])
     }
-}
-
-private func resampleLinear(_ wav: [Float], from: Int, to: Int) -> [Float] {
-    guard from != to, wav.count > 1 else { return wav }
-    let ratio = Float(to) / Float(from)
-    let newLength = Int(round(Float(wav.count) * ratio))
-    guard newLength > 1 else { return wav }
-
-    var output = [Float](repeating: 0, count: newLength)
-    for i in 0..<newLength {
-        let pos = Float(i) / ratio
-        let idx = Int(floor(pos))
-        let frac = pos - Float(idx)
-        let idxNext = min(idx + 1, wav.count - 1)
-        output[i] = wav[idx] * (1 - frac) + wav[idxNext] * frac
-    }
-    return output
 }
 
 private func trimSilence(_ wav: [Float], topDb: Float) -> [Float] {

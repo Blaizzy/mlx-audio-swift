@@ -227,84 +227,61 @@ final class T3: Module {
         generatedTokens: [Int]?,
         repetitionPenalty: Float
     ) -> Int {
-        var logitsArray = logits.asArray(Float.self)
-        if let generatedTokens, repetitionPenalty != 1.0 {
-            for token in Set(generatedTokens) where token >= 0 && token < logitsArray.count {
-                if logitsArray[token] > 0 {
-                    logitsArray[token] /= repetitionPenalty
-                } else {
-                    logitsArray[token] *= repetitionPenalty
-                }
+        var filteredLogits = logits
+
+        if let generatedTokens, repetitionPenalty != 1.0, !generatedTokens.isEmpty {
+            let vocabSize = filteredLogits.dim(-1)
+            var tokenMask = [Float](repeating: 0, count: vocabSize)
+            for token in Set(generatedTokens) where token >= 0 && token < vocabSize {
+                tokenMask[token] = 1.0
             }
+
+            let mask = MLXArray(tokenMask).reshaped([1, vocabSize])
+            let penalty = MLXArray(repetitionPenalty)
+            let penalized = MLX.where(filteredLogits .< 0, filteredLogits * penalty, filteredLogits / penalty)
+            filteredLogits = MLX.where(mask .> 0, penalized, filteredLogits)
         }
 
         if temperature > 0 && temperature != 1.0 {
-            for i in logitsArray.indices {
-                logitsArray[i] /= temperature
-            }
+            filteredLogits = filteredLogits / MLXArray(temperature)
         }
 
-        if topK > 0 && topK < logitsArray.count {
-            let topIndices = logitsArray.enumerated()
-                .sorted { $0.element > $1.element }
-                .prefix(topK)
-                .map { $0.offset }
-            let allowed = Set(topIndices)
-            let negInf = -Float.greatestFiniteMagnitude
-            for i in logitsArray.indices where !allowed.contains(i) {
-                logitsArray[i] = negInf
+        if topK > 0 {
+            let vocabSize = filteredLogits.dim(-1)
+            let k = min(topK, vocabSize)
+            if k > 0, k < vocabSize {
+                let partitioned = argPartition(filteredLogits, kth: -k, axis: -1)
+                let kthPosition = vocabSize - k
+                let kthIndices = partitioned[0..., kthPosition..<(kthPosition + 1)]
+                let kthValues = takeAlong(filteredLogits, kthIndices, axis: -1)
+                let keepMask = filteredLogits .>= kthValues
+                filteredLogits = MLX.where(keepMask, filteredLogits, MLXArray(-Float.infinity))
             }
         }
 
         if topP < 1.0 {
-            let sorted = logitsArray.enumerated().sorted { $0.element > $1.element }
-            var cumulative: Float = 0
-            var cutoffIndex = sorted.count
+            let sortedIndices = argSort(-filteredLogits, axis: -1)
+            let sortedLogits = takeAlong(filteredLogits, sortedIndices, axis: -1)
+            let sortedProbs = softmax(sortedLogits, axis: -1)
+            let cumulativeProbs = cumsum(sortedProbs, axis: -1)
 
-            let probs = softmax(sorted.map { $0.element })
-            for (idx, prob) in probs.enumerated() {
-                cumulative += prob
-                if cumulative > topP {
-                    cutoffIndex = max(1, idx + 1)
-                    break
-                }
+            var sortedIndicesToRemove = cumulativeProbs .> MLXArray(topP)
+            let batch = filteredLogits.dim(0)
+            let vocabSize = filteredLogits.dim(-1)
+
+            if vocabSize > 1 {
+                let first = MLXArray.zeros([batch, 1], type: Bool.self)
+                let shifted = sortedIndicesToRemove[0..., 0..<(vocabSize - 1)]
+                sortedIndicesToRemove = MLX.concatenated([first, shifted], axis: -1)
             }
 
-            let allowed = Set(sorted.prefix(cutoffIndex).map { $0.offset })
-            let negInf = -Float.greatestFiniteMagnitude
-            for i in logitsArray.indices where !allowed.contains(i) {
-                logitsArray[i] = negInf
-            }
+            let filteredSorted = MLX.where(sortedIndicesToRemove, MLXArray(-Float.infinity), sortedLogits)
+            let inverseIndices = argSort(sortedIndices, axis: -1)
+            filteredLogits = takeAlong(filteredSorted, inverseIndices, axis: -1)
         }
 
-        if temperature == 0 {
-            return logitsArray.enumerated().max(by: { $0.element < $1.element })?.offset ?? 0
-        }
-
-        let probabilities = softmax(logitsArray)
-        return sampleIndex(from: probabilities)
+        let next = categorical(filteredLogits)
+        eval(next)
+        return Int(next.item(Int32.self))
     }
-}
-
-private func softmax(_ logits: [Float]) -> [Float] {
-    guard let maxVal = logits.max() else { return [] }
-    let expVals = logits.map { expf($0 - maxVal) }
-    let sum = expVals.reduce(0, +)
-    guard sum > 0 else { return Array(repeating: 0, count: logits.count) }
-    return expVals.map { $0 / sum }
-}
-
-private func sampleIndex(from probs: [Float]) -> Int {
-    let total = probs.reduce(0, +)
-    guard total > 0 else { return 0 }
-
-    let target = Float.random(in: 0..<total)
-    var cumulative: Float = 0
-    for (index, prob) in probs.enumerated() {
-        cumulative += prob
-        if target <= cumulative {
-            return index
-        }
-    }
-    return max(0, probs.count - 1)
 }

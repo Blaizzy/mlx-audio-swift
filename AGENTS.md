@@ -29,6 +29,74 @@ implementation that uses the standard Hugging Face cache layout.
   This installs the Python reference implementation (currently mlx-audio v0.2.9) which includes Chatterbox Turbo for comparison during the port.
 - **Activate environment**: `source venv/bin/activate` to use the Python reference implementation.
 
+## Debugging / parity tools
+
+This repo includes a Swift-native parity/debug executable for Chatterbox Turbo:
+
+- **`ChatterboxTurboCompare`** (Swift executable target)
+  - Generates deterministic speech tokens + mel + WAV given a seed (no Python subprocess).
+  - Writes artifacts to disk for diffing against the Python reference.
+  - Common usage:
+    ```bash
+    # Generates Swift WAV + token/mel dumps (seeded)
+    swift run -c debug ChatterboxTurboCompare \
+      --repo mlx-community/Chatterbox-Turbo-TTS-4bit \
+      --text "Quick quality check. Does this sound natural?" \
+      --seed 0 --maxTokens 200 \
+      --out Artifacts/swift.wav \
+      --tokensOut Artifacts/swift_tokens.txt \
+      --melOut Artifacts/swift_mel.bin
+    ```
+  - You can also dump a model parameter by flattened key:
+    ```bash
+    swift run -c debug ChatterboxTurboCompare \
+      --dumpParamKey "s3gen.decoder.estimator.down_blocks.0.downsample.conv.conv.weight" \
+      --dumpParamOut Artifacts/param.bin
+    ```
+
+For Python reference output, use the `mlx-audio` implementation (we typically have it cloned under `~/projects/xaden/src/mlx-audio`):
+
+```bash
+cd ~/projects/xaden/src/mlx-audio
+source .venv311/bin/activate  # or your venv
+python - <<'PY'
+import os
+import numpy as np
+import mlx.core as mx
+import soundfile as sf
+from mlx_audio.tts.utils import load_model
+
+text = "Quick quality check. Does this sound natural?"
+model = load_model("mlx-community/Chatterbox-Turbo-TTS-4bit")
+mx.random.seed(0)  # IMPORTANT: seed right before generation for parity
+
+segments = [np.array(r.audio, dtype=np.float32) for r in model.generate(text, split_pattern=None, max_tokens=200)]
+audio = np.concatenate(segments)
+out_path = os.path.expanduser("~/projects/xaden/src/mlx-audio-swift/Artifacts/python.wav")
+sf.write(out_path, audio, model.sample_rate, subtype="FLOAT")
+print("wrote python.wav", model.sample_rate, audio.shape[0])
+PY
+```
+
+Quick numeric compare (Python):
+
+```bash
+python - <<'PY'
+import numpy as np
+import soundfile as sf
+
+swift_audio, sr1 = sf.read("Artifacts/swift.wav", dtype="float32")
+py_audio, sr2 = sf.read("Artifacts/python.wav", dtype="float32")
+assert sr1 == sr2
+n = min(len(swift_audio), len(py_audio))
+diff = swift_audio[:n] - py_audio[:n]
+print("sr", sr1, "samples", n)
+print("max_abs", float(np.max(np.abs(diff))))
+print("mean_abs", float(np.mean(np.abs(diff))))
+print("rms", float(np.sqrt(np.mean(diff**2))))
+PY
+```
+
 ## Repository expectations
 
 - Work on branch `pc/refactor-core`.

@@ -339,7 +339,7 @@ final class HiFTGenerator: Module {
         let freqBins = nFft / 2 + 1
 
         let window = stftWindow.asArray(Float.self)
-        let twoPi = 2.0 * Float.pi
+        let twoPi = 2.0 * Double.pi
 
         var real = [Float](repeating: 0, count: batch * freqBins * numFrames)
         var imag = [Float](repeating: 0, count: batch * freqBins * numFrames)
@@ -355,16 +355,17 @@ final class HiFTGenerator: Module {
                     frame[n] = sample * window[n]
                 }
                 for k in 0..<freqBins {
-                    var sumReal: Float = 0
-                    var sumImag: Float = 0
+                    var sumReal: Double = 0
+                    var sumImag: Double = 0
                     for n in 0..<nFft {
-                        let angle = twoPi * Float(k * n) / Float(nFft)
-                        sumReal += frame[n] * cosf(angle)
-                        sumImag -= frame[n] * sinf(angle)
+                        let angle = twoPi * Double(k * n) / Double(nFft)
+                        let value = Double(frame[n])
+                        sumReal += value * cos(angle)
+                        sumImag -= value * sin(angle)
                     }
                     let base = (b * freqBins + k) * numFrames + frameIndex
-                    real[base] = sumReal
-                    imag[base] = sumImag
+                    real[base] = Float(sumReal)
+                    imag[base] = Float(sumImag)
                 }
             }
         }
@@ -380,8 +381,10 @@ final class HiFTGenerator: Module {
         let batch = magnitude.shape[0]
         let numFrames = magnitude.shape[2]
 
-        let real = magnitude * MLX.cos(phase)
-        let imag = magnitude * MLX.sin(phase)
+        let maxMag = MLXArray(Float(1e2))
+        let magnitudeClamped = MLX.where(magnitude .< maxMag, magnitude, maxMag)
+        let real = magnitudeClamped * MLX.cos(phase)
+        let imag = magnitudeClamped * MLX.sin(phase)
 
         var outputs: [MLXArray] = []
         outputs.reserveCapacity(batch)
@@ -412,8 +415,9 @@ final class HiFTGenerator: Module {
                 }
             }
 
-            for i in 0..<outputLength where windowSum[i] > 0 {
-                audioSamples[i] /= windowSum[i]
+            for i in 0..<outputLength {
+                let denom = max(windowSum[i], 1e-8)
+                audioSamples[i] /= denom
             }
 
             let pad = nFft / 2
@@ -457,7 +461,7 @@ final class HiFTGenerator: Module {
             }
         }
 
-        h = leakyRelu(h, negativeSlope: 0.1)
+        h = leakyRelu(h, negativeSlope: 0.01)
         h = convPost(h)
 
         let nFft = istftParams["n_fft"] ?? 16
