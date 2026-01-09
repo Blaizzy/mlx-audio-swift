@@ -357,6 +357,24 @@ public final class WhisperSession: @unchecked Sendable {
 
                             tokens.append(nextToken)
 
+                            // Hallucination detection: Check every 5 tokens to avoid performance hit
+                            // Whisper often gets stuck in loops like "nda nda nda" or repeating phrases
+                            if step % 5 == 4 && self.detectRepetitionFast(tokens: tokens) {
+                                // Emit what we have and stop - repetition indicates model failure
+                                let finalTokens = Array(tokens.dropFirst(lastEmittedIndex).dropLast())  // Exclude the repetitive token
+                                let finalText = self.tokenizer.decode(finalTokens)
+                                let fullText = emittedText + finalText
+                                if !fullText.isEmpty {
+                                    continuation.yield(StreamingResult(
+                                        text: fullText.trimmingCharacters(in: .whitespaces),
+                                        isFinal: true,
+                                        timestamp: 0...audioDuration
+                                    ))
+                                }
+                                didEmitFinal = true
+                                break
+                            }
+
                             // AlignAtt: Check if we should emit
                             let mostAttendedFrame = StreamingDecoder.getMostAttendedFrame(
                                 crossQK: crossQK,
@@ -455,6 +473,43 @@ public final class WhisperSession: @unchecked Sendable {
             currentTask?.cancel()
             currentTask = nil
         }
+    }
+
+    // MARK: - Hallucination Detection
+
+    /// Fast repetition detection - O(n) with minimal allocations
+    /// Uses packed integers for n-gram keys instead of arrays
+    private func detectRepetitionFast(tokens: [Int], windowSize: Int = 12, threshold: Int = 4) -> Bool {
+        // Need at least 5 initial tokens (prompt) + window
+        guard tokens.count > 5 + windowSize else { return false }
+
+        let startIdx = tokens.count - windowSize
+
+        // Single token repetition - use simple array scan
+        var lastToken = tokens[startIdx]
+        var repeatCount = 1
+        for i in (startIdx + 1)..<tokens.count {
+            if tokens[i] == lastToken {
+                repeatCount += 1
+                if repeatCount >= threshold { return true }
+            } else {
+                lastToken = tokens[i]
+                repeatCount = 1
+            }
+        }
+
+        // Bigram repetition - pack two tokens into UInt64
+        // Token IDs are typically < 51865, so 32 bits each is safe
+        var bigramCounts: [UInt64: Int] = [:]
+        bigramCounts.reserveCapacity(windowSize)
+        for i in startIdx..<(tokens.count - 1) {
+            let key = UInt64(UInt32(bitPattern: Int32(tokens[i]))) << 32 | UInt64(UInt32(bitPattern: Int32(tokens[i + 1])))
+            let count = (bigramCounts[key] ?? 0) + 1
+            if count >= 3 { return true }
+            bigramCounts[key] = count
+        }
+
+        return false
     }
 }
 
