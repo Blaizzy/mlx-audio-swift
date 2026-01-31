@@ -9,7 +9,7 @@ import Foundation
 @preconcurrency import MLX
 import HuggingFace
 import Tokenizers
-import MLXLMCommon
+@preconcurrency import MLXLMCommon
 import MLXNN
 import MLXAudioCodecs
 import MLXAudioCore
@@ -354,8 +354,7 @@ private class LlamaTTSModelInner: Module {
 ///
 /// This model generates audio from text using SNAC audio codec tokens.
 /// It supports voice cloning and streaming generation.
-public class LlamaTTSModel: Module, KVCacheDimensionProvider {
-
+public class LlamaTTSModel: Module, KVCacheDimensionProvider, @unchecked Sendable {
     public let vocabularySize: Int
     public let kvHeads: [Int]
     public var tokenizer: Tokenizer?
@@ -734,119 +733,121 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider {
             repetitionContextSize: 20
         )
     ) -> AsyncThrowingStream<LlamaTTSGeneration, Error> {
-        AsyncThrowingStream { continuation in
-            Task {
-                do {
-                    guard let snacModel = self._snacModel else {
-                        throw LlamaTTSError.modelNotInitialized("SNAC model not loaded")
-                    }
-                    guard self.tokenizer != nil else {
-                        throw LlamaTTSError.modelNotInitialized("Tokenizer not loaded")
-                    }
-
-                    let prompt = text.replacingOccurrences(of: "\\n", with: "\n")
-                        .replacingOccurrences(of: "\\t", with: "\t")
-
-                    let (inputIds, _) = self.prepareInputIds(prompts: [prompt], voice: voice)
-
-                    let sampler = parameters.sampler()
-                    var processor = parameters.processor()
-
-                    let promptTokens = inputIds.squeezed(axis: 0)
-                    processor?.prompt(promptTokens)
-
-                    var cache = cache
-                    if cache == nil {
-                        cache = self.makeCache()
-                    }
-
-                    var generatedTokens: [Int32] = []
-                    let promptTokensList = inputIds.squeezed(axis: 0).asArray(Int32.self)
-                    generatedTokens.append(contentsOf: promptTokensList)
-
-                    let maxTokens = parameters.maxTokens ?? 1200
-
-                    let startTime = Date()
-
-                    // Prefill
-                    var tokenCount: Int = 0
-                    var logits = self(inputIds, cache: cache)
-                    let prefillTime = Date().timeIntervalSince(startTime)
-
-                    let generateStartTime = Date()
-
-                    // Generate tokens
-                    for i in 0..<maxTokens {
-                        if Task.isCancelled { break }
-
-                        let tokenValue: Int = autoreleasepool {
-                            var lastLogits = logits[0..., -1, 0...]
-                            lastLogits = processor?.process(logits: lastLogits) ?? lastLogits
-
-                            let nextToken = sampler.sample(logits: lastLogits)
-                            processor?.didSample(token: nextToken)
-
-                            let value = nextToken.item(Int.self)
-
-                            if value != OrpheusTokens.endOfSpeech {
-                                let nextTokenExpanded = nextToken.reshaped([1, 1])
-                                logits = self(nextTokenExpanded, cache: cache)
-                                eval(logits)
-                            }
-
-                            return value
-                        }
-
-                        tokenCount += 1
-                        continuation.yield(.token(tokenValue))
-
-                        if tokenValue == OrpheusTokens.endOfSpeech {
-                            break
-                        }
-
-                        generatedTokens.append(Int32(tokenValue))
-
-                        if i % 50 == 0 {
-                            Memory.clearCache()
-                        }
-                    }
-
-                    let generateTime = Date().timeIntervalSince(generateStartTime)
-
-                    let allTokens = MLXArray(generatedTokens).expandedDimensions(axis: 0)
-
-                    // Parse and decode audio
-                    let codeLists = self.parseOutput(allTokens)
-
-                    guard let codeList = codeLists.first, !codeList.isEmpty else {
-                        throw LlamaTTSError.generationFailed("No audio codes generated")
-                    }
-
-                    let audio = llamaDecodeAudioFromCodes(codeList: codeList, snacModel: snacModel)
-                    audio.eval()
-
-                    Memory.clearCache()
-
-                    // Yield completion info
-                    let info = LlamaTTSGenerationInfo(
-                        promptTokenCount: inputIds.shape[1],
-                        generationTokenCount: tokenCount,
-                        prefillTime: prefillTime,
-                        generateTime: generateTime,
-                        tokensPerSecond: Double(tokenCount) / generateTime,
-                        peakMemoryUsage: Double(Memory.peakMemory) / 1e9
-                    )
-                    continuation.yield(.info(info))
-
-                    // Yield final audio
-                    continuation.yield(.audio(audio))
-
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
+        let (stream, continuation) = AsyncThrowingStream<LlamaTTSGeneration, Error>.makeStream()
+        Task { @Sendable [weak self] in
+            guard let self else { return }
+            
+            do {
+                guard let snacModel = self._snacModel else {
+                    throw LlamaTTSError.modelNotInitialized("SNAC model not loaded")
                 }
+                guard self.tokenizer != nil else {
+                    throw LlamaTTSError.modelNotInitialized("Tokenizer not loaded")
+                }
+                
+                let prompt = text.replacingOccurrences(of: "\\n", with: "\n")
+                    .replacingOccurrences(of: "\\t", with: "\t")
+                
+                let (inputIds, _) = self.prepareInputIds(prompts: [prompt], voice: voice)
+                
+                let sampler = parameters.sampler()
+                var processor = parameters.processor()
+                
+                let promptTokens = inputIds.squeezed(axis: 0)
+                processor?.prompt(promptTokens)
+                
+                var cache = cache
+                if cache == nil {
+                    cache = self.makeCache()
+                }
+                
+                var generatedTokens: [Int32] = []
+                let promptTokensList = inputIds.squeezed(axis: 0).asArray(Int32.self)
+                generatedTokens.append(contentsOf: promptTokensList)
+                
+                let maxTokens = parameters.maxTokens ?? 1200
+                
+                let startTime = Date()
+                
+                // Prefill
+                var tokenCount: Int = 0
+                var logits = self(inputIds, cache: cache)
+                let prefillTime = Date().timeIntervalSince(startTime)
+                
+                let generateStartTime = Date()
+                
+                // Generate tokens
+                for i in 0..<maxTokens {
+                    if Task.isCancelled { break }
+                    
+                    let tokenValue: Int = autoreleasepool {
+                        var lastLogits = logits[0..., -1, 0...]
+                        lastLogits = processor?.process(logits: lastLogits) ?? lastLogits
+                        
+                        let nextToken = sampler.sample(logits: lastLogits)
+                        processor?.didSample(token: nextToken)
+                        
+                        let value = nextToken.item(Int.self)
+                        
+                        if value != OrpheusTokens.endOfSpeech {
+                            let nextTokenExpanded = nextToken.reshaped([1, 1])
+                            logits = self(nextTokenExpanded, cache: cache)
+                            eval(logits)
+                        }
+                        
+                        return value
+                    }
+                    
+                    tokenCount += 1
+                    continuation.yield(.token(tokenValue))
+                    
+                    if tokenValue == OrpheusTokens.endOfSpeech {
+                        break
+                    }
+                    
+                    generatedTokens.append(Int32(tokenValue))
+                    
+                    if i % 50 == 0 {
+                        Memory.clearCache()
+                    }
+                }
+                
+                let generateTime = Date().timeIntervalSince(generateStartTime)
+                
+                let allTokens = MLXArray(generatedTokens).expandedDimensions(axis: 0)
+                
+                // Parse and decode audio
+                let codeLists = self.parseOutput(allTokens)
+                
+                guard let codeList = codeLists.first, !codeList.isEmpty else {
+                    throw LlamaTTSError.generationFailed("No audio codes generated")
+                }
+                
+                let audio = llamaDecodeAudioFromCodes(codeList: codeList, snacModel: snacModel)
+                audio.eval()
+                
+                Memory.clearCache()
+                
+                // Yield completion info
+                let info = LlamaTTSGenerationInfo(
+                    promptTokenCount: inputIds.shape[1],
+                    generationTokenCount: tokenCount,
+                    prefillTime: prefillTime,
+                    generateTime: generateTime,
+                    tokensPerSecond: Double(tokenCount) / generateTime,
+                    peakMemoryUsage: Double(Memory.peakMemory) / 1e9
+                )
+                continuation.yield(.info(info))
+                
+                // Yield final audio
+                continuation.yield(.audio(audio))
+                
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
             }
         }
+        return stream
     }
 
     // MARK: - Loading
@@ -971,3 +972,4 @@ private func llamaTTSResolveOrDownloadModel(
     print("Model downloaded to: \(modelDir.path)")
     return modelDir
 }
+

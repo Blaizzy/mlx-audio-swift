@@ -184,7 +184,7 @@ private class SopranoModelInner: Module {
 
 // MARK: - Soprano Model
 
-public class SopranoModel: Module, KVCacheDimensionProvider {
+public class SopranoModel: Module, KVCacheDimensionProvider, @unchecked Sendable {
     public let vocabularySize: Int
     public let kvHeads: [Int]
     public var tokenizer: Tokenizer?
@@ -651,93 +651,95 @@ public class SopranoModel: Module, KVCacheDimensionProvider {
             repetitionContextSize: 30
         )
     ) -> AsyncThrowingStream<SopranoGeneration, Error> {
-        AsyncThrowingStream { continuation in
-            Task {
-                do {
-                    guard self.tokenizer != nil else {
-                        throw SopranoError.modelNotInitialized("Tokenizer not loaded")
-                    }
-
-                    let prompt = text.replacingOccurrences(of: "\\n", with: "\n")
-                        .replacingOccurrences(of: "\\t", with: "\t")
-
-                    let startTime = Date()
-                    let sentenceData = self.preprocessText([prompt])
-
-                    var audioParts: [MLXArray] = []
-                    var totalTokens = 0
-                    let maxTokens = parameters.maxTokens ?? 512
-
-                    for (promptText, _, _) in sentenceData {
-                        let inputIds = self.tokenize(promptText)
-                        var allHiddenStates: [MLXArray] = []
-
-                        for await (token, hiddenState) in self.streamGenerate(
-                            inputIds: inputIds,
-                            maxTokens: maxTokens,
-                            temperature: parameters.temperature,
-                            topP: parameters.topP,
-                            repetitionPenalty: parameters.repetitionPenalty ?? 1.0,  // Match Python (no penalty)
-                            repetitionContextSize: parameters.repetitionContextSize
-                        ) {
-                            allHiddenStates.append(hiddenState)
-
-                            if let tokenVal = token {
-                                continuation.yield(.token(tokenVal))
-                            }
-                        }
-
-                        let tokenCount = allHiddenStates.count
-                        totalTokens += tokenCount
-
-                        // Stack hidden states
-                        let hiddenStates = MLX.concatenated(allHiddenStates, axis: 1)
-
-                        // Decode to audio
-                        var audio = self.decoder(hiddenStates)
-
-                        let tokenSize = self.configuration.tokenSize
-                        let audioLength = tokenCount * tokenSize - tokenSize
-
-                        if audioLength > 0 {
-                            audio = audio[0, (-audioLength)...]
-                        } else {
-                            audio = audio[0]
-                        }
-
-                        audioParts.append(audio)
-                    }
-
-                    // Concatenate audio
-                    let finalAudio: MLXArray
-                    if audioParts.count > 1 {
-                        finalAudio = MLX.concatenated(audioParts, axis: 0)
-                    } else {
-                        finalAudio = audioParts[0]
-                    }
-
-                    let elapsed = Date().timeIntervalSince(startTime)
-
-                    // Yield info
-                    let info = SopranoGenerationInfo(
-                        promptTokenCount: 0,
-                        generationTokenCount: totalTokens,
-                        prefillTime: 0,
-                        generateTime: elapsed,
-                        tokensPerSecond: Double(totalTokens) / elapsed,
-                        peakMemoryUsage: Double(Memory.peakMemory) / 1e9
-                    )
-                    continuation.yield(.info(info))
-
-                    // Yield audio
-                    continuation.yield(.audio(finalAudio))
-
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
+        let (stream, continuation) = AsyncThrowingStream<SopranoGeneration, Error>.makeStream()
+        Task { @Sendable [weak self, continuation] in
+            guard let self else { return }
+            
+            do {
+                guard self.tokenizer != nil else {
+                    throw SopranoError.modelNotInitialized("Tokenizer not loaded")
                 }
+                
+                let prompt = text.replacingOccurrences(of: "\\n", with: "\n")
+                    .replacingOccurrences(of: "\\t", with: "\t")
+                
+                let startTime = Date()
+                let sentenceData = self.preprocessText([prompt])
+                
+                var audioParts: [MLXArray] = []
+                var totalTokens = 0
+                let maxTokens = parameters.maxTokens ?? 512
+                
+                for (promptText, _, _) in sentenceData {
+                    let inputIds = self.tokenize(promptText)
+                    var allHiddenStates: [MLXArray] = []
+                    
+                    for await (token, hiddenState) in self.streamGenerate(
+                        inputIds: inputIds,
+                        maxTokens: maxTokens,
+                        temperature: parameters.temperature,
+                        topP: parameters.topP,
+                        repetitionPenalty: parameters.repetitionPenalty ?? 1.0,  // Match Python (no penalty)
+                        repetitionContextSize: parameters.repetitionContextSize
+                    ) {
+                        allHiddenStates.append(hiddenState)
+                        
+                        if let tokenVal = token {
+                            continuation.yield(.token(tokenVal))
+                        }
+                    }
+                    
+                    let tokenCount = allHiddenStates.count
+                    totalTokens += tokenCount
+                    
+                    // Stack hidden states
+                    let hiddenStates = MLX.concatenated(allHiddenStates, axis: 1)
+                    
+                    // Decode to audio
+                    var audio = self.decoder(hiddenStates)
+                    
+                    let tokenSize = self.configuration.tokenSize
+                    let audioLength = tokenCount * tokenSize - tokenSize
+                    
+                    if audioLength > 0 {
+                        audio = audio[0, (-audioLength)...]
+                    } else {
+                        audio = audio[0]
+                    }
+                    
+                    audioParts.append(audio)
+                }
+                
+                // Concatenate audio
+                let finalAudio: MLXArray
+                if audioParts.count > 1 {
+                    finalAudio = MLX.concatenated(audioParts, axis: 0)
+                } else {
+                    finalAudio = audioParts[0]
+                }
+                
+                let elapsed = Date().timeIntervalSince(startTime)
+                
+                // Yield info
+                let info = SopranoGenerationInfo(
+                    promptTokenCount: 0,
+                    generationTokenCount: totalTokens,
+                    prefillTime: 0,
+                    generateTime: elapsed,
+                    tokensPerSecond: Double(totalTokens) / elapsed,
+                    peakMemoryUsage: Double(Memory.peakMemory) / 1e9
+                )
+                continuation.yield(.info(info))
+                
+                // Yield audio
+                continuation.yield(.audio(finalAudio))
+                
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
             }
         }
+        return stream
     }
 
     /// Stream generate tokens and hidden states.
@@ -1023,3 +1025,4 @@ private struct TopPSampler {
         return sampledToken.reshaped([1])
     }
 }
+
