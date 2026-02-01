@@ -124,12 +124,12 @@ class Qwen3TTSViewModel: ObservableObject {
     // Audio playback
     private var audioPlayer: AVAudioPlayer?
 
-    // Generation parameters
-    let temperature: Float = 0.3
-    let topK: Int = 50
-    let topP: Float = 0.95
-    let maxTokens: Int = 2000
-    let repetitionPenalty: Float = 1.05
+    // Generation parameters (adjustable)
+    @Published var temperature: Float = 0.3
+    @Published var topK: Int = 50
+    @Published var topP: Float = 0.95
+    @Published var maxTokens: Int = 2000
+    @Published var repetitionPenalty: Float = 1.05
 
     // Audio sample rate
     private let sampleRate: Double = 24000

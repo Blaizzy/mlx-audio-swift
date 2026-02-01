@@ -25,6 +25,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		0335571B2F2F068500B9DAB7 /* Qwen3TTS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Qwen3TTS.entitlements; sourceTree = "<group>"; };
 		PROD001 /* VoicesApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VoicesApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		PROD002 /* Qwen3TTS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Qwen3TTS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		QSRC001 /* Qwen3TTSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Qwen3TTSApp.swift; sourceTree = "<group>"; };
@@ -131,6 +132,7 @@
 		QGRP001 /* Qwen3TTS */ = {
 			isa = PBXGroup;
 			children = (
+				0335571B2F2F068500B9DAB7 /* Qwen3TTS.entitlements */,
 				QSRC001 /* Qwen3TTSApp.swift */,
 				QSRC002 /* Qwen3TTSContentView.swift */,
 				QSRC003 /* Qwen3TTSViewModel.swift */,
@@ -455,7 +457,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = "";
+				CODE_SIGN_ENTITLEMENTS = Qwen3TTS/Qwen3TTS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -488,7 +490,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = "";
+				CODE_SIGN_ENTITLEMENTS = Qwen3TTS/Qwen3TTS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;

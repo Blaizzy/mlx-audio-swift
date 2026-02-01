@@ -10,6 +10,7 @@ import SwiftUI
 struct Qwen3TTSContentView: View {
     @StateObject private var viewModel = Qwen3TTSViewModel()
     @State private var inputText = "This is a demo of the Qwen3 TTS model running on Apple Silicon."
+    @State private var showSettings = false
     @FocusState private var isTextEditorFocused: Bool
 
     var body: some View {
@@ -37,6 +38,9 @@ struct Qwen3TTSContentView: View {
 
                         // Text Input
                         textInputView
+
+                        // Settings (collapsible)
+                        settingsView
 
                         // Generation Stats
                         if viewModel.generationTime > 0 || viewModel.audioDuration > 0 {
@@ -285,6 +289,137 @@ struct Qwen3TTSContentView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var settingsView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Header with toggle
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showSettings.toggle()
+                }
+            } label: {
+                HStack {
+                    Image(systemName: "slider.horizontal.3")
+                        .foregroundStyle(.secondary)
+                    Text("Generation Settings")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Image(systemName: showSettings ? "chevron.up" : "chevron.down")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+
+            if showSettings {
+                VStack(spacing: 16) {
+                    // Temperature
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Temperature")
+                                .font(.caption)
+                            Spacer()
+                            Text(String(format: "%.2f", viewModel.temperature))
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: $viewModel.temperature, in: 0.1...2.0, step: 0.05)
+                            .tint(.blue)
+                    }
+
+                    // Top-K
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Top-K")
+                                .font(.caption)
+                            Spacer()
+                            Text("\(viewModel.topK)")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: Binding(
+                            get: { Double(viewModel.topK) },
+                            set: { viewModel.topK = Int($0) }
+                        ), in: 1...100, step: 1)
+                            .tint(.blue)
+                    }
+
+                    // Top-P
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Top-P")
+                                .font(.caption)
+                            Spacer()
+                            Text(String(format: "%.2f", viewModel.topP))
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: $viewModel.topP, in: 0.1...1.0, step: 0.05)
+                            .tint(.blue)
+                    }
+
+                    // Repetition Penalty
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Repetition Penalty")
+                                .font(.caption)
+                            Spacer()
+                            Text(String(format: "%.2f", viewModel.repetitionPenalty))
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: $viewModel.repetitionPenalty, in: 1.0...2.0, step: 0.05)
+                            .tint(.blue)
+                    }
+
+                    // Max Tokens
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Max Tokens")
+                                .font(.caption)
+                            Spacer()
+                            Text("\(viewModel.maxTokens)")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: Binding(
+                            get: { Double(viewModel.maxTokens) },
+                            set: { viewModel.maxTokens = Int($0) }
+                        ), in: 100...4000, step: 100)
+                            .tint(.blue)
+                    }
+
+                    // Reset button
+                    Button {
+                        viewModel.temperature = 0.3
+                        viewModel.topK = 50
+                        viewModel.topP = 0.95
+                        viewModel.repetitionPenalty = 1.05
+                        viewModel.maxTokens = 2000
+                    } label: {
+                        HStack {
+                            Image(systemName: "arrow.counterclockwise")
+                            Text("Reset to Defaults")
+                        }
+                        .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding()
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.secondary.opacity(0.05))
+                )
+                .disabled(viewModel.state.isActive)
+            }
+        }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.secondary.opacity(0.1))
+        )
     }
 
     private var statsView: some View {
