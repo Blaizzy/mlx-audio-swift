@@ -226,6 +226,9 @@ class Qwen3TTSViewModel: ObservableObject {
         audioDuration = 0
         lastAudioURL = nil
 
+        // Yield to allow UI to update before blocking generation
+        await Task.yield()
+
         let startTime = Date()
 
         // Determine voice/instruct based on model type

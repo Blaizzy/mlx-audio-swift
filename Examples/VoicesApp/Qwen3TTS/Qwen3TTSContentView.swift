@@ -470,12 +470,8 @@ struct Qwen3TTSContentView: View {
             } label: {
                 HStack(spacing: 8) {
                     if viewModel.state.isGenerating {
-                        ProgressView()
-                            .controlSize(.small)
-                            #if os(iOS)
-                            .tint(.white)
-                            #endif
-                        Text("Generating...")
+                        Image(systemName: "stop.fill")
+                        Text("Stop")
                     } else if case .loading = viewModel.state {
                         ProgressView()
                             .controlSize(.small)
@@ -493,7 +489,7 @@ struct Qwen3TTSContentView: View {
                 .padding(.vertical, 16)
             }
             .buttonStyle(.borderedProminent)
-            .tint(viewModel.state.isGenerating ? .orange : .blue)
+            .tint(viewModel.state.isGenerating ? .red : .blue)
             .disabled(!viewModel.isModelLoaded || viewModel.state == .playing || viewModel.state == .loading || (!viewModel.state.isGenerating && inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
 
             // Secondary buttons row
