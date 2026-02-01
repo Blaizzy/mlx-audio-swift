@@ -221,12 +221,7 @@ class Qwen3TTSViewModel: ObservableObject {
         }
         #endif
 
-        state = .generating(step: 0, codes: 0)
-        generationTime = 0
-        audioDuration = 0
-        lastAudioURL = nil
-
-        // Yield to allow UI to update before blocking generation
+        // State already set by startGeneration, just yield for UI
         await Task.yield()
 
         let startTime = Date()
@@ -284,6 +279,12 @@ class Qwen3TTSViewModel: ObservableObject {
 
     /// Start generation in a cancellable task.
     func startGeneration(text: String) {
+        // Set state immediately before task starts (ensures UI updates)
+        state = .generating(step: 0, codes: 0)
+        generationTime = 0
+        audioDuration = 0
+        lastAudioURL = nil
+
         generationTask = Task {
             await generate(text: text)
         }

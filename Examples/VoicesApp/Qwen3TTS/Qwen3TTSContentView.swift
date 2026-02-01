@@ -466,8 +466,8 @@ struct Qwen3TTSContentView: View {
     }
 
     private var actionButtonsView: some View {
-        VStack(spacing: 12) {
-            // Primary Generate button (full width)
+        HStack(spacing: 16) {
+            // Generate / Stop button
             Button {
                 isTextEditorFocused = false
                 if viewModel.state.isGenerating {
@@ -476,67 +476,67 @@ struct Qwen3TTSContentView: View {
                     viewModel.startGeneration(text: inputText)
                 }
             } label: {
-                HStack(spacing: 8) {
+                ZStack {
+                    Circle()
+                        .fill(viewModel.state.isGenerating ? Color.red : Color.blue)
+                        .frame(width: 56, height: 56)
+
                     if viewModel.state.isGenerating {
                         Image(systemName: "stop.fill")
-                        Text("Stop")
+                            .font(.title2)
+                            .foregroundStyle(.white)
                     } else if case .loading = viewModel.state {
                         ProgressView()
-                            .controlSize(.small)
-                            #if os(iOS)
                             .tint(.white)
-                            #endif
-                        Text("Loading...")
                     } else {
                         Image(systemName: "waveform")
-                        Text("Generate Speech")
+                            .font(.title2)
+                            .foregroundStyle(.white)
                     }
                 }
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(viewModel.state.isGenerating ? .red : .blue)
+            .buttonStyle(.plain)
             .disabled(!viewModel.isModelLoaded || viewModel.state == .playing || viewModel.state == .loading || (!viewModel.state.isGenerating && inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
 
-            // Secondary buttons row
-            HStack(spacing: 12) {
-                // Play / Stop Playback button
-                Button {
-                    if case .playing = viewModel.state {
-                        viewModel.stopPlayback()
-                    } else {
-                        Task {
-                            await viewModel.playAudio()
-                        }
+            // Play / Stop button
+            Button {
+                if case .playing = viewModel.state {
+                    viewModel.stopPlayback()
+                } else {
+                    Task {
+                        await viewModel.playAudio()
                     }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: viewModel.state == .playing ? "stop.fill" : "play.fill")
-                        Text(viewModel.state == .playing ? "Stop" : "Play")
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
                 }
-                .buttonStyle(.bordered)
-                .tint(viewModel.state == .playing ? .red : .primary)
-                .disabled(!viewModel.hasGeneratedAudio || viewModel.state.isGenerating || viewModel.state == .loading)
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(viewModel.state == .playing ? Color.red : (viewModel.hasGeneratedAudio ? Color.orange : Color.secondary.opacity(0.3)))
+                        .frame(width: 56, height: 56)
 
-                // Share button
-                ShareLink(item: viewModel.lastAudioURL ?? URL(fileURLWithPath: "/")) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "square.and.arrow.up")
-                        Text("Share")
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
+                    Image(systemName: viewModel.state == .playing ? "stop.fill" : "play.fill")
+                        .font(.title2)
+                        .foregroundStyle(viewModel.hasGeneratedAudio ? .white : .secondary)
                 }
-                .buttonStyle(.bordered)
-                .tint(.primary)
-                .disabled(!viewModel.hasGeneratedAudio || viewModel.state.isActive)
             }
+            .buttonStyle(.plain)
+            .disabled(!viewModel.hasGeneratedAudio || viewModel.state.isGenerating || viewModel.state == .loading)
+
+            // Share button
+            ShareLink(item: viewModel.lastAudioURL ?? URL(fileURLWithPath: "/")) {
+                ZStack {
+                    Circle()
+                        .fill(viewModel.hasGeneratedAudio && !viewModel.state.isActive ? Color.green : Color.secondary.opacity(0.3))
+                        .frame(width: 56, height: 56)
+
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.title2)
+                        .foregroundStyle(viewModel.hasGeneratedAudio && !viewModel.state.isActive ? .white : .secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(!viewModel.hasGeneratedAudio || viewModel.state.isActive)
         }
+        .padding(.vertical, 8)
     }
 }
 
