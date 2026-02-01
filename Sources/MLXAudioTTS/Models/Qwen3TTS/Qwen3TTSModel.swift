@@ -11,7 +11,7 @@
 //
 
 import Foundation
-import HuggingFace
+import Hub
 import MLX
 import MLXNN
 import Tokenizers
@@ -68,32 +68,20 @@ public class Qwen3TTSModel {
     /// - Returns: Loaded model ready for generation
     public static func load(
         from repo: String,
-        progressHandler: ((Progress) -> Void)? = nil
+        progressHandler: (@Sendable (Progress) -> Void)? = nil
     ) async throws -> Qwen3TTSModel {
-        // Check for HF token in environment or Info.plist
-        let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
-            ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
+        let hub = HubApi()
 
-        let client: HubClient
-        if let token = hfToken, !token.isEmpty {
-            client = HubClient(host: HubClient.defaultHost, bearerToken: token)
-        } else {
-            client = HubClient.default
-        }
-        let cache = client.cache ?? HubCache.default
-
-        guard let repoID = Repo.ID(rawValue: repo) else {
-            throw Qwen3TTSError.invalidConfig("Invalid repository ID: \(repo)")
+        // Download model files using Hub API from swift-transformers
+        // This handles caching correctly without the speech_tokenizer corruption issues
+        let modelDirectory = try await hub.snapshot(
+            from: Hub.Repo(id: repo),
+            matching: ["*.safetensors", "*.json", "*.txt"]
+        ) { progress in
+            progressHandler?(progress)
         }
 
-        // Download model files to cache directory
-        let modelDir = try await resolveOrDownloadQwen3TTSModel(
-            client: client,
-            cache: cache,
-            repoID: repoID
-        )
-
-        return try await load(from: modelDir)
+        return try await load(from: modelDirectory)
     }
 
     /// Load model from a local directory.
@@ -645,85 +633,4 @@ private func writeWAV(samples: [Float], sampleRate: Int, to url: URL) throws {
     }
 
     try data.write(to: url)
-}
-
-// MARK: - Model Download Helper
-
-/// Resolves a Qwen3-TTS model from cache or downloads it if not cached.
-/// - Parameters:
-///   - client: The HuggingFace Hub client
-///   - cache: The HuggingFace cache
-///   - repoID: The repository ID
-/// - Returns: The model directory URL
-private func resolveOrDownloadQwen3TTSModel(
-    client: HubClient,
-    cache: HubCache,
-    repoID: Repo.ID
-) async throws -> URL {
-    // Use a persistent cache directory based on repo ID
-    let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
-    let modelDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        .appendingPathComponent("mlx-audio")
-        .appendingPathComponent(modelSubdir)
-
-    // Check if model already exists with required files
-    if FileManager.default.fileExists(atPath: modelDir.path) {
-        let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
-        let hasSafetensors = files?.contains { $0.pathExtension == "safetensors" } ?? false
-
-        if hasSafetensors {
-            // Validate that config.json is valid JSON
-            let configPath = modelDir.appendingPathComponent("config.json")
-            if FileManager.default.fileExists(atPath: configPath.path) {
-                if let configData = try? Data(contentsOf: configPath),
-                   let _ = try? JSONSerialization.jsonObject(with: configData) {
-                    // Also check that speech_tokenizer is a directory (not a corrupted file)
-                    let speechTokenizerPath = modelDir.appendingPathComponent("speech_tokenizer")
-                    var isDirectory: ObjCBool = false
-                    if FileManager.default.fileExists(atPath: speechTokenizerPath.path, isDirectory: &isDirectory) {
-                        if isDirectory.boolValue {
-                            // Cache is valid
-                            return modelDir
-                        } else {
-                            // speech_tokenizer is a file, not a directory - corrupted cache
-                            try? FileManager.default.removeItem(at: modelDir)
-                        }
-                    } else {
-                        // speech_tokenizer doesn't exist yet, cache may be partial
-                        // Continue with download
-                    }
-                } else {
-                    // Cached config.json is invalid, clear cache
-                    try? FileManager.default.removeItem(at: modelDir)
-                }
-            }
-        }
-    }
-
-    // Create directory if needed
-    try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
-
-    // Clean up speech_tokenizer if it exists as a file (not a directory)
-    // This can happen if a previous download was interrupted
-    let speechTokenizerPath = modelDir.appendingPathComponent("speech_tokenizer")
-    var isDirectory: ObjCBool = false
-    if FileManager.default.fileExists(atPath: speechTokenizerPath.path, isDirectory: &isDirectory) {
-        if !isDirectory.boolValue {
-            // It's a file, remove it so we can create a directory
-            try? FileManager.default.removeItem(at: speechTokenizerPath)
-        }
-    }
-
-    // Download model snapshot
-    _ = try await client.downloadSnapshot(
-        of: repoID,
-        kind: .model,
-        to: modelDir,
-        revision: "main",
-        progressHandler: { progress in
-            // Progress updates handled internally
-        }
-    )
-
-    return modelDir
 }

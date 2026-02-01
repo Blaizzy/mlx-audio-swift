@@ -9,7 +9,8 @@ let package = Package(
         .macOS(.v15)
     ],
     products: [
-        .executable(name: "VoicesApp", targets: ["VoicesApp"])
+        .executable(name: "VoicesApp", targets: ["VoicesApp"]),
+        .executable(name: "Qwen3TTS", targets: ["Qwen3TTS"])
     ],
     dependencies: [
         .package(path: "../..")
@@ -18,10 +19,17 @@ let package = Package(
         .executableTarget(
             name: "VoicesApp",
             dependencies: [
-                .product(name: "MLXAudioTTS", package: "mlx-audio-swift"),
-                .product(name: "MLXAudioCore", package: "mlx-audio-swift")
+                .product(name: "MLXAudioTTS", package: "mlx-audio-swift-sdk"),
+                .product(name: "MLXAudioCore", package: "mlx-audio-swift-sdk")
             ],
             path: "VoicesApp"
+        ),
+        .executableTarget(
+            name: "Qwen3TTS",
+            dependencies: [
+                .product(name: "MLXAudioTTS", package: "mlx-audio-swift-sdk")
+            ],
+            path: "Qwen3TTS"
         )
     ]
 )
