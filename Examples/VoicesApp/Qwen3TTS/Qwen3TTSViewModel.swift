@@ -233,7 +233,8 @@ class Qwen3TTSViewModel: ObservableObject {
 
         // Determine voice/instruct based on model type
         let voice: String? = selectedModel.usesVoiceNames ? selectedVoice.rawValue : nil
-        let instruct: String? = selectedModel.usesVoiceNames ? nil : voiceInstruct
+        let trimmedInstruct = voiceInstruct.trimmingCharacters(in: .whitespacesAndNewlines)
+        let instruct: String? = trimmedInstruct.isEmpty ? nil : trimmedInstruct
 
         do {
             // Generate audio

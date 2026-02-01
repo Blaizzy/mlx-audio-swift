@@ -29,12 +29,13 @@ struct Qwen3TTSContentView: View {
                         // Model Selection
                         modelSelectionView
 
-                        // Voice Selection (for CustomVoice) or Instruct (for VoiceDesign/Base)
+                        // Voice Selection (for CustomVoice)
                         if viewModel.selectedModel.usesVoiceNames {
                             voiceSelectionView
-                        } else {
-                            voiceInstructView
                         }
+
+                        // Voice Description (for all models)
+                        voiceInstructView
 
                         // Text Input
                         textInputView
@@ -224,9 +225,16 @@ struct Qwen3TTSContentView: View {
 
     private var voiceInstructView: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Voice Description")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            HStack {
+                Text("Voice Description")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                if viewModel.selectedModel.usesVoiceNames {
+                    Text("(Optional)")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
 
             TextField("Describe the voice style...", text: $viewModel.voiceInstruct, axis: .vertical)
                 .lineLimit(2...4)
@@ -240,7 +248,7 @@ struct Qwen3TTSContentView: View {
 
             Text("E.g., \"A calm, clear female voice with a professional tone.\"")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.tertiary)
         }
     }
 
