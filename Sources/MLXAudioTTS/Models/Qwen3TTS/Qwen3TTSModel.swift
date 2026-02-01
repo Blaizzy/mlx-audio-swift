@@ -677,7 +677,21 @@ private func resolveOrDownloadQwen3TTSModel(
             if FileManager.default.fileExists(atPath: configPath.path) {
                 if let configData = try? Data(contentsOf: configPath),
                    let _ = try? JSONSerialization.jsonObject(with: configData) {
-                    return modelDir
+                    // Also check that speech_tokenizer is a directory (not a corrupted file)
+                    let speechTokenizerPath = modelDir.appendingPathComponent("speech_tokenizer")
+                    var isDirectory: ObjCBool = false
+                    if FileManager.default.fileExists(atPath: speechTokenizerPath.path, isDirectory: &isDirectory) {
+                        if isDirectory.boolValue {
+                            // Cache is valid
+                            return modelDir
+                        } else {
+                            // speech_tokenizer is a file, not a directory - corrupted cache
+                            try? FileManager.default.removeItem(at: modelDir)
+                        }
+                    } else {
+                        // speech_tokenizer doesn't exist yet, cache may be partial
+                        // Continue with download
+                    }
                 } else {
                     // Cached config.json is invalid, clear cache
                     try? FileManager.default.removeItem(at: modelDir)
@@ -688,6 +702,17 @@ private func resolveOrDownloadQwen3TTSModel(
 
     // Create directory if needed
     try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
+
+    // Clean up speech_tokenizer if it exists as a file (not a directory)
+    // This can happen if a previous download was interrupted
+    let speechTokenizerPath = modelDir.appendingPathComponent("speech_tokenizer")
+    var isDirectory: ObjCBool = false
+    if FileManager.default.fileExists(atPath: speechTokenizerPath.path, isDirectory: &isDirectory) {
+        if !isDirectory.boolValue {
+            // It's a file, remove it so we can create a directory
+            try? FileManager.default.removeItem(at: speechTokenizerPath)
+        }
+    }
 
     // Download model snapshot
     _ = try await client.downloadSnapshot(
