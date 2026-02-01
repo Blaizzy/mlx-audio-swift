@@ -457,8 +457,8 @@ struct Qwen3TTSContentView: View {
     }
 
     private var actionButtonsView: some View {
-        HStack(spacing: 12) {
-            // Generate / Stop Generation button
+        VStack(spacing: 12) {
+            // Primary Generate button (full width)
             Button {
                 isTextEditorFocused = false
                 if viewModel.state.isGenerating {
@@ -467,69 +467,70 @@ struct Qwen3TTSContentView: View {
                     viewModel.startGeneration(text: inputText)
                 }
             } label: {
-                HStack {
+                HStack(spacing: 8) {
                     if viewModel.state.isGenerating {
-                        Image(systemName: "stop.fill")
-                        Text("Stop")
+                        ProgressView()
+                            .controlSize(.small)
+                            #if os(iOS)
+                            .tint(.white)
+                            #endif
+                        Text("Generating...")
+                    } else if case .loading = viewModel.state {
+                        ProgressView()
+                            .controlSize(.small)
+                            #if os(iOS)
+                            .tint(.white)
+                            #endif
+                        Text("Loading...")
                     } else {
-                        if case .loading = viewModel.state {
-                            ProgressView()
-                                .controlSize(.small)
-                                #if os(iOS)
-                                .tint(.white)
-                                #endif
-                            Text("Loading...")
-                        } else {
-                            Image(systemName: "waveform")
-                            Text("Generate")
-                        }
+                        Image(systemName: "waveform")
+                        Text("Generate Speech")
                     }
                 }
+                .font(.headline)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
+                .padding(.vertical, 16)
             }
             .buttonStyle(.borderedProminent)
-            .tint(viewModel.state.isGenerating ? .red : .blue)
+            .tint(viewModel.state.isGenerating ? .orange : .blue)
             .disabled(!viewModel.isModelLoaded || viewModel.state == .playing || viewModel.state == .loading || (!viewModel.state.isGenerating && inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
 
-            // Play / Stop Playback button
-            Button {
-                if case .playing = viewModel.state {
-                    viewModel.stopPlayback()
-                } else {
-                    Task {
-                        await viewModel.playAudio()
-                    }
-                }
-            } label: {
-                HStack {
+            // Secondary buttons row
+            HStack(spacing: 12) {
+                // Play / Stop Playback button
+                Button {
                     if case .playing = viewModel.state {
-                        Image(systemName: "stop.fill")
-                        Text("Stop")
+                        viewModel.stopPlayback()
                     } else {
-                        Image(systemName: "play.fill")
-                        Text("Play")
+                        Task {
+                            await viewModel.playAudio()
+                        }
                     }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: viewModel.state == .playing ? "stop.fill" : "play.fill")
+                        Text(viewModel.state == .playing ? "Stop" : "Play")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(viewModel.state == .playing ? .red : .orange)
-            .disabled(!viewModel.hasGeneratedAudio || viewModel.state.isGenerating || viewModel.state == .loading)
+                .buttonStyle(.bordered)
+                .tint(viewModel.state == .playing ? .red : .primary)
+                .disabled(!viewModel.hasGeneratedAudio || viewModel.state.isGenerating || viewModel.state == .loading)
 
-            // Share button
-            ShareLink(item: viewModel.lastAudioURL ?? URL(fileURLWithPath: "/")) {
-                HStack {
-                    Image(systemName: "square.and.arrow.up")
-                    Text("Share")
+                // Share button
+                ShareLink(item: viewModel.lastAudioURL ?? URL(fileURLWithPath: "/")) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "square.and.arrow.up")
+                        Text("Share")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
+                .buttonStyle(.bordered)
+                .tint(.primary)
+                .disabled(!viewModel.hasGeneratedAudio || viewModel.state.isActive)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.green)
-            .disabled(!viewModel.hasGeneratedAudio || viewModel.state.isActive)
         }
     }
 }

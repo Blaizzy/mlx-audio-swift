@@ -245,7 +245,10 @@ class Qwen3TTSViewModel: ObservableObject {
                 instruct: instruct
             ) { [weak self] step, codes in
                 Task { @MainActor in
-                    self?.state = .generating(step: step, codes: codes)
+                    // Only update if still in generating state (avoid race with completion)
+                    if case .generating = self?.state {
+                        self?.state = .generating(step: step, codes: codes)
+                    }
                 }
             }
 
