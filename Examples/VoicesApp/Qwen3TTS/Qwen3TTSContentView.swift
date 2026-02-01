@@ -6,15 +6,18 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct Qwen3TTSContentView: View {
     @StateObject private var viewModel = Qwen3TTSViewModel()
     @State private var inputText = "Hello! Thanks for calling today. I'm Vivian, your support agent. Let's take a look at what's going on with your account."
     @State private var showSettings = false
+    @State private var showFilePicker = false
     @FocusState private var isTextEditorFocused: Bool
 
     private static let customVoiceDefaultText = "Hello! Thanks for calling today. I'm Vivian, your support agent. Let's take a look at what's going on with your account."
     private static let voiceDesignDefaultText = "It's in the top drawer... wait, it's empty? No way, that's impossible! I'm sure I put it there."
+    private static let voiceCloningDefaultText = "Hey, it's Jerry. I'm calling to sell you nothing! That's right. Nothing at all."
 
     var body: some View {
         NavigationStack {
@@ -37,8 +40,15 @@ struct Qwen3TTSContentView: View {
                             voiceSelectionView
                         }
 
-                        // Voice Description (for all models)
-                        voiceInstructView
+                        // Reference Audio (for Base model voice cloning)
+                        if viewModel.selectedModel.supportsVoiceCloning {
+                            referenceAudioView
+                        }
+
+                        // Voice Description (for CustomVoice and VoiceDesign models, not Base)
+                        if !viewModel.selectedModel.supportsVoiceCloning {
+                            voiceInstructView
+                        }
 
                         // Text Input
                         textInputView
@@ -70,10 +80,36 @@ struct Qwen3TTSContentView: View {
             }
             .onChange(of: viewModel.selectedModel) { _, newModel in
                 // Update default text based on model type
-                if newModel.usesVoiceNames {
+                if newModel.supportsVoiceCloning {
+                    inputText = Self.voiceCloningDefaultText
+                } else if newModel.usesVoiceNames {
                     inputText = Self.customVoiceDefaultText
                 } else {
                     inputText = Self.voiceDesignDefaultText
+                }
+                // Clear reference audio when switching away from Base model
+                if !newModel.supportsVoiceCloning {
+                    viewModel.clearReferenceAudio()
+                }
+            }
+            .fileImporter(
+                isPresented: $showFilePicker,
+                allowedContentTypes: [UTType.audio, UTType.wav],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    if let url = urls.first {
+                        // Start accessing security-scoped resource
+                        if url.startAccessingSecurityScopedResource() {
+                            viewModel.loadReferenceAudio(from: url)
+                            url.stopAccessingSecurityScopedResource()
+                        } else {
+                            viewModel.loadReferenceAudio(from: url)
+                        }
+                    }
+                case .failure(let error):
+                    print("File picker error: \(error)")
                 }
             }
         }
@@ -159,7 +195,7 @@ struct Qwen3TTSContentView: View {
                         if viewModel.selectedModel != model {
                             viewModel.selectedModel = model
                             Task {
-                                await viewModel.loadModel(forceReload: true)
+                                await viewModel.loadModel()
                             }
                         }
                     } label: {
@@ -231,6 +267,48 @@ struct Qwen3TTSContentView: View {
                 )
             }
             .disabled(viewModel.state.isActive)
+        }
+    }
+
+    private var referenceAudioView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Reference Audio")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Button {
+                    showFilePicker = true
+                } label: {
+                    HStack {
+                        Image(systemName: "waveform.badge.plus")
+                        Text(viewModel.referenceAudioURL?.lastPathComponent ?? "Select Audio File")
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color.secondary.opacity(0.1))
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.state.isActive)
+
+                if viewModel.referenceAudioURL != nil {
+                    Button {
+                        viewModel.clearReferenceAudio()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Text("WAV file at 24kHz for voice cloning")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
         }
     }
 
@@ -533,20 +611,33 @@ struct Qwen3TTSContentView: View {
             .disabled(!viewModel.hasGeneratedAudio || viewModel.state.isGenerating || viewModel.state == .loading)
 
             // Share button
-            ShareLink(item: viewModel.lastAudioURL ?? URL(fileURLWithPath: "/")) {
+            if let audioURL = viewModel.lastAudioURL, viewModel.hasGeneratedAudio && !viewModel.state.isActive {
+                ShareLink(item: audioURL) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 56, height: 56)
+
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.title2)
+                            .foregroundStyle(.white)
+                    }
+                }
+                .buttonStyle(.plain)
+            } else {
+                // Placeholder when share is disabled
                 ZStack {
                     Circle()
-                        .fill(viewModel.hasGeneratedAudio && !viewModel.state.isActive ? Color.green : Color.secondary.opacity(0.3))
+                        .fill(Color.secondary.opacity(0.3))
                         .frame(width: 56, height: 56)
 
                     Image(systemName: "square.and.arrow.up")
                         .font(.title2)
-                        .foregroundStyle(viewModel.hasGeneratedAudio && !viewModel.state.isActive ? .white : .secondary)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .buttonStyle(.plain)
-            .disabled(!viewModel.hasGeneratedAudio || viewModel.state.isActive)
         }
+        .fixedSize(horizontal: false, vertical: true)
         .padding(.vertical, 8)
     }
 }

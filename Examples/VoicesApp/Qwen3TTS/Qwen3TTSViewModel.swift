@@ -142,6 +142,10 @@ class Qwen3TTSViewModel: ObservableObject {
     // Audio sample rate
     private let sampleRate: Double = 24000
 
+    // Voice cloning (Base model only)
+    @Published var referenceAudioURL: URL?
+    private var referenceAudio: MLXArray?
+
     // MARK: - Public Methods
 
     /// Load the TTS model from HuggingFace.
@@ -241,6 +245,7 @@ class Qwen3TTSViewModel: ObservableObject {
                 maxTokens: maxTokens,
                 repetitionPenalty: repetitionPenalty,
                 speaker: voice,
+                refAudio: referenceAudio,
                 instruct: instruct
             ) { [weak self] step, codes in
                 Task { @MainActor in
@@ -339,6 +344,29 @@ class Qwen3TTSViewModel: ObservableObject {
         lastAudioURL != nil
     }
 
+    /// Check if voice cloning is supported for current model.
+    var supportsVoiceCloning: Bool {
+        selectedModel.supportsVoiceCloning
+    }
+
+    /// Load reference audio from a WAV file for voice cloning.
+    func loadReferenceAudio(from url: URL) {
+        do {
+            referenceAudio = try Self.loadWAV(from: url)
+            referenceAudioURL = url
+            print("Loaded reference audio: \(url.lastPathComponent)")
+        } catch {
+            print("Failed to load reference audio: \(error)")
+            state = .error("Failed to load audio: \(error.localizedDescription)")
+        }
+    }
+
+    /// Clear reference audio.
+    func clearReferenceAudio() {
+        referenceAudio = nil
+        referenceAudioURL = nil
+    }
+
     // MARK: - Private Methods
 
     private func setupAudioSession() {
@@ -416,5 +444,105 @@ class Qwen3TTSViewModel: ObservableObject {
         }
 
         return data
+    }
+
+    /// Load a WAV file and return audio samples as MLXArray.
+    /// Expects mono 24kHz audio. Stereo will be converted to mono.
+    private static func loadWAV(from url: URL) throws -> MLXArray {
+        let data = try Data(contentsOf: url)
+
+        // Parse WAV header
+        guard data.count > 44 else {
+            throw NSError(domain: "WAV", code: 1, userInfo: [NSLocalizedDescriptionKey: "File too small to be valid WAV"])
+        }
+
+        // Check RIFF header
+        let riff = String(data: data[0..<4], encoding: .ascii)
+        guard riff == "RIFF" else {
+            throw NSError(domain: "WAV", code: 2, userInfo: [NSLocalizedDescriptionKey: "Not a valid WAV file (missing RIFF header)"])
+        }
+
+        // Check WAVE format
+        let wave = String(data: data[8..<12], encoding: .ascii)
+        guard wave == "WAVE" else {
+            throw NSError(domain: "WAV", code: 3, userInfo: [NSLocalizedDescriptionKey: "Not a valid WAV file (missing WAVE format)"])
+        }
+
+        // Parse chunks
+        var offset = 12
+        var audioFormat: UInt16 = 0
+        var numChannels: UInt16 = 0
+        var wavSampleRate: UInt32 = 0
+        var bitsPerSample: UInt16 = 0
+        var dataOffset = 0
+        var dataSize = 0
+
+        while offset < data.count - 8 {
+            let chunkId = String(data: data[offset..<(offset + 4)], encoding: .ascii) ?? ""
+            let chunkSize = data.withUnsafeBytes { ptr -> UInt32 in
+                ptr.load(fromByteOffset: offset + 4, as: UInt32.self)
+            }
+
+            if chunkId == "fmt " {
+                audioFormat = data.withUnsafeBytes { ptr in
+                    ptr.load(fromByteOffset: offset + 8, as: UInt16.self)
+                }
+                numChannels = data.withUnsafeBytes { ptr in
+                    ptr.load(fromByteOffset: offset + 10, as: UInt16.self)
+                }
+                wavSampleRate = data.withUnsafeBytes { ptr in
+                    ptr.load(fromByteOffset: offset + 12, as: UInt32.self)
+                }
+                bitsPerSample = data.withUnsafeBytes { ptr in
+                    ptr.load(fromByteOffset: offset + 22, as: UInt16.self)
+                }
+            } else if chunkId == "data" {
+                dataOffset = offset + 8
+                dataSize = Int(chunkSize)
+                break
+            }
+
+            offset += 8 + Int(chunkSize)
+        }
+
+        guard audioFormat == 1 else {
+            throw NSError(domain: "WAV", code: 4, userInfo: [NSLocalizedDescriptionKey: "Only PCM format is supported (got format \(audioFormat))"])
+        }
+
+        guard bitsPerSample == 16 || bitsPerSample == 32 else {
+            throw NSError(domain: "WAV", code: 5, userInfo: [NSLocalizedDescriptionKey: "Only 16-bit or 32-bit audio is supported (got \(bitsPerSample)-bit)"])
+        }
+
+        if wavSampleRate != 24000 {
+            print("WARNING: Audio is \(wavSampleRate)Hz, expected 24000Hz. Results may vary.")
+        }
+
+        // Read samples
+        var samples: [Float] = []
+        let bytesPerSample = Int(bitsPerSample) / 8
+        let numSamples = dataSize / (bytesPerSample * Int(numChannels))
+
+        for i in 0..<numSamples {
+            var sampleSum: Float = 0
+            for ch in 0..<Int(numChannels) {
+                let sampleOffset = dataOffset + i * Int(numChannels) * bytesPerSample + ch * bytesPerSample
+
+                if bitsPerSample == 16 {
+                    let sample = data.withUnsafeBytes { ptr -> Int16 in
+                        ptr.load(fromByteOffset: sampleOffset, as: Int16.self)
+                    }
+                    sampleSum += Float(sample) / 32768.0
+                } else if bitsPerSample == 32 {
+                    let sample = data.withUnsafeBytes { ptr -> Int32 in
+                        ptr.load(fromByteOffset: sampleOffset, as: Int32.self)
+                    }
+                    sampleSum += Float(sample) / 2147483648.0
+                }
+            }
+            // Average channels for mono
+            samples.append(sampleSum / Float(numChannels))
+        }
+
+        return MLXArray(samples)
     }
 }
