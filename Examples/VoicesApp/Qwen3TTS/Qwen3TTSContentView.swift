@@ -9,9 +9,12 @@ import SwiftUI
 
 struct Qwen3TTSContentView: View {
     @StateObject private var viewModel = Qwen3TTSViewModel()
-    @State private var inputText = "This is a demo of the Qwen3 TTS model running on Apple Silicon."
+    @State private var inputText = "Hello! Thanks for calling today. I'm Vivian, your support agent. Let's take a look at what's going on with your account."
     @State private var showSettings = false
     @FocusState private var isTextEditorFocused: Bool
+
+    private static let customVoiceDefaultText = "Hello! Thanks for calling today. I'm Vivian, your support agent. Let's take a look at what's going on with your account."
+    private static let voiceDesignDefaultText = "It's in the top drawer... wait, it's empty? No way, that's impossible! I'm sure I put it there."
 
     var body: some View {
         NavigationStack {
@@ -64,6 +67,14 @@ struct Qwen3TTSContentView: View {
             }
             .task {
                 await viewModel.loadModel()
+            }
+            .onChange(of: viewModel.selectedModel) { _, newModel in
+                // Update default text based on model type
+                if newModel.usesVoiceNames {
+                    inputText = Self.customVoiceDefaultText
+                } else {
+                    inputText = Self.voiceDesignDefaultText
+                }
             }
         }
     }
