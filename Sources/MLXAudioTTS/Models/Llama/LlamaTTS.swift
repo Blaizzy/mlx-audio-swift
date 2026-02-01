@@ -354,7 +354,7 @@ private class LlamaTTSModelInner: Module {
 ///
 /// This model generates audio from text using SNAC audio codec tokens.
 /// It supports voice cloning and streaming generation.
-public class LlamaTTSModel: Module, KVCacheDimensionProvider, @unchecked Sendable {
+public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationModel, @unchecked Sendable {
     public let vocabularySize: Int
     public let kvHeads: [Int]
     public var tokenizer: Tokenizer?
@@ -603,6 +603,42 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, @unchecked Sendabl
         return caches
     }
 
+    public func generate(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language _: String?,
+        generationParameters: GenerateParameters
+    ) async throws -> MLXArray {
+        try await generate(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            cache: nil,
+            parameters: generationParameters
+        )
+    }
+
+    public func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language _: String?,
+        generationParameters: GenerateParameters
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        generateStream(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            cache: nil,
+            parameters: generationParameters
+        )
+    }
+
     // MARK: - Generation
 
     /// Generate audio from text.
@@ -610,12 +646,16 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, @unchecked Sendabl
     /// - Parameters:
     ///   - text: The text to synthesize
     ///   - voice: Optional voice identifier (e.g., "tara")
+    ///   - refAudio: Optional reference audio for voice cloning
+    ///   - refText: Optional transcript of reference audio
     ///   - cache: Optional pre-existing KV cache
     ///   - parameters: Generation parameters
     /// - Returns: Generated audio as MLXArray
     public func generate(
         text: String,
         voice: String? = nil,
+        refAudio: MLXArray? = nil,
+        refText: String? = nil,
         cache: [KVCache]? = nil,
         parameters: GenerateParameters = GenerateParameters(
             maxTokens: 1200,
@@ -636,7 +676,12 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, @unchecked Sendabl
         let prompt = text.replacingOccurrences(of: "\\n", with: "\n")
             .replacingOccurrences(of: "\\t", with: "\t")
 
-        let (inputIds, _) = prepareInputIds(prompts: [prompt], voice: voice)
+        let (inputIds, _) = prepareInputIds(
+            prompts: [prompt],
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText
+        )
 
         // Create sampler and processor from parameters
         let sampler = parameters.sampler()
@@ -718,12 +763,16 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, @unchecked Sendabl
     /// - Parameters:
     ///   - text: The text to synthesize
     ///   - voice: Optional voice identifier
+    ///   - refAudio: Optional reference audio for voice cloning
+    ///   - refText: Optional transcript of reference audio
     ///   - cache: Optional pre-existing KV cache
     ///   - parameters: Generation parameters
     /// - Returns: AsyncThrowingStream of generation events
     public func generateStream(
         text: String,
         voice: String? = nil,
+        refAudio: MLXArray? = nil,
+        refText: String? = nil,
         cache: [KVCache]? = nil,
         parameters: GenerateParameters = GenerateParameters(
             maxTokens: 1200,
@@ -748,7 +797,12 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, @unchecked Sendabl
                 let prompt = text.replacingOccurrences(of: "\\n", with: "\n")
                     .replacingOccurrences(of: "\\t", with: "\t")
                 
-                let (inputIds, _) = self.prepareInputIds(prompts: [prompt], voice: voice)
+                let (inputIds, _) = self.prepareInputIds(
+                    prompts: [prompt],
+                    voice: voice,
+                    refAudio: refAudio,
+                    refText: refText
+                )
                 
                 let sampler = parameters.sampler()
                 var processor = parameters.processor()
@@ -972,4 +1026,3 @@ private func llamaTTSResolveOrDownloadModel(
     print("Model downloaded to: \(modelDir.path)")
     return modelDir
 }
-

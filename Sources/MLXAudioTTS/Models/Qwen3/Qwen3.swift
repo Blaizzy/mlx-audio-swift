@@ -322,7 +322,7 @@ private class Qwen3ModelInner: Module {
 }
 
 
-public class Qwen3Model: Module, KVCacheDimensionProvider, @unchecked Sendable {
+public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel, @unchecked Sendable {
 
     public let vocabularySize: Int
     public let kvHeads: [Int]
@@ -538,6 +538,42 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, @unchecked Sendable {
         return caches
     }
 
+    public func generate(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language _: String?,
+        generationParameters: GenerateParameters
+    ) async throws -> MLXArray {
+        try await generate(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            cache: nil,
+            parameters: generationParameters
+        )
+    }
+
+    public func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language _: String?,
+        generationParameters: GenerateParameters
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        generateStream(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            cache: nil,
+            parameters: generationParameters
+        )
+    }
+
     // MARK: - Generation using MLXLMCommon evaluate pattern
 
     /// Generate audio from text using MLXLMCommon's evaluate-style token generation.
@@ -550,11 +586,15 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, @unchecked Sendable {
     /// - Parameters:
     ///   - text: The text to synthesize
     ///   - voice: Optional voice identifier (e.g., "en-us-1")
+    ///   - refAudio: Optional reference audio for voice cloning
+    ///   - refText: Optional transcription of the reference audio
     ///   - parameters: Generation parameters (temperature, topP, maxTokens, etc.)
     /// - Returns: Generated audio as MLXArray
     public func generate(
         text: String,
         voice: String? = nil,
+        refAudio: MLXArray? = nil,
+        refText: String? = nil,
         cache: [KVCache]? = nil,
         parameters: GenerateParameters = GenerateParameters(
             maxTokens: 1200,
@@ -575,7 +615,12 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, @unchecked Sendable {
         let prompt = text.replacingOccurrences(of: "\\n", with: "\n")
             .replacingOccurrences(of: "\\t", with: "\t")
 
-        let (inputIds, _) = prepareInputIds(prompts: [prompt], voice: voice)
+        let (inputIds, _) = prepareInputIds(
+            prompts: [prompt],
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText
+        )
 
         // Create sampler and processor from parameters
         let sampler = parameters.sampler()

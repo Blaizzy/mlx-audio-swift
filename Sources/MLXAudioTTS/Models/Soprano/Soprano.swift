@@ -184,7 +184,7 @@ private class SopranoModelInner: Module {
 
 // MARK: - Soprano Model
 
-public class SopranoModel: Module, KVCacheDimensionProvider, @unchecked Sendable {
+public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationModel, @unchecked Sendable {
     public let vocabularySize: Int
     public let kvHeads: [Int]
     public var tokenizer: Tokenizer?
@@ -274,6 +274,37 @@ public class SopranoModel: Module, KVCacheDimensionProvider, @unchecked Sendable
             caches.append(cache)
         }
         return caches
+    }
+
+    public func generate(
+        text: String,
+        voice: String?,
+        refAudio _: MLXArray?,
+        refText _: String?,
+        language _: String?,
+        generationParameters: GenerateParameters
+    ) async throws -> MLXArray {
+        try await generate(
+            text: text,
+            voice: voice,
+            splitPattern: "\n",
+            parameters: generationParameters
+        )
+    }
+
+    public func generateStream(
+        text: String,
+        voice: String?,
+        refAudio _: MLXArray?,
+        refText _: String?,
+        language _: String?,
+        generationParameters: GenerateParameters
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        generateStream(
+            text: text,
+            voice: voice,
+            parameters: generationParameters
+        )
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
@@ -1025,4 +1056,3 @@ private struct TopPSampler {
         return sampledToken.reshaped([1])
     }
 }
-
