@@ -174,6 +174,7 @@ class Qwen3TTSViewModel: ObservableObject {
         case .voiceDesignBf16:
             cacheLimit = 800 * 1024 * 1024  // 800MB for bf16
         }
+        // Keeping this as using Memory.cacheLimit results in audio loss
         GPU.set(cacheLimit: cacheLimit)
 
         // Setup audio session
