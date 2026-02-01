@@ -52,7 +52,7 @@ public class Qwen3TTSTalkerModel: Module {
         }
         self._layers.wrappedValue = decoderLayers
 
-        self._norm.wrappedValue = RMSNorm(dims: config.hiddenSize, eps: config.rmsNormEps)
+        self._norm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
 
         // Initialize rotary embeddings with MRoPE section from config
         self.rotaryEmb = TalkerRotaryEmbedding(

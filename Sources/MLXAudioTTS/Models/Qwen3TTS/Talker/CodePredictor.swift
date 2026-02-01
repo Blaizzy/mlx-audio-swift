@@ -60,8 +60,8 @@ public class CodePredictorAttention: Module {
             bias: config.attentionBias
         )
 
-        self._qNorm.wrappedValue = RMSNorm(dims: headDim, eps: config.rmsNormEps)
-        self._kNorm.wrappedValue = RMSNorm(dims: headDim, eps: config.rmsNormEps)
+        self._qNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: config.rmsNormEps)
+        self._kNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: config.rmsNormEps)
     }
 
     public func callAsFunction(
@@ -142,8 +142,8 @@ public class CodePredictorDecoderLayer: Module {
     public init(config: Qwen3TTSTalkerCodePredictorConfig, layerIdx: Int) {
         self._selfAttn.wrappedValue = CodePredictorAttention(config: config, layerIdx: layerIdx)
         self._mlp.wrappedValue = CodePredictorMLP(config: config)
-        self._inputLayernorm.wrappedValue = RMSNorm(dims: config.hiddenSize, eps: config.rmsNormEps)
-        self._postAttentionLayernorm.wrappedValue = RMSNorm(dims: config.hiddenSize, eps: config.rmsNormEps)
+        self._inputLayernorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        self._postAttentionLayernorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
     }
 
     public func callAsFunction(
@@ -200,7 +200,7 @@ public class CodePredictorModel: Module {
         }
         self._layers.wrappedValue = decoderLayers
 
-        self._norm.wrappedValue = RMSNorm(dims: config.hiddenSize, eps: config.rmsNormEps)
+        self._norm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
 
         // Standard rotary embeddings
         self.rotaryEmb = RotaryEmbedding(

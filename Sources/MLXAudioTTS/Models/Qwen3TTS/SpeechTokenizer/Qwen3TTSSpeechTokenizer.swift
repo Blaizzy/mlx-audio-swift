@@ -209,7 +209,7 @@ public class Qwen3TTSSpeechTokenizer: Module {
 
         // Use direct path-based assignment instead of nested structure
         // This handles numeric keys correctly for both arrays and module dicts
-        setWeightsByPath(sanitizedWeights)
+        self.setWeightsByPath(sanitizedWeights)
     }
 
 }

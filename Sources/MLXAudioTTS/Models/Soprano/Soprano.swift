@@ -51,8 +51,8 @@ private class SopranoAttention: Module {
         self._wv.wrappedValue = Linear(dim, kvHeads * headDim, bias: false)
         self._wo.wrappedValue = Linear(heads * headDim, dim, bias: false)
 
-        self._qNorm.wrappedValue = RMSNorm(dims: headDim, eps: args.rmsNormEps)
-        self._kNorm.wrappedValue = RMSNorm(dims: headDim, eps: args.rmsNormEps)
+        self._qNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.rmsNormEps)
+        self._kNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.rmsNormEps)
 
         self.rope = RoPE(
             dimensions: headDim,
@@ -129,8 +129,8 @@ private class SopranoTransformerBlock: Module {
     init(_ args: SopranoConfiguration) {
         self._attention.wrappedValue = SopranoAttention(args)
         self.mlp = SopranoMLP(dimensions: args.hiddenSize, hiddenDimensions: args.intermediateSize)
-        self._inputLayerNorm.wrappedValue = RMSNorm(dims: args.hiddenSize, eps: args.rmsNormEps)
-        self._postAttentionLayerNorm.wrappedValue = RMSNorm(dims: args.hiddenSize, eps: args.rmsNormEps)
+        self._inputLayerNorm.wrappedValue = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        self._postAttentionLayerNorm.wrappedValue = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
     }
 
     func callAsFunction(
@@ -165,7 +165,7 @@ private class SopranoModelInner: Module {
             SopranoTransformerBlock(args)
         }
 
-        self.norm = RMSNorm(dims: args.hiddenSize, eps: args.rmsNormEps)
+        self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
     }
 
     func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {

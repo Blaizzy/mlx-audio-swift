@@ -95,8 +95,8 @@ public class TalkerDecoderLayer: Module {
 
         self._selfAttn.wrappedValue = TalkerAttention(config: config, layerIdx: layerIdx)
         self._mlp.wrappedValue = TalkerMLP(config: config)
-        self._inputLayernorm.wrappedValue = RMSNorm(dims: config.hiddenSize, eps: config.rmsNormEps)
-        self._postAttentionLayernorm.wrappedValue = RMSNorm(dims: config.hiddenSize, eps: config.rmsNormEps)
+        self._inputLayernorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        self._postAttentionLayernorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
     }
 
     /// Forward pass for the decoder layer.

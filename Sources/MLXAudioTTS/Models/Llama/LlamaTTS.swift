@@ -298,8 +298,8 @@ private class LlamaTTSTransformerBlock: Module {
     init(_ args: LlamaTTSConfiguration) {
         self._attention.wrappedValue = LlamaTTSAttention(args)
         self._mlp.wrappedValue = LlamaTTSMLP(args)
-        self._inputLayerNorm.wrappedValue = RMSNorm(dims: args.hiddenSize, eps: args.rmsNormEps)
-        self._postAttentionLayerNorm.wrappedValue = RMSNorm(dims: args.hiddenSize, eps: args.rmsNormEps)
+        self._inputLayerNorm.wrappedValue = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        self._postAttentionLayerNorm.wrappedValue = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
     }
 
     func callAsFunction(
@@ -331,7 +331,7 @@ private class LlamaTTSModelInner: Module {
         self.layers = (0..<args.hiddenLayers)
             .map { _ in LlamaTTSTransformerBlock(args) }
 
-        self.norm = RMSNorm(dims: args.hiddenSize, eps: args.rmsNormEps)
+        self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
     }
 
     func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {

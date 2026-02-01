@@ -10,33 +10,7 @@ import Foundation
 import MLX
 import MLXNN
 
-// MARK: - RMSNorm
-
-/// RMS Layer Normalization.
-///
-/// Used for QK normalization in TalkerAttention.
-/// This is a Module-based version with learnable weight parameter.
-public class RMSNorm: Module, UnaryLayer {
-    public let dims: Int
-    public let eps: Float
-
-    @ParameterInfo(key: "weight") var weight: MLXArray
-
-    public init(dims: Int, eps: Float = 1e-6) {
-        self.dims = dims
-        self.eps = eps
-        self._weight.wrappedValue = MLXArray.ones([dims])
-    }
-
-    public func callAsFunction(_ x: MLXArray) -> MLXArray {
-        // Cast to float32 for numerical stability
-        let xFloat = x.asType(.float32)
-        let variance = mean(xFloat * xFloat, axis: -1, keepDims: true)
-        let xNormed = xFloat * rsqrt(variance + eps)
-        return (weight * xNormed).asType(x.dtype)
-    }
-}
-
+// Note: Uses MLXNN.RMSNorm for QK normalization
 // Note: rotateHalf, applyRotaryPosEmb, applyMultimodalRotaryPosEmb are in Qwen3TTSUtils.swift
 
 // MARK: - TalkerAttention
@@ -95,8 +69,8 @@ public class TalkerAttention: Module {
         )
 
         // QK normalization (like Qwen3)
-        self._qNorm.wrappedValue = RMSNorm(dims: headDim, eps: config.rmsNormEps)
-        self._kNorm.wrappedValue = RMSNorm(dims: headDim, eps: config.rmsNormEps)
+        self._qNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: config.rmsNormEps)
+        self._kNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: config.rmsNormEps)
     }
 
     /// Forward pass for TalkerAttention.
