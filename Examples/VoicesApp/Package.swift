@@ -19,15 +19,15 @@ let package = Package(
         .executableTarget(
             name: "VoicesApp",
             dependencies: [
-                .product(name: "MLXAudioTTS", package: "mlx-audio-swift-sdk"),
-                .product(name: "MLXAudioCore", package: "mlx-audio-swift-sdk")
+                .product(name: "MLXAudioTTS", package: "mlx-audio-swift"),
+                .product(name: "MLXAudioCore", package: "mlx-audio-swift")
             ],
             path: "VoicesApp"
         ),
         .executableTarget(
             name: "Qwen3TTS",
             dependencies: [
-                .product(name: "MLXAudioTTS", package: "mlx-audio-swift-sdk")
+                .product(name: "MLXAudioTTS", package: "mlx-audio-swift")
             ],
             path: "Qwen3TTS"
         )
