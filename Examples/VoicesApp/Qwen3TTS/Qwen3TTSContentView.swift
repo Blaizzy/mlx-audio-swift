@@ -423,7 +423,7 @@ struct Qwen3TTSContentView: View {
     }
 
     private var statsView: some View {
-        HStack(spacing: 20) {
+        HStack(spacing: 16) {
             if viewModel.generationTime > 0 {
                 Qwen3StatView(
                     title: "Generation",
@@ -449,10 +449,11 @@ struct Qwen3TTSContentView: View {
                 )
             }
         }
-        .padding()
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.secondary.opacity(0.1))
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.secondary.opacity(0.05))
         )
     }
 
@@ -543,17 +544,18 @@ struct Qwen3StatView: View {
     let icon: String
 
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 2) {
             Image(systemName: icon)
-                .font(.title3)
-                .foregroundStyle(.secondary)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
 
             Text(value)
-                .font(.headline)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
 
             Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
         }
         .frame(maxWidth: .infinity)
     }
