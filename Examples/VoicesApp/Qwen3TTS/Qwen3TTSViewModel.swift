@@ -100,6 +100,13 @@ enum Qwen3GenerationState: Equatable {
         default: return true
         }
     }
+
+    var isGenerating: Bool {
+        switch self {
+        case .generating, .decoding: return true
+        default: return false
+        }
+    }
 }
 
 /// ViewModel for TTS operations.
@@ -123,6 +130,7 @@ class Qwen3TTSViewModel: ObservableObject {
 
     // Audio playback
     private var audioPlayer: AVAudioPlayer?
+    private var generationTask: Task<Void, Never>?
 
     // Generation parameters (adjustable)
     @Published var temperature: Float = 0.3
@@ -192,7 +200,7 @@ class Qwen3TTSViewModel: ObservableObject {
         }
     }
 
-    /// Generate speech from text.
+    /// Generate speech from text (does not auto-play).
     func generate(text: String) async {
         guard let model = model else {
             state = .error("Model not loaded")
@@ -216,6 +224,7 @@ class Qwen3TTSViewModel: ObservableObject {
         state = .generating(step: 0, codes: 0)
         generationTime = 0
         audioDuration = 0
+        lastAudioURL = nil
 
         let startTime = Date()
 
@@ -240,21 +249,66 @@ class Qwen3TTSViewModel: ObservableObject {
                 }
             }
 
+            // Check for cancellation
+            if Task.isCancelled {
+                state = .idle
+                return
+            }
+
+            state = .decoding
             let samples = audio.asArray(Float.self)
             generationTime = Date().timeIntervalSince(startTime)
             audioDuration = Double(samples.count) / sampleRate
 
             print("Generated \(samples.count) samples, duration: \(audioDuration)s")
 
-            // Play audio
-            state = .playing
-            await playAudioSamples(samples)
+            // Save audio to file (but don't play)
+            await saveAudioSamples(samples)
 
             state = .idle
 
         } catch {
             print("Generation failed: \(error)")
-            state = .error("Generation failed: \(error.localizedDescription)")
+            if !Task.isCancelled {
+                state = .error("Generation failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Start generation in a cancellable task.
+    func startGeneration(text: String) {
+        generationTask = Task {
+            await generate(text: text)
+        }
+    }
+
+    /// Stop ongoing generation.
+    func stopGeneration() {
+        generationTask?.cancel()
+        generationTask = nil
+        state = .idle
+    }
+
+    /// Play the last generated audio.
+    func playAudio() async {
+        guard let audioURL = lastAudioURL else { return }
+
+        state = .playing
+
+        do {
+            audioPlayer = try AVAudioPlayer(contentsOf: audioURL)
+            audioPlayer?.prepareToPlay()
+            audioPlayer?.play()
+
+            // Wait for playback to complete
+            while audioPlayer?.isPlaying == true {
+                try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+            }
+
+            state = .idle
+        } catch {
+            print("Failed to play audio: \(error)")
+            state = .error("Playback failed: \(error.localizedDescription)")
         }
     }
 
@@ -272,6 +326,11 @@ class Qwen3TTSViewModel: ObservableObject {
         model != nil
     }
 
+    /// Check if audio has been generated and is ready to play.
+    var hasGeneratedAudio: Bool {
+        lastAudioURL != nil
+    }
+
     // MARK: - Private Methods
 
     private func setupAudioSession() {
@@ -287,7 +346,7 @@ class Qwen3TTSViewModel: ObservableObject {
         #endif
     }
 
-    private func playAudioSamples(_ samples: [Float]) async {
+    private func saveAudioSamples(_ samples: [Float]) async {
         // Create WAV data
         let wavData = createWAVData(from: samples)
 
@@ -301,17 +360,8 @@ class Qwen3TTSViewModel: ObservableObject {
             print("Saved audio to: \(audioURL.path)")
 
             lastAudioURL = audioURL
-
-            audioPlayer = try AVAudioPlayer(contentsOf: audioURL)
-            audioPlayer?.prepareToPlay()
-            audioPlayer?.play()
-
-            // Wait for playback to complete
-            while audioPlayer?.isPlaying == true {
-                try await Task.sleep(nanoseconds: 100_000_000) // 100ms
-            }
         } catch {
-            print("Failed to play audio: \(error)")
+            print("Failed to save audio: \(error)")
         }
     }
 
