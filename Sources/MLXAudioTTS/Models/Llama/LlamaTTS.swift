@@ -35,6 +35,7 @@ public typealias LlamaTTSError = AudioGenerationError
 public typealias LlamaTTSGenerationInfo = AudioGenerationInfo
 public typealias LlamaTTSGeneration = AudioGeneration
 
+
 // MARK: - SNAC Audio Codec Functions
 
 /// Decode SNAC audio codes to waveform.
@@ -245,9 +246,10 @@ private class LlamaTTSAttention: Module {
         keys = keys.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
         values = values.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
 
-        if let cache {
-            queries = rope(queries, offset: cache.offset)
-            keys = rope(keys, offset: cache.offset)
+        if let cache = cache as? BaseKVCache {
+            let offset = cache.offset
+            queries = rope(queries, offset: offset)
+            keys = rope(keys, offset: offset)
             (keys, values) = cache.update(keys: keys, values: values)
         } else {
             queries = rope(queries)
@@ -296,8 +298,8 @@ private class LlamaTTSTransformerBlock: Module {
     init(_ args: LlamaTTSConfiguration) {
         self._attention.wrappedValue = LlamaTTSAttention(args)
         self._mlp.wrappedValue = LlamaTTSMLP(args)
-        self._inputLayerNorm.wrappedValue = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
-        self._postAttentionLayerNorm.wrappedValue = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        self._inputLayerNorm.wrappedValue = RMSNorm(dims: args.hiddenSize, eps: args.rmsNormEps)
+        self._postAttentionLayerNorm.wrappedValue = RMSNorm(dims: args.hiddenSize, eps: args.rmsNormEps)
     }
 
     func callAsFunction(
@@ -329,13 +331,14 @@ private class LlamaTTSModelInner: Module {
         self.layers = (0..<args.hiddenLayers)
             .map { _ in LlamaTTSTransformerBlock(args) }
 
-        self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        self.norm = RMSNorm(dims: args.hiddenSize, eps: args.rmsNormEps)
     }
 
     func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
         var h = embedTokens(inputs)
 
-        let mask = createAttentionMask(h: h, cache: cache?.first)
+        let firstCache: KVCache? = cache?.first
+        let mask: MLXFast.ScaledDotProductAttentionMaskMode = createAttentionMask(h: h, cache: firstCache, windowSize: nil, returnArray: false)
 
         for (i, layer) in layers.enumerated() {
             h = layer(h, mask: mask, cache: cache?[i])
@@ -592,9 +595,12 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
     }
 
     public func makeCache() -> [KVCache] {
-        return (0..<configuration.hiddenLayers).map { _ in
-            KVCacheSimple()
+        var caches: [KVCache] = []
+        for _ in 0..<configuration.hiddenLayers {
+            let cache: KVCache = KVCacheSimple()
+            caches.append(cache)
         }
+        return caches
     }
 
     public func generate(

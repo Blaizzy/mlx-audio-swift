@@ -35,6 +35,7 @@ public typealias Qwen3Error = AudioGenerationError
 public typealias Qwen3GenerationInfo = AudioGenerationInfo
 public typealias Qwen3Generation = AudioGeneration
 
+
 // MARK: - Decode
 
 /// Decode audio codes in chunks to reduce memory spikes.
@@ -174,8 +175,8 @@ public class Attention: Module {
         self._wv.wrappedValue = Linear(dim, kvHeads * headDim, bias: false)
         self._wo.wrappedValue = Linear(heads * headDim, dim, bias: false)
 
-        self._qNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.rmsNormEps)
-        self._kNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.rmsNormEps)
+        self._qNorm.wrappedValue = RMSNorm(dims: headDim, eps: args.rmsNormEps)
+        self._kNorm.wrappedValue = RMSNorm(dims: headDim, eps: args.rmsNormEps)
 
         let ropeScale: Float
         if let ropeScaling = args.ropeScaling, ropeScaling["type"] == .string("linear"),
@@ -211,9 +212,10 @@ public class Attention: Module {
         values = values.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
 
 
-        if let cache {
-            queries = rope(queries, offset: cache.offset)
-            keys = rope(keys, offset: cache.offset)
+        if let cache = cache as? BaseKVCache {
+            let offset = cache.offset
+            queries = rope(queries, offset: offset)
+            keys = rope(keys, offset: offset)
             // Update cache and get full key/value history
             (keys, values) = cache.update(keys: keys, values: values)
         } else {
@@ -266,8 +268,8 @@ private class TransformerBlock: Module {
     public init(_ args: Qwen3Configuration) {
         self._attention.wrappedValue = Attention(args)
         self.mlp = MLP(dimensions: args.hiddenSize, hiddenDimensions: args.intermediateSize)
-        self._inputLayerNorm.wrappedValue = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
-        self._postAttentionLayerNorm.wrappedValue = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        self._inputLayerNorm.wrappedValue = RMSNorm(dims: args.hiddenSize, eps: args.rmsNormEps)
+        self._postAttentionLayerNorm.wrappedValue = RMSNorm(dims: args.hiddenSize, eps: args.rmsNormEps)
 
     }
 
@@ -301,14 +303,15 @@ private class Qwen3ModelInner: Module {
         self.layers = (0..<args.hiddenLayers)
             .map { _ in TransformerBlock(args) }
 
-        self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        self.norm = RMSNorm(dims: args.hiddenSize, eps: args.rmsNormEps)
 
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
         var h = embedTokens(inputs)
 
-        let mask = createAttentionMask(h: h, cache: cache?.first)
+        let firstCache: KVCache? = cache?.first
+        let mask: MLXFast.ScaledDotProductAttentionMaskMode = createAttentionMask(h: h, cache: firstCache, windowSize: nil, returnArray: false)
 
         for (i, layer) in layers.enumerated() {
             h = layer(h, mask: mask, cache: cache?[i])
@@ -527,9 +530,12 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
     }
 
     public func makeCache() -> [KVCache] {
-        return (0..<self.configuration.hiddenLayers).map { _ in
-            KVCacheSimple()
+        var caches: [KVCache] = []
+        for _ in 0..<self.configuration.hiddenLayers {
+            let cache: KVCache = KVCacheSimple()
+            caches.append(cache)
         }
+        return caches
     }
 
     public func generate(
