@@ -175,8 +175,8 @@ public class Attention: Module {
         self._wv.wrappedValue = Linear(dim, kvHeads * headDim, bias: false)
         self._wo.wrappedValue = Linear(heads * headDim, dim, bias: false)
 
-        self._qNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.rmsNormEps)
-        self._kNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.rmsNormEps)
+        self._qNorm.wrappedValue = RMSNorm(dims: headDim, eps: args.rmsNormEps)
+        self._kNorm.wrappedValue = RMSNorm(dims: headDim, eps: args.rmsNormEps)
 
         let ropeScale: Float
         if let ropeScaling = args.ropeScaling, ropeScaling["type"] == .string("linear"),
@@ -268,8 +268,8 @@ private class TransformerBlock: Module {
     public init(_ args: Qwen3Configuration) {
         self._attention.wrappedValue = Attention(args)
         self.mlp = MLP(dimensions: args.hiddenSize, hiddenDimensions: args.intermediateSize)
-        self._inputLayerNorm.wrappedValue = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
-        self._postAttentionLayerNorm.wrappedValue = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        self._inputLayerNorm.wrappedValue = RMSNorm(dims: args.hiddenSize, eps: args.rmsNormEps)
+        self._postAttentionLayerNorm.wrappedValue = RMSNorm(dims: args.hiddenSize, eps: args.rmsNormEps)
 
     }
 
@@ -303,7 +303,7 @@ private class Qwen3ModelInner: Module {
         self.layers = (0..<args.hiddenLayers)
             .map { _ in TransformerBlock(args) }
 
-        self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        self.norm = RMSNorm(dims: args.hiddenSize, eps: args.rmsNormEps)
 
     }
 
