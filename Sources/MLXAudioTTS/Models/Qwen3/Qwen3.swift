@@ -212,10 +212,9 @@ public class Attention: Module {
         values = values.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
 
 
-        if let cache = cache as? BaseKVCache {
-            let offset = cache.offset
-            queries = rope(queries, offset: offset)
-            keys = rope(keys, offset: offset)
+        if let cache {
+            queries = rope(queries, offset: cache.offset)
+            keys = rope(keys, offset: cache.offset)
             // Update cache and get full key/value history
             (keys, values) = cache.update(keys: keys, values: values)
         } else {
@@ -310,8 +309,7 @@ private class Qwen3ModelInner: Module {
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
         var h = embedTokens(inputs)
 
-        let firstCache: KVCache? = cache?.first
-        let mask: MLXFast.ScaledDotProductAttentionMaskMode = createAttentionMask(h: h, cache: firstCache, windowSize: nil, returnArray: false)
+        let mask = createAttentionMask(h: h, cache: cache?.first)
 
         for (i, layer) in layers.enumerated() {
             h = layer(h, mask: mask, cache: cache?[i])
@@ -530,12 +528,9 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
     }
 
     public func makeCache() -> [KVCache] {
-        var caches: [KVCache] = []
-        for _ in 0..<self.configuration.hiddenLayers {
-            let cache: KVCache = KVCacheSimple()
-            caches.append(cache)
+        return (0..<self.configuration.hiddenLayers).map { _ in
+            KVCacheSimple()
         }
-        return caches
     }
 
     public func generate(

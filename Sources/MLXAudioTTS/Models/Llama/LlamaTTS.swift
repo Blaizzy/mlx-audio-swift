@@ -246,10 +246,9 @@ private class LlamaTTSAttention: Module {
         keys = keys.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
         values = values.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
 
-        if let cache = cache as? BaseKVCache {
-            let offset = cache.offset
-            queries = rope(queries, offset: offset)
-            keys = rope(keys, offset: offset)
+        if let cache {
+            queries = rope(queries, offset: cache.offset)
+            keys = rope(keys, offset: cache.offset)
             (keys, values) = cache.update(keys: keys, values: values)
         } else {
             queries = rope(queries)
@@ -337,8 +336,7 @@ private class LlamaTTSModelInner: Module {
     func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
         var h = embedTokens(inputs)
 
-        let firstCache: KVCache? = cache?.first
-        let mask: MLXFast.ScaledDotProductAttentionMaskMode = createAttentionMask(h: h, cache: firstCache, windowSize: nil, returnArray: false)
+        let mask = createAttentionMask(h: h, cache: cache?.first)
 
         for (i, layer) in layers.enumerated() {
             h = layer(h, mask: mask, cache: cache?[i])
@@ -595,12 +593,9 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
     }
 
     public func makeCache() -> [KVCache] {
-        var caches: [KVCache] = []
-        for _ in 0..<configuration.hiddenLayers {
-            let cache: KVCache = KVCacheSimple()
-            caches.append(cache)
+        return (0..<configuration.hiddenLayers).map { _ in
+            KVCacheSimple()
         }
-        return caches
     }
 
     public func generate(
