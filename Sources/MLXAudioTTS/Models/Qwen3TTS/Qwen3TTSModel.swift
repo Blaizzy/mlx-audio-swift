@@ -11,7 +11,7 @@
 //
 
 import Foundation
-import Hub
+import HuggingFace
 import MLX
 import MLXNN
 import Tokenizers
@@ -64,22 +64,28 @@ public class Qwen3TTSModel {
     ///
     /// - Parameters:
     ///   - repo: HuggingFace repo ID (e.g., "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16")
-    ///   - progressHandler: Optional progress callback during download
     /// - Returns: Loaded model ready for generation
-    public static func load(
-        from repo: String,
-        progressHandler: (@Sendable (Progress) -> Void)? = nil
-    ) async throws -> Qwen3TTSModel {
-        let hub = HubApi()
+    public static func load(from repo: String) async throws -> Qwen3TTSModel {
+        let client = HubClient.default
+        let cache = client.cache ?? HubCache.default
 
-        // Download model files using Hub API from swift-transformers
-        // This handles caching correctly without the speech_tokenizer corruption issues
-        let modelDirectory = try await hub.snapshot(
-            from: Hub.Repo(id: repo),
-            matching: ["*.safetensors", "*.json", "*.txt"]
-        ) { progress in
-            progressHandler?(progress)
+        guard let repoID = Repo.ID(rawValue: repo) else {
+            throw Qwen3TTSError.invalidRepoID(repo)
         }
+
+        // Use a persistent cache directory based on repo ID
+        let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
+        let modelDirectory = cache.cacheDirectory
+            .appendingPathComponent(modelSubdir)
+
+        // Download model files using HubClient
+        try await client.downloadSnapshot(
+            of: repoID,
+            kind: .model,
+            to: modelDirectory,
+            revision: "main",
+            matching: ["*.safetensors", "*.json", "*.txt"]
+        )
 
         return try await load(from: modelDirectory)
     }
@@ -544,6 +550,7 @@ public enum Qwen3TTSError: Error, LocalizedError {
     case invalidSampleRate(expected: Int, got: Int)
     case invalidInput(String)
     case invalidParameter(String, String)  // (paramName, reason)
+    case invalidRepoID(String)
 
     public var errorDescription: String? {
         switch self {
@@ -567,6 +574,8 @@ public enum Qwen3TTSError: Error, LocalizedError {
             return "Invalid input: \(message)"
         case .invalidParameter(let param, let reason):
             return "Invalid parameter '\(param)': \(reason)"
+        case .invalidRepoID(let repo):
+            return "Invalid HuggingFace repository ID: \(repo)"
         }
     }
 }

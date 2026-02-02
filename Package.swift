@@ -79,7 +79,6 @@ let package = Package(
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "Transformers", package: "swift-transformers"),
-                .product(name: "Hub", package: "swift-transformers"),
             ],
             path: "Sources/MLXAudioTTS"
         ),

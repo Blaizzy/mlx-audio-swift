@@ -56,11 +56,6 @@ struct Qwen3TTSContentView: View {
                         // Settings (collapsible)
                         settingsView
 
-                        // Generation Stats
-                        if viewModel.generationTime > 0 || viewModel.audioDuration > 0 {
-                            statsView
-                        }
-
                         // Action Buttons
                         actionButtonsView
                     }
@@ -118,22 +113,12 @@ struct Qwen3TTSContentView: View {
     // MARK: - View Components
 
     private var statusHeaderView: some View {
-        VStack(spacing: 8) {
-            HStack {
-                stateIndicator
-                Spacer()
-            }
-
-            // Download progress
-            if case .loading = viewModel.state {
-                VStack(alignment: .leading, spacing: 4) {
-                    ProgressView(value: viewModel.downloadProgress)
-                        .tint(.blue)
-
-                    Text("Downloading model: \(Int(viewModel.downloadProgress * 100))%")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+        HStack {
+            stateIndicator
+            Spacer()
+            // Show stats in header when idle and stats are available
+            if case .idle = viewModel.state, viewModel.generationTime > 0 {
+                statsContent
             }
         }
         .padding()
@@ -148,9 +133,18 @@ struct Qwen3TTSContentView: View {
         HStack(spacing: 8) {
             switch viewModel.state {
             case .idle:
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                Text(viewModel.isModelLoaded ? "Ready" : "Not loaded")
+                if viewModel.isModelLoaded {
+                    if viewModel.generationTime > 0 {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    } else {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Text("Ready")
+                    }
+                } else {
+                    Text("Not loaded")
+                }
 
             case .loading:
                 ProgressView()
@@ -181,6 +175,24 @@ struct Qwen3TTSContentView: View {
             }
         }
         .font(.subheadline)
+    }
+
+    @ViewBuilder
+    private var statsContent: some View {
+        HStack(spacing: 12) {
+            if viewModel.generationTime > 0 {
+                Label(String(format: "%.1fs", viewModel.generationTime), systemImage: "cpu")
+            }
+            if viewModel.audioDuration > 0 {
+                Label(String(format: "%.1fs", viewModel.audioDuration), systemImage: "waveform")
+            }
+            if viewModel.generationTime > 0 && viewModel.audioDuration > 0 {
+                let rtf = viewModel.audioDuration / viewModel.generationTime
+                Label(String(format: "%.2fx", rtf), systemImage: "speedometer")
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 
     private var modelSelectionView: some View {
@@ -519,41 +531,6 @@ struct Qwen3TTSContentView: View {
         )
     }
 
-    private var statsView: some View {
-        HStack(spacing: 16) {
-            if viewModel.generationTime > 0 {
-                Qwen3StatView(
-                    title: "Generation",
-                    value: String(format: "%.1fs", viewModel.generationTime),
-                    icon: "cpu"
-                )
-            }
-
-            if viewModel.audioDuration > 0 {
-                Qwen3StatView(
-                    title: "Duration",
-                    value: String(format: "%.1fs", viewModel.audioDuration),
-                    icon: "waveform"
-                )
-            }
-
-            if viewModel.generationTime > 0 && viewModel.audioDuration > 0 {
-                let rtf = viewModel.audioDuration / viewModel.generationTime
-                Qwen3StatView(
-                    title: "RTF",
-                    value: String(format: "%.2fx", rtf),
-                    icon: "speedometer"
-                )
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.secondary.opacity(0.05))
-        )
-    }
-
     private var actionButtonsView: some View {
         HStack(spacing: 16) {
             // Generate / Stop button
@@ -637,33 +614,7 @@ struct Qwen3TTSContentView: View {
                 }
             }
         }
-        .fixedSize(horizontal: false, vertical: true)
         .padding(.vertical, 8)
-    }
-}
-
-// MARK: - Stat View
-
-struct Qwen3StatView: View {
-    let title: String
-    let value: String
-    let icon: String
-
-    var body: some View {
-        VStack(spacing: 2) {
-            Image(systemName: icon)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-
-            Text(value)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-        .frame(maxWidth: .infinity)
     }
 }
 

@@ -118,7 +118,6 @@ class Qwen3TTSViewModel: ObservableObject {
     @Published var selectedModel: Qwen3Model = .customVoice4bit
     @Published var selectedVoice: Qwen3Voice = .serena
     @Published var voiceInstruct: String = "A calm, clear female voice with a professional tone."
-    @Published var downloadProgress: Double = 0
     @Published var generationTime: TimeInterval = 0
     @Published var audioDuration: TimeInterval = 0
     @Published var lastAudioURL: URL?
@@ -162,7 +161,6 @@ class Qwen3TTSViewModel: ObservableObject {
         }
 
         state = .loading
-        downloadProgress = 0
 
         // Set memory cache limit based on model size
         let cacheLimit: Int
@@ -174,8 +172,7 @@ class Qwen3TTSViewModel: ObservableObject {
         case .voiceDesignBf16:
             cacheLimit = 800 * 1024 * 1024  // 800MB for bf16
         }
-        // Keeping this as using Memory.cacheLimit results in audio loss
-        GPU.set(cacheLimit: cacheLimit)
+        Memory.cacheLimit = cacheLimit
 
         // Setup audio session
         setupAudioSession()
@@ -185,16 +182,7 @@ class Qwen3TTSViewModel: ObservableObject {
         do {
             print("Loading model from: \(modelRepo)")
 
-            model = try await Qwen3TTSModel.load(from: modelRepo) { [weak self] progress in
-                // Update progress on main actor
-                // Note: Hub library only calls this at start (0%) and end (100%)
-                // For per-file progress, the Progress object updates internally
-                let fraction = progress.fractionCompleted
-                Task { @MainActor in
-                    self?.downloadProgress = fraction
-                    print("Download progress: \(Int(fraction * 100))%")
-                }
-            }
+            model = try await Qwen3TTSModel.load(from: modelRepo)
 
             loadedModelId = selectedModel
             print("Model loaded successfully!")
