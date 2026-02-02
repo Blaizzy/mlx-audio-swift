@@ -1,4 +1,7 @@
-.build
+.build/
+docs/
+.serena/
+claudedocs/
 .swiftpm
 .DS_Store
 .xcbkptlist
@@ -12,3 +15,5 @@ xcuserdata/*
 *.xcuserdatad
 *.xcuserdatad/xcdebugger
 *.xcuserdatad/xcdebugger/Breakpoints_v2.xcbkptlist
+*.profraw
+.worktrees/

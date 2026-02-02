@@ -1,0 +1,116 @@
+version: '3'
+
+vars:
+  BUILD_DIR: .build/xcode
+  DEBUG_BIN: '{{.BUILD_DIR}}/Build/Products/Debug'
+  RELEASE_BIN: '{{.BUILD_DIR}}/Build/Products/Release'
+  TEST_RESOURCES: MLXAudioSTT/Tests/Resources
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  # ─────────────────────────────────────────────────────────────
+  # Build
+  # ─────────────────────────────────────────────────────────────
+  build:
+    desc: Build stt-demo (Debug, GPU/Metal enabled)
+    cmds:
+      - xcodebuild -scheme stt-demo -configuration Debug -derivedDataPath {{.BUILD_DIR}} -destination 'platform=macOS' build
+    sources:
+      - '**/*.swift'
+    generates:
+      - '{{.DEBUG_BIN}}/stt-demo'
+
+  build:release:
+    desc: Build stt-demo (Release, optimized)
+    cmds:
+      - xcodebuild -scheme stt-demo -configuration Release -derivedDataPath {{.BUILD_DIR}} -destination 'platform=macOS' build
+    sources:
+      - '**/*.swift'
+    generates:
+      - '{{.RELEASE_BIN}}/stt-demo'
+
+  build:tts:
+    desc: Build tts-demo (Debug)
+    cmds:
+      - xcodebuild -scheme tts-demo -configuration Debug -derivedDataPath {{.BUILD_DIR}} -destination 'platform=macOS' build
+
+  # ─────────────────────────────────────────────────────────────
+  # Run STT
+  # ─────────────────────────────────────────────────────────────
+  stt:
+    desc: Run stt-demo with audio file
+    deps: [build]
+    cmds:
+      - '{{.DEBUG_BIN}}/stt-demo {{.CLI_ARGS}}'
+
+  stt:release:
+    desc: Run stt-demo (Release) with audio file
+    deps: [build:release]
+    cmds:
+      - '{{.RELEASE_BIN}}/stt-demo {{.CLI_ARGS}}'
+
+  stt:short:
+    desc: Test with short_2s.wav (0.79s)
+    deps: [build]
+    cmds:
+      - '{{.DEBUG_BIN}}/stt-demo {{.TEST_RESOURCES}}/short_2s.wav'
+
+  stt:medium:
+    desc: Test with medium_15s.wav (12.9s)
+    deps: [build]
+    cmds:
+      - '{{.DEBUG_BIN}}/stt-demo {{.TEST_RESOURCES}}/medium_15s.wav'
+
+  stt:test:
+    desc: Test with test_speech.wav (5.7s)
+    deps: [build]
+    cmds:
+      - '{{.DEBUG_BIN}}/stt-demo {{.TEST_RESOURCES}}/test_speech.wav'
+
+  stt:say:
+    desc: 'Create and transcribe test audio (usage: task stt:say -- "text")'
+    deps: [build]
+    cmds:
+      - say -o /tmp/stt_test.wav --data-format=LEI16@16000 "{{.CLI_ARGS}}"
+      - '{{.DEBUG_BIN}}/stt-demo /tmp/stt_test.wav'
+
+  # ─────────────────────────────────────────────────────────────
+  # Tests
+  # ─────────────────────────────────────────────────────────────
+  test:
+    desc: Run all tests
+    cmds:
+      - swift test
+
+  test:stt:
+    desc: Run STT tests only
+    cmds:
+      - swift test --filter MLXAudioSTTTests
+
+  # ─────────────────────────────────────────────────────────────
+  # Utilities
+  # ─────────────────────────────────────────────────────────────
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - rm -rf {{.BUILD_DIR}}
+      - swift package clean
+
+  clean:cache:
+    desc: Clean HuggingFace model cache
+    cmds:
+      - rm -rf ~/.cache/huggingface/hub/models--mlx-community--whisper*
+      - rm -rf ~/.cache/huggingface/hub/models--openai--whisper*
+
+  info:
+    desc: Show project info
+    cmds:
+      - echo "Test audio files"
+      - ls -lh {{.TEST_RESOURCES}}/*.wav 2>/dev/null || echo "No test files found"
+      - echo ""
+      - echo "Build artifacts"
+      - ls -lh {{.DEBUG_BIN}}/stt-demo 2>/dev/null || echo "Not built yet"
