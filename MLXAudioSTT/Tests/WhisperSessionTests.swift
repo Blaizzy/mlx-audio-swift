@@ -3,6 +3,40 @@ import MLX
 import Foundation
 @testable import MLXAudioSTT
 
+// MARK: - Model Load Gate
+
+private actor ModelLoadGate {
+    static let shared = ModelLoadGate()
+    private var isLocked = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func lock() async {
+        if !isLocked {
+            isLocked = true
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func unlock() {
+        if !waiters.isEmpty {
+            let next = waiters.removeFirst()
+            next.resume()
+        } else {
+            isLocked = false
+        }
+    }
+
+    func withLock<T>(_ operation: () async throws -> T) async rethrows -> T {
+        await lock()
+        defer { unlock() }
+        return try await operation()
+    }
+}
+
 // MARK: - WAV Loading Helper
 
 private func loadWAV(from url: URL) throws -> MLXArray {
@@ -42,8 +76,29 @@ private func loadWAV(from url: URL) throws -> MLXArray {
 // MARK: - Tests
 
 struct WhisperSessionTests {
+    private func loadSession(
+        model: WhisperModel = .largeTurbo,
+        streaming: StreamingConfig = .default,
+        options: ModelLoadingOptions? = nil
+    ) async throws -> WhisperSession {
+        try await ModelLoadGate.shared.withLock {
+            if let options = options {
+                return try await WhisperSession.fromPretrained(
+                    model: model,
+                    options: options,
+                    streaming: streaming
+                )
+            }
+
+            return try await WhisperSession.fromPretrained(
+                model: model,
+                streaming: streaming
+            )
+        }
+    }
+
     @Test func transcribe_invalidSampleRate_throws() async throws {
-        let session = try await WhisperSession.fromPretrained(model: .largeTurbo)
+        let session = try await loadSession(model: .largeTurbo)
         let audio = MLXArray.zeros([44100])
 
         await #expect(throws: WhisperError.self) {
@@ -52,7 +107,7 @@ struct WhisperSessionTests {
     }
 
     @Test func cancel_stopsTranscription() async throws {
-        let session = try await WhisperSession.fromPretrained(model: .largeTurbo)
+        let session = try await loadSession(model: .largeTurbo)
         let audio = MLXArray.zeros([AudioConstants.nSamples])
 
         // Use type annotation to get streaming version
@@ -73,7 +128,7 @@ struct WhisperSessionTests {
     }
 
     @Test func fromPretrained_createsSession() async throws {
-        let session = try await WhisperSession.fromPretrained(
+        let session = try await loadSession(
             model: .largeTurbo,
             streaming: .default
         )
@@ -83,7 +138,7 @@ struct WhisperSessionTests {
     }
 
     @Test func transcribe_validSampleRate_streams() async throws {
-        let session = try await WhisperSession.fromPretrained(model: .largeTurbo)
+        let session = try await loadSession(model: .largeTurbo)
         let audio = MLXArray.zeros([AudioConstants.nSamples])
 
         var results: [StreamingResult] = []
@@ -99,7 +154,7 @@ struct WhisperSessionTests {
     @Test(.disabled("Requires network and model download"))
     func transcribe_silentAudio_returnsEmptyOrMinimal() async throws {
         // Given: A session with tiny model
-        let session = try await WhisperSession.fromPretrained(model: .tiny)
+        let session = try await loadSession(model: .tiny)
 
         // Silent audio (1 second)
         let audio = MLXArray.zeros([AudioConstants.sampleRate])
@@ -119,7 +174,7 @@ struct WhisperSessionTests {
     func transcribe_realSpeech_returnsExpectedText() async throws {
         // Given: A session with tiny model and real speech audio
         // Audio contains: "The quick brown fox jumps over the lazy dog. This is a test of the speech to text system."
-        let session = try await WhisperSession.fromPretrained(model: .tiny)
+        let session = try await loadSession(model: .tiny)
 
         guard let audioURL = Bundle.module.url(forResource: "test_speech", withExtension: "wav", subdirectory: "Resources") else {
             throw NSError(domain: "Test", code: 1, userInfo: [NSLocalizedDescriptionKey: "test_speech.wav not found in bundle"])
@@ -145,7 +200,7 @@ struct WhisperSessionTests {
     // MARK: - SDK v1 API Tests
 
     @Test func generateStream_validAudio_emitsEvents() async throws {
-        let session = try await WhisperSession.fromPretrained(model: .largeTurbo)
+        let session = try await loadSession(model: .largeTurbo)
         let audio = MLXArray.zeros([AudioConstants.nSamples])
 
         var tokens: [String] = []
@@ -175,7 +230,7 @@ struct WhisperSessionTests {
     }
 
     @Test func generate_validAudio_returnsOutput() async throws {
-        let session = try await WhisperSession.fromPretrained(model: .largeTurbo)
+        let session = try await loadSession(model: .largeTurbo)
         let audio = MLXArray.zeros([AudioConstants.nSamples])
 
         let output = try await session.generate(audio: audio)
@@ -186,7 +241,7 @@ struct WhisperSessionTests {
     }
 
     @Test func generateStream_withTemperature_usesSampling() async throws {
-        let session = try await WhisperSession.fromPretrained(model: .largeTurbo)
+        let session = try await loadSession(model: .largeTurbo)
         let audio = MLXArray.zeros([AudioConstants.nSamples])
 
         var result: STTOutput?
