@@ -19,6 +19,7 @@ public typealias SopranoError = AudioGenerationError
 public typealias SopranoGenerationInfo = AudioGenerationInfo
 public typealias SopranoGeneration = AudioGeneration
 
+
 // MARK: - Soprano Attention
 
 private class SopranoAttention: Module {
@@ -76,9 +77,10 @@ private class SopranoAttention: Module {
         keys = kNorm(keys.reshaped(B, L, args.kvHeads, -1)).transposed(0, 2, 1, 3)
         values = values.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
 
-        if let cache = cache {
-            queries = rope(queries, offset: cache.offset)
-            keys = rope(keys, offset: cache.offset)
+        if let cache = cache as? BaseKVCache {
+            let offset = cache.offset
+            queries = rope(queries, offset: offset)
+            keys = rope(keys, offset: offset)
             (keys, values) = cache.update(keys: keys, values: values)
         } else {
             queries = rope(queries)
@@ -169,7 +171,8 @@ private class SopranoModelInner: Module {
     func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
         var h = embedTokens(inputs)
 
-        let mask = createAttentionMask(h: h, cache: cache?.first)
+        let firstCache: KVCache? = cache?.first
+        let mask: MLXFast.ScaledDotProductAttentionMaskMode = createAttentionMask(h: h, cache: firstCache, windowSize: nil, returnArray: false)
 
         for (i, layer) in layers.enumerated() {
             h = layer(h, mask: mask, cache: cache?[i])
@@ -243,7 +246,8 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
     func forwardWithHiddenStates(_ inputs: MLXArray, cache: [KVCache]? = nil) -> (logits: MLXArray, hiddenStates: MLXArray) {
         var h = model.embedTokens(inputs)
 
-        let mask = createAttentionMask(h: h, cache: cache?.first)
+        let firstCache: KVCache? = cache?.first
+        let mask: MLXFast.ScaledDotProductAttentionMaskMode = createAttentionMask(h: h, cache: firstCache, windowSize: nil, returnArray: false)
 
         for (i, layer) in model.layers.enumerated() {
             h = layer(h, mask: mask, cache: cache?[i])
@@ -264,9 +268,12 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
     }
 
     public func makeCache() -> [KVCache] {
-        return (0..<configuration.hiddenLayers).map { _ in
-            KVCacheSimple()
+        var caches: [KVCache] = []
+        for _ in 0..<configuration.hiddenLayers {
+            let cache: KVCache = KVCacheSimple()
+            caches.append(cache)
         }
+        return caches
     }
 
     public func generate(

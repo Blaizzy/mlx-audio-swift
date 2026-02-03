@@ -1,7 +1,6 @@
 import AVFoundation
 import Foundation
 @preconcurrency import MLX
-import MLXAudioCore
 import MLXAudioTTS
 import MLXLMCommon
 
@@ -38,12 +37,7 @@ enum App {
                 model: args.model,
                 text: args.text,
                 voice: args.voice,
-                outputPath: args.outputPath,
-                refAudioPath: args.refAudioPath,
-                refText: args.refText,
-                maxTokens: args.maxTokens,
-                temperature: args.temperature,
-                topP: args.topP
+                outputPath: args.outputPath
             )
         } catch {
             fputs("Error: \(error)\n", stderr)
@@ -57,11 +51,6 @@ enum App {
         text: String,
         voice: String?,
         outputPath: String?,
-        refAudioPath: String?,
-        refText: String?,
-        maxTokens: Int,
-        temperature: Float,
-        topP: Float,
         hfToken: String? = nil
     ) async throws {
         Memory.cacheLimit = 100 * 1024 * 1024
@@ -86,25 +75,13 @@ enum App {
         print("Generating")
         let started = CFAbsoluteTimeGetCurrent()
 
-        let refAudio: MLXArray?
-        if let refAudioPath, !refAudioPath.isEmpty {
-            let refAudioURL = resovleURL(path: refAudioPath)
-            (_, refAudio) = try loadAudioArray(from: refAudioURL)
-        } else {
-            refAudio = nil
-        }
-
         let audioData = try await loadedModel.generate(
             text: text,
             voice: voice,
-            refAudio: refAudio,
-            refText: refText,
+            refAudio: nil,
+            refText: nil,
             language: nil,
-            generationParameters: GenerateParameters(
-                maxTokens: maxTokens,
-                temperature: temperature,
-                topP: topP
-            )
+            generationParameters: GenerateParameters()
         ).asArray(Float.self)
 
         let outputURL = makeOutputURL(outputPath: outputPath)
@@ -126,14 +103,6 @@ enum App {
         }
         return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(outputName)
-    }
-
-    private static func resovleURL(path: String) -> URL {
-        if path.hasPrefix("/") {
-            return URL(fileURLWithPath: path)
-        }
-        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent(path)
     }
 
     private static func writeWavFile(samples: [Float], sampleRate: Double, outputURL: URL) throws {
@@ -159,13 +128,11 @@ enum App {
 enum CLIError: Error, CustomStringConvertible {
     case missingValue(String)
     case unknownOption(String)
-    case invalidValue(String, String)
 
     var description: String {
         switch self {
         case .missingValue(let k): "Missing value for \(k)"
         case .unknownOption(let k): "Unknown option \(k)"
-        case .invalidValue(let k, let v): "Invalid value for \(k): \(v)"
         }
     }
 }
@@ -175,22 +142,12 @@ struct CLI {
     let text: String
     let voice: String?
     let outputPath: String?
-    let refAudioPath: String?
-    let refText: String?
-    let maxTokens: Int
-    let temperature: Float
-    let topP: Float
 
     static func parse() throws -> CLI {
         var text: String?
         var voice: String? = nil
         var outputPath: String? = nil
-        var model = "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit"
-        var refAudioPath: String? = nil
-        var refText: String? = nil
-        var maxTokens: Int = 1200
-        var temperature: Float = 0.7
-        var topP: Float = 0.9
+        var model = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit"
 
         var it = CommandLine.arguments.dropFirst().makeIterator()
         while let arg = it.next() {
@@ -207,24 +164,6 @@ struct CLI {
             case "--output", "-o":
                 guard let v = it.next() else { throw CLIError.missingValue(arg) }
                 outputPath = v
-            case "--ref_audio":
-                guard let v = it.next() else { throw CLIError.missingValue(arg) }
-                refAudioPath = v
-            case "--ref_text":
-                guard let v = it.next() else { throw CLIError.missingValue(arg) }
-                refText = v
-            case "--max_tokens":
-                guard let v = it.next() else { throw CLIError.missingValue(arg) }
-                guard let value = Int(v) else { throw CLIError.invalidValue(arg, v) }
-                maxTokens = value
-            case "--temperature":
-                guard let v = it.next() else { throw CLIError.missingValue(arg) }
-                guard let value = Float(v) else { throw CLIError.invalidValue(arg, v) }
-                temperature = value
-            case "--top_p":
-                guard let v = it.next() else { throw CLIError.missingValue(arg) }
-                guard let value = Float(v) else { throw CLIError.invalidValue(arg, v) }
-                topP = value
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -241,35 +180,20 @@ struct CLI {
             throw CLIError.missingValue("--text")
         }
 
-        return CLI(
-            model: model,
-            text: finalText,
-            voice: voice,
-            outputPath: outputPath,
-            refAudioPath: refAudioPath,
-            refText: refText,
-            maxTokens: maxTokens,
-            temperature: temperature,
-            topP: topP
-        )
+        return CLI(model: model, text: finalText, voice: voice, outputPath: outputPath)
     }
 
     static func printUsage() {
         let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "marvis-tts-cli"
         print("""
         Usage:
-          \(exe) --text "Hello world" [--voice conversational_b] [--model <hf-repo>] [--output <path>] [--ref_audio <path>] [--ref_text <string>] [--max_tokens <int>] [--temperature <float>] [--top_p <float>]
+          \(exe) --text "Hello world" [--voice conversational_b] [--model <hf-repo>] [--output <path>]
 
         Options:
           -t, --text <string>           Text to synthesize (required if not passed as trailing arg)
           -v, --voice <name>            Voice id
-              --model <repo>            HF repo id. Default: Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit
+              --model <repo>            HF repo id. Default: mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit
           -o, --output <path>           Output WAV path. Default: ./output.wav
-              --ref_audio <path>       Path to reference audio
-              --ref_text <string>      Caption for reference audio
-              --max_tokens <int>       Maximum number of tokens to generate. Default: 1200
-              --temperature <float>    Sampling temperature. Default: 0.7
-              --top_p <float>          Top-p sampling. Default: 0.9
           -h, --help                    Show this help
         """)
     }

@@ -35,6 +35,7 @@ public typealias Qwen3Error = AudioGenerationError
 public typealias Qwen3GenerationInfo = AudioGenerationInfo
 public typealias Qwen3Generation = AudioGeneration
 
+
 // MARK: - Decode
 
 /// Decode audio codes in chunks to reduce memory spikes.

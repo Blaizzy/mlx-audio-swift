@@ -35,6 +35,7 @@ public typealias LlamaTTSError = AudioGenerationError
 public typealias LlamaTTSGenerationInfo = AudioGenerationInfo
 public typealias LlamaTTSGeneration = AudioGeneration
 
+
 // MARK: - SNAC Audio Codec Functions
 
 /// Decode SNAC audio codes to waveform.
