@@ -557,20 +557,10 @@ public class Qwen3TTSTalkerForConditionalGeneration: Module {
 
             // Check for EOS
             if tokenValue == Int32(eosTokenId) {
-                // DEBUG: iOS word-skipping investigation
-                print("[TTS Debug] EOS hit at step \(step), generated \(generatedCodes.count) frames")
-                // end debug
                 break
             }
 
             generatedTokens.append(Int(tokenValue))
-
-            // Log every 10 steps
-            // DEBUG: iOS word-skipping investigation
-            if step % 10 == 0 {
-                print("[TTS Debug] Step \(step): token=\(tokenValue), codes=\(generatedCodes.count)")
-            }
-            // end debug
 
             // Generate remaining codebook tokens (codes 1-15) with code predictor
             var codeTokens: [MLXArray] = [nextToken]
@@ -604,23 +594,12 @@ public class Qwen3TTSTalkerForConditionalGeneration: Module {
                 eval(nextCode)
 
                 codeTokens.append(nextCode)
-
             }
-
 
             // Stack all codebook tokens: [1, 16]
             let allCodes = concatenated(codeTokens, axis: 1)
             eval(allCodes)
             generatedCodes.append(allCodes)
-
-            // DEBUG: Print first 4 codes for comparison with CLI
-            if step < 10 || step % 20 == 0 {
-                let c0 = codeTokens[0][0, 0].item(Int32.self)
-                let c1 = codeTokens[1][0, 0].item(Int32.self)
-                let c2 = codeTokens[2][0, 0].item(Int32.self)
-                let c3 = codeTokens[3][0, 0].item(Int32.self)
-                print("[TTS Codes] Step \(step): [\(c0), \(c1), \(c2), \(c3), ...]")
-            }
 
             // Prepare next input embedding
             let textEmbed: MLXArray

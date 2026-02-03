@@ -21,7 +21,7 @@ enum Qwen3Model: String, CaseIterable, Identifiable {
     case base4bit = "smdesai/Qwen3-TTS-12Hz-0.6B-Base-4bit"
     case customVoice4bit = "smdesai/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit"
     case customVoice8bit = "smdesai/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit"
-    case voiceDesignBf16 = "smdesai/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16"
+    case voiceDesign4bit = "smdesai/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit"
 
     var id: String { rawValue }
 
@@ -30,7 +30,7 @@ enum Qwen3Model: String, CaseIterable, Identifiable {
         case .base4bit: return "0.6B Base (4-bit)"
         case .customVoice4bit: return "0.6B CustomVoice (4-bit)"
         case .customVoice8bit: return "0.6B CustomVoice (8-bit)"
-        case .voiceDesignBf16: return "1.7B VoiceDesign (bf16)"
+        case .voiceDesign4bit: return "1.7B VoiceDesign (4-bit)"
         }
     }
 
@@ -39,7 +39,7 @@ enum Qwen3Model: String, CaseIterable, Identifiable {
         case .base4bit: return "Base model with voice cloning support."
         case .customVoice4bit: return "Fast, smaller model with preset voices."
         case .customVoice8bit: return "Higher precision model with preset voices."
-        case .voiceDesignBf16: return "Larger model with voice design via instructions."
+        case .voiceDesign4bit: return "Fast, smaller model with voice design via instructions."
         }
     }
 
@@ -49,7 +49,7 @@ enum Qwen3Model: String, CaseIterable, Identifiable {
         case .base4bit: return false
         case .customVoice4bit: return true
         case .customVoice8bit: return true
-        case .voiceDesignBf16: return false
+        case .voiceDesign4bit: return false
         }
     }
 
@@ -132,7 +132,7 @@ class Qwen3TTSViewModel: ObservableObject {
     private var generationTask: Task<Void, Never>?
 
     // Generation parameters (adjustable)
-    @Published var temperature: Float = 0.3
+    @Published var temperature: Float = 1.0
     @Published var topK: Int = 50
     @Published var topP: Float = 0.95
     @Published var maxTokens: Int = 2000
@@ -165,12 +165,10 @@ class Qwen3TTSViewModel: ObservableObject {
         // Set memory cache limit based on model size
         let cacheLimit: Int
         switch selectedModel {
-        case .base4bit, .customVoice4bit:
+        case .base4bit, .customVoice4bit, .voiceDesign4bit:
             cacheLimit = 300 * 1024 * 1024  // 300MB for 4-bit
         case .customVoice8bit:
             cacheLimit = 400 * 1024 * 1024  // 400MB for 8-bit
-        case .voiceDesignBf16:
-            cacheLimit = 800 * 1024 * 1024  // 800MB for bf16
         }
         Memory.cacheLimit = cacheLimit
 

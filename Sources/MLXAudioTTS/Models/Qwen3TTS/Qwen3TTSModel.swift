@@ -78,14 +78,23 @@ public class Qwen3TTSModel {
         let modelDirectory = cache.cacheDirectory
             .appendingPathComponent(modelSubdir)
 
-        // Download model files using HubClient
-        try await client.downloadSnapshot(
-            of: repoID,
-            kind: .model,
-            to: modelDirectory,
-            revision: "main",
-            matching: ["*.safetensors", "*.json", "*.txt"]
-        )
+        // Check if model is already cached (has config.json and at least one safetensors file)
+        let configExists = FileManager.default.fileExists(atPath: modelDirectory.appendingPathComponent("config.json").path)
+        let hasSafetensors = (try? FileManager.default.contentsOfDirectory(at: modelDirectory, includingPropertiesForKeys: nil))?.contains { $0.pathExtension == "safetensors" } ?? false
+
+        if configExists && hasSafetensors {
+            print("Using cached model at: \(modelDirectory.path)")
+        } else {
+            // Download model files using HubClient
+            print("Downloading model to: \(modelDirectory.path)")
+            try await client.downloadSnapshot(
+                of: repoID,
+                kind: .model,
+                to: modelDirectory,
+                revision: "main",
+                matching: ["*.safetensors", "*.json", "*.txt"]
+            )
+        }
 
         return try await load(from: modelDirectory)
     }
@@ -500,6 +509,12 @@ public class Qwen3TTSModel {
             // Progress callback
             onProgress(step + 1, generatedCodes.count)
 
+            // Clear GPU cache periodically to prevent memory buildup on iOS
+            // MLX lazy evaluation builds computation graphs that grow until iOS kills the app
+            if (step + 1) % 25 == 0 {
+                Memory.clearCache()
+            }
+
             // Prepare next input
             let textEmbed: MLXArray
             if trailingIdx < trailingTextHidden.shape[1] {
@@ -518,6 +533,9 @@ public class Qwen3TTSModel {
             inputEmbeds = textEmbed + codecEmbed
             eval(inputEmbeds)
         }
+
+        // Final cache clear after generation
+        Memory.clearCache()
 
         if generatedCodes.isEmpty {
             throw Qwen3TTSError.noCodesGenerated
