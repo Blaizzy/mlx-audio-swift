@@ -117,7 +117,7 @@ public final class Attention: Module {
 
     public init(cfg: TransformerConfig) {
         self.cfg = cfg
-        // Only kv_repeat == 1 supported (parity with your python)
+        // Only kv_repeat == 1 supported (parity with python)
         precondition(cfg.kvRepeat == 1, "only kv_repeat == 1 is supported")
 
         let numKV = cfg.numHeads / cfg.kvRepeat
@@ -296,7 +296,6 @@ public final class Transformer: Module {
     }
 
     public func makeCache() -> [KVCacheSimple] {
-        // Assume your KVCache init matches the python: (head_dim, n_kv_heads)
         return (0..<cfg.numLayers).map { _ in KVCacheSimple() }
     }
 }

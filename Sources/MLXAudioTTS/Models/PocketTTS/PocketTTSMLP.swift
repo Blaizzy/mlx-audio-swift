@@ -20,8 +20,12 @@ public final class PocketRMSNorm: Module, UnaryLayer {
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
         let x32 = x.asType(.float32)
-        let meanSquare = MLX.mean(x32 * x32, axis: -1, keepDims: true)
-        let inv = MLXArray(1.0) / MLX.sqrt(meanSquare + MLXArray(eps))
+        let mean = MLX.mean(x32, axis: -1, keepDims: true)
+        let diff = x32 - mean
+        let n = max(x32.shape.last ?? 1, 1)
+        let denom = MLXArray(Float(max(n - 1, 1)))
+        let varr = MLX.sum(diff * diff, axis: -1, keepDims: true) / denom
+        let inv = MLXArray(1.0) / MLX.sqrt(varr + MLXArray(eps))
         let y = x32 * inv * alpha.asType(.float32)
         return y.asType(x.dtype)
     }
@@ -45,17 +49,7 @@ public final class PocketLayerNorm: Module {
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let x32 = x.asType(.float32)
-        let mean = MLX.mean(x32, axis: -1, keepDims: true)
-        let varr = MLX.mean((x32 - mean) * (x32 - mean), axis: -1, keepDims: true)
-        var y = (x32 - mean) / MLX.sqrt(varr + MLXArray(eps))
-        if let w = weight {
-            y = y * w.asType(.float32)
-        }
-        if let b = bias {
-            y = y + b.asType(.float32)
-        }
-        return y.asType(x.dtype)
+        return MLXFast.layerNorm(x, weight: weight, bias: bias, eps: eps)
     }
 }
 
