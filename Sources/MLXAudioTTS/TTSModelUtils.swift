@@ -79,7 +79,7 @@ public enum TTSModelUtils {
         if lower.contains("csm") || lower.contains("sesame") {
             return "csm"
         }
-        if lower.contains("pocket") {
+        if lower.contains("pocket_tts") {
             return "pocket_tts"
         }
         return nil
