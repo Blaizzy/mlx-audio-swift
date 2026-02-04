@@ -13,6 +13,8 @@
 import Foundation
 import HuggingFace
 import MLX
+import MLXAudioCore
+import MLXLMCommon
 import MLXNN
 import Tokenizers
 
@@ -30,7 +32,7 @@ import Tokenizers
 /// let refAudio = ... // MLXArray of audio samples at 24kHz
 /// let audio = try model.generate(text: "Hello!", refAudio: refAudio)
 /// ```
-public class Qwen3TTSModel {
+public class Qwen3TTSModel: @unchecked Sendable {
     public let config: Qwen3TTSModelConfig
     public let talker: Qwen3TTSTalkerForConditionalGeneration
     public let speechTokenizer: Qwen3TTSSpeechTokenizer
@@ -660,4 +662,76 @@ private func writeWAV(samples: [Float], sampleRate: Int, to url: URL) throws {
     }
 
     try data.write(to: url)
+}
+
+// MARK: - SpeechGenerationModel Conformance
+
+extension Qwen3TTSModel: SpeechGenerationModel {
+
+    /// Alias for load(from:) to match other models' API
+    public static func fromPretrained(_ modelRepo: String) async throws -> Qwen3TTSModel {
+        try await load(from: modelRepo)
+    }
+
+    public func generate(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters
+    ) async throws -> MLXArray {
+        try generate(
+            text: text,
+            temperature: generationParameters.temperature,
+            topK: 50,
+            topP: generationParameters.topP,
+            maxTokens: generationParameters.maxTokens ?? 2000,
+            repetitionPenalty: generationParameters.repetitionPenalty ?? 1.0,
+            speaker: voice,
+            refAudio: refAudio
+        )
+    }
+
+    public func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        // Capture all parameters as local constants for Sendable compliance
+        let capturedText = text
+        let capturedVoice = voice
+        let capturedRefAudio = refAudio
+        let capturedTemp = generationParameters.temperature
+        let capturedTopP = generationParameters.topP
+        let capturedMaxTokens = generationParameters.maxTokens ?? 2000
+        let capturedRepPenalty = generationParameters.repetitionPenalty ?? 1.0
+
+        // Use unstructured task to avoid Sendable issues with self
+        return AsyncThrowingStream { continuation in
+            let model = self
+            continuation.onTermination = { _ in }
+
+            // Run synchronously in the stream's context
+            do {
+                let audio = try model.generate(
+                    text: capturedText,
+                    temperature: capturedTemp,
+                    topK: 50,
+                    topP: capturedTopP,
+                    maxTokens: capturedMaxTokens,
+                    repetitionPenalty: capturedRepPenalty,
+                    speaker: capturedVoice,
+                    refAudio: capturedRefAudio
+                )
+                continuation.yield(.audio(audio))
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
+            }
+        }
+    }
 }
