@@ -44,6 +44,10 @@ public enum TTSModelUtils {
 
         switch resolvedType {
         case "qwen3_tts", "qwen3", "qwen":
+            // Detect Qwen3-TTS conditional generation model (nested talker_config)
+            if await configHasNestedTalkerConfig(modelRepo) {
+                return try await Qwen3TTSFullModel.fromPretrained(modelRepo)
+            }
             return try await Qwen3Model.fromPretrained(modelRepo)
         case "llama_tts", "llama3_tts", "llama3", "llama", "orpheus", "orpheus_tts":
             return try await LlamaTTSModel.fromPretrained(modelRepo)
@@ -63,6 +67,20 @@ public enum TTSModelUtils {
         let trimmed = modelType.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return trimmed.lowercased()
+    }
+
+    /// Check if the model's config.json contains a nested talker_config (Qwen3-TTS conditional generation)
+    private static func configHasNestedTalkerConfig(_ modelRepo: String) async -> Bool {
+        guard let repoID = Repo.ID(rawValue: modelRepo) else { return false }
+        do {
+            let modelDir = try await ModelUtils.resolveOrDownloadModel(repoID: repoID, requiredExtension: "safetensors")
+            let configPath = modelDir.appendingPathComponent("config.json")
+            let data = try Data(contentsOf: configPath)
+            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                return json["talker_config"] != nil
+            }
+        } catch {}
+        return false
     }
 
     private static func inferModelType(from modelRepo: String) -> String? {
