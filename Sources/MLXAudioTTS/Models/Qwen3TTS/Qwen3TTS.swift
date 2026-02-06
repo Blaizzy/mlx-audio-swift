@@ -9,9 +9,9 @@ import HuggingFace
 import Tokenizers
 import Foundation
 
-// MARK: - Qwen3TTS Full Model
+// MARK: - Qwen3TTS Model
 
-public final class Qwen3TTSFullModel: Module, SpeechGenerationModel, @unchecked Sendable {
+public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Sendable {
     let config: Qwen3TTSModelConfig
     let talker: Qwen3TTSTalkerForConditionalGeneration
     var speechTokenizer: Qwen3TTSSpeechTokenizer?
@@ -437,7 +437,7 @@ public final class Qwen3TTSFullModel: Module, SpeechGenerationModel, @unchecked 
 
     // MARK: - fromPretrained
 
-    public static func fromPretrained(_ modelRepo: String) async throws -> Qwen3TTSFullModel {
+    public static func fromPretrained(_ modelRepo: String) async throws -> Qwen3TTSModel {
         let repoID = Repo.ID(rawValue: modelRepo)!
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID, requiredExtension: "safetensors"
@@ -447,7 +447,7 @@ public final class Qwen3TTSFullModel: Module, SpeechGenerationModel, @unchecked 
         let configData = try Data(contentsOf: modelDir.appendingPathComponent("config.json"))
         let config = try JSONDecoder().decode(Qwen3TTSModelConfig.self, from: configData)
 
-        let model = Qwen3TTSFullModel(config: config)
+        let model = Qwen3TTSModel(config: config)
 
         // Load talker weights
         var allWeights = [String: MLXArray]()
@@ -516,7 +516,7 @@ public final class Qwen3TTSFullModel: Module, SpeechGenerationModel, @unchecked 
         return model
     }
 
-    private static func loadSpeechTokenizer(model: Qwen3TTSFullModel, path: URL) throws {
+    private static func loadSpeechTokenizer(model: Qwen3TTSModel, path: URL) throws {
         // Load config — fall back to defaults if config.json is missing
         let tokenizerConfig: Qwen3TTSTokenizerConfig
         let configPath = path.appendingPathComponent("config.json")

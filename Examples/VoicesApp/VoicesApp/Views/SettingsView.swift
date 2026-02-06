@@ -117,7 +117,6 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
 
                         VStack(alignment: .leading, spacing: 2) {
-                            ModelHintRow(modelId: "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-6bit")
                             ModelHintRow(modelId: "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16")
                         }
                     }
