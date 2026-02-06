@@ -119,7 +119,7 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         progressHandler: @escaping (Progress) -> Void = { _ in }
     ) async throws -> MLXArray? {
         _ = progressHandler
-        let fileURL = modelFolder.appendingPathComponent("\(voiceName).safetensors")
+        let fileURL = modelFolder.appendingPathComponent("embeddings/\(voiceName).safetensors")
         if !FileManager.default.fileExists(atPath: fileURL.path) {
             return nil
         }
@@ -165,18 +165,28 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
     }
 
     private func sliceFlowCache(_ state: inout PocketTTSState, to length: Int) {
-        guard length > 0 else { return }
+        let targetLength = max(length, 0)
         for cache in state.flowCache {
             let s = cache.state
             guard s.count == 2 else { continue }
             let keys = s[0]
             let values = s[1]
-            let end = min(length, keys.shape[2])
+            let end = min(targetLength, keys.shape[2])
             let slicedKeys = keys[.ellipsis, ..<end, 0...]
             let slicedValues = values[.ellipsis, ..<end, 0...]
             cache.state = [slicedKeys, slicedValues]
             cache.offset = min(cache.offset, end)
         }
+    }
+
+    private func getFlowCacheNumFrames(_ state: PocketTTSState) -> Int {
+        for cache in state.flowCache {
+            let s = cache.state
+            guard s.count == 2 else { continue }
+            let keys = s[0]
+            return min(cache.offset, keys.shape[2])
+        }
+        return 0
     }
 
     public func generateAudio(
@@ -203,8 +213,10 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
             throw NSError(domain: "PocketTTSModel", code: 3, userInfo: [NSLocalizedDescriptionKey: "Missing generation state"])
         }
         var outputs: [MLXArray] = []
+        let promptNumFrames = getFlowCacheNumFrames(state)
         let chunks = try PocketTTSTextUtils.splitIntoBestSentences(flow_lm.conditioner.tokenizer, text)
         for chunk in chunks {
+            sliceFlowCache(&state, to: promptNumFrames)
             let (_, guess) = try PocketTTSTextUtils.prepareTextPrompt(chunk)
             let frames = framesAfterEos ?? (guess + 2)
             let audioChunks = try generateAudioStreamShortText(state: &state, text: chunk, framesAfterEos: frames, maxFrames: maxFrames)
