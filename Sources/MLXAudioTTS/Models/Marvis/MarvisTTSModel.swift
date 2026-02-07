@@ -149,7 +149,7 @@ public final class MarvisTTSModel: Module {
 
 public extension MarvisTTSModel {
     static func fromPretrained(
-        _ modelRepo: String = "Marvis-AI/marvis-tts-250m-v0.2-MLX-6bit",
+        _ modelRepo: String = "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit",
         progressHandler: @escaping (Progress) -> Void = { _ in }
     ) async throws -> MarvisTTSModel {
         Memory.cacheLimit = 100 * 1024 * 1024
@@ -219,7 +219,7 @@ public extension MarvisTTSModel {
 
     static func fromPretrained(
         hub: HubApi = .shared,
-        repoId: String = "Marvis-AI/marvis-tts-250m-v0.2-MLX-6bit",
+        repoId: String = "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit",
         progressHandler: @escaping (Progress) -> Void
     ) async throws -> MarvisTTSModel {
         _ = hub
