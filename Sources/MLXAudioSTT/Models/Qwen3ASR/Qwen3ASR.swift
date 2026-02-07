@@ -1165,8 +1165,12 @@ public class Qwen3ASRModel: Module {
         if FileManager.default.fileExists(atPath: configPath.path) {
             let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
             let hasSafetensors = files?.contains { $0.pathExtension == "safetensors" } ?? false
+            let hasTokenizer = FileManager.default.fileExists(
+                atPath: modelDir.appendingPathComponent("tokenizer.json").path)
+            let hasVocab = FileManager.default.fileExists(
+                atPath: modelDir.appendingPathComponent("vocab.json").path)
 
-            if hasSafetensors {
+            if hasSafetensors && (hasTokenizer || hasVocab) {
                 print("Using cached model at: \(modelDir.path)")
                 return modelDir
             }
