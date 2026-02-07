@@ -756,10 +756,11 @@ public class Qwen3ASRModel: Module {
         let audioFeatures = getAudioFeatures(inputFeatures, featureAttentionMask: featureAttentionMask)
         eval(audioFeatures)
 
-        // Build input embeddings
+        // Build input embeddings (use embeds.dtype to get correct float type even for quantized models)
+        let embeds = model.embedTokens(inputIds)
         let inputsEmbeds = mergeAudioFeatures(
-            inputsEmbeds: model.embedTokens(inputIds),
-            audioFeatures: audioFeatures.asType(model.embedTokens.weight.dtype),
+            inputsEmbeds: embeds,
+            audioFeatures: audioFeatures.asType(embeds.dtype),
             inputIds: inputIds
         )
 
@@ -845,10 +846,11 @@ public class Qwen3ASRModel: Module {
                 )
                 eval(audioFeatures)
 
-                // Build input embeddings
+                // Build input embeddings (use embeds.dtype to get correct float type even for quantized models)
+                let embeds = self.model.embedTokens(inputIds)
                 let inputsEmbeds = self.mergeAudioFeatures(
-                    inputsEmbeds: self.model.embedTokens(inputIds),
-                    audioFeatures: audioFeatures.asType(self.model.embedTokens.weight.dtype),
+                    inputsEmbeds: embeds,
+                    audioFeatures: audioFeatures.asType(embeds.dtype),
                     inputIds: inputIds
                 )
 
