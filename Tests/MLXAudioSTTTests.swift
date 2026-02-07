@@ -1455,6 +1455,11 @@ struct Qwen3ASRTests {
             #expect(item.startTime >= 0, "Start time should be non-negative")
             #expect(item.endTime >= item.startTime, "End time should be >= start time")
         }
+        print("\u{001B}[32m Qwen3 ForcedAligner Summary:\u{001B}[0m")
+        print("\u{001B}[32m  Text: \(result.text)\u{001B}[0m")
+        print("\u{001B}[32m  Prompt Tokens: \(result.promptTokens)\u{001B}[0m")
+        print("\u{001B}[32m  Total Time: \(String(format: "%.3f", result.totalTime))s\u{001B}[0m")
+        print("\u{001B}[32m  Peak Memory: \(String(format: "%.2f", result.peakMemoryUsage))GB\u{001B}[0m")
     }
 }
 

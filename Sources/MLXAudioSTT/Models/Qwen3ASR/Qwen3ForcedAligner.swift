@@ -32,8 +32,25 @@ public struct ForcedAlignItem: Sendable {
 public struct ForcedAlignResult: Sendable {
     public let items: [ForcedAlignItem]
 
-    public init(items: [ForcedAlignItem]) {
+    /// Number of tokens in the prompt.
+    public let promptTokens: Int
+
+    /// Total processing time in seconds.
+    public let totalTime: Double
+
+    /// Peak memory usage in GB.
+    public let peakMemoryUsage: Double
+
+    public init(
+        items: [ForcedAlignItem],
+        promptTokens: Int = 0,
+        totalTime: Double = 0.0,
+        peakMemoryUsage: Double = 0.0
+    ) {
         self.items = items
+        self.promptTokens = promptTokens
+        self.totalTime = totalTime
+        self.peakMemoryUsage = peakMemoryUsage
     }
 
     /// Full text from all aligned items.
@@ -419,6 +436,8 @@ public class Qwen3ForcedAlignerModel: Module {
             fatalError("Tokenizer not loaded")
         }
 
+        let startTime = Date()
+
         let (inputFeatures, featureAttentionMask, numAudioTokens) = preprocessAudio(audio)
 
         let (wordList, alignerInputText) = alignerProcessor.encodeTimestamp(text: text, language: language)
@@ -431,6 +450,7 @@ public class Qwen3ForcedAlignerModel: Module {
 
         let inputIdsList = tokenizer.encode(text: expandedText)
         let inputIds = MLXArray(inputIdsList.map { Int32($0) }).expandedDimensions(axis: 0)
+        let promptTokenCount = inputIds.dim(1)
 
         let logits = callAsFunction(
             inputIds: inputIds,
@@ -465,9 +485,16 @@ public class Qwen3ForcedAlignerModel: Module {
             timestamp: timestampValues
         )
 
+        let endTime = Date()
+        let peakMemory = Double(Memory.peakMemory) / 1e9
         Memory.clearCache()
 
-        return ForcedAlignResult(items: items)
+        return ForcedAlignResult(
+            items: items,
+            promptTokens: promptTokenCount,
+            totalTime: endTime.timeIntervalSince(startTime),
+            peakMemoryUsage: peakMemory
+        )
     }
 
     // MARK: - Weight Sanitization
