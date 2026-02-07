@@ -1,18 +1,17 @@
 import Foundation
 import HuggingFace
 
-public struct ModelUtils {
+public enum ModelUtils {
     public static func resolveModelType(repoID: Repo.ID, hfToken: String? = nil) async throws -> String? {
         let modelNameComponents = repoID.name.split(separator: "/").last?.split(separator: "-")
         let modelURL = try await resolveOrDownloadModel(repoID: repoID, requiredExtension: "safetensors", hfToken: hfToken)
-        let configJSON = try JSONSerialization.jsonObject(with: try Data(contentsOf: modelURL.appendingPathComponent("config.json")))
+        let configJSON = try JSONSerialization.jsonObject(with: Data(contentsOf: modelURL.appendingPathComponent("config.json")))
         if let config = configJSON as? [String: Any] {
             return (config["model_type"] as? String) ?? (config["architecture"] as? String) ?? modelNameComponents?.first?.lowercased()
         }
         return nil
     }
-    
-    
+
     /// Resolves a model from cache or downloads it if not cached.
     /// - Parameters:
     ///   - string: The repository name
@@ -34,7 +33,7 @@ public struct ModelUtils {
         let cache = client.cache ?? HubCache.default
         return try await resolveOrDownloadModel(client: client, cache: cache, repoID: repoID, requiredExtension: requiredExtension)
     }
-    
+
     /// Resolves a model from cache or downloads it if not cached.
     /// - Parameters:
     ///   - client: The HuggingFace Hub client
@@ -76,12 +75,15 @@ public struct ModelUtils {
         // Create directory if needed
         try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
 
+        let allowedExtensions: Set<String> = ["*.\(requiredExtension)", "*.safetensors", "*.json"]
+
         print("Downloading model \(repoID)...")
         _ = try await client.downloadSnapshot(
             of: repoID,
             kind: .model,
             to: modelDir,
             revision: "main",
+            matching: Array(allowedExtensions),
             progressHandler: { progress in
                 print("\(progress.completedUnitCount)/\(progress.totalUnitCount) files")
             }
