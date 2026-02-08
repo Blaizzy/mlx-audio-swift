@@ -12,8 +12,8 @@ MLXAudio follows a modular design allowing you to import only what you need:
 
 - **MLXAudioCore**: Base types, protocols, and utilities
 - **MLXAudioCodecs**: Audio codec implementations (SNAC, Vocos, Mimi)
-- **MLXAudioTTS**: Text-to-Speech models (Soprano, Qwen3, LlamaTTS)
-- **MLXAudioSTT**: Speech-to-Text models (GLMASR, Whisper)
+- **MLXAudioTTS**: Text-to-Speech models (Soprano, VyvoTTS, Orpheus, Marvis TTS, Pocket TTS)
+- **MLXAudioSTT**: Speech-to-Text models (GLMASR)
 - **MLXAudioSTS**: Speech-to-Speech (future)
 - **MLXAudioUI**: SwiftUI components for audio interfaces
 
@@ -90,12 +90,21 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 
 ## Supported Models
 
-| Model | Type | HuggingFace Repo |
-|-------|------|------------------|
-| Soprano | TTS | mlx-community/Soprano-80M-bf16 |
-| Qwen3 | TTS | mlx-community/VyvoTTS-EN-Beta-4bit |
-| LlamaTTS (Orpheus) | TTS | mlx-community/orpheus-3b-0.1-ft-bf16 |
-| GLMASR | STT | mlx-community/GLM-ASR-Nano-2512-4bit |
+### TTS Models
+
+| Model | Model README | HuggingFace Repo |
+|-------|--------------|------------------|
+| Soprano | [Soprano README](Sources/MLXAudioTTS/Models/Soprano/README.md) | [mlx-community/Soprano-80M-bf16](https://huggingface.co/mlx-community/Soprano-80M-bf16) |
+| VyvoTTS | [VyvoTTS README](Sources/MLXAudioTTS/Models/Qwen3/README.md) | [mlx-community/VyvoTTS-EN-Beta-4bit](https://huggingface.co/mlx-community/VyvoTTS-EN-Beta-4bit) |
+| Orpheus | [Orpheus README](Sources/MLXAudioTTS/Models/Llama/README.md) | [mlx-community/orpheus-3b-0.1-ft-bf16](https://huggingface.co/mlx-community/orpheus-3b-0.1-ft-bf16) |
+| Marvis TTS | [Marvis TTS README](Sources/MLXAudioTTS/Models/Marvis/README.md) | [Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit](https://huggingface.co/Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit) |
+| Pocket TTS | [Pocket TTS README](Sources/MLXAudioTTS/Models/PocketTTS/README.md) | [mlx-community/pocket-tts](https://huggingface.co/mlx-community/pocket-tts) |
+
+### STT Models
+
+| Model | Model README | HuggingFace Repo |
+|-------|--------------|------------------|
+| GLMASR | [GLMASR README](Sources/MLXAudioSTT/Models/GLMASR/README.md) | [mlx-community/GLM-ASR-Nano-2512-4bit](https://huggingface.co/mlx-community/GLM-ASR-Nano-2512-4bit) |
 
 ## Features
 
