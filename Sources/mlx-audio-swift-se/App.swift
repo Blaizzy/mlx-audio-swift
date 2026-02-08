@@ -84,11 +84,11 @@ enum App {
         let frameCount = AVAudioFrameCount(samples.count)
         guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
-            fatalError("Failed to create audio buffer")
+            throw CLIError.audioBufferError("Failed to create audio buffer with sample rate \(sampleRate) Hz")
         }
         buffer.frameLength = frameCount
         guard let channelData = buffer.floatChannelData else {
-            fatalError("Failed to access audio buffer data")
+            throw CLIError.audioBufferError("Failed to access audio buffer channel data")
         }
         for i in 0..<samples.count {
             channelData[0][i] = samples[i]
@@ -103,11 +103,13 @@ enum App {
 enum CLIError: Error, CustomStringConvertible {
     case missingValue(String)
     case unknownOption(String)
+    case audioBufferError(String)
 
     var description: String {
         switch self {
         case .missingValue(let k): "Missing value for \(k)"
         case .unknownOption(let k): "Unknown option \(k)"
+        case .audioBufferError(let msg): msg
         }
     }
 }

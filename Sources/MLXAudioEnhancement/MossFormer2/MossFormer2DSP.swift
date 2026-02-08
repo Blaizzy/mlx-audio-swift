@@ -125,6 +125,10 @@ public enum MossFormer2DSP {
         var output = [Float](repeating: 0, count: fullLength)
         var windowSum = [Float](repeating: 0, count: fullLength)
 
+        // TODO: Vectorize overlap-add using scatter-add (mlx_scatter_add).
+        // Approach: precompute flat index buffer mapping frame positions to output indices,
+        // then use `array.at(indices).add(values)` for fully on-device accumulation.
+        // Reference: Python mlx-audio ISTFTCache uses `output.at[indices].add(updates)`.
         for frameIndex in 0..<numFrames {
             let start = frameIndex * hopLength
             if start >= fullLength { break }
@@ -147,8 +151,8 @@ public enum MossFormer2DSP {
         var result = output
         if center {
             let trim = fftLen / 2
-            if result.count > trim {
-                result = Array(result[trim...])
+            if result.count > 2 * trim {
+                result = Array(result[trim..<(result.count - trim)])
             }
         }
         if let audioLength, result.count > audioLength {
@@ -243,7 +247,7 @@ public enum MossFormer2DSP {
         return MLX.concatenated([window, rightPad], axis: 0)
     }
 
-    private static func hannWindow(size: Int, periodic: Bool = true) -> MLXArray {
+    static func hannWindow(size: Int, periodic: Bool = true) -> MLXArray {
         guard size > 0 else { return MLXArray.zeros([0], type: Float.self) }
         if size == 1 { return MLXArray([Float(1.0)]) }
 
@@ -269,42 +273,34 @@ public enum MossFormer2DSP {
 
         let halfWin = max(winLength / 2, 1)
         var denom: Float = 0
-        if halfWin > 0 {
-            for i in 1...halfWin {
-                denom += Float(i * i)
-            }
-            denom *= 2.0
+        for i in 1...halfWin {
+            denom += Float(i * i)
         }
+        denom *= 2.0
         if denom <= 0 {
             return MLXArray.zeros([channels, time], type: Float.self)
         }
 
-        let values = features.asArray(Float.self)
-        var deltas = [Float](repeating: 0, count: channels * time)
-
-        @inline(__always)
-        func clampedTime(_ t: Int) -> Int {
-            if t < 0 { return 0 }
-            if t >= time { return time - 1 }
-            return t
+        // Kernel: [-halfWin..halfWin] / denom for Kaldi-style finite-difference deltas
+        let kernelSize = 2 * halfWin + 1
+        var kernelValues = [Float](repeating: 0, count: kernelSize)
+        for i in (-halfWin)...halfWin {
+            kernelValues[i + halfWin] = Float(i) / denom
         }
+        let singleKernel = MLXArray(kernelValues).reshaped([1, kernelSize, 1])
+        let weight = MLX.repeated(singleKernel, count: channels, axis: 0)
 
-        @inline(__always)
-        func at(_ c: Int, _ t: Int) -> Float {
-            values[c * time + clampedTime(t)]
-        }
+        // [channels, time] → NLC [1, time, channels]
+        let nlc = features.transposed(1, 0).expandedDimensions(axis: 0)
 
-        for c in 0..<channels {
-            let base = c * time
-            for t in 0..<time {
-                var acc: Float = 0
-                for i in 1...halfWin {
-                    acc += Float(i) * (at(c, t + i) - at(c, t - i))
-                }
-                deltas[base + t] = acc / denom
-            }
-        }
+        let padded = MLX.padded(
+            nlc,
+            widths: [.init(0), .init((halfWin, halfWin)), .init(0)],
+            mode: .edge
+        )
 
-        return MLXArray(deltas).reshaped([channels, time])
+        let convOut = MLX.conv1d(padded, weight, stride: 1, padding: 0, groups: channels)
+
+        return convOut.squeezed(axis: 0).transposed(1, 0)
     }
 }
