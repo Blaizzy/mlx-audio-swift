@@ -321,7 +321,13 @@ public final class MossFormer2SEModel {
         }
 
         let audio = audioInput.asType(.float32)
-        let window = MossFormer2DSP.hammingWindow(size: config.winLen)
+        let lowerType = config.winType.lowercased()
+        let window: MLXArray
+        if lowerType.contains("hann") {
+            window = MossFormer2DSP.hannWindow(size: config.winLen, periodic: false)
+        } else {
+            window = MossFormer2DSP.hammingWindow(size: config.winLen, periodic: false)
+        }
 
         let fbank = MossFormer2DSP.computeFbankKaldi(
             audio: audio,

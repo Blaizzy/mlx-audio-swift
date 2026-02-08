@@ -289,6 +289,29 @@ struct MossFormer2SEDSPTests {
         #expect(deltas.shape == [10, 60])
     }
 
+    @Test func computeDeltasKaldiNumerical() {
+        // Regression test: verify numerical values match CPU implementation
+        // Input: [1, 2, 3, 4, 5] with winLength=5 (halfWin=2)
+        // denom = 2 * (1^2 + 2^2) = 10
+        // delta[t] = sum(i * (feat[t+i] - feat[t-i]) for i in 1..2) / 10
+        let input = MLXArray([1.0, 2.0, 3.0, 4.0, 5.0]).reshaped([1, 5])
+        let deltas = MossFormer2DSP.computeDeltasKaldi(input)
+
+        // Expected values (hand-calculated):
+        // t=0: (1*(2-1) + 2*(3-1)) / 10 = 5/10 = 0.5
+        // t=1: (1*(3-1) + 2*(4-1)) / 10 = 8/10 = 0.8
+        // t=2: (1*(4-2) + 2*(5-3)) / 10 = 6/10 = 0.6
+        // t=3: (1*(5-3) + 2*(5-4)) / 10 = 4/10 = 0.4
+        // t=4: (1*(5-4) + 2*(5-5)) / 10 = 1/10 = 0.1
+        let expected: [Float] = [0.5, 0.8, 0.6, 0.4, 0.1]
+        let deltasArray = deltas.asArray(Float.self)
+
+        let epsilon: Float = 1e-5
+        for (i, exp) in expected.enumerated() {
+            #expect(abs(deltasArray[i] - exp) < epsilon, "delta[\(i)]: expected \(exp), got \(deltasArray[i])")
+        }
+    }
+
     @Test func melFilterbankShape() {
         let bank = MossFormer2DSP.melFilterbank(sampleRate: 48000, nFft: 256, numMels: 60)
 
