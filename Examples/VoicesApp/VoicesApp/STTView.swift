@@ -113,16 +113,25 @@ struct STTView: View {
             HStack(spacing: 8) {
                 // File import button
                 Button(action: { showFileImporter = true }) {
-                    HStack(spacing: 6) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "doc.badge.plus")
+                            Text("Import")
+                        }
+                        .font(buttonFont)
+                        .foregroundStyle(.primary)
+                        .frame(height: buttonHeight)
+                        .padding(.horizontal, 12)
+                        .background(Color.gray.opacity(0.2))
+                        .clipShape(Capsule())
+
                         Image(systemName: "doc.badge.plus")
-                        Text("Import")
+                            .font(buttonFont)
+                            .foregroundStyle(.primary)
+                            .frame(width: buttonHeight, height: buttonHeight)
+                            .background(Color.gray.opacity(0.2))
+                            .clipShape(Capsule())
                     }
-                    .font(buttonFont)
-                    .foregroundStyle(.primary)
-                    .frame(height: buttonHeight)
-                    .padding(.horizontal, 12)
-                    .background(Color.gray.opacity(0.2))
-                    .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
 
@@ -174,28 +183,46 @@ struct STTView: View {
                     Button(action: {
                         viewModel.stop()
                     }) {
-                        Text("Stop")
-                            .font(buttonFont)
-                            .fontWeight(.medium)
-                            .foregroundStyle(.white)
-                            .frame(height: buttonHeight)
-                            .padding(.horizontal, 16)
-                            .background(Color.red)
-                            .clipShape(Capsule())
+                        ViewThatFits(in: .horizontal) {
+                            Text("Stop")
+                                .font(buttonFont)
+                                .fontWeight(.medium)
+                                .foregroundStyle(.white)
+                                .frame(height: buttonHeight)
+                                .padding(.horizontal, 16)
+                                .background(Color.red)
+                                .clipShape(Capsule())
+
+                            Image(systemName: "stop.fill")
+                                .font(buttonFont)
+                                .foregroundStyle(.white)
+                                .frame(width: buttonHeight, height: buttonHeight)
+                                .background(Color.red)
+                                .clipShape(Capsule())
+                        }
                     }
                     .buttonStyle(.plain)
                 } else {
                     Button(action: {
                         viewModel.startTranscription()
                     }) {
-                        Text("Transcribe")
-                            .font(buttonFont)
-                            .fontWeight(.medium)
-                            .foregroundStyle(canTranscribe ? .white : .secondary)
-                            .frame(height: buttonHeight)
-                            .padding(.horizontal, 16)
-                            .background(canTranscribe ? Color.blue : Color.gray.opacity(0.2))
-                            .clipShape(Capsule())
+                        ViewThatFits(in: .horizontal) {
+                            Text("Transcribe")
+                                .font(buttonFont)
+                                .fontWeight(.medium)
+                                .foregroundStyle(canTranscribe ? .white : .secondary)
+                                .frame(height: buttonHeight)
+                                .padding(.horizontal, 16)
+                                .background(canTranscribe ? Color.blue : Color.gray.opacity(0.2))
+                                .clipShape(Capsule())
+
+                            Image(systemName: "waveform.badge.mic")
+                                .font(buttonFont)
+                                .foregroundStyle(canTranscribe ? .white : .secondary)
+                                .frame(width: buttonHeight, height: buttonHeight)
+                                .background(canTranscribe ? Color.blue : Color.gray.opacity(0.2))
+                                .clipShape(Capsule())
+                        }
                     }
                     .buttonStyle(.plain)
                     .disabled(!canTranscribe)
