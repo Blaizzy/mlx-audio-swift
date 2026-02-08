@@ -4,7 +4,7 @@ import MLX
 import MLXNN
 
 @testable import MLXAudioCore
-@testable import MLXAudioEnhancement
+@testable import MLXAudioSTS
 
 struct MossFormer2SEConfigTests {
 
