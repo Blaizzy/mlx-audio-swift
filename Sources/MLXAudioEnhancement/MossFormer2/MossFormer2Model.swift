@@ -332,8 +332,11 @@ public final class MossFormer2SEModel {
             winType: config.winType,
             preemphasis: config.preemphasis
         )
-        let delta = MossFormer2DSP.computeDeltasKaldi(fbank, winLength: 2)
-        let deltaDelta = MossFormer2DSP.computeDeltasKaldi(delta, winLength: 2)
+        let fbankT = fbank.transposed(1, 0)
+        let deltaT = MossFormer2DSP.computeDeltasKaldi(fbankT, winLength: 5)
+        let deltaDeltaT = MossFormer2DSP.computeDeltasKaldi(deltaT, winLength: 5)
+        let delta = deltaT.transposed(1, 0)
+        let deltaDelta = deltaDeltaT.transposed(1, 0)
         let features = MLX.concatenated([fbank, delta, deltaDelta], axis: -1)
 
         let batchedFeatures = features.expandedDimensions(axis: 0)
@@ -347,7 +350,7 @@ public final class MossFormer2SEModel {
             hopLength: config.winInc,
             winLen: config.winLen,
             window: window,
-            center: true
+            center: false
         )
 
         var mask2d = mask[0]
@@ -371,7 +374,7 @@ public final class MossFormer2SEModel {
             hopLength: config.winInc,
             winLen: config.winLen,
             window: window,
-            center: true,
+            center: false,
             audioLength: audio.shape[0]
         )
     }

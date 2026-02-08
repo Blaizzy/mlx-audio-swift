@@ -115,20 +115,20 @@ public enum MossFormer2DSP {
         let synthesisWindow = adjustedWindow(window, targetLength: frameWidth)
         let windowedFrames = frames * synthesisWindow
 
-        let targetLength = max(audioLength ?? ((numFrames - 1) * hopLength + frameWidth), 0)
-        if targetLength == 0 {
+        let fullLength = (numFrames - 1) * hopLength + frameWidth
+        guard fullLength > 0 else {
             return MLXArray.zeros([0], type: Float.self)
         }
 
         let frameValues = windowedFrames.asArray(Float.self)
         let windowValues = synthesisWindow.asArray(Float.self)
-        var output = [Float](repeating: 0, count: targetLength)
-        var windowSum = [Float](repeating: 0, count: targetLength)
+        var output = [Float](repeating: 0, count: fullLength)
+        var windowSum = [Float](repeating: 0, count: fullLength)
 
         for frameIndex in 0..<numFrames {
             let start = frameIndex * hopLength
-            if start >= targetLength { break }
-            let maxLen = Swift.min(frameWidth, targetLength - start)
+            if start >= fullLength { break }
+            let maxLen = Swift.min(frameWidth, fullLength - start)
             let base = frameIndex * frameWidth
 
             for j in 0..<maxLen {
@@ -139,18 +139,22 @@ public enum MossFormer2DSP {
         }
 
         let eps: Float = 1e-8
-        for i in 0..<targetLength {
+        for i in 0..<fullLength {
             let denom = max(windowSum[i], eps)
             output[i] /= denom
         }
 
+        var result = output
         if center {
             let trim = fftLen / 2
-            if targetLength > 2 * trim {
-                return MLXArray(Array(output[trim..<(targetLength - trim)]))
+            if result.count > trim {
+                result = Array(result[trim...])
             }
         }
-        return MLXArray(output)
+        if let audioLength, result.count > audioLength {
+            result = Array(result.prefix(audioLength))
+        }
+        return MLXArray(result)
     }
 
     public static func computeFbankKaldi(
