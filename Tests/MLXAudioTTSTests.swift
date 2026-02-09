@@ -537,6 +537,125 @@ struct Qwen3TTSConfigTests {
 }
 
 
+// MARK: - Qwen3-TTS Generation Path Routing Tests (no model download required)
+
+// Run Qwen3TTSRoutingTests with:  xcodebuild test \
+// -scheme MLXAudio-Package \
+// -destination 'platform=macOS' \
+// -only-testing:MLXAudioTests/Qwen3TTSRoutingTests \
+// CODE_SIGNING_ALLOWED=NO
+
+struct Qwen3TTSRoutingTests {
+
+    // MARK: - Helper to create a Qwen3TTSModel from a minimal config JSON
+
+    /// Creates a Qwen3TTSModel with the given tts_model_type for routing tests.
+    /// No weights are loaded; only the config is parsed and a minimal speech tokenizer
+    /// is attached so that the hasEncoder check works.
+    private func makeModel(ttsModelType: String, hasEncoder: Bool = false) throws -> Qwen3TTSModel {
+        let json = """
+        {
+            "model_type": "qwen3_tts",
+            "tts_model_type": "\(ttsModelType)",
+            "tts_model_size": "0b6",
+            "tokenizer_type": "qwen3_tts_tokenizer_12hz",
+            "sample_rate": 24000,
+            "im_start_token_id": 151644,
+            "im_end_token_id": 151645,
+            "tts_pad_token_id": 151671,
+            "tts_bos_token_id": 151672,
+            "tts_eos_token_id": 151673
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSModelConfig.self, from: json)
+        let model = Qwen3TTSModel(config: config)
+
+        // Attach a minimal speech tokenizer (no weights) so hasEncoder can be checked
+        let tokenizerJson = "{}".data(using: .utf8)!
+        let tokenizerConfig = try JSONDecoder().decode(Qwen3TTSTokenizerConfig.self, from: tokenizerJson)
+        let speechTokenizer = Qwen3TTSSpeechTokenizer(config: tokenizerConfig)
+
+        if hasEncoder {
+            speechTokenizer.hasEncoder = true
+        }
+
+        model.speechTokenizer = speechTokenizer
+        return model
+    }
+
+    // MARK: - Routing tests
+
+    /// voice_design config routes to .voiceDesign
+    @Test func voiceDesignRouting() throws {
+        let model = try makeModel(ttsModelType: "voice_design")
+        let path = try model.resolveGenerationPath(refAudio: nil, refText: nil)
+        #expect(path == .voiceDesign, "voice_design config should route to .voiceDesign")
+    }
+
+    /// custom_voice config routes to .customVoice
+    @Test func customVoiceRouting() throws {
+        let model = try makeModel(ttsModelType: "custom_voice")
+        let path = try model.resolveGenerationPath(refAudio: nil, refText: nil)
+        #expect(path == .customVoice, "custom_voice config should route to .customVoice")
+    }
+
+    /// base config without refAudio routes to .base
+    @Test func baseRoutingWithoutRefAudio() throws {
+        let model = try makeModel(ttsModelType: "base")
+        let path = try model.resolveGenerationPath(refAudio: nil, refText: nil)
+        #expect(path == .base, "base config without refAudio should route to .base")
+    }
+
+    /// base config with refAudio but no refText routes to .base (not ICL)
+    @Test func baseRoutingWithRefAudioButNoRefText() throws {
+        let model = try makeModel(ttsModelType: "base")
+        let refAudio = MLXArray.zeros([1, 1, 24000])
+        let path = try model.resolveGenerationPath(refAudio: refAudio, refText: nil)
+        #expect(path == .base, "base config with refAudio but no refText should route to .base")
+    }
+
+    /// base config with refAudio and refText but no encoder routes to .base (not ICL)
+    @Test func baseRoutingWithRefAudioAndRefTextButNoEncoder() throws {
+        let model = try makeModel(ttsModelType: "base", hasEncoder: false)
+        let refAudio = MLXArray.zeros([1, 1, 24000])
+        let path = try model.resolveGenerationPath(refAudio: refAudio, refText: "Hello")
+        #expect(path == .base, "base config with refAudio + refText but no encoder should route to .base")
+    }
+
+    /// base config with refAudio + refText + hasEncoder routes to .icl
+    @Test func baseRoutingWithRefAudioRefTextAndEncoder() throws {
+        let model = try makeModel(ttsModelType: "base", hasEncoder: true)
+        let refAudio = MLXArray.zeros([1, 1, 24000])
+        let path = try model.resolveGenerationPath(refAudio: refAudio, refText: "Hello")
+        #expect(path == .icl, "base config with refAudio + refText + hasEncoder should route to .icl")
+    }
+
+    /// Unknown model type throws an error
+    @Test func unknownModelTypeThrows() throws {
+        let model = try makeModel(ttsModelType: "unknown_type")
+        #expect(throws: AudioGenerationError.self) {
+            _ = try model.resolveGenerationPath(refAudio: nil, refText: nil)
+        }
+    }
+
+    /// voice_design ignores refAudio/refText — always routes to .voiceDesign
+    @Test func voiceDesignRoutingIgnoresRefAudio() throws {
+        let model = try makeModel(ttsModelType: "voice_design")
+        let refAudio = MLXArray.zeros([1, 1, 24000])
+        let path = try model.resolveGenerationPath(refAudio: refAudio, refText: "Hello")
+        #expect(path == .voiceDesign, "voice_design should always route to .voiceDesign regardless of refAudio/refText")
+    }
+
+    /// custom_voice ignores refAudio/refText — always routes to .customVoice
+    @Test func customVoiceRoutingIgnoresRefAudio() throws {
+        let model = try makeModel(ttsModelType: "custom_voice")
+        let refAudio = MLXArray.zeros([1, 1, 24000])
+        let path = try model.resolveGenerationPath(refAudio: refAudio, refText: "Hello")
+        #expect(path == .customVoice, "custom_voice should always route to .customVoice regardless of refAudio/refText")
+    }
+}
+
+
 struct Qwen3TTSTests {
 
     /// Test basic text-to-speech generation with Qwen3 model
