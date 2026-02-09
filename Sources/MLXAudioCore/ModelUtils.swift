@@ -49,7 +49,7 @@ public enum ModelUtils {
     ) async throws -> URL {
         // Use a persistent cache directory based on repo ID
         let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
-        let modelDir = URL.cachesDirectory.appendingPathComponent("mlx-audio").appendingPathComponent(modelSubdir)
+        let modelDir = URL.cachesDirectory.appendingPathComponent("intrusive-memory/Models/Audio").appendingPathComponent(modelSubdir)
 
         // Check if model already exists with required files
         if FileManager.default.fileExists(atPath: modelDir.path) {
