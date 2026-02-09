@@ -140,7 +140,9 @@ jobs:
       - name: Download models (cache miss - priming for next run)
         if: steps.model-cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
         run: |
-          pip3 install --quiet huggingface_hub
+          python3 -m venv /tmp/hf-venv
+          source /tmp/hf-venv/bin/activate
+          pip install --quiet huggingface_hub
           mkdir -p ~/Library/Caches/mlx-audio
 
           echo "$CI_MODELS" | while IFS='|' read -r repo local_dir; do
