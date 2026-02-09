@@ -49,20 +49,19 @@ public enum MossFormer2DSP {
             return MLXArray.zeros([0, fftLen / 2 + 1], dtype: .complex64)
         }
 
-        let numFrames = 1 + (signalLen - winLen) / hopLength
+        let numFrames = 1 + (signalLen - winLen + hopLength - 1) / hopLength
         guard numFrames > 0 else {
             return MLXArray.zeros([0, fftLen / 2 + 1], dtype: .complex64)
         }
 
-        var frames: [MLXArray] = []
-        frames.reserveCapacity(numFrames)
-        for i in 0..<numFrames {
-            let start = i * hopLength
-            let end = start + winLen
-            frames.append(signal[start..<end])
+        let requiredLen = winLen + (numFrames - 1) * hopLength
+        var paddedSignal = signal
+        if paddedSignal.shape[0] < requiredLen {
+            let pad = MLXArray.zeros([requiredLen - paddedSignal.shape[0]], type: Float.self)
+            paddedSignal = MLX.concatenated([paddedSignal, pad], axis: 0)
         }
 
-        var stackedFrames = MLX.stacked(frames, axis: 0)
+        var stackedFrames = asStrided(paddedSignal, [numFrames, winLen], strides: [hopLength, 1])
         let win = adjustedWindow(window, targetLength: winLen)
         stackedFrames = stackedFrames * win
 
@@ -89,12 +88,15 @@ public enum MossFormer2DSP {
         guard fftLen > 0, hopLength > 0, winLen > 0 else {
             return MLXArray.zeros([0], type: Float.self)
         }
-        guard real.ndim == 3, imag.ndim == 3, real.shape == imag.shape else {
-            return MLXArray.zeros([0], type: Float.self)
-        }
-        guard real.shape[0] > 0 else {
-            return MLXArray.zeros([0], type: Float.self)
-        }
+         guard real.ndim == 3, imag.ndim == 3, real.shape == imag.shape else {
+             return MLXArray.zeros([0], type: Float.self)
+         }
+         guard real.shape[0] == 1 else {
+             return MLXArray.zeros([0], type: Float.self)
+         }
+         guard real.shape[0] > 0 else {
+             return MLXArray.zeros([0], type: Float.self)
+         }
 
         let realT = real[0].transposed(1, 0)
         let imagT = imag[0].transposed(1, 0)
@@ -120,45 +122,35 @@ public enum MossFormer2DSP {
             return MLXArray.zeros([0], type: Float.self)
         }
 
-        let frameValues = windowedFrames.asArray(Float.self)
-        let windowValues = synthesisWindow.asArray(Float.self)
-        var output = [Float](repeating: 0, count: fullLength)
-        var windowSum = [Float](repeating: 0, count: fullLength)
+        let frameOffsets = MLXArray.arange(numFrames).expandedDimensions(axis: 1)
+            * MLXArray(Int32(hopLength))
+        let sampleOffsets = MLXArray.arange(frameWidth).expandedDimensions(axis: 0)
+        let indices = (frameOffsets + sampleOffsets).reshaped(-1)
 
-        // TODO: Vectorize overlap-add using scatter-add (mlx_scatter_add).
-        // Approach: precompute flat index buffer mapping frame positions to output indices,
-        // then use `array.at(indices).add(values)` for fully on-device accumulation.
-        // Reference: Python mlx-audio ISTFTCache uses `output.at[indices].add(updates)`.
-        for frameIndex in 0..<numFrames {
-            let start = frameIndex * hopLength
-            if start >= fullLength { break }
-            let maxLen = Swift.min(frameWidth, fullLength - start)
-            let base = frameIndex * frameWidth
+        let flatFrames = windowedFrames.reshaped(-1)
+        var output = MLXArray.zeros([fullLength], type: Float.self)
+        output = output.at[indices].add(flatFrames)
 
-            for j in 0..<maxLen {
-                output[start + j] += frameValues[base + j]
-                let w = windowValues[j]
-                windowSum[start + j] += w * w
-            }
-        }
+        let windowSq = synthesisWindow * synthesisWindow
+        let tiledWindowSq = MLX.repeated(
+            windowSq.expandedDimensions(axis: 0), count: numFrames, axis: 0
+        ).reshaped(-1)
+        var windowSum = MLXArray.zeros([fullLength], type: Float.self)
+        windowSum = windowSum.at[indices].add(tiledWindowSq)
 
-        let eps: Float = 1e-8
-        for i in 0..<fullLength {
-            let denom = max(windowSum[i], eps)
-            output[i] /= denom
-        }
+        let eps = MLXArray(Float(1e-8))
+        var result = output / MLX.maximum(windowSum, eps)
 
-        var result = output
         if center {
             let trim = fftLen / 2
-            if result.count > 2 * trim {
-                result = Array(result[trim..<(result.count - trim)])
+            if fullLength > 2 * trim {
+                result = result[trim..<(fullLength - trim)]
             }
         }
-        if let audioLength, result.count > audioLength {
-            result = Array(result.prefix(audioLength))
+        if let audioLength, result.shape[0] > audioLength {
+            result = result[0..<audioLength]
         }
-        return MLXArray(result)
+        return result
     }
 
     public static func computeFbankKaldi(

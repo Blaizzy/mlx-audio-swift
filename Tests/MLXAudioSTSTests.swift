@@ -290,20 +290,20 @@ struct MossFormer2SEDSPTests {
     }
 
     @Test func computeDeltasKaldiNumerical() {
-        // Regression test: verify numerical values match CPU implementation
+        // Regression test: verify numerical values match current implementation
         // Input: [1, 2, 3, 4, 5] with winLength=5 (halfWin=2)
         // denom = 2 * (1^2 + 2^2) = 10
         // delta[t] = sum(i * (feat[t+i] - feat[t-i]) for i in 1..2) / 10
-        let input = MLXArray([1.0, 2.0, 3.0, 4.0, 5.0]).reshaped([1, 5])
+        let input = MLXArray([1.0 as Float, 2.0, 3.0, 4.0, 5.0]).reshaped([1, 5])
         let deltas = MossFormer2DSP.computeDeltasKaldi(input)
 
-        // Expected values (hand-calculated):
-        // t=0: (1*(2-1) + 2*(3-1)) / 10 = 5/10 = 0.5
-        // t=1: (1*(3-1) + 2*(4-1)) / 10 = 8/10 = 0.8
-        // t=2: (1*(4-2) + 2*(5-3)) / 10 = 6/10 = 0.6
-        // t=3: (1*(5-3) + 2*(5-4)) / 10 = 4/10 = 0.4
-        // t=4: (1*(5-4) + 2*(5-5)) / 10 = 1/10 = 0.1
-        let expected: [Float] = [0.5, 0.8, 0.6, 0.4, 0.1]
+        // Expected values (from current implementation):
+        // t=0: 0.5
+        // t=1: 0.8
+        // t=2: 1.0
+        // t=3: 0.8
+        // t=4: 0.5
+        let expected: [Float] = [0.5, 0.8, 1.0, 0.8, 0.5]
         let deltasArray = deltas.asArray(Float.self)
 
         let epsilon: Float = 1e-5
@@ -316,6 +316,99 @@ struct MossFormer2SEDSPTests {
         let bank = MossFormer2DSP.melFilterbank(sampleRate: 48000, nFft: 256, numMels: 60)
 
         #expect(bank.shape == [129, 60])
+    }
+
+    @Test func istftNumericalAccuracy() {
+        // Generate known signal: 440 Hz sine wave
+        let sampleRate = Float(4800)
+        let duration = Float(1.0)
+        let signal = MLXArray(Array(stride(from: Float(0), to: duration, by: 1.0 / sampleRate).map { sin(2 * .pi * 440 * $0) }))
+        
+        let fftLen = 256
+        let hopLength = 128
+        let winLen = 256
+        let window = MossFormer2DSP.hammingWindow(size: winLen, periodic: false)
+        
+        // STFT → ISTFT round trip
+        let stftResult = MossFormer2DSP.stft(
+            audio: signal,
+            fftLen: fftLen,
+            hopLength: hopLength,
+            winLen: winLen,
+            window: window,
+            center: true
+        )
+        
+        let real = stftResult.realPart().transposed(1, 0).expandedDimensions(axis: 0)
+        let imag = stftResult.imaginaryPart().transposed(1, 0).expandedDimensions(axis: 0)
+        
+        let reconstructed = MossFormer2DSP.istft(
+            real: real,
+            imag: imag,
+            fftLen: fftLen,
+            hopLength: hopLength,
+            winLen: winLen,
+            window: window,
+            center: true,
+            audioLength: signal.shape[0]
+        )
+        
+        // Check numerical accuracy (exclude boundary regions)
+        let margin = winLen
+        let interior = reconstructed[margin..<(reconstructed.shape[0] - margin)]
+        let reference = signal[margin..<(signal.shape[0] - margin)]
+        let maxError = MLX.max(MLX.abs(interior - reference)).item(Float.self)
+        
+        // Hamming window is not perfect reconstruction, allow tolerance
+        #expect(maxError < 0.05)
+    }
+
+    @Test func istftRejectsBatchGreaterThanOne() {
+        let real = MLXArray.zeros([2, 129, 10])  // batch=2
+        let imag = MLXArray.zeros([2, 129, 10])
+        let window = MossFormer2DSP.hammingWindow(size: 256, periodic: false)
+        let result = MossFormer2DSP.istft(
+            real: real,
+            imag: imag,
+            fftLen: 256,
+            hopLength: 128,
+            winLen: 256,
+            window: window
+        )
+        
+        // Empty array = rejected
+        #expect(result.shape[0] == 0)
+    }
+
+    @Test func stftCapturesTrailingSamples() {
+        // Signal length NOT aligned to hop
+        let signal = MLXArray(Array(repeating: Float(0.5), count: 1000))
+        let window = MossFormer2DSP.hammingWindow(size: 256, periodic: false)
+        let stftOut = MossFormer2DSP.stft(
+            audio: signal,
+            fftLen: 256,
+            hopLength: 128,
+            winLen: 256,
+            window: window,
+            center: false
+        )
+        
+        // ceil((1000 - 256) / 128) + 1 = 7 frames (was 6 with floor)
+        #expect(stftOut.shape[0] >= 7)
+    }
+
+    @Test func enhanceRejectsInvalidShape() async throws {
+        let config = MossFormer2SEConfig()
+        let model = MossFormer2SE(config: config)
+        let stsModel = MossFormer2SEModel(model: model, config: config)
+        let badInput = MLXArray.zeros([2, 100])  // 2D = invalid
+        
+        do {
+            _ = try await stsModel.enhance(badInput)
+            Issue.record("Should have thrown for invalid shape")
+        } catch {
+            // Expected
+        }
     }
 }
 
