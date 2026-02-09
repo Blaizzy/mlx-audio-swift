@@ -101,7 +101,7 @@ public final class MarvisTTSModel: Module {
     
     private func cacheURL(for audioURL: URL) -> URL {
         let cacheFilename = audioURL.deletingPathExtension().appendingPathExtension("npy").lastPathComponent
-        let cacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appending(component: "MarvisTTSModel/prompt_cache")
+        let cacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appending(component: "intrusive-memory/Models/Audio/MarvisTTSModel/prompt_cache")
         try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
         return cacheDirectory.appending(component: cacheFilename)
     }
