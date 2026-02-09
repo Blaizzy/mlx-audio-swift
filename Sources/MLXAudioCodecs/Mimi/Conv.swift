@@ -73,11 +73,11 @@ public final class ConvTranspose1d: Module {
         groups: Int = 1,
         bias: Bool = true
     ) {
-        // Weight shape mirrors your Python: (out_channels // groups, ksize, in_channels)
+        // Weight shape mirrors Python: (out_channels, ksize, in_channels // groups)
         let scale: Float = 1.0 / Float(inChannels * ksize)
         self.weight = MLXRandom.uniform(
             low: -scale, high: scale,
-            [outChannels / groups, ksize, inChannels]
+            [outChannels, ksize, inChannels / groups]
         )
         self.bias = bias ? MLXArray.zeros([outChannels]) : nil
         self.padding = padding
@@ -91,11 +91,19 @@ public final class ConvTranspose1d: Module {
     // Expand weight as needed to emulate grouped depthwise transposed conv like the Python version
     private func expandedWeightAndGroups() -> (MLXArray, Int) {
         if groups == inChannels && groups == outChannels {
+            var w = weight
+            if w.shape.count == 3
+                && w.shape[0] == outChannels
+                && w.shape[1] == ksize
+                && w.shape[2] == 1 {
+                // Legacy depthwise layout: (C, k, 1) -> (1, k, C)
+                w = swappedAxes(w, 0, 2)
+            }
             var eyeW = eye(outChannels)
                 .asType(weight.dtype)
                 .reshaped([outChannels, 1, outChannels])
             eyeW = repeated(eyeW, count: ksize, axis: 1) // repeat along kernel dim
-            let wRep = repeated(weight, count: groups, axis: 0)
+            let wRep = repeated(w, count: groups, axis: 0)
             return (wRep * eyeW, 1)
         } else if groups > 1 {
             fatalError("groups > 1 (non-depthwise) not supported in ConvTranspose1d")

@@ -1,0 +1,8 @@
+// Shared settings for all builds.
+APP_BUNDLE_ID = com.example.VoicesApp
+PRODUCT_BUNDLE_IDENTIFIER = $(APP_BUNDLE_ID)
+
+// Keep empty so Xcode prompts when needed.
+DEVELOPMENT_TEAM =
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_IDENTITY = Apple Development

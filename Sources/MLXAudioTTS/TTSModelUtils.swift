@@ -53,6 +53,8 @@ public enum TTSModelUtils {
             return try await MarvisTTSModel.fromPretrained(modelRepo)
         case "soprano_tts", "soprano":
             return try await SopranoModel.fromPretrained(modelRepo)
+        case "pocket_tts":
+            return try await PocketTTSModel.fromPretrained(modelRepo)
         default:
             throw TTSModelUtilsError.unsupportedModelType(modelType ?? resolvedType)
         }
@@ -78,6 +80,9 @@ public enum TTSModelUtils {
         }
         if lower.contains("csm") || lower.contains("sesame") {
             return "csm"
+        }
+        if lower.contains("pocket_tts") {
+            return "pocket_tts"
         }
         return nil
     }
