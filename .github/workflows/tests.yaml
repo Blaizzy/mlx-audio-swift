@@ -1,30 +1,235 @@
-# This workflow will build a Swift project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-swift
-
-name: Run Tests
+name: Tests
 
 on:
   pull_request:
-    branches:
-      - main
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  MLX_AUDIO_CACHE: ~/Library/Caches/mlx-audio
+
+  # Models to download for CI testing (keep total under 10GB for GH Actions cache limit)
+  # Format: "huggingface-repo-id|local-dir-name" per line
+  # Add/remove models here to change what's cached and tested
+  CI_MODELS: |
+    mlx-community/snac_24khz|mlx-community_snac_24khz
+    mlx-community/Soprano-80M-bf16|mlx-community_Soprano-80M-bf16
+    mlx-community/Qwen3-ASR-0.6B-4bit|mlx-community_Qwen3-ASR-0.6B-4bit
+    mlx-community/GLM-ASR-Nano-2512-4bit|mlx-community_GLM-ASR-Nano-2512-4bit
 
 jobs:
-  build:
-    runs-on: macos-latest
+  code-quality:
+    name: Code Quality
+    runs-on: macos-26
 
     steps:
-      - uses: actions/checkout@v4
-      - name: Select Xcode version
-        uses: maxim-lobanov/setup-xcode@v1
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          xcode-version: 'latest'
-      - name: Install Metal toolchain
-        run: xcodebuild -downloadComponent MetalToolchain
-      - name: Clean build folder
-        run: xcodebuild clean -scheme MLXAudio-Package -destination 'platform=macOS'
+          fetch-depth: 0
+
+      - name: Check for new TODOs/FIXMEs
+        run: |
+          echo "Checking for TODO/FIXME in Sources/..."
+          FINDINGS=$(grep -rn 'TODO\|FIXME' Sources/ || true)
+          if [ -n "$FINDINGS" ]; then
+            echo "::warning::Found TODOs/FIXMEs in source code:"
+            echo "$FINDINGS"
+          else
+            echo "No TODOs/FIXMEs found."
+          fi
+
+      - name: Flag large files
+        run: |
+          echo "Checking for files larger than 100KB in Sources/..."
+          LARGE_FILES=$(find Sources/ -type f -size +100k 2>/dev/null || true)
+          if [ -n "$LARGE_FILES" ]; then
+            echo "::warning::Large files (>100KB) found:"
+            echo "$LARGE_FILES"
+          else
+            echo "No large files found."
+          fi
+
+      - name: Detect print statements in production code
+        run: |
+          echo "Checking for print() statements in Sources/..."
+          PRINTS=$(grep -rn 'print(' Sources/ --include='*.swift' || true)
+          if [ -n "$PRINTS" ]; then
+            echo "::warning::Found print() statements in production code:"
+            echo "$PRINTS"
+          else
+            echo "No print() statements found."
+          fi
+
+  macos-tests:
+    name: macOS Tests
+    runs-on: macos-26
+    needs: code-quality
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
       - name: Build
-        run: xcodebuild build-for-testing -scheme MLXAudio-Package -destination 'platform=macOS' MACOSX_DEPLOYMENT_TARGET=14.0 CODE_SIGNING_ALLOWED=NO
-      - name: Test Codecs
-        run: xcodebuild test-without-building -scheme MLXAudio-Package -destination 'platform=macOS' -only-testing:MLXAudioTests/MLXAudioCodecsTests CODE_SIGNING_ALLOWED=NO
-      - name: Test TTS
-        run: xcodebuild test-without-building -scheme MLXAudio-Package -destination 'platform=macOS' -only-testing:MLXAudioTests/MLXAudioTTSTests CODE_SIGNING_ALLOWED=NO
+        run: |
+          xcodebuild build-for-testing \
+            -scheme MLXAudio-Package \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee build-output.log
+
+      - name: Test Codecs (unit tests)
+        run: |
+          xcodebuild test-without-building \
+            -scheme MLXAudio-Package \
+            -destination 'platform=macOS' \
+            -only-testing:MLXAudioTests/VocosTests \
+            -only-testing:MLXAudioTests/EncodecTests \
+            -only-testing:MLXAudioTests/DACVAETests \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee test-codecs-output.log
+
+      - name: Test STT (unit tests)
+        run: |
+          xcodebuild test-without-building \
+            -scheme MLXAudio-Package \
+            -destination 'platform=macOS' \
+            -only-testing:MLXAudioTests/GLMASRModuleSetupTests \
+            -only-testing:MLXAudioTests/Qwen3ASRModuleSetupTests \
+            -only-testing:MLXAudioTests/ForceAlignProcessorTests \
+            -only-testing:MLXAudioTests/ForcedAlignResultTests \
+            -only-testing:MLXAudioTests/Qwen3ASRHelperTests \
+            -only-testing:MLXAudioTests/SplitAudioIntoChunksTests \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee test-stt-output.log
+
+      - name: Upload test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output
+          path: |
+            build-output.log
+            test-codecs-output.log
+            test-stt-output.log
+          retention-days: 7
+
+  download-models:
+    name: Download Models
+    runs-on: macos-26
+    outputs:
+      cache-hit: ${{ steps.model-cache.outputs.cache-hit }}
+
+    steps:
+      - name: Restore model cache
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/mlx-audio
+          key: mlx-models-v1
+          lookup-only: ${{ github.event_name == 'pull_request' }}
+
+      - name: Download models (cache miss - priming for next run)
+        if: steps.model-cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        run: |
+          pip3 install --quiet huggingface_hub
+          mkdir -p ~/Library/Caches/mlx-audio
+
+          echo "$CI_MODELS" | while IFS='|' read -r repo local_dir; do
+            [ -z "$repo" ] && continue
+            repo=$(echo "$repo" | xargs)
+            local_dir=$(echo "$local_dir" | xargs)
+            echo "Downloading $repo → ~/Library/Caches/mlx-audio/$local_dir"
+            huggingface-cli download "$repo" \
+              --local-dir ~/Library/Caches/mlx-audio/"$local_dir" \
+              --include "*.safetensors" "*.json" "*.txt" "*.model" \
+              --quiet || echo "::warning::Failed to download $repo"
+          done
+
+          echo "Cache contents:"
+          du -sh ~/Library/Caches/mlx-audio/*/ 2>/dev/null || echo "No models downloaded"
+
+  model-tests:
+    name: Model Tests
+    runs-on: macos-26
+    needs: [macos-tests, download-models]
+    if: needs.download-models.outputs.cache-hit == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore model cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/Library/Caches/mlx-audio
+          key: mlx-models-v1
+
+      - name: Show cached models
+        run: |
+          echo "Cached models:"
+          ls -la ~/Library/Caches/mlx-audio/ 2>/dev/null || echo "No cache directory"
+          du -sh ~/Library/Caches/mlx-audio/*/ 2>/dev/null || echo "No models cached"
+
+      - name: Build
+        run: |
+          xcodebuild build-for-testing \
+            -scheme MLXAudio-Package \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Test SNAC (codec)
+        run: |
+          xcodebuild test-without-building \
+            -scheme MLXAudio-Package \
+            -destination 'platform=macOS' \
+            -only-testing:MLXAudioTests/SNACTests \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee test-snac-output.log
+
+      - name: Test Soprano TTS
+        run: |
+          xcodebuild test-without-building \
+            -scheme MLXAudio-Package \
+            -destination 'platform=macOS' \
+            -only-testing:MLXAudioTests/SopranoTTSTests \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee test-soprano-output.log
+
+      - name: Test Qwen3 ASR
+        run: |
+          xcodebuild test-without-building \
+            -scheme MLXAudio-Package \
+            -destination 'platform=macOS' \
+            -only-testing:MLXAudioTests/Qwen3ASRTests \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee test-qwen3asr-output.log
+
+      - name: Test GLM ASR
+        run: |
+          xcodebuild test-without-building \
+            -scheme MLXAudio-Package \
+            -destination 'platform=macOS' \
+            -only-testing:MLXAudioTests/GLMASRTests \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee test-glmasr-output.log
+
+      - name: Upload model test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-test-output
+          path: |
+            test-snac-output.log
+            test-soprano-output.log
+            test-qwen3asr-output.log
+            test-glmasr-output.log
+          retention-days: 7
