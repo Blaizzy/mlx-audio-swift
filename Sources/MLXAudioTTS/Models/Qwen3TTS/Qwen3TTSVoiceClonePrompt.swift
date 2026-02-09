@@ -192,4 +192,98 @@ extension Qwen3TTSModel {
             language: language
         )
     }
+
+    // MARK: - Generate with clone prompt
+
+    /// Generate audio using a pre-computed VoiceClonePrompt.
+    ///
+    /// This is functionally identical to `generateICL()` but skips the expensive
+    /// audio encoding and speaker embedding extraction steps by reusing cached data
+    /// from the clone prompt.
+    ///
+    /// - Parameters:
+    ///   - text: Text to synthesize
+    ///   - clonePrompt: Pre-computed voice clone prompt from `createVoiceClonePrompt()`
+    ///   - language: Language code override (defaults to the prompt's language)
+    ///   - temperature: Sampling temperature (default 0.9)
+    ///   - topP: Nucleus sampling threshold (default 1.0)
+    ///   - repetitionPenalty: Repetition penalty (minimum 1.5 for ICL, default 1.5)
+    ///   - maxTokens: Maximum generation tokens (default 4096)
+    /// - Returns: Generated audio waveform
+    public func generateWithClonePrompt(
+        text: String,
+        clonePrompt: VoiceClonePrompt,
+        language: String? = nil,
+        temperature: Float = 0.9,
+        topP: Float = 1.0,
+        repetitionPenalty: Float = 1.5,
+        maxTokens: Int = 4096
+    ) throws -> MLXArray {
+        guard let speechTokenizer, let tokenizer else {
+            throw AudioGenerationError.modelNotInitialized("Speech tokenizer or text tokenizer not loaded")
+        }
+
+        let effectiveLanguage = language ?? clonePrompt.language
+        let refCodes = clonePrompt.refCodes
+
+        // Step 1: Prepare ICL inputs using pre-computed codes and speaker embedding
+        let (inputEmbeds, trailingTextHidden, ttsPadEmbed) = try prepareICLInputs(
+            text: text,
+            refCodes: refCodes,
+            speakerEmbedding: clonePrompt.speakerEmbedding,
+            refText: clonePrompt.refText,
+            language: effectiveLanguage
+        )
+
+        // Step 2: Cap max tokens based on text length
+        let targetTokenCount = tokenizer.encode(text: text).count
+        let effectiveMaxTokens = min(maxTokens, max(75, targetTokenCount * 6))
+
+        // Step 3: Apply minimum repetition penalty of 1.5 for ICL
+        let effectiveRepPenalty = max(repetitionPenalty, 1.5)
+
+        // Step 4: Run shared autoregressive generation loop
+        let generatedCodes = generateFromEmbeddings(
+            inputEmbeds: inputEmbeds,
+            trailingTextHidden: trailingTextHidden,
+            ttsPadEmbed: ttsPadEmbed,
+            temperature: temperature,
+            topP: topP,
+            repetitionPenalty: effectiveRepPenalty,
+            maxTokens: effectiveMaxTokens
+        )
+
+        // Step 5: Check for empty generation
+        guard !generatedCodes.isEmpty else {
+            return MLXArray.zeros([1])
+        }
+
+        // Step 6: Prepend reference codes to generated codes before decoding
+        let genCodes = stacked(generatedCodes, axis: 1)  // [1, genLen, numCodeGroups]
+        let refCodesT = refCodes.transposed(0, 2, 1)  // [1, refTime, 16]
+        let fullCodes = concatenated([refCodesT, genCodes], axis: 1)  // [1, refTime+genLen, 16]
+
+        // Step 7: Decode full codes
+        let (audio, audioLengths) = speechTokenizer.decode(fullCodes)
+        var audioOut = audio[0]  // Remove batch dim
+
+        // Step 8: Trim to valid length
+        let validLen = Int(audioLengths[0].item(Int32.self))
+        if validLen > 0 && validLen < audioOut.dim(0) {
+            audioOut = audioOut[..<validLen]
+        }
+
+        // Step 9: Proportional trimming — remove the reference audio portion
+        let refLen = refCodes.dim(2)  // refTime
+        let totalLen = fullCodes.dim(1)  // refTime + genLen
+        let cut = Int(Float(refLen) / Float(max(totalLen, 1)) * Float(audioOut.dim(0)))
+        if cut > 0 && cut < audioOut.dim(0) {
+            audioOut = audioOut[cut...]
+        }
+
+        // Step 10: Evaluate and return
+        eval(audioOut)
+        return audioOut
+    }
+
 }
