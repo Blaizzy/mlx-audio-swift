@@ -9,6 +9,7 @@ import Testing
 import MLX
 import MLXLMCommon
 import Foundation
+import AVFoundation
 
 @testable import MLXAudioCore
 @testable import MLXAudioTTS
@@ -225,6 +226,158 @@ struct LlamaTTSTests {
 
 
 }
+
+// Run Qwen3-TTS VoiceDesign tests with:  xcodebuild test \
+// -scheme MLXAudio-Package \
+// -destination 'platform=macOS' \
+// -only-testing:MLXAudioTests/Qwen3TTSVoiceDesignTests \
+// 2>&1 | grep -E "(Suite.*started|Test test.*started|Loading|Loaded|Generating|Generated|Saved|passed after|failed after|TEST SUCCEEDED|TEST FAILED|Suite.*passed|Test run)"
+
+struct Qwen3TTSVoiceDesignTests {
+
+    /// Test VoiceDesign model loading and audio generation.
+    /// This downloads the 1.7B VoiceDesign model (~3.4GB), so it requires
+    /// sufficient disk space and RAM. Expect this test to take several minutes
+    /// on first run due to model download.
+    @Test func testVoiceDesignGenerateAudio() async throws {
+        // 1. Load Qwen3-TTS VoiceDesign model
+        print("\u{001B}[33mLoading Qwen3-TTS VoiceDesign model...\u{001B}[0m")
+        let model = try await Qwen3TTSModel.fromPretrained(
+            "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16"
+        )
+        print("\u{001B}[32mQwen3-TTS VoiceDesign model loaded!\u{001B}[0m")
+
+        #expect(model.sampleRate == 24000, "VoiceDesign model should output 24kHz audio")
+
+        // 2. Generate audio with a voice description (instruct)
+        let text = "Hello, this is a test"
+        let instruct = "A calm female voice with low register"
+        print("\u{001B}[33mGenerating audio for: \"\(text)\" with instruct: \"\(instruct)\"...\u{001B}[0m")
+
+        let parameters = GenerateParameters(
+            maxTokens: 2048,
+            temperature: 0.6,
+            topP: 0.8,
+            repetitionPenalty: 1.05,
+            repetitionContextSize: 20
+        )
+
+        // VoiceDesign uses 'voice' parameter as the instruct (voice description)
+        let audio = try await model.generate(
+            text: text,
+            voice: instruct,
+            refAudio: nil,
+            refText: nil,
+            language: "en",
+            generationParameters: parameters
+        )
+
+        print("\u{001B}[32mGenerated audio shape: \(audio.shape)\u{001B}[0m")
+
+        // 3. Verify audio is non-empty
+        #expect(audio.shape[0] > 0, "Audio should have samples")
+
+        // 4. Save to WAV and verify file
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen3_tts_voicedesign_test_output.wav")
+        try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+        print("\u{001B}[32mSaved VoiceDesign audio to\u{001B}[0m: \(outputURL.path)")
+
+        // 5. Verify the WAV file exists and has content
+        let fileData = try Data(contentsOf: outputURL)
+        #expect(fileData.count > 44, "WAV file should be larger than just the header (44 bytes)")
+
+        // 6. Verify sample rate by reading back with AVFoundation
+        let audioFile = try AVAudioFile(forReading: outputURL)
+        let actualSampleRate = audioFile.processingFormat.sampleRate
+        #expect(actualSampleRate == 24000.0, "Output WAV should be 24kHz, got \(actualSampleRate)")
+
+        // 7. Verify non-zero duration
+        let duration = Double(audioFile.length) / actualSampleRate
+        #expect(duration > 0.1, "Audio duration should be > 0.1s, got \(duration)s")
+        print("\u{001B}[32mAudio duration: \(String(format: "%.2f", duration))s at \(Int(actualSampleRate))Hz\u{001B}[0m")
+    }
+
+    /// Test VoiceDesign streaming generation
+    @Test func testVoiceDesignStreamGenerate() async throws {
+        // 1. Load Qwen3-TTS VoiceDesign model
+        print("\u{001B}[33mLoading Qwen3-TTS VoiceDesign model...\u{001B}[0m")
+        let model = try await Qwen3TTSModel.fromPretrained(
+            "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16"
+        )
+        print("\u{001B}[32mQwen3-TTS VoiceDesign model loaded!\u{001B}[0m")
+
+        // 2. Generate audio with streaming
+        let text = "This is a streaming test of VoiceDesign."
+        let instruct = "A deep male voice speaking slowly"
+        print("\u{001B}[33mStreaming generation for: \"\(text)\" with instruct: \"\(instruct)\"...\u{001B}[0m")
+
+        let parameters = GenerateParameters(
+            maxTokens: 2048,
+            temperature: 0.6,
+            topP: 0.8,
+            repetitionPenalty: 1.05,
+            repetitionContextSize: 20
+        )
+
+        var tokenCount = 0
+        var finalAudio: MLXArray?
+        var generationInfo: AudioGenerationInfo?
+
+        for try await event in model.generateStream(
+            text: text,
+            voice: instruct,
+            refAudio: nil,
+            refText: nil,
+            language: "en",
+            generationParameters: parameters
+        ) {
+            switch event {
+            case .token(_):
+                tokenCount += 1
+                if tokenCount % 50 == 0 {
+                    print("  Generated \(tokenCount) tokens...")
+                }
+            case .info(let info):
+                generationInfo = info
+                print("\u{001B}[36m\(info.summary)\u{001B}[0m")
+            case .audio(let audio):
+                finalAudio = audio
+                print("\u{001B}[32mReceived final audio: \(audio.shape)\u{001B}[0m")
+            }
+        }
+
+        // 3. Verify results
+        #expect(tokenCount > 0, "Should have generated tokens")
+        #expect(finalAudio != nil, "Should have received final audio")
+        #expect(generationInfo != nil, "Should have received generation info")
+
+        if let audio = finalAudio {
+            #expect(audio.shape[0] > 0, "Audio should have samples")
+
+            // Save the audio
+            let outputURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("qwen3_tts_voicedesign_stream_test_output.wav")
+            try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+            print("\u{001B}[32mSaved VoiceDesign streamed audio to\u{001B}[0m: \(outputURL.path)")
+        }
+    }
+
+    /// Test loading VoiceDesign model via TTSModelUtils
+    @Test func testVoiceDesignModelRouting() async throws {
+        // Verify the model loads correctly via the generic utility
+        print("\u{001B}[33mLoading VoiceDesign model via TTSModelUtils...\u{001B}[0m")
+        let model = try await TTSModelUtils.loadModel(
+            modelRepo: "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
+            modelType: "qwen3_tts"
+        )
+        print("\u{001B}[32mModel loaded via TTSModelUtils!\u{001B}[0m")
+
+        #expect(model.sampleRate == 24000, "VoiceDesign model should output 24kHz audio")
+        #expect(model is Qwen3TTSModel, "Model should be Qwen3TTSModel instance")
+    }
+}
+
 
 // Run PocketTTS tests with:  xcodebuild test \
 // -scheme MLXAudio-Package \
