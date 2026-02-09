@@ -454,7 +454,6 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                     )
 
                 case .customVoice:
-                    // Streaming not yet implemented for CustomVoice; fall back to non-streaming
                     audio = try generateCustomVoice(
                         text: text,
                         speaker: voice,
@@ -462,7 +461,13 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                         temperature: temp,
                         topP: topP,
                         repetitionPenalty: repPenalty,
-                        maxTokens: maxTokens
+                        maxTokens: maxTokens,
+                        onToken: { tokenId in
+                            continuation.yield(.token(tokenId))
+                        },
+                        onInfo: { info in
+                            continuation.yield(.info(info))
+                        }
                     )
 
                 case .icl:
@@ -479,7 +484,6 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                     )
 
                 case .base:
-                    // Streaming not yet implemented for Base; fall back to non-streaming
                     audio = try generateBase(
                         text: text,
                         voice: voice,
@@ -487,7 +491,13 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                         temperature: temp,
                         topP: topP,
                         repetitionPenalty: repPenalty,
-                        maxTokens: maxTokens
+                        maxTokens: maxTokens,
+                        onToken: { tokenId in
+                            continuation.yield(.token(tokenId))
+                        },
+                        onInfo: { info in
+                            continuation.yield(.info(info))
+                        }
                     )
                 }
 
@@ -752,10 +762,11 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return audio
     }
 
-    // MARK: - Base generation (stub)
+    // MARK: - Base generation
 
     /// Generate audio using the Base model path (no reference audio / no ICL).
-    /// - Note: Not yet implemented. Will be completed in Task 17.
+    /// Uses `prepareBaseInputs()` which handles speaker lookups, dialect override,
+    /// and instruct embedding.
     func generateBase(
         text: String,
         voice: String?,
@@ -763,17 +774,79 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         temperature: Float,
         topP: Float,
         repetitionPenalty: Float,
-        maxTokens: Int
+        maxTokens: Int,
+        onToken: ((Int) -> Void)? = nil,
+        onInfo: ((AudioGenerationInfo) -> Void)? = nil
     ) throws -> MLXArray {
-        throw AudioGenerationError.generationFailed(
-            "Base generation is not yet implemented. This will be added in a future update."
+        guard let speechTokenizer, let tokenizer else {
+            throw AudioGenerationError.modelNotInitialized("Speech tokenizer or tokenizer not loaded")
+        }
+
+        // Prepare inputs using Base path (handles speaker, dialect, instruct)
+        let (inputEmbeds, trailingTextHidden, ttsPadEmbed) = try prepareBaseInputs(
+            text: text,
+            language: language,
+            speaker: voice  // 'voice' maps to speaker name for Base model
         )
+
+        // Cap max tokens based on text length
+        let targetTokenCount = tokenizer.encode(text: text).count
+        let effectiveMaxTokens = min(maxTokens, max(75, targetTokenCount * 6))
+
+        // Run the shared autoregressive generation loop
+        let startTime = Date()
+        let generatedCodes = generateFromEmbeddings(
+            inputEmbeds: inputEmbeds,
+            trailingTextHidden: trailingTextHidden,
+            ttsPadEmbed: ttsPadEmbed,
+            temperature: temperature,
+            topP: topP,
+            repetitionPenalty: repetitionPenalty,
+            maxTokens: effectiveMaxTokens,
+            onToken: onToken
+        )
+
+        guard !generatedCodes.isEmpty else {
+            return MLXArray.zeros([1])
+        }
+
+        // Emit generation info
+        let generateTime = Date().timeIntervalSince(startTime)
+        let tokenCount = generatedCodes.count
+        let info = AudioGenerationInfo(
+            promptTokenCount: 0,
+            generationTokenCount: tokenCount,
+            prefillTime: 0,
+            generateTime: generateTime,
+            tokensPerSecond: Double(tokenCount) / generateTime,
+            peakMemoryUsage: Double(Memory.peakMemory) / 1e9
+        )
+        onInfo?(info)
+
+        // Stack and decode
+        let codes = stacked(generatedCodes, axis: 1)
+
+        var audioChunks = [MLXArray]()
+        for chunk in speechTokenizer.streamingDecode(codes, chunkTokens: 100) {
+            audioChunks.append(chunk)
+        }
+        var audio = concatenated(audioChunks, axis: -1)[0]
+
+        // Trim to valid length
+        let validLen = Int((codes[0..., 0..., 0] .> 0).sum().item(Int32.self)) * speechTokenizer.decodeUpsampleRate
+        if validLen > 0 && validLen < audio.dim(0) {
+            audio = audio[..<validLen]
+        }
+
+        eval(audio)
+        return audio
     }
 
-    // MARK: - CustomVoice generation (stub)
+    // MARK: - CustomVoice generation
 
     /// Generate audio using a predefined speaker from the CustomVoice model.
-    /// - Note: Not yet implemented. Will be completed in Task 18.
+    /// Validates that the speaker exists in the model's `spkId` configuration,
+    /// then delegates to `prepareBaseInputs()` with the speaker name.
     func generateCustomVoice(
         text: String,
         speaker: String?,
@@ -781,11 +854,82 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         temperature: Float,
         topP: Float,
         repetitionPenalty: Float,
-        maxTokens: Int
+        maxTokens: Int,
+        onToken: ((Int) -> Void)? = nil,
+        onInfo: ((AudioGenerationInfo) -> Void)? = nil
     ) throws -> MLXArray {
-        throw AudioGenerationError.generationFailed(
-            "CustomVoice generation is not yet implemented. This will be added in a future update."
+        guard let speechTokenizer, let tokenizer else {
+            throw AudioGenerationError.modelNotInitialized("Speech tokenizer or tokenizer not loaded")
+        }
+
+        // Validate speaker exists in config
+        guard let speaker, !speaker.isEmpty else {
+            throw AudioGenerationError.invalidInput(
+                "CustomVoice generation requires a speaker name."
+            )
+        }
+
+        guard let spkIdMap = config.talkerConfig?.spkId, spkIdMap[speaker.lowercased()] != nil else {
+            let available = config.talkerConfig?.spkId?.keys.sorted().joined(separator: ", ") ?? "none"
+            throw AudioGenerationError.invalidInput(
+                "Speaker '\(speaker)' not found. Available speakers: \(available)"
+            )
+        }
+
+        // CustomVoice delegates to prepareBaseInputs with speaker name
+        let (inputEmbeds, trailingTextHidden, ttsPadEmbed) = try prepareBaseInputs(
+            text: text,
+            language: language,
+            speaker: speaker
         )
+
+        // Cap max tokens
+        let targetTokenCount = tokenizer.encode(text: text).count
+        let effectiveMaxTokens = min(maxTokens, max(75, targetTokenCount * 6))
+
+        let startTime = Date()
+        let generatedCodes = generateFromEmbeddings(
+            inputEmbeds: inputEmbeds,
+            trailingTextHidden: trailingTextHidden,
+            ttsPadEmbed: ttsPadEmbed,
+            temperature: temperature,
+            topP: topP,
+            repetitionPenalty: repetitionPenalty,
+            maxTokens: effectiveMaxTokens,
+            onToken: onToken
+        )
+
+        guard !generatedCodes.isEmpty else {
+            return MLXArray.zeros([1])
+        }
+
+        let generateTime = Date().timeIntervalSince(startTime)
+        let tokenCount = generatedCodes.count
+        let info = AudioGenerationInfo(
+            promptTokenCount: 0,
+            generationTokenCount: tokenCount,
+            prefillTime: 0,
+            generateTime: generateTime,
+            tokensPerSecond: Double(tokenCount) / generateTime,
+            peakMemoryUsage: Double(Memory.peakMemory) / 1e9
+        )
+        onInfo?(info)
+
+        let codes = stacked(generatedCodes, axis: 1)
+
+        var audioChunks = [MLXArray]()
+        for chunk in speechTokenizer.streamingDecode(codes, chunkTokens: 100) {
+            audioChunks.append(chunk)
+        }
+        var audio = concatenated(audioChunks, axis: -1)[0]
+
+        let validLen = Int((codes[0..., 0..., 0] .> 0).sum().item(Int32.self)) * speechTokenizer.decodeUpsampleRate
+        if validLen > 0 && validLen < audio.dim(0) {
+            audio = audio[..<validLen]
+        }
+
+        eval(audio)
+        return audio
     }
 
     // MARK: - ICL voice cloning generation
