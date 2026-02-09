@@ -7,6 +7,7 @@
 
 import Testing
 import MLX
+import MLXNN
 import MLXLMCommon
 import Foundation
 import AVFoundation
@@ -592,10 +593,11 @@ struct Qwen3TTSRoutingTests {
         let speechTokenizer = Qwen3TTSSpeechTokenizer(config: tokenizerConfig)
 
         if hasEncoder {
-            // Create a minimal encoder and assign it to make hasEncoder return true
+            // Create a minimal encoder and assign it via update(modules:) to satisfy @ModuleInfo
             let encoderConfigJson = "{}".data(using: .utf8)!
             let encoderConfig = try JSONDecoder().decode(Qwen3TTSTokenizerEncoderConfig.self, from: encoderConfigJson)
-            speechTokenizer.encoderModel = Qwen3TTSSpeechTokenizerEncoder(config: encoderConfig)
+            let encoder = Qwen3TTSSpeechTokenizerEncoder(config: encoderConfig)
+            speechTokenizer.update(modules: ModuleChildren(values: ["encoder_model": .value(encoder)]))
         }
 
         model.speechTokenizer = speechTokenizer
