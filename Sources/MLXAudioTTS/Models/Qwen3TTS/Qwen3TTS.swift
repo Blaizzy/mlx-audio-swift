@@ -15,6 +15,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     let config: Qwen3TTSModelConfig
     let talker: Qwen3TTSTalkerForConditionalGeneration
     var speechTokenizer: Qwen3TTSSpeechTokenizer?
+    var speakerEncoder: Qwen3TTSSpeakerEncoder?
     var tokenizer: Tokenizer?
 
     public var sampleRate: Int { config.sampleRate }
@@ -949,6 +950,21 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             )
         } else {
             print("Warning: speech_tokenizer directory not found, speech decoding unavailable")
+        }
+
+        // Load speaker encoder if config has speaker_encoder_config (Base model only)
+        if let speakerEncoderConfig = config.speakerEncoderConfig {
+            let speakerEncoder = Qwen3TTSSpeakerEncoder(config: speakerEncoderConfig)
+            let sanitizedWeights = Qwen3TTSSpeakerEncoder.sanitize(weights: allWeights)
+            if !sanitizedWeights.isEmpty {
+                let pairs = sanitizedWeights.map { ($0.key, $0.value) }
+                try speakerEncoder.update(parameters: ModuleParameters.unflattened(pairs), verify: .noUnusedKeys)
+                eval(speakerEncoder.parameters())
+                model.speakerEncoder = speakerEncoder
+                print("Loaded speaker encoder (\(speakerEncoderConfig.encDim)-dim)")
+            } else {
+                print("Warning: speaker_encoder_config present but no speaker_encoder weights found")
+            }
         }
 
         print("Loaded Qwen3-TTS model (\(config.ttsModelType))")
