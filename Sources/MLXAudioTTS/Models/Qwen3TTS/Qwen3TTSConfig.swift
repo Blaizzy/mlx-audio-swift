@@ -6,6 +6,8 @@ import MLXLMCommon
 
 // MARK: - Code Predictor Config
 
+/// Configuration for the Qwen3-TTS code predictor sub-model that generates
+/// codec tokens 2-16 conditioned on the first codebook token and hidden states.
 public struct Qwen3TTSTalkerCodePredictorConfig: Codable, Sendable {
     var vocabSize: Int
     var hiddenSize: Int
@@ -69,6 +71,8 @@ public struct Qwen3TTSTalkerCodePredictorConfig: Codable, Sendable {
 
 // MARK: - Talker Config
 
+/// Configuration for the Qwen3-TTS talker transformer with multimodal 3D RoPE.
+/// Includes codec special token IDs, speaker ID mappings, and language ID mappings.
 public struct Qwen3TTSTalkerConfig: Codable, Sendable {
     var codePredictorConfig: Qwen3TTSTalkerCodePredictorConfig?
     var vocabSize: Int
@@ -197,6 +201,7 @@ public struct Qwen3TTSTalkerConfig: Codable, Sendable {
 
 // MARK: - Tokenizer Decoder Config
 
+/// Configuration for the speech tokenizer decoder (VQ + transformer + upsampling).
 public struct Qwen3TTSTokenizerDecoderConfig: Codable, Sendable {
     var attentionBias: Bool
     var attentionDropout: Float
@@ -281,6 +286,8 @@ public struct Qwen3TTSTokenizerDecoderConfig: Codable, Sendable {
 
 // MARK: - Tokenizer Encoder Config
 
+/// Configuration for the speech tokenizer encoder (SeanetEncoder + transformer + RVQ).
+/// Used for encoding reference audio into codec tokens for ICL voice cloning.
 public struct Qwen3TTSTokenizerEncoderConfig: Codable, Sendable {
     var frameRate: Float
     var attentionBias: Bool
@@ -389,6 +396,8 @@ public struct Qwen3TTSTokenizerEncoderConfig: Codable, Sendable {
 
 // MARK: - Tokenizer Config (wrapper)
 
+/// Wrapper configuration for the Qwen3-TTS speech tokenizer, containing
+/// optional encoder and decoder sub-configs along with sample rate settings.
 public struct Qwen3TTSTokenizerConfig: Codable, Sendable {
     var decoderConfig: Qwen3TTSTokenizerDecoderConfig?
     var encoderConfig: Qwen3TTSTokenizerEncoderConfig?
@@ -422,6 +431,8 @@ public struct Qwen3TTSTokenizerConfig: Codable, Sendable {
 
 // MARK: - Speaker Encoder Config
 
+/// Configuration for the ECAPA-TDNN speaker encoder that extracts x-vector
+/// speaker embeddings from mel spectrograms. Only present in Base models.
 public struct Qwen3TTSSpeakerEncoderConfig: Codable, Sendable {
     var melDim: Int
     var encDim: Int
@@ -461,6 +472,9 @@ public struct Qwen3TTSSpeakerEncoderConfig: Codable, Sendable {
 
 // MARK: - Top-level Model Config
 
+/// Top-level configuration for a Qwen3-TTS model, decoded from the
+/// repository's `config.json`. Contains sub-configs for the talker,
+/// speech tokenizer, and optional speaker encoder.
 public struct Qwen3TTSModelConfig: Codable, Sendable {
     var modelType: String
     var talkerConfig: Qwen3TTSTalkerConfig?

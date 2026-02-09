@@ -26,6 +26,13 @@ public struct VoiceClonePrompt: Sendable {
     /// Language code used for encoding.
     public let language: String
 
+    /// Create a voice clone prompt from pre-computed data.
+    ///
+    /// - Parameters:
+    ///   - refCodes: Encoded reference audio codes, shape `[1, 16, ref_time]`.
+    ///   - speakerEmbedding: X-vector speaker embedding, shape `[1, enc_dim]` (or nil).
+    ///   - refText: Transcript of the reference audio.
+    ///   - language: Language code used for encoding (e.g. "en", "auto").
     public init(refCodes: MLXArray, speakerEmbedding: MLXArray?, refText: String, language: String) {
         self.refCodes = refCodes
         self.speakerEmbedding = speakerEmbedding
@@ -37,9 +44,12 @@ public struct VoiceClonePrompt: Sendable {
 // MARK: - Serialization
 
 extension VoiceClonePrompt {
-    /// Serialize to Data for persistence (e.g., saving to disk).
+    /// Serialize to binary data for persistence (e.g. saving to disk).
     ///
     /// Format: `[4 bytes metadata length][JSON metadata][refCodes safetensors][speaker safetensors?]`
+    ///
+    /// - Returns: A self-contained binary ``Data`` blob that can be written to disk
+    ///   and later restored with ``deserialize(from:)``.
     public func serialize() throws -> Data {
         // Save refCodes to safetensors data
         let refCodesData = try saveToData(arrays: ["ref_codes": refCodes])
@@ -73,7 +83,11 @@ extension VoiceClonePrompt {
         return result
     }
 
-    /// Deserialize from Data.
+    /// Deserialize a ``VoiceClonePrompt`` from binary data.
+    ///
+    /// - Parameter data: Binary data previously produced by ``serialize()``.
+    /// - Returns: A reconstituted ``VoiceClonePrompt``.
+    /// - Throws: ``VoiceClonePromptError/invalidData(_:)`` if the data is malformed.
     public static func deserialize(from data: Data) throws -> VoiceClonePrompt {
         guard data.count >= 4 else {
             throw VoiceClonePromptError.invalidData("Data too short")
@@ -135,9 +149,12 @@ extension VoiceClonePrompt {
 
 // MARK: - Error type
 
+/// Errors that can occur during ``VoiceClonePrompt`` serialization or deserialization.
 public enum VoiceClonePromptError: Error, LocalizedError {
+    /// The binary data is malformed or truncated.
     case invalidData(String)
 
+    /// A human-readable description of the error.
     public var errorDescription: String? {
         switch self {
         case .invalidData(let msg): return "VoiceClonePrompt: \(msg)"

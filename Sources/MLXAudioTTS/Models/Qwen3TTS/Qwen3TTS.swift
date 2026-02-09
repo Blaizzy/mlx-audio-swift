@@ -11,6 +11,13 @@ import Foundation
 
 // MARK: - Qwen3TTS Model
 
+/// Qwen3-TTS conditional generation model supporting multiple generation paths:
+/// VoiceDesign, Base, CustomVoice, and ICL (in-context learning voice cloning).
+///
+/// Wraps a `Qwen3TTSTalkerForConditionalGeneration` transformer, an optional
+/// speech tokenizer (encoder + decoder), and an optional ECAPA-TDNN speaker
+/// encoder.  Use ``fromPretrained(_:)`` to load a model from a HuggingFace
+/// repository.
 public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Sendable {
     let config: Qwen3TTSModelConfig
     let talker: Qwen3TTSTalkerForConditionalGeneration
@@ -18,6 +25,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     var speakerEncoder: Qwen3TTSSpeakerEncoder?
     var tokenizer: Tokenizer?
 
+    /// The output audio sample rate in Hz (typically 24000).
     public var sampleRate: Int { config.sampleRate }
 
     init(config: Qwen3TTSModelConfig) {
@@ -365,6 +373,24 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
     // MARK: - SpeechGenerationModel protocol
 
+    /// Generate audio from text using the appropriate generation path.
+    ///
+    /// The generation path is automatically selected based on the model type
+    /// and the presence of reference audio:
+    /// - VoiceDesign: `voice` is interpreted as a voice description (instruct).
+    /// - CustomVoice: `voice` is a predefined speaker name.
+    /// - Base: `voice` is an optional speaker name; if `refAudio` and `refText`
+    ///   are provided and the speech encoder is available, ICL is used instead.
+    /// - ICL: In-context learning voice cloning from reference audio.
+    ///
+    /// - Parameters:
+    ///   - text: The text to synthesise.
+    ///   - voice: Voice description (VoiceDesign) or speaker name (Base/CustomVoice).
+    ///   - refAudio: Reference audio waveform for ICL voice cloning (optional).
+    ///   - refText: Transcript of the reference audio (optional).
+    ///   - language: Language code (e.g. "en", "chinese", "auto"). Defaults to "auto".
+    ///   - generationParameters: Sampling parameters (temperature, topP, etc.).
+    /// - Returns: Generated audio waveform as a 1-D MLXArray.
     public func generate(
         text: String,
         voice: String?,
@@ -437,6 +463,21 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         }
     }
 
+    /// Generate audio from text as an asynchronous stream of ``AudioGeneration`` events.
+    ///
+    /// Yields `.token(id)` for each generated codec token, `.info(...)` with
+    /// generation statistics, and `.audio(waveform)` as the final event.
+    /// See ``generate(text:voice:refAudio:refText:language:generationParameters:)``
+    /// for details on path selection.
+    ///
+    /// - Parameters:
+    ///   - text: The text to synthesise.
+    ///   - voice: Voice description or speaker name (depends on model type).
+    ///   - refAudio: Reference audio waveform for ICL voice cloning (optional).
+    ///   - refText: Transcript of the reference audio (optional).
+    ///   - language: Language code (e.g. "en", "chinese", "auto"). Defaults to "auto".
+    ///   - generationParameters: Sampling parameters (temperature, topP, etc.).
+    /// - Returns: An ``AsyncThrowingStream`` of ``AudioGeneration`` events.
     public func generateStream(
         text: String,
         voice: String?,
@@ -1393,6 +1434,15 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
     // MARK: - fromPretrained
 
+    /// Load a Qwen3-TTS model from a HuggingFace repository.
+    ///
+    /// Downloads (or resolves from cache) the model weights, tokenizer, speech
+    /// tokenizer, and optional speaker encoder.  If the repository ships only a
+    /// slow tokenizer (`vocab.json` + `merges.txt`), a fast `tokenizer.json`
+    /// is generated automatically.
+    ///
+    /// - Parameter modelRepo: HuggingFace repository ID (e.g. "Qwen/Qwen3-TTS").
+    /// - Returns: A fully initialised ``Qwen3TTSModel`` ready for generation.
     public static func fromPretrained(_ modelRepo: String) async throws -> Qwen3TTSModel {
         let repoID = Repo.ID(rawValue: modelRepo)!
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
