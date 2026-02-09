@@ -286,12 +286,52 @@ public struct Qwen3TTSTokenizerConfig: Codable, Sendable {
     }
 }
 
+// MARK: - Speaker Encoder Config
+
+public struct Qwen3TTSSpeakerEncoderConfig: Codable, Sendable {
+    var melDim: Int
+    var encDim: Int
+    var encChannels: [Int]
+    var encKernelSizes: [Int]
+    var encDilations: [Int]
+    var encAttentionChannels: Int
+    var encRes2netScale: Int
+    var encSeChannels: Int
+    var sampleRate: Int
+
+    enum CodingKeys: String, CodingKey {
+        case melDim = "mel_dim"
+        case encDim = "enc_dim"
+        case encChannels = "enc_channels"
+        case encKernelSizes = "enc_kernel_sizes"
+        case encDilations = "enc_dilations"
+        case encAttentionChannels = "enc_attention_channels"
+        case encRes2netScale = "enc_res2net_scale"
+        case encSeChannels = "enc_se_channels"
+        case sampleRate = "sample_rate"
+    }
+
+    public init(from decoder: Swift.Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        melDim = try c.decodeIfPresent(Int.self, forKey: .melDim) ?? 128
+        encDim = try c.decodeIfPresent(Int.self, forKey: .encDim) ?? 1024
+        encChannels = try c.decodeIfPresent([Int].self, forKey: .encChannels) ?? [512, 512, 512, 512, 1536]
+        encKernelSizes = try c.decodeIfPresent([Int].self, forKey: .encKernelSizes) ?? [5, 3, 3, 3, 1]
+        encDilations = try c.decodeIfPresent([Int].self, forKey: .encDilations) ?? [1, 2, 3, 4, 1]
+        encAttentionChannels = try c.decodeIfPresent(Int.self, forKey: .encAttentionChannels) ?? 128
+        encRes2netScale = try c.decodeIfPresent(Int.self, forKey: .encRes2netScale) ?? 8
+        encSeChannels = try c.decodeIfPresent(Int.self, forKey: .encSeChannels) ?? 128
+        sampleRate = try c.decodeIfPresent(Int.self, forKey: .sampleRate) ?? 24000
+    }
+}
+
 // MARK: - Top-level Model Config
 
 public struct Qwen3TTSModelConfig: Codable, Sendable {
     var modelType: String
     var talkerConfig: Qwen3TTSTalkerConfig?
     var tokenizerConfig: Qwen3TTSTokenizerConfig?
+    var speakerEncoderConfig: Qwen3TTSSpeakerEncoderConfig?
     var tokenizerType: String
     var ttsModelSize: String
     var ttsModelType: String
@@ -306,6 +346,7 @@ public struct Qwen3TTSModelConfig: Codable, Sendable {
         case modelType = "model_type"
         case talkerConfig = "talker_config"
         case tokenizerConfig = "tokenizer_config"
+        case speakerEncoderConfig = "speaker_encoder_config"
         case tokenizerType = "tokenizer_type"
         case ttsModelSize = "tts_model_size"
         case ttsModelType = "tts_model_type"
@@ -322,6 +363,7 @@ public struct Qwen3TTSModelConfig: Codable, Sendable {
         modelType = try c.decodeIfPresent(String.self, forKey: .modelType) ?? "qwen3_tts"
         talkerConfig = try c.decodeIfPresent(Qwen3TTSTalkerConfig.self, forKey: .talkerConfig)
         tokenizerConfig = try c.decodeIfPresent(Qwen3TTSTokenizerConfig.self, forKey: .tokenizerConfig)
+        speakerEncoderConfig = try c.decodeIfPresent(Qwen3TTSSpeakerEncoderConfig.self, forKey: .speakerEncoderConfig)
         tokenizerType = try c.decodeIfPresent(String.self, forKey: .tokenizerType) ?? "qwen3_tts_tokenizer_12hz"
         ttsModelSize = try c.decodeIfPresent(String.self, forKey: .ttsModelSize) ?? "0b6"
         ttsModelType = try c.decodeIfPresent(String.self, forKey: .ttsModelType) ?? "base"

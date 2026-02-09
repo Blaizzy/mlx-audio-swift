@@ -227,6 +227,316 @@ struct Qwen3TTSLanguageTests {
 }
 
 
+// MARK: - Qwen3-TTS Config Parsing Tests (no model download required)
+
+// Run Qwen3TTSConfigTests with:  xcodebuild test \
+// -scheme MLXAudio-Package \
+// -destination 'platform=macOS' \
+// -only-testing:MLXAudioTests/Qwen3TTSConfigTests \
+// CODE_SIGNING_ALLOWED=NO
+
+struct Qwen3TTSConfigTests {
+
+    // MARK: - Test JSON Fixtures
+
+    /// Minimal Base model config JSON matching mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16
+    static let baseConfigJSON = """
+    {
+        "model_type": "qwen3_tts",
+        "tts_model_type": "base",
+        "tts_model_size": "1b7",
+        "tokenizer_type": "qwen3_tts_tokenizer_12hz",
+        "im_start_token_id": 151644,
+        "im_end_token_id": 151645,
+        "tts_pad_token_id": 151671,
+        "tts_bos_token_id": 151672,
+        "tts_eos_token_id": 151673,
+        "sample_rate": 24000,
+        "speaker_encoder_config": {
+            "enc_dim": 2048,
+            "sample_rate": 24000
+        },
+        "talker_config": {
+            "hidden_size": 2048,
+            "num_hidden_layers": 28,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 8,
+            "head_dim": 128,
+            "intermediate_size": 6144,
+            "hidden_act": "silu",
+            "vocab_size": 3072,
+            "text_vocab_size": 151936,
+            "text_hidden_size": 2048,
+            "num_code_groups": 16,
+            "codec_bos_id": 2149,
+            "codec_eos_token_id": 2150,
+            "codec_pad_id": 2148,
+            "codec_think_id": 2154,
+            "codec_nothink_id": 2155,
+            "codec_think_bos_id": 2156,
+            "codec_think_eos_id": 2157,
+            "codec_language_id": {
+                "chinese": 2055,
+                "english": 2050,
+                "german": 2053,
+                "italian": 2070,
+                "portuguese": 2071,
+                "spanish": 2054,
+                "japanese": 2058,
+                "korean": 2064,
+                "french": 2061,
+                "russian": 2069
+            },
+            "spk_id": {},
+            "spk_is_dialect": {}
+        }
+    }
+    """
+
+    /// Minimal VoiceDesign config JSON matching mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16
+    static let voiceDesignConfigJSON = """
+    {
+        "model_type": "qwen3_tts",
+        "tts_model_type": "voice_design",
+        "tts_model_size": "1b7",
+        "tokenizer_type": "qwen3_tts_tokenizer_12hz",
+        "im_start_token_id": 151644,
+        "im_end_token_id": 151645,
+        "tts_pad_token_id": 151671,
+        "tts_bos_token_id": 151672,
+        "tts_eos_token_id": 151673,
+        "sample_rate": 24000,
+        "talker_config": {
+            "hidden_size": 2048,
+            "num_hidden_layers": 28,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 8,
+            "head_dim": 128,
+            "intermediate_size": 6144,
+            "hidden_act": "silu",
+            "vocab_size": 3072,
+            "text_vocab_size": 151936,
+            "text_hidden_size": 2048,
+            "num_code_groups": 16,
+            "codec_bos_id": 2149,
+            "codec_eos_token_id": 2150,
+            "codec_pad_id": 2148,
+            "codec_think_id": 2154,
+            "codec_nothink_id": 2155,
+            "codec_think_bos_id": 2156,
+            "codec_think_eos_id": 2157,
+            "codec_language_id": {
+                "chinese": 2055,
+                "english": 2050,
+                "german": 2053,
+                "italian": 2070,
+                "portuguese": 2071,
+                "spanish": 2054,
+                "japanese": 2058,
+                "korean": 2064,
+                "french": 2061,
+                "russian": 2069
+            },
+            "spk_id": {},
+            "spk_is_dialect": {}
+        }
+    }
+    """
+
+    /// Minimal CustomVoice config JSON matching mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16
+    /// Note: spk_id values use [Int] arrays to match the Swift Codable type declaration.
+    /// The actual HuggingFace JSON uses plain Int values; the Python type annotation is
+    /// Dict[str, List[int]]. This discrepancy will be addressed in a future task.
+    static let customVoiceConfigJSON = """
+    {
+        "model_type": "qwen3_tts",
+        "tts_model_type": "custom_voice",
+        "tts_model_size": "1b7",
+        "tokenizer_type": "qwen3_tts_tokenizer_12hz",
+        "im_start_token_id": 151644,
+        "im_end_token_id": 151645,
+        "tts_pad_token_id": 151671,
+        "tts_bos_token_id": 151672,
+        "tts_eos_token_id": 151673,
+        "sample_rate": 24000,
+        "talker_config": {
+            "hidden_size": 2048,
+            "num_hidden_layers": 28,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 8,
+            "head_dim": 128,
+            "intermediate_size": 6144,
+            "hidden_act": "silu",
+            "vocab_size": 3072,
+            "text_vocab_size": 151936,
+            "text_hidden_size": 2048,
+            "num_code_groups": 16,
+            "codec_bos_id": 2149,
+            "codec_eos_token_id": 2150,
+            "codec_pad_id": 2148,
+            "codec_think_id": 2154,
+            "codec_nothink_id": 2155,
+            "codec_think_bos_id": 2156,
+            "codec_think_eos_id": 2157,
+            "codec_language_id": {
+                "chinese": 2055,
+                "english": 2050,
+                "german": 2053,
+                "italian": 2070,
+                "portuguese": 2071,
+                "spanish": 2054,
+                "japanese": 2058,
+                "korean": 2064,
+                "french": 2061,
+                "russian": 2069,
+                "beijing_dialect": 2074,
+                "sichuan_dialect": 2062
+            },
+            "spk_id": {
+                "serena": [3066],
+                "vivian": [3065],
+                "uncle_fu": [3010],
+                "ryan": [3061],
+                "aiden": [2861],
+                "ono_anna": [2873],
+                "sohee": [2864],
+                "eric": [2875],
+                "dylan": [2878]
+            },
+            "spk_is_dialect": {
+                "eric": "sichuan_dialect",
+                "dylan": "beijing_dialect"
+            }
+        }
+    }
+    """
+
+    // MARK: - Helper
+
+    private func parseConfig(_ json: String) throws -> Qwen3TTSModelConfig {
+        let data = json.data(using: .utf8)!
+        return try JSONDecoder().decode(Qwen3TTSModelConfig.self, from: data)
+    }
+
+    // MARK: - Speaker Encoder Config Tests
+
+    /// Parse Base model config JSON, verify speakerEncoderConfig is non-nil
+    /// with encDim == 2048, sampleRate == 24000
+    @Test func testBaseConfigHasSpeakerEncoderConfig() throws {
+        let config = try parseConfig(Self.baseConfigJSON)
+        #expect(config.speakerEncoderConfig != nil,
+                "Base model config should have speaker_encoder_config")
+        #expect(config.speakerEncoderConfig!.encDim == 2048,
+                "Base model enc_dim should be 2048")
+        #expect(config.speakerEncoderConfig!.sampleRate == 24000,
+                "Base model speaker encoder sample_rate should be 24000")
+    }
+
+    /// Verify that fields not specified in the JSON get their correct defaults
+    @Test func testBaseConfigSpeakerEncoderDefaults() throws {
+        let config = try parseConfig(Self.baseConfigJSON)
+        let sec = config.speakerEncoderConfig!
+        // The Base HF JSON only specifies enc_dim and sample_rate; all other fields
+        // should fall back to their defaults from the Python config class.
+        #expect(sec.melDim == 128, "Default melDim should be 128")
+        #expect(sec.encChannels == [512, 512, 512, 512, 1536],
+                "Default encChannels should match Python defaults")
+        #expect(sec.encKernelSizes == [5, 3, 3, 3, 1],
+                "Default encKernelSizes should match Python defaults")
+        #expect(sec.encDilations == [1, 2, 3, 4, 1],
+                "Default encDilations should match Python defaults")
+        #expect(sec.encAttentionChannels == 128,
+                "Default encAttentionChannels should be 128")
+        #expect(sec.encRes2netScale == 8,
+                "Default encRes2netScale should be 8")
+        #expect(sec.encSeChannels == 128,
+                "Default encSeChannels should be 128")
+    }
+
+    /// Parse VoiceDesign config JSON, verify speakerEncoderConfig is nil
+    @Test func testVoiceDesignConfigHasNoSpeakerEncoderConfig() throws {
+        let config = try parseConfig(Self.voiceDesignConfigJSON)
+        #expect(config.speakerEncoderConfig == nil,
+                "VoiceDesign config should not have speaker_encoder_config")
+    }
+
+    /// Parse CustomVoice config JSON, verify speakerEncoderConfig is nil
+    @Test func testCustomVoiceConfigHasNoSpeakerEncoderConfig() throws {
+        let config = try parseConfig(Self.customVoiceConfigJSON)
+        #expect(config.speakerEncoderConfig == nil,
+                "CustomVoice config should not have speaker_encoder_config")
+    }
+
+    // MARK: - Model Type and spkId Tests
+
+    /// Parse Base config: ttsModelType == "base", spkId empty
+    @Test func testBaseConfigModelType() throws {
+        let config = try parseConfig(Self.baseConfigJSON)
+        #expect(config.ttsModelType == "base",
+                "Base config tts_model_type should be 'base'")
+        #expect(config.talkerConfig?.spkId?.isEmpty == true,
+                "Base config spk_id should be empty")
+    }
+
+    /// Parse VoiceDesign config: ttsModelType == "voice_design", spkId empty
+    @Test func testVoiceDesignConfigModelType() throws {
+        let config = try parseConfig(Self.voiceDesignConfigJSON)
+        #expect(config.ttsModelType == "voice_design",
+                "VoiceDesign config tts_model_type should be 'voice_design'")
+        #expect(config.talkerConfig?.spkId?.isEmpty == true,
+                "VoiceDesign config spk_id should be empty")
+    }
+
+    /// Parse CustomVoice config: ttsModelType == "custom_voice", spkId has entries
+    @Test func testCustomVoiceConfigModelType() throws {
+        let config = try parseConfig(Self.customVoiceConfigJSON)
+        #expect(config.ttsModelType == "custom_voice",
+                "CustomVoice config tts_model_type should be 'custom_voice'")
+        let spkId = config.talkerConfig?.spkId
+        #expect(spkId != nil, "CustomVoice config spk_id should be non-nil")
+        #expect(spkId!.count == 9,
+                "CustomVoice config should have 9 named speakers, got \(spkId!.count)")
+        #expect(spkId!["serena"] == [3066],
+                "Speaker 'serena' should have ID [3066]")
+    }
+
+    // MARK: - Codec Language ID Tests
+
+    /// Parse codecLanguageId: 10 entries for Base
+    @Test func testBaseConfigCodecLanguageId() throws {
+        let config = try parseConfig(Self.baseConfigJSON)
+        let langId = config.talkerConfig?.codecLanguageId
+        #expect(langId != nil, "Base config codec_language_id should be non-nil")
+        #expect(langId!.count == 10,
+                "Base config should have 10 language entries, got \(langId!.count)")
+        #expect(langId!["english"] == 2050)
+        #expect(langId!["chinese"] == 2055)
+    }
+
+    /// Parse codecLanguageId: 10 entries for VoiceDesign
+    @Test func testVoiceDesignConfigCodecLanguageId() throws {
+        let config = try parseConfig(Self.voiceDesignConfigJSON)
+        let langId = config.talkerConfig?.codecLanguageId
+        #expect(langId != nil, "VoiceDesign config codec_language_id should be non-nil")
+        #expect(langId!.count == 10,
+                "VoiceDesign config should have 10 language entries, got \(langId!.count)")
+    }
+
+    /// Parse codecLanguageId: 12 entries for CustomVoice (includes dialects)
+    @Test func testCustomVoiceConfigCodecLanguageId() throws {
+        let config = try parseConfig(Self.customVoiceConfigJSON)
+        let langId = config.talkerConfig?.codecLanguageId
+        #expect(langId != nil, "CustomVoice config codec_language_id should be non-nil")
+        #expect(langId!.count == 12,
+                "CustomVoice config should have 12 language entries (including dialects), got \(langId!.count)")
+        #expect(langId!["beijing_dialect"] == 2074,
+                "CustomVoice should include beijing_dialect")
+        #expect(langId!["sichuan_dialect"] == 2062,
+                "CustomVoice should include sichuan_dialect")
+    }
+}
+
+
 struct Qwen3TTSTests {
 
     /// Test basic text-to-speech generation with Qwen3 model

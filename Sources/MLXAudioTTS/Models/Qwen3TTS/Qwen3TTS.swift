@@ -28,6 +28,42 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         self.talker = Qwen3TTSTalkerForConditionalGeneration(config: talkerConfig)
     }
 
+    // MARK: - Generation path routing
+
+    /// The generation path that will be used based on model type and inputs.
+    enum GenerationPath: Equatable, Sendable {
+        case voiceDesign
+        case customVoice
+        case base
+        case icl
+    }
+
+    /// Determines which generation path to use based on config, inputs, and encoder availability.
+    ///
+    /// - Parameters:
+    ///   - refAudio: Reference audio for voice cloning (optional).
+    ///   - refText: Reference text transcript for voice cloning (optional).
+    /// - Returns: The generation path to use.
+    /// - Throws: `AudioGenerationError.invalidInput` if `ttsModelType` is unknown.
+    func resolveGenerationPath(refAudio: MLXArray?, refText: String?) throws -> GenerationPath {
+        switch config.ttsModelType {
+        case "voice_design":
+            return .voiceDesign
+        case "custom_voice":
+            return .customVoice
+        case "base":
+            if refAudio != nil, refText != nil, speechTokenizer?.hasEncoder == true {
+                return .icl
+            } else {
+                return .base
+            }
+        default:
+            throw AudioGenerationError.invalidInput(
+                "Unknown tts_model_type: '\(config.ttsModelType)'. Expected 'voice_design', 'custom_voice', or 'base'."
+            )
+        }
+    }
+
     // MARK: - SpeechGenerationModel protocol
 
     public func generate(
@@ -45,24 +81,61 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             throw AudioGenerationError.modelNotInitialized("Text tokenizer not loaded")
         }
 
-        // VoiceDesign: voice parameter is the instruct (voice description)
-        let instruct = voice
         let lang = language ?? "auto"
         let temp = generationParameters.temperature
         let topP = generationParameters.topP
         let repPenalty = generationParameters.repetitionPenalty ?? 1.05
         let maxTokens = generationParameters.maxTokens ?? 4096
 
-        let audio = generateVoiceDesign(
-            text: text,
-            instruct: instruct,
-            language: lang,
-            temperature: temp,
-            topP: topP,
-            repetitionPenalty: repPenalty,
-            maxTokens: maxTokens
-        )
-        return audio
+        let path = try resolveGenerationPath(refAudio: refAudio, refText: refText)
+
+        switch path {
+        case .voiceDesign:
+            // VoiceDesign: voice parameter is the instruct (voice description)
+            return generateVoiceDesign(
+                text: text,
+                instruct: voice,
+                language: lang,
+                temperature: temp,
+                topP: topP,
+                repetitionPenalty: repPenalty,
+                maxTokens: maxTokens
+            )
+
+        case .customVoice:
+            return try generateCustomVoice(
+                text: text,
+                speaker: voice,
+                language: lang,
+                temperature: temp,
+                topP: topP,
+                repetitionPenalty: repPenalty,
+                maxTokens: maxTokens
+            )
+
+        case .base:
+            return try generateBase(
+                text: text,
+                voice: voice,
+                language: lang,
+                temperature: temp,
+                topP: topP,
+                repetitionPenalty: repPenalty,
+                maxTokens: maxTokens
+            )
+
+        case .icl:
+            return try generateICL(
+                text: text,
+                refAudio: refAudio!,
+                refText: refText!,
+                language: lang,
+                temperature: temp,
+                topP: topP,
+                repetitionPenalty: repPenalty,
+                maxTokens: maxTokens
+            )
+        }
     }
 
     public func generateStream(
@@ -84,29 +157,71 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                     throw AudioGenerationError.modelNotInitialized("Text tokenizer not loaded")
                 }
 
-                // VoiceDesign: voice parameter is the instruct (voice description)
-                let instruct = voice
                 let lang = language ?? "auto"
                 let temp = generationParameters.temperature
                 let topP = generationParameters.topP
                 let repPenalty = generationParameters.repetitionPenalty ?? 1.05
                 let maxTokens = generationParameters.maxTokens ?? 4096
 
-                let audio = generateVoiceDesign(
-                    text: text,
-                    instruct: instruct,
-                    language: lang,
-                    temperature: temp,
-                    topP: topP,
-                    repetitionPenalty: repPenalty,
-                    maxTokens: maxTokens,
-                    onToken: { tokenId in
-                        continuation.yield(.token(tokenId))
-                    },
-                    onInfo: { info in
-                        continuation.yield(.info(info))
-                    }
-                )
+                let path = try resolveGenerationPath(refAudio: refAudio, refText: refText)
+                let audio: MLXArray
+
+                switch path {
+                case .voiceDesign:
+                    audio = generateVoiceDesign(
+                        text: text,
+                        instruct: voice,
+                        language: lang,
+                        temperature: temp,
+                        topP: topP,
+                        repetitionPenalty: repPenalty,
+                        maxTokens: maxTokens,
+                        onToken: { tokenId in
+                            continuation.yield(.token(tokenId))
+                        },
+                        onInfo: { info in
+                            continuation.yield(.info(info))
+                        }
+                    )
+
+                case .customVoice:
+                    // Streaming not yet implemented for CustomVoice; fall back to non-streaming
+                    audio = try generateCustomVoice(
+                        text: text,
+                        speaker: voice,
+                        language: lang,
+                        temperature: temp,
+                        topP: topP,
+                        repetitionPenalty: repPenalty,
+                        maxTokens: maxTokens
+                    )
+
+                case .icl:
+                    // Streaming not yet implemented for ICL; fall back to non-streaming
+                    audio = try generateICL(
+                        text: text,
+                        refAudio: refAudio!,
+                        refText: refText!,
+                        language: lang,
+                        temperature: temp,
+                        topP: topP,
+                        repetitionPenalty: repPenalty,
+                        maxTokens: maxTokens
+                    )
+
+                case .base:
+                    // Streaming not yet implemented for Base; fall back to non-streaming
+                    audio = try generateBase(
+                        text: text,
+                        voice: voice,
+                        language: lang,
+                        temperature: temp,
+                        topP: topP,
+                        repetitionPenalty: repPenalty,
+                        maxTokens: maxTokens
+                    )
+                }
+
                 continuation.yield(.audio(audio))
                 continuation.finish()
             } catch {
@@ -114,6 +229,65 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             }
         }
         return stream
+    }
+
+    // MARK: - Language resolution
+
+    /// ISO 639-1 to Qwen3-TTS internal language name mapping.
+    private static let isoToLanguageName: [String: String] = [
+        "en": "english",
+        "zh": "chinese",
+        "ja": "japanese",
+        "ko": "korean",
+        "de": "german",
+        "fr": "french",
+        "ru": "russian",
+        "pt": "portuguese",
+        "es": "spanish",
+        "it": "italian",
+    ]
+
+    /// Resolves a language code to the internal language string used by Qwen3-TTS.
+    ///
+    /// Accepts ISO 639-1 codes (e.g. "en", "zh"), full language names (e.g. "english",
+    /// "chinese"), or the special value "auto". The resolved language is validated against
+    /// the model's `codecLanguageId` dictionary when a config is provided.
+    ///
+    /// - Parameters:
+    ///   - code: An ISO 639-1 language code, a full language name, or "auto".
+    ///   - config: Optional talker config used to validate the resolved language against
+    ///     supported languages. When nil, validation is skipped and the static mapping
+    ///     is used directly.
+    /// - Returns: The resolved language string, or nil if the code is unsupported.
+    public static func resolveLanguage(_ code: String, config: Qwen3TTSTalkerConfig? = nil) -> String? {
+        let lowered = code.lowercased()
+
+        // "auto" is always a valid pass-through
+        if lowered == "auto" {
+            return "auto"
+        }
+
+        // Try ISO 639-1 mapping first
+        if let mapped = isoToLanguageName[lowered] {
+            // If config is provided, validate against supported languages
+            if let langMap = config?.codecLanguageId {
+                return langMap[mapped] != nil ? mapped : nil
+            }
+            return mapped
+        }
+
+        // Try as a full language name (pass-through if valid)
+        if let langMap = config?.codecLanguageId {
+            // Validate against config's supported languages
+            return langMap[lowered] != nil ? lowered : nil
+        }
+
+        // Without config, check if it's a known full language name from our mapping values
+        if isoToLanguageName.values.contains(lowered) {
+            return lowered
+        }
+
+        return nil
     }
 
     // MARK: - VoiceDesign generation
@@ -264,6 +438,61 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
         eval(audio)
         return audio
+    }
+
+    // MARK: - Base generation (stub)
+
+    /// Generate audio using the Base model path (no reference audio / no ICL).
+    /// - Note: Not yet implemented. Will be completed in Task 17.
+    func generateBase(
+        text: String,
+        voice: String?,
+        language: String,
+        temperature: Float,
+        topP: Float,
+        repetitionPenalty: Float,
+        maxTokens: Int
+    ) throws -> MLXArray {
+        throw AudioGenerationError.generationFailed(
+            "Base generation is not yet implemented. This will be added in a future update."
+        )
+    }
+
+    // MARK: - CustomVoice generation (stub)
+
+    /// Generate audio using a predefined speaker from the CustomVoice model.
+    /// - Note: Not yet implemented. Will be completed in Task 18.
+    func generateCustomVoice(
+        text: String,
+        speaker: String?,
+        language: String,
+        temperature: Float,
+        topP: Float,
+        repetitionPenalty: Float,
+        maxTokens: Int
+    ) throws -> MLXArray {
+        throw AudioGenerationError.generationFailed(
+            "CustomVoice generation is not yet implemented. This will be added in a future update."
+        )
+    }
+
+    // MARK: - ICL voice cloning generation (stub)
+
+    /// Generate audio using in-context learning (voice cloning) with reference audio.
+    /// - Note: Not yet implemented. Will be completed in Task 14.
+    func generateICL(
+        text: String,
+        refAudio: MLXArray,
+        refText: String,
+        language: String,
+        temperature: Float,
+        topP: Float,
+        repetitionPenalty: Float,
+        maxTokens: Int
+    ) throws -> MLXArray {
+        throw AudioGenerationError.generationFailed(
+            "ICL voice cloning generation is not yet implemented. This will be added in a future update."
+        )
     }
 
     // MARK: - Prepare generation inputs
