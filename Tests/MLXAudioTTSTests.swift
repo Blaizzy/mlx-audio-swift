@@ -2019,3 +2019,165 @@ struct Qwen3TTSSpeakerEncoderWeightTests {
                 "Base config speakerEncoderConfig encDim should be 2048")
     }
 }
+
+
+// MARK: - Qwen3-TTS Speaker Embedding Extraction Tests (no model download required)
+
+// Run Qwen3TTSSpeakerEmbeddingTests with:  xcodebuild test \
+// -scheme MLXAudio-Package \
+// -destination 'platform=macOS' \
+// -only-testing:MLXAudioTests/Qwen3TTSSpeakerEmbeddingTests \
+// CODE_SIGNING_ALLOWED=NO
+
+struct Qwen3TTSSpeakerEmbeddingTests {
+
+    // MARK: - Helper to create model with/without speaker encoder
+
+    /// Creates a Qwen3TTSModel with optional speaker encoder attached.
+    private func makeModel(withSpeakerEncoder: Bool, encDim: Int = 2048) throws -> Qwen3TTSModel {
+        let json: String
+        if withSpeakerEncoder {
+            json = """
+            {
+                "model_type": "qwen3_tts",
+                "tts_model_type": "base",
+                "speaker_encoder_config": {
+                    "enc_dim": \(encDim),
+                    "sample_rate": 24000
+                }
+            }
+            """
+        } else {
+            json = """
+            {
+                "model_type": "qwen3_tts",
+                "tts_model_type": "voice_design"
+            }
+            """
+        }
+        let config = try JSONDecoder().decode(Qwen3TTSModelConfig.self, from: json.data(using: .utf8)!)
+        let model = Qwen3TTSModel(config: config)
+
+        if withSpeakerEncoder, let encoderConfig = config.speakerEncoderConfig {
+            let encoder = Qwen3TTSSpeakerEncoder(config: encoderConfig)
+            model.speakerEncoder = encoder
+        }
+
+        return model
+    }
+
+    // MARK: - Error handling tests
+
+    /// extractSpeakerEmbedding throws when speaker encoder is not loaded
+    @Test func throwsWhenNoSpeakerEncoder() throws {
+        let model = try makeModel(withSpeakerEncoder: false)
+
+        #expect(throws: AudioGenerationError.self) {
+            _ = try model.extractSpeakerEmbedding(audio: MLXArray.zeros([24000]))
+        }
+    }
+
+    /// extractSpeakerEmbedding throws with modelNotInitialized error type
+    @Test func throwsModelNotInitializedError() throws {
+        let model = try makeModel(withSpeakerEncoder: false)
+
+        do {
+            _ = try model.extractSpeakerEmbedding(audio: MLXArray.zeros([24000]))
+            Issue.record("Expected error to be thrown")
+        } catch let error as AudioGenerationError {
+            // Verify it is the modelNotInitialized variant
+            if case .modelNotInitialized(let msg) = error {
+                #expect(msg.contains("Speaker encoder"),
+                        "Error message should mention speaker encoder, got: \(msg)")
+            } else {
+                Issue.record("Expected modelNotInitialized error, got: \(error)")
+            }
+        }
+    }
+
+    // MARK: - Output shape tests
+
+    /// extractSpeakerEmbedding returns correct shape for 1D audio input
+    @Test func outputShapeFor1DAudio() throws {
+        let model = try makeModel(withSpeakerEncoder: true, encDim: 2048)
+
+        // 1 second of audio at 24kHz
+        let audio = MLXArray.zeros([24000])
+        let embedding = try model.extractSpeakerEmbedding(audio: audio)
+        eval(embedding)
+
+        #expect(embedding.shape == [1, 2048],
+                "Expected embedding shape [1, 2048], got \(embedding.shape)")
+    }
+
+    /// extractSpeakerEmbedding returns correct shape for 2D audio input [1, samples]
+    @Test func outputShapeFor2DAudio() throws {
+        let model = try makeModel(withSpeakerEncoder: true, encDim: 2048)
+
+        // 1 second of audio at 24kHz, batched
+        let audio = MLXArray.zeros([1, 24000])
+        let embedding = try model.extractSpeakerEmbedding(audio: audio)
+        eval(embedding)
+
+        #expect(embedding.shape == [1, 2048],
+                "Expected embedding shape [1, 2048] for 2D input, got \(embedding.shape)")
+    }
+
+    /// extractSpeakerEmbedding output shape matches configured encDim
+    @Test func outputShapeMatchesEncDim() throws {
+        let model = try makeModel(withSpeakerEncoder: true, encDim: 1024)
+
+        let audio = MLXArray.zeros([24000])
+        let embedding = try model.extractSpeakerEmbedding(audio: audio)
+        eval(embedding)
+
+        #expect(embedding.shape == [1, 1024],
+                "Expected embedding shape [1, 1024], got \(embedding.shape)")
+    }
+
+    /// extractSpeakerEmbedding works with short audio (0.5 seconds)
+    @Test func outputShapeForShortAudio() throws {
+        let model = try makeModel(withSpeakerEncoder: true, encDim: 2048)
+
+        // 0.5 seconds of audio
+        let audio = MLXArray.zeros([12000])
+        let embedding = try model.extractSpeakerEmbedding(audio: audio)
+        eval(embedding)
+
+        #expect(embedding.shape == [1, 2048],
+                "Expected embedding shape [1, 2048] for short audio, got \(embedding.shape)")
+    }
+
+    /// extractSpeakerEmbedding works with longer audio (3 seconds)
+    @Test func outputShapeForLongAudio() throws {
+        let model = try makeModel(withSpeakerEncoder: true, encDim: 2048)
+
+        // 3 seconds of audio
+        let audio = MLXArray.zeros([72000])
+        let embedding = try model.extractSpeakerEmbedding(audio: audio)
+        eval(embedding)
+
+        #expect(embedding.shape == [1, 2048],
+                "Expected embedding shape [1, 2048] for long audio, got \(embedding.shape)")
+    }
+
+    // MARK: - Determinism test
+
+    /// extractSpeakerEmbedding produces identical output for identical input
+    @Test func deterministicOutput() throws {
+        let model = try makeModel(withSpeakerEncoder: true, encDim: 2048)
+
+        let audio = MLXArray.zeros([24000])
+        let embedding1 = try model.extractSpeakerEmbedding(audio: audio)
+        let embedding2 = try model.extractSpeakerEmbedding(audio: audio)
+        eval(embedding1, embedding2)
+
+        // With zero input and random weights, both calls should produce identical results
+        let diff = MLX.abs(embedding1 - embedding2).sum()
+        eval(diff)
+        let diffVal: Float = diff.item()
+
+        #expect(diffVal < 1e-6,
+                "Same input should produce identical embeddings, diff = \(diffVal)")
+    }
+}

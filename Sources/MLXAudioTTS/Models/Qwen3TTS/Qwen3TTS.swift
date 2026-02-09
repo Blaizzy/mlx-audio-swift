@@ -29,6 +29,110 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         self.talker = Qwen3TTSTalkerForConditionalGeneration(config: talkerConfig)
     }
 
+    // MARK: - Speaker embedding extraction
+
+    /// Extract x-vector speaker embedding from raw audio using the ECAPA-TDNN speaker encoder.
+    ///
+    /// Computes a mel spectrogram from the audio waveform using the speaker encoder's
+    /// expected parameters (n_fft=1024, num_mels=128, sr=24000, hop_size=256, win_size=1024,
+    /// fmin=0, fmax=12000), then passes it through the speaker encoder to produce an
+    /// x-vector embedding suitable for use as a speaker conditioning signal.
+    ///
+    /// - Parameter audio: Raw audio waveform as MLXArray, shape `[samples]` or `[1, samples]`.
+    ///   Expected sample rate: 24000 Hz (matching `speakerEncoderConfig.sampleRate`).
+    /// - Returns: Speaker embedding of shape `[1, enc_dim]`.
+    /// - Throws: `AudioGenerationError.modelNotInitialized` if the speaker encoder is not loaded
+    ///   (only Base models ship with a speaker encoder).
+    func extractSpeakerEmbedding(audio: MLXArray) throws -> MLXArray {
+        guard let speakerEncoder else {
+            throw AudioGenerationError.modelNotInitialized(
+                "Speaker encoder not loaded. Only Base models have a speaker encoder."
+            )
+        }
+
+        let speakerConfig = speakerEncoder.config
+
+        // Flatten to 1D if batched [1, samples] -> [samples]
+        var wav = audio
+        if wav.ndim == 2 {
+            wav = wav.squeezed(axis: 0)
+        }
+
+        // Compute mel spectrogram with speaker-encoder-specific parameters
+        // Python reference: n_fft=1024, num_mels=128, sr=24000, hop_size=256,
+        //                   win_size=1024, fmin=0, fmax=12000
+        let mel = computeSpeakerEncoderMel(
+            audio: wav,
+            sampleRate: speakerConfig.sampleRate,
+            nFft: 1024,
+            hopLength: 256,
+            winSize: 1024,
+            nMels: speakerConfig.melDim,
+            fMin: 0,
+            fMax: 12000
+        )
+
+        // Add batch dimension: [time, mel_dim] -> [1, time, mel_dim]
+        let melBatched = mel.expandedDimensions(axis: 0)
+
+        // Run through speaker encoder -> [1, enc_dim]
+        return speakerEncoder(melBatched)
+    }
+
+    /// Compute mel spectrogram for the speaker encoder.
+    ///
+    /// This uses a standard mel spectrogram computation (power spectrum + mel filterbank + log)
+    /// without Whisper-style normalization. The parameters match the Python reference's
+    /// `extract_speaker_embedding()` function.
+    ///
+    /// - Parameters:
+    ///   - audio: 1D audio waveform `[samples]`
+    ///   - sampleRate: Audio sample rate (typically 24000)
+    ///   - nFft: FFT size (1024)
+    ///   - hopLength: Hop length between STFT frames (256)
+    ///   - winSize: Window size (1024, same as nFft for speaker encoder)
+    ///   - nMels: Number of mel filterbank channels (128)
+    ///   - fMin: Minimum frequency for mel filterbank (0)
+    ///   - fMax: Maximum frequency for mel filterbank (12000)
+    /// - Returns: Mel spectrogram of shape `[time, nMels]`
+    private func computeSpeakerEncoderMel(
+        audio: MLXArray,
+        sampleRate: Int,
+        nFft: Int,
+        hopLength: Int,
+        winSize: Int,
+        nMels: Int,
+        fMin: Float,
+        fMax: Float
+    ) -> MLXArray {
+        // Create Hanning window of win_size (same as nFft for speaker encoder)
+        let window = hanningWindow(size: winSize)
+
+        // Compute STFT using existing DSP utility
+        let freqs = stft(audio: audio, window: window, nFft: nFft, hopLength: hopLength)
+
+        // Compute power spectrum (magnitude squared)
+        let magnitudes = MLX.abs(freqs).square()
+
+        // Create mel filterbank [nFreqs, nMels] with fMin/fMax, slaney normalization
+        let filters = melFilters(
+            sampleRate: sampleRate,
+            nFft: nFft,
+            nMels: nMels,
+            fMin: fMin,
+            fMax: fMax,
+            norm: "slaney"
+        )
+
+        // Apply mel filterbank: [numFrames, nFreqs] @ [nFreqs, nMels] = [numFrames, nMels]
+        var melSpec = MLX.matmul(magnitudes, filters)
+
+        // Apply log scaling (standard log-mel, NOT Whisper normalization)
+        melSpec = MLX.log(MLX.maximum(melSpec, MLXArray(Float(1e-5))))
+
+        return melSpec
+    }
+
     // MARK: - Generation path routing
 
     /// The generation path that will be used based on model type and inputs.
