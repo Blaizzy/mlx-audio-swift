@@ -147,9 +147,23 @@ public struct AudioGenerateParameters {
 }
 ```
 
+### Model cache — shared `intrusive-memory` path
+
+All `intrusive-memory` projects share a common model cache hierarchy under `~/Library/Caches/intrusive-memory/Models/`. Each project stores its models in a type-specific subdirectory:
+
+| Project | Cache path |
+|---------|-----------|
+| **mlx-audio-swift** (Audio) | `~/Library/Caches/intrusive-memory/Models/Audio/<namespace>_<repo>/` |
+| **SwiftBruja** (LLM) | `~/Library/Caches/intrusive-memory/Models/LLM/<namespace>_<repo>/` |
+| **Marvis prompt cache** | `~/Library/Caches/intrusive-memory/Models/Audio/MarvisTTSModel/prompt_cache/` |
+
+The `<namespace>_<repo>` directory name is the HuggingFace repo ID with `/` replaced by `_` (e.g., `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16` → `mlx-community_Qwen3-TTS-12Hz-1.7B-Base-bf16`).
+
+If you add a new model or cache path, always use the `intrusive-memory/Models/` hierarchy.
+
 ### Model loading
 
-Models are loaded from HuggingFace via `fromPretrained()`. Internally this calls `ModelUtils.resolveOrDownloadModel()` which caches to `~/Library/Caches/mlx-audio/<namespace>_<repo>/`.
+Models are loaded from HuggingFace via `fromPretrained()`. Internally this calls `ModelUtils.resolveOrDownloadModel()` which caches to the shared path above.
 
 ### TTSModelUtils — model type dispatch
 
@@ -405,7 +419,7 @@ Tests use **Swift Testing** framework (`@Test`, `#expect`, `@Suite`), not XCTest
 
 **Triggers**: `workflow_dispatch` + PRs to `main` (opened, synchronize, reopened)
 
-**Model cache**: `~/Library/Caches/mlx-audio` cached with key `mlx-models-v1`. Prime via `workflow_dispatch`. Model tests skip when cache is cold.
+**Model cache**: `~/Library/Caches/intrusive-memory/Models/Audio` cached with key `mlx-models-v1`. Prime via `workflow_dispatch`. Model tests skip when cache is cold.
 
 ## Adding a New TTS Model
 
@@ -428,7 +442,7 @@ Tests use **Swift Testing** framework (`@Test`, `#expect`, `@Suite`), not XCTest
 
 - **Never use `swift build`/`swift test`** — always `xcodebuild`
 - **PyTorch weight conversion**: Conv1d weights need transposition from `(O,I,K)` to `(O,K,I)`, Conv2d from `(O,I,H,W)` to `(O,H,W,I)` in `sanitize()`
-- **Model cache path**: `~/Library/Caches/mlx-audio/<namespace>_<repo>` — replace `/` with `_` in repo ID
+- **Model cache path**: `~/Library/Caches/intrusive-memory/Models/Audio/<namespace>_<repo>` — replace `/` with `_` in repo ID. All `intrusive-memory` projects share the `~/Library/Caches/intrusive-memory/Models/` hierarchy
 - **Bundle resources in tests**: Use `.copy("media")` in Package.swift, access via `Bundle.module`
 - **Concurrency warnings**: Use `@preconcurrency import MLX` and `@unchecked Sendable` on Module subclasses
 - **CI test selection**: Only add tests to CI that work without model downloads. Model-dependent tests go in the `model-tests` job
