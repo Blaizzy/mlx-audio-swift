@@ -82,6 +82,7 @@ public struct ModelUtils {
             kind: .model,
             to: modelDir,
             revision: "main",
+            matching: ["*.safetensors", "*.json", "*.txt"],
             progressHandler: { progress in
                 print("\(progress.completedUnitCount)/\(progress.totalUnitCount) files")
             }

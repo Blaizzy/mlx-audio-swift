@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 @preconcurrency import MLX
+import MLXAudioCore
 import MLXAudioTTS
 import MLXLMCommon
 
@@ -37,7 +38,11 @@ enum App {
                 model: args.model,
                 text: args.text,
                 voice: args.voice,
-                outputPath: args.outputPath
+                outputPath: args.outputPath,
+                instruct: args.instruct,
+                refAudioPath: args.refAudioPath,
+                refText: args.refText,
+                language: args.language
             )
         } catch {
             fputs("Error: \(error)\n", stderr)
@@ -51,6 +56,10 @@ enum App {
         text: String,
         voice: String?,
         outputPath: String?,
+        instruct: String? = nil,
+        refAudioPath: String? = nil,
+        refText: String? = nil,
+        language: String? = nil,
         hfToken: String? = nil
     ) async throws {
         Memory.cacheLimit = 100 * 1024 * 1024
@@ -72,15 +81,25 @@ enum App {
             }
         }
 
+        // Load reference audio for voice cloning if provided
+        var refAudio: MLXArray? = nil
+        if let path = refAudioPath {
+            let url = URL(fileURLWithPath: path)
+            let (_, audioArray) = try loadAudioArray(from: url)
+            refAudio = audioArray
+            print("Loaded reference audio from \(path)")
+        }
+
         print("Generating")
         let started = CFAbsoluteTimeGetCurrent()
 
         let audioData = try await loadedModel.generate(
             text: text,
             voice: voice,
-            refAudio: nil,
-            refText: nil,
-            language: nil,
+            refAudio: refAudio,
+            refText: refText,
+            language: language,
+            instruct: instruct,
             generationParameters: GenerateParameters()
         ).asArray(Float.self)
 
@@ -142,12 +161,20 @@ struct CLI {
     let text: String
     let voice: String?
     let outputPath: String?
+    let instruct: String?
+    let refAudioPath: String?
+    let refText: String?
+    let language: String?
 
     static func parse() throws -> CLI {
         var text: String?
         var voice: String? = nil
         var outputPath: String? = nil
         var model = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit"
+        var instruct: String? = nil
+        var refAudioPath: String? = nil
+        var refText: String? = nil
+        var language: String? = nil
 
         var it = CommandLine.arguments.dropFirst().makeIterator()
         while let arg = it.next() {
@@ -164,6 +191,18 @@ struct CLI {
             case "--output", "-o":
                 guard let v = it.next() else { throw CLIError.missingValue(arg) }
                 outputPath = v
+            case "--instruct":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                instruct = v
+            case "--ref-audio":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                refAudioPath = v
+            case "--ref-text":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                refText = v
+            case "--language":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                language = v
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -180,7 +219,10 @@ struct CLI {
             throw CLIError.missingValue("--text")
         }
 
-        return CLI(model: model, text: finalText, voice: voice, outputPath: outputPath)
+        return CLI(
+            model: model, text: finalText, voice: voice, outputPath: outputPath,
+            instruct: instruct, refAudioPath: refAudioPath, refText: refText, language: language
+        )
     }
 
     static func printUsage() {
@@ -191,9 +233,13 @@ struct CLI {
 
         Options:
           -t, --text <string>           Text to synthesize (required if not passed as trailing arg)
-          -v, --voice <name>            Voice id
+          -v, --voice <name>            Voice id (CustomVoice models)
               --model <repo>            HF repo id. Default: mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit
           -o, --output <path>           Output WAV path. Default: ./output.wav
+              --instruct <string>       Voice description / style instruction (VoiceDesign/CustomVoice)
+              --ref-audio <path>        Reference audio WAV for voice cloning (Base models)
+              --ref-text <string>       Transcription of the reference audio
+              --language <code>         Language code (e.g. en, zh, ja)
           -h, --help                    Show this help
         """)
     }
