@@ -7,8 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		33B121622F2EA502006A1A8A /* MLXAudioTTS in Frameworks */ = {isa = PBXBuildFile; productRef = PKG001 /* MLXAudioTTS */; };
-		33B121632F2EA502006A1A8A /* MLXAudioCore in Frameworks */ = {isa = PBXBuildFile; productRef = PKG002 /* MLXAudioCore */; };
+		0302D42D2F318E9200A2CE99 /* MLXAudioCore in Frameworks */ = {isa = PBXBuildFile; productRef = 33B1215C2F2EA41E006A1A8A /* MLXAudioCore */; };
+		0302D42E2F318E9200A2CE99 /* MLXAudioTTS in Frameworks */ = {isa = PBXBuildFile; productRef = 33B1215E2F2EA41E006A1A8A /* MLXAudioTTS */; };
+		33B121622F2EA502006A1A8A /* (null) in Frameworks */ = {isa = PBXBuildFile; };
+		33B121632F2EA502006A1A8A /* (null) in Frameworks */ = {isa = PBXBuildFile; };
 		APP001 /* VoicesApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC001 /* VoicesApp.swift */; };
 		APP002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC002 /* ContentView.swift */; };
 		APP003 /* Voice.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC003 /* Voice.swift */; };
@@ -18,17 +20,14 @@
 		APP007 /* VoiceRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC007 /* VoiceRow.swift */; };
 		APP008 /* VoiceCollectionCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC008 /* VoiceCollectionCard.swift */; };
 		APP009 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC009 /* SettingsView.swift */; };
-		QWEN001 /* Qwen3TTSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = QSRC001 /* Qwen3TTSApp.swift */; };
-		QWEN002 /* Qwen3TTSContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = QSRC002 /* Qwen3TTSContentView.swift */; };
-		QWEN003 /* Qwen3TTSViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = QSRC003 /* Qwen3TTSViewModel.swift */; };
-		QWEN004 /* MLXAudioTTS in Frameworks */ = {isa = PBXBuildFile; productRef = 33B1215E2F2EA41E006A1A8A /* MLXAudioTTS */; };
+		APP010 /* Qwen3TTSContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = QSRC002 /* Qwen3TTSContentView.swift */; };
+		APP011 /* Qwen3TTSViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = QSRC003 /* Qwen3TTSViewModel.swift */; };
+		APP012 /* ClonedVoicesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC010A /* ClonedVoicesView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		0335571B2F2F068500B9DAB7 /* Qwen3TTS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Qwen3TTS.entitlements; sourceTree = "<group>"; };
+		ENT001 /* VoicesApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VoicesApp.entitlements; sourceTree = "<group>"; };
 		PROD001 /* VoicesApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VoicesApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		PROD002 /* Qwen3TTS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Qwen3TTS.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		QSRC001 /* Qwen3TTSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Qwen3TTSApp.swift; sourceTree = "<group>"; };
 		QSRC002 /* Qwen3TTSContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Qwen3TTSContentView.swift; sourceTree = "<group>"; };
 		QSRC003 /* Qwen3TTSViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Qwen3TTSViewModel.swift; sourceTree = "<group>"; };
 		SRC001 /* VoicesApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicesApp.swift; sourceTree = "<group>"; };
@@ -40,6 +39,7 @@
 		SRC007 /* VoiceRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceRow.swift; sourceTree = "<group>"; };
 		SRC008 /* VoiceCollectionCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCollectionCard.swift; sourceTree = "<group>"; };
 		SRC009 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		SRC010A /* ClonedVoicesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClonedVoicesView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -47,16 +47,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				33B121632F2EA502006A1A8A /* MLXAudioCore in Frameworks */,
-				33B121622F2EA502006A1A8A /* MLXAudioTTS in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		QFRM001 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				QWEN004 /* MLXAudioTTS in Frameworks */,
+				0302D42E2F318E9200A2CE99 /* MLXAudioTTS in Frameworks */,
+				0302D42D2F318E9200A2CE99 /* MLXAudioCore in Frameworks */,
+				33B121632F2EA502006A1A8A /* (null) in Frameworks */,
+				33B121622F2EA502006A1A8A /* (null) in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -67,7 +61,6 @@
 			isa = PBXGroup;
 			children = (
 				GRP002 /* VoicesApp */,
-				QGRP001 /* Qwen3TTS */,
 				GRP006 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -75,6 +68,7 @@
 		GRP002 /* VoicesApp */ = {
 			isa = PBXGroup;
 			children = (
+				ENT001 /* VoicesApp.entitlements */,
 				SRC001 /* VoicesApp.swift */,
 				GRP003 /* Models */,
 				GRP004 /* ViewModels */,
@@ -95,6 +89,7 @@
 			isa = PBXGroup;
 			children = (
 				SRC004 /* TTSViewModel.swift */,
+				QSRC003 /* Qwen3TTSViewModel.swift */,
 			);
 			path = ViewModels;
 			sourceTree = "<group>";
@@ -103,7 +98,9 @@
 			isa = PBXGroup;
 			children = (
 				SRC002 /* ContentView.swift */,
+				QSRC002 /* Qwen3TTSContentView.swift */,
 				SRC005 /* VoicesView.swift */,
+				SRC010A /* ClonedVoicesView.swift */,
 				SRC006 /* AddVoiceView.swift */,
 				SRC009 /* SettingsView.swift */,
 				GRP007 /* Components */,
@@ -115,7 +112,6 @@
 			isa = PBXGroup;
 			children = (
 				PROD001 /* VoicesApp.app */,
-				PROD002 /* Qwen3TTS.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -127,17 +123,6 @@
 				SRC008 /* VoiceCollectionCard.swift */,
 			);
 			path = Components;
-			sourceTree = "<group>";
-		};
-		QGRP001 /* Qwen3TTS */ = {
-			isa = PBXGroup;
-			children = (
-				0335571B2F2F068500B9DAB7 /* Qwen3TTS.entitlements */,
-				QSRC001 /* Qwen3TTSApp.swift */,
-				QSRC002 /* Qwen3TTSContentView.swift */,
-				QSRC003 /* Qwen3TTSViewModel.swift */,
-			);
-			path = Qwen3TTS;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -164,26 +149,6 @@
 			productReference = PROD001 /* VoicesApp.app */;
 			productType = "com.apple.product-type.application";
 		};
-		TGT002 /* Qwen3TTS */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = QCFG001 /* Build configuration list for PBXNativeTarget "Qwen3TTS" */;
-			buildPhases = (
-				QSRC010 /* Sources */,
-				QFRM001 /* Frameworks */,
-				QRES001 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = Qwen3TTS;
-			packageProductDependencies = (
-				33B1215E2F2EA41E006A1A8A /* MLXAudioTTS */,
-			);
-			productName = Qwen3TTS;
-			productReference = PROD002 /* Qwen3TTS.app */;
-			productType = "com.apple.product-type.application";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -195,9 +160,6 @@
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
 					TGT001 = {
-						CreatedOnToolsVersion = 15.0;
-					};
-					TGT002 = {
 						CreatedOnToolsVersion = 15.0;
 					};
 				};
@@ -219,19 +181,11 @@
 			projectRoot = "";
 			targets = (
 				TGT001 /* VoicesApp */,
-				TGT002 /* Qwen3TTS */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		QRES001 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		RES001 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -242,16 +196,6 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		QSRC010 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				QWEN001 /* Qwen3TTSApp.swift in Sources */,
-				QWEN002 /* Qwen3TTSContentView.swift in Sources */,
-				QWEN003 /* Qwen3TTSViewModel.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		SRC010 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -265,6 +209,9 @@
 				APP007 /* VoiceRow.swift in Sources */,
 				APP008 /* VoiceCollectionCard.swift in Sources */,
 				APP009 /* SettingsView.swift in Sources */,
+				APP010 /* Qwen3TTSContentView.swift in Sources */,
+				APP011 /* Qwen3TTSViewModel.swift in Sources */,
+				APP012 /* ClonedVoicesView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -333,11 +280,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = "";
+				CODE_SIGN_ENTITLEMENTS = VoicesApp/VoicesApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = WT753TG39U;
+				DEVELOPMENT_TEAM = TA92TEWDS4;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -352,7 +299,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.mlx-audio.VoicesApp";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.sdesai.mlx-audio.VoicesApp";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = NO;
@@ -366,40 +313,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = "";
-				CODE_SIGN_STYLE = Automatic;
-				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = WT753TG39U;
-				ENABLE_HARDENED_RUNTIME = NO;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSMainStoryboardFile = "";
-				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.mlx-audio.VoicesApp";
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
-				SUPPORTS_MACCATALYST = NO;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Release;
-		};
-		QCFG002 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = Qwen3TTS/Qwen3TTS.entitlements;
+				CODE_SIGN_ENTITLEMENTS = VoicesApp/VoicesApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -418,40 +332,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.sdesai.mlx-audio.Qwen3TTS";
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
-				SUPPORTS_MACCATALYST = NO;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Debug;
-		};
-		QCFG003 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = Qwen3TTS/Qwen3TTS.entitlements;
-				CODE_SIGN_STYLE = Automatic;
-				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = TA92TEWDS4;
-				ENABLE_HARDENED_RUNTIME = NO;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSMainStoryboardFile = "";
-				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.sdesai.mlx-audio.Qwen3TTS";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.sdesai.mlx-audio.VoicesApp";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = NO;
@@ -478,15 +359,6 @@
 			buildConfigurations = (
 				CFG005 /* Debug */,
 				CFG006 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		QCFG001 /* Build configuration list for PBXNativeTarget "Qwen3TTS" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				QCFG002 /* Debug */,
-				QCFG003 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

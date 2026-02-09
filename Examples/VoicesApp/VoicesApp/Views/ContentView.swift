@@ -92,8 +92,12 @@ struct ContentView: View {
     @State private var selectedVoice: Voice?
     @State private var showVoices = false
     @State private var showSettings = false
+    @State private var showVoiceDesign = false
+    @State private var showVoiceCloning = false
     @State private var recentlyUsed: [Voice] = Voice.samples
     @State private var customVoices: [Voice] = Voice.customVoices
+    @State private var clonedVoices: [Voice] = []
+    @State private var selectedClonedVoice: Voice?
 
     #if os(iOS)
     private let buttonHeight: CGFloat = 44
@@ -166,37 +170,27 @@ struct ContentView: View {
 
             // Bottom bar
             HStack(spacing: 8) {
-                // Voice selector chip
-                Button(action: { showVoices = true }) {
-                    HStack(spacing: 6) {
-                        if let voice = selectedVoice {
-                            VoiceAvatar(color: voice.color, size: 20)
-                            Text("\(voice.name)")
-                                .lineLimit(1)
-                        } else {
-                            Image(systemName: "waveform")
-                            Text("Voice")
-                        }
-                    }
-                    .font(buttonFont)
-                    .foregroundStyle(.primary)
-                    .frame(height: buttonHeight)
-                    .padding(.horizontal, 12)
-                    .background(Color.gray.opacity(0.2))
-                    .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
+                // Voice controls - adapt based on model variant
+                voiceControlChip
 
                 // Settings button
                 Button(action: { showSettings = true }) {
+                    #if os(iOS)
                     Image(systemName: "slider.horizontal.3")
                         .font(buttonFont)
                         .foregroundStyle(.primary)
                         .frame(width: buttonHeight, height: buttonHeight)
                         .background(Color.gray.opacity(0.2))
                         .clipShape(Capsule())
+                    #else
+                    Label("Settings", systemImage: "slider.horizontal.3")
+                    #endif
                 }
+                #if os(iOS)
                 .buttonStyle(.plain)
+                #else
+                .buttonStyle(.bordered)
+                #endif
 
                 Spacer()
 
@@ -205,24 +199,45 @@ struct ContentView: View {
                     Button(action: {
                         viewModel.stop()
                     }) {
-                        Text("Stop")
-                            .font(buttonFont)
-                            .fontWeight(.medium)
-                            .foregroundStyle(.white)
-                            .frame(height: buttonHeight)
-                            .padding(.horizontal, 16)
-                            .background(Color.red)
-                            .clipShape(Capsule())
+                        #if os(iOS)
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .tint(.white)
+                                .scaleEffect(0.7)
+                            Text("Stop")
+                                .font(buttonFont)
+                                .fontWeight(.medium)
+                        }
+                        .foregroundStyle(.white)
+                        .frame(height: buttonHeight)
+                        .padding(.horizontal, 16)
+                        .background(Color.red)
+                        .clipShape(Capsule())
+                        #else
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.white)
+                            Text("Generating…")
+                        }
+                        #endif
                     }
+                    #if os(iOS)
                     .buttonStyle(.plain)
+                    #else
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
+                    #endif
                 } else {
                     Button(action: {
-                        viewModel.startSynthesis(text: textInput, voice: selectedVoice)
-                        if let voice = selectedVoice {
+                        let voice: Voice? = viewModel.voiceMode == .voiceList ? selectedVoice : nil
+                        viewModel.startSynthesis(text: textInput, voice: voice)
+                        if let voice = selectedVoice, viewModel.voiceMode == .voiceList {
                             recentlyUsed.removeAll { $0.id == voice.id }
                             recentlyUsed.insert(voice, at: 0)
                         }
                     }) {
+                        #if os(iOS)
                         Text("Generate")
                             .font(buttonFont)
                             .fontWeight(.medium)
@@ -231,8 +246,15 @@ struct ContentView: View {
                             .padding(.horizontal, 16)
                             .background(canGenerate ? Color.blue : Color.gray.opacity(0.2))
                             .clipShape(Capsule())
+                        #else
+                        Label("Generate", systemImage: "waveform")
+                        #endif
                     }
+                    #if os(iOS)
                     .buttonStyle(.plain)
+                    #else
+                    .buttonStyle(.borderedProminent)
+                    #endif
                     .disabled(!canGenerate)
                 }
             }
@@ -265,6 +287,30 @@ struct ContentView: View {
                 .presentationDragIndicator(.visible)
                 #endif
         }
+        .sheet(isPresented: $showVoiceDesign) {
+            VoiceDesignSheet(voiceInstruct: $viewModel.voiceInstruct)
+                #if os(iOS)
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
+                #else
+                .frame(minWidth: 400, minHeight: 300)
+                #endif
+        }
+        .sheet(isPresented: $showVoiceCloning) {
+            ClonedVoicesView(
+                clonedVoices: $clonedVoices,
+                selectedVoice: selectedClonedVoice
+            ) { voice in
+                selectedClonedVoice = voice
+                viewModel.referenceAudioURL = voice.audioFileURL
+                viewModel.referenceTranscription = voice.transcription ?? ""
+                showVoiceCloning = false
+            }
+            #if os(iOS)
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+            #endif
+        }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .background:
@@ -281,6 +327,141 @@ struct ContentView: View {
 
     private var canGenerate: Bool {
         !textInput.isEmpty && !viewModel.isGenerating && viewModel.isModelLoaded
+    }
+
+    // MARK: - Voice Control Chip
+
+    @ViewBuilder
+    private var voiceControlChip: some View {
+        switch viewModel.voiceMode {
+        case .voiceList:
+            // VyvoTTS: Voice browser button
+            Button(action: { showVoices = true }) {
+                HStack(spacing: 6) {
+                    if let voice = selectedVoice {
+                        VoiceAvatar(color: voice.color, size: 20)
+                        Text("\(voice.name)")
+                            .lineLimit(1)
+                    } else {
+                        Image(systemName: "waveform")
+                        Text("Voice")
+                    }
+                }
+                .font(buttonFont)
+                #if os(iOS)
+                .foregroundStyle(.primary)
+                .frame(height: buttonHeight)
+                .padding(.horizontal, 12)
+                .background(Color.gray.opacity(0.2))
+                .clipShape(Capsule())
+                #endif
+            }
+            #if os(iOS)
+            .buttonStyle(.plain)
+            #else
+            .buttonStyle(.bordered)
+            #endif
+
+        case .presetVoices:
+            // Qwen3 CustomVoice: Menu picker + optional style
+            Menu {
+                ForEach(TTSViewModel.qwen3Voices, id: \.id) { voice in
+                    Button(action: { viewModel.selectedQwen3Voice = voice.id }) {
+                        HStack {
+                            Text(voice.name)
+                            if viewModel.selectedQwen3Voice == voice.id {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "person.wave.2")
+                    Text(TTSViewModel.qwen3Voices.first { $0.id == viewModel.selectedQwen3Voice }?.name ?? "Voice")
+                        .lineLimit(1)
+                }
+                .font(buttonFont)
+                #if os(iOS)
+                .foregroundStyle(.primary)
+                .frame(height: buttonHeight)
+                .padding(.horizontal, 12)
+                .background(Color.gray.opacity(0.2))
+                .clipShape(Capsule())
+                #endif
+            }
+
+            // Optional style instruction
+            Button(action: { showVoiceDesign = true }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "theatermasks")
+                    #if os(macOS)
+                    Text(viewModel.voiceInstruct.isEmpty ? "Style" : "Styled")
+                    #endif
+                }
+                .font(buttonFont)
+                #if os(iOS)
+                .foregroundStyle(.primary)
+                .frame(width: buttonHeight, height: buttonHeight)
+                .background(Color.gray.opacity(0.2))
+                .clipShape(Capsule())
+                #endif
+            }
+            #if os(iOS)
+            .buttonStyle(.plain)
+            #else
+            .buttonStyle(.bordered)
+            #endif
+
+        case .voiceCloning:
+            // Qwen3 Base: Cloned voices browser
+            Button(action: { showVoiceCloning = true }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "mic.badge.plus")
+                    if let voice = selectedClonedVoice {
+                        Text(voice.name)
+                            .lineLimit(1)
+                    } else {
+                        Text("Clone")
+                    }
+                }
+                .font(buttonFont)
+                #if os(iOS)
+                .foregroundStyle(.primary)
+                .frame(height: buttonHeight)
+                .padding(.horizontal, 12)
+                .background(Color.gray.opacity(0.2))
+                .clipShape(Capsule())
+                #endif
+            }
+            #if os(iOS)
+            .buttonStyle(.plain)
+            #else
+            .buttonStyle(.bordered)
+            #endif
+
+        case .voiceDesign:
+            // Qwen3 VoiceDesign: Style description button
+            Button(action: { showVoiceDesign = true }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "theatermasks")
+                    Text(viewModel.voiceInstruct.isEmpty ? "Style" : "Styled")
+                }
+                .font(buttonFont)
+                #if os(iOS)
+                .foregroundStyle(.primary)
+                .frame(height: buttonHeight)
+                .padding(.horizontal, 12)
+                .background(Color.gray.opacity(0.2))
+                .clipShape(Capsule())
+                #endif
+            }
+            #if os(iOS)
+            .buttonStyle(.plain)
+            #else
+            .buttonStyle(.bordered)
+            #endif
+        }
     }
 }
 
@@ -543,6 +724,42 @@ struct BottomActionBar: View {
             return "Generating..."
         } else {
             return "Generate Speech"
+        }
+    }
+}
+
+// MARK: - Voice Design Sheet
+
+struct VoiceDesignSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var voiceInstruct: String
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $voiceInstruct)
+                        .frame(minHeight: 60, maxHeight: 120)
+                        .scrollContentBackground(.hidden)
+                } header: {
+                    Text("Voice Description")
+                } footer: {
+                    Text("Describe the desired voice characteristics, e.g. \"A calm, clear female voice with a professional tone.\"")
+                }
+            }
+            #if os(macOS)
+            .formStyle(.grouped)
+            .padding(.horizontal)
+            #endif
+            .navigationTitle("Voice Style")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
         }
     }
 }

@@ -18,10 +18,10 @@ import UIKit
 
 /// Available TTS models.
 enum Qwen3Model: String, CaseIterable, Identifiable {
-    case base4bit = "smdesai/Qwen3-TTS-12Hz-0.6B-Base-4bit"
-    case customVoice4bit = "smdesai/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit"
-    case customVoice8bit = "smdesai/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit"
-    case voiceDesign4bit = "smdesai/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit"
+    case base4bit = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"
+    case customVoice4bit = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit"
+    case customVoice8bit = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit"
+    case voiceDesign4bit = "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit"
 
     var id: String { rawValue }
 

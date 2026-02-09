@@ -155,6 +155,10 @@ struct AddVoiceView: View {
                     Text("Preview")
                 }
             }
+            #if os(macOS)
+            .formStyle(.grouped)
+            .padding(.horizontal)
+            #endif
             .navigationTitle("Add Voice")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -184,6 +188,9 @@ struct AddVoiceView: View {
                 audioPlayer?.stop()
             }
         }
+        #if os(macOS)
+        .frame(minWidth: 400, minHeight: 500)
+        #endif
     }
 
     private func saveVoice() {

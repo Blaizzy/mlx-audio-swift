@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
-   LastUpgradeVersion = "2620"
+   LastUpgradeVersion = "2630"
    version = "1.7">
    <BuildAction
       parallelizeBuildables = "YES"
@@ -15,9 +15,9 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "TGT002"
-               BuildableName = "Qwen3TTS.app"
-               BlueprintName = "Qwen3TTS"
+               BlueprintIdentifier = "TGT001"
+               BuildableName = "VoicesApp.app"
+               BlueprintName = "VoicesApp"
                ReferencedContainer = "container:VoicesApp.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -44,9 +44,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "TGT002"
-            BuildableName = "Qwen3TTS.app"
-            BlueprintName = "Qwen3TTS"
+            BlueprintIdentifier = "TGT001"
+            BuildableName = "VoicesApp.app"
+            BlueprintName = "VoicesApp"
             ReferencedContainer = "container:VoicesApp.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -61,9 +61,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "TGT002"
-            BuildableName = "Qwen3TTS.app"
-            BlueprintName = "Qwen3TTS"
+            BlueprintIdentifier = "TGT001"
+            BuildableName = "VoicesApp.app"
+            BlueprintName = "VoicesApp"
             ReferencedContainer = "container:VoicesApp.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
