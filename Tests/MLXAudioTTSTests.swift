@@ -23,6 +23,210 @@ import AVFoundation
 // 2>&1 | grep -E "(Suite.*started|Test test.*started|Loading|Loaded|Generating|Generated|Saved|passed after|failed after|TEST SUCCEEDED|TEST FAILED|Suite.*passed|Test run)"
 
 
+// MARK: - Qwen3-TTS Speech Tokenizer Unit Tests (no model download required)
+
+// Run Qwen3TTSSpeechTokenizerTests with:  xcodebuild test \
+// -scheme MLXAudio-Package \
+// -destination 'platform=macOS' \
+// -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerTests \
+// CODE_SIGNING_ALLOWED=NO
+
+struct Qwen3TTSSpeechTokenizerTests {
+
+    /// Test that hasEncoder defaults to false when no encoder is loaded
+    @Test func testHasEncoderDefaultsFalse() throws {
+        // Create a minimal tokenizer config from empty JSON (all defaults)
+        let json = "{}".data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSTokenizerConfig.self, from: json)
+        let tokenizer = Qwen3TTSSpeechTokenizer(config: config)
+
+        #expect(tokenizer.hasEncoder == false, "hasEncoder should default to false when no encoder is loaded")
+    }
+
+    /// Test that hasEncoder can be set to true (simulating encoder load)
+    @Test func testHasEncoderCanBeSetTrue() throws {
+        let json = "{}".data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSTokenizerConfig.self, from: json)
+        let tokenizer = Qwen3TTSSpeechTokenizer(config: config)
+
+        // Simulate what Task 7 will do when the encoder is loaded
+        tokenizer.hasEncoder = true
+        #expect(tokenizer.hasEncoder == true, "hasEncoder should be true after encoder is loaded")
+    }
+}
+
+
+// MARK: - Qwen3-TTS Language Resolution Unit Tests (no model download required)
+
+// Run Qwen3TTSLanguageTests with:  xcodebuild test \
+// -scheme MLXAudio-Package \
+// -destination 'platform=macOS' \
+// -only-testing:MLXAudioTests/Qwen3TTSLanguageTests \
+// CODE_SIGNING_ALLOWED=NO
+
+struct Qwen3TTSLanguageTests {
+
+    /// Test ISO 639-1 code "en" resolves to "english" without config
+    @Test func testResolveLanguageEnglishISO() {
+        let result = Qwen3TTSModel.resolveLanguage("en")
+        #expect(result == "english", "ISO code 'en' should resolve to 'english'")
+    }
+
+    /// Test ISO 639-1 code "zh" resolves to "chinese" without config
+    @Test func testResolveLanguageChineseISO() {
+        let result = Qwen3TTSModel.resolveLanguage("zh")
+        #expect(result == "chinese", "ISO code 'zh' should resolve to 'chinese'")
+    }
+
+    /// Test ISO 639-1 code "ja" resolves to "japanese" without config
+    @Test func testResolveLanguageJapaneseISO() {
+        let result = Qwen3TTSModel.resolveLanguage("ja")
+        #expect(result == "japanese", "ISO code 'ja' should resolve to 'japanese'")
+    }
+
+    /// Test ISO 639-1 code "ko" resolves to "korean" without config
+    @Test func testResolveLanguageKoreanISO() {
+        let result = Qwen3TTSModel.resolveLanguage("ko")
+        #expect(result == "korean", "ISO code 'ko' should resolve to 'korean'")
+    }
+
+    /// Test all supported ISO 639-1 codes resolve correctly
+    @Test func testResolveLanguageAllISO() {
+        let expected: [String: String] = [
+            "en": "english",
+            "zh": "chinese",
+            "ja": "japanese",
+            "ko": "korean",
+            "de": "german",
+            "fr": "french",
+            "ru": "russian",
+            "pt": "portuguese",
+            "es": "spanish",
+            "it": "italian",
+        ]
+        for (iso, name) in expected {
+            let result = Qwen3TTSModel.resolveLanguage(iso)
+            #expect(result == name, "ISO code '\(iso)' should resolve to '\(name)', got '\(result ?? "nil")'")
+        }
+    }
+
+    /// Test full language name "english" passes through without config
+    @Test func testResolveLanguageFullNamePassthrough() {
+        let result = Qwen3TTSModel.resolveLanguage("english")
+        #expect(result == "english", "Full language name 'english' should pass through")
+    }
+
+    /// Test full language name "chinese" passes through without config
+    @Test func testResolveLanguageChineseFullName() {
+        let result = Qwen3TTSModel.resolveLanguage("chinese")
+        #expect(result == "chinese", "Full language name 'chinese' should pass through")
+    }
+
+    /// Test "auto" passes through as a special value
+    @Test func testResolveLanguageAuto() {
+        let result = Qwen3TTSModel.resolveLanguage("auto")
+        #expect(result == "auto", "'auto' should pass through unchanged")
+    }
+
+    /// Test "Auto" (mixed case) passes through
+    @Test func testResolveLanguageAutoMixedCase() {
+        let result = Qwen3TTSModel.resolveLanguage("Auto")
+        #expect(result == "auto", "'Auto' (mixed case) should resolve to 'auto'")
+    }
+
+    /// Test unsupported code returns nil
+    @Test func testResolveLanguageUnsupportedCode() {
+        let result = Qwen3TTSModel.resolveLanguage("xx")
+        #expect(result == nil, "Unsupported code 'xx' should return nil")
+    }
+
+    /// Test empty string returns nil
+    @Test func testResolveLanguageEmptyString() {
+        let result = Qwen3TTSModel.resolveLanguage("")
+        #expect(result == nil, "Empty string should return nil")
+    }
+
+    /// Test case insensitivity for ISO codes
+    @Test func testResolveLanguageCaseInsensitive() {
+        let result = Qwen3TTSModel.resolveLanguage("EN")
+        #expect(result == "english", "Uppercase 'EN' should resolve to 'english'")
+    }
+
+    /// Test case insensitivity for full names
+    @Test func testResolveLanguageFullNameCaseInsensitive() {
+        let result = Qwen3TTSModel.resolveLanguage("English")
+        #expect(result == "english", "'English' (capitalized) should resolve to 'english'")
+    }
+
+    /// Test ISO code with config validation — language exists in config
+    @Test func testResolveLanguageWithConfigValid() throws {
+        // Build a minimal talker config with codecLanguageId containing "english"
+        let json = """
+        {
+            "codec_language_id": {"english": 2158, "chinese": 2159}
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSTalkerConfig.self, from: json)
+
+        let result = Qwen3TTSModel.resolveLanguage("en", config: config)
+        #expect(result == "english", "ISO code 'en' should resolve to 'english' when validated against config")
+    }
+
+    /// Test ISO code with config validation — language NOT in config
+    @Test func testResolveLanguageWithConfigInvalid() throws {
+        // Build a config that only supports "chinese" — not "english"
+        let json = """
+        {
+            "codec_language_id": {"chinese": 2159}
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSTalkerConfig.self, from: json)
+
+        let result = Qwen3TTSModel.resolveLanguage("en", config: config)
+        #expect(result == nil, "ISO code 'en' should return nil when 'english' is not in config's codecLanguageId")
+    }
+
+    /// Test full name with config validation — passes through when in config
+    @Test func testResolveLanguageFullNameWithConfigValid() throws {
+        let json = """
+        {
+            "codec_language_id": {"english": 2158, "chinese": 2159}
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSTalkerConfig.self, from: json)
+
+        let result = Qwen3TTSModel.resolveLanguage("english", config: config)
+        #expect(result == "english", "Full name 'english' should pass through when in config")
+    }
+
+    /// Test "auto" with config — always passes through regardless of config
+    @Test func testResolveLanguageAutoWithConfig() throws {
+        let json = """
+        {
+            "codec_language_id": {"english": 2158}
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSTalkerConfig.self, from: json)
+
+        let result = Qwen3TTSModel.resolveLanguage("auto", config: config)
+        #expect(result == "auto", "'auto' should always pass through, even with config")
+    }
+
+    /// Test config with dialect language — pass through a dialect string in codecLanguageId
+    @Test func testResolveLanguageDialectInConfig() throws {
+        let json = """
+        {
+            "codec_language_id": {"english": 2158, "sichuan_dialect": 2170}
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSTalkerConfig.self, from: json)
+
+        let result = Qwen3TTSModel.resolveLanguage("sichuan_dialect", config: config)
+        #expect(result == "sichuan_dialect", "Dialect strings should pass through when in config")
+    }
+}
+
+
 struct Qwen3TTSTests {
 
     /// Test basic text-to-speech generation with Qwen3 model

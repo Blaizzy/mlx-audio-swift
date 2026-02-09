@@ -709,6 +709,12 @@ final class Qwen3TTSSpeechTokenizer: Module {
     let decodeUpsampleRate: Int
     @ModuleInfo var decoder: Qwen3TTSSpeechTokenizerDecoder
 
+    /// Whether the speech tokenizer encoder is available.
+    /// When true, the tokenizer can encode audio waveforms into codec tokens
+    /// (required for ICL voice cloning). This is set to true by Task 7 when
+    /// the encoder model is loaded.
+    var hasEncoder: Bool = false
+
     init(config: Qwen3TTSTokenizerConfig) {
         self.config = config
         self.decodeUpsampleRate = config.decodeUpsampleRate
