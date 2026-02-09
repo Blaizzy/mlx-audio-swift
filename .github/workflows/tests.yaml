@@ -141,8 +141,7 @@ jobs:
         if: steps.model-cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
         run: |
           python3 -m venv /tmp/hf-venv
-          source /tmp/hf-venv/bin/activate
-          pip install --quiet huggingface_hub
+          /tmp/hf-venv/bin/pip install --quiet huggingface_hub
           mkdir -p ~/Library/Caches/mlx-audio
 
           echo "$CI_MODELS" | while IFS='|' read -r repo local_dir; do
@@ -150,7 +149,7 @@ jobs:
             repo=$(echo "$repo" | xargs)
             local_dir=$(echo "$local_dir" | xargs)
             echo "Downloading $repo → ~/Library/Caches/mlx-audio/$local_dir"
-            huggingface-cli download "$repo" \
+            /tmp/hf-venv/bin/huggingface-cli download "$repo" \
               --local-dir ~/Library/Caches/mlx-audio/"$local_dir" \
               --include "*.safetensors" "*.json" "*.txt" "*.model" \
               --quiet || echo "::warning::Failed to download $repo"
