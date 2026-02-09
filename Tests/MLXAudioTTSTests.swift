@@ -60,6 +60,32 @@ struct Qwen3TTSSpeechTokenizerTests {
 }
 
 
+// MARK: - Qwen3-TTS Speech Tokenizer Encode Tests (no model download required)
+
+// Run Qwen3TTSSpeechTokenizerEncodeTests with:  xcodebuild test \
+// -scheme MLXAudio-Package \
+// -destination 'platform=macOS' \
+// -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerEncodeTests \
+// CODE_SIGNING_ALLOWED=NO
+
+struct Qwen3TTSSpeechTokenizerEncodeTests {
+
+    /// encode() should throw when encoder is not loaded
+    @Test func encodeThrowsWhenNoEncoder() throws {
+        let json = "{}".data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSTokenizerConfig.self, from: json)
+        let tokenizer = Qwen3TTSSpeechTokenizer(config: config)
+
+        #expect(tokenizer.hasEncoder == false)
+
+        let dummyAudio = MLXArray.zeros([1, 1, 24000])
+        #expect(throws: AudioGenerationError.self) {
+            try tokenizer.encode(dummyAudio)
+        }
+    }
+}
+
+
 // MARK: - Qwen3-TTS Language Resolution Unit Tests (no model download required)
 
 // Run Qwen3TTSLanguageTests with:  xcodebuild test \
@@ -1741,5 +1767,255 @@ struct Qwen3TTSSpeakerEncoderTests {
 
         #expect(transposed.shape == [2048, 1, 3072],
                 "Conv weight should be transposed to [O, K, I], got \(transposed.shape)")
+    }
+}
+
+
+// MARK: - Qwen3-TTS Speaker Encoder Weight Loading Tests (no model download required)
+
+// Run Qwen3TTSSpeakerEncoderWeightTests with:  xcodebuild test \
+// -scheme MLXAudio-Package \
+// -destination 'platform=macOS' \
+// -only-testing:MLXAudioTests/Qwen3TTSSpeakerEncoderWeightTests \
+// CODE_SIGNING_ALLOWED=NO
+
+struct Qwen3TTSSpeakerEncoderWeightTests {
+
+    // MARK: - Initialization from config
+
+    /// Verify speaker encoder initializes correctly from a config with custom encDim
+    @Test func testInitFromConfig() throws {
+        let json = """
+        {
+            "enc_dim": 2048,
+            "sample_rate": 24000
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSSpeakerEncoderConfig.self, from: json)
+        let encoder = Qwen3TTSSpeakerEncoder(config: config)
+
+        #expect(encoder.config.encDim == 2048,
+                "Encoder encDim should be 2048")
+        #expect(encoder.config.sampleRate == 24000,
+                "Encoder sampleRate should be 24000")
+        #expect(encoder.config.melDim == 128,
+                "Encoder melDim should default to 128")
+    }
+
+    /// Verify speaker encoder initializes from minimal (all-defaults) config
+    @Test func testInitFromMinimalConfig() throws {
+        let json = "{}".data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSSpeakerEncoderConfig.self, from: json)
+        let encoder = Qwen3TTSSpeakerEncoder(config: config)
+
+        #expect(encoder.config.encDim == 1024,
+                "Default encDim should be 1024")
+        #expect(encoder.config.encChannels == [512, 512, 512, 512, 1536],
+                "Default encChannels should match Python defaults")
+    }
+
+    // MARK: - Sanitize prefix stripping
+
+    /// Verify sanitize strips "speaker_encoder." prefix from all matching keys
+    @Test func testSanitizeStripsPrefixCorrectly() {
+        let weights: [String: MLXArray] = [
+            "speaker_encoder.blocks.0.conv.weight": MLXArray.zeros([64, 128, 5]),
+            "speaker_encoder.blocks.0.conv.bias": MLXArray.zeros([64]),
+            "speaker_encoder.mfa.conv.weight": MLXArray.zeros([1536, 1536, 1]),
+            "speaker_encoder.asp.tdnn.conv.weight": MLXArray.zeros([128, 4608, 1]),
+            "speaker_encoder.fc.weight": MLXArray.zeros([2048, 3072, 1]),
+            "speaker_encoder.fc.bias": MLXArray.zeros([2048]),
+        ]
+
+        let sanitized = Qwen3TTSSpeakerEncoder.sanitize(weights: weights)
+
+        #expect(sanitized.count == 6,
+                "All 6 speaker_encoder keys should be included, got \(sanitized.count)")
+        #expect(sanitized["blocks.0.conv.weight"] != nil,
+                "Should strip prefix to 'blocks.0.conv.weight'")
+        #expect(sanitized["blocks.0.conv.bias"] != nil,
+                "Should strip prefix to 'blocks.0.conv.bias'")
+        #expect(sanitized["mfa.conv.weight"] != nil,
+                "Should strip prefix to 'mfa.conv.weight'")
+        #expect(sanitized["asp.tdnn.conv.weight"] != nil,
+                "Should strip prefix to 'asp.tdnn.conv.weight'")
+        #expect(sanitized["fc.weight"] != nil,
+                "Should strip prefix to 'fc.weight'")
+        #expect(sanitized["fc.bias"] != nil,
+                "Should strip prefix to 'fc.bias'")
+    }
+
+    /// Verify sanitize excludes keys that do not start with "speaker_encoder."
+    @Test func testSanitizeExcludesNonSpeakerEncoderKeys() {
+        let weights: [String: MLXArray] = [
+            "speaker_encoder.fc.weight": MLXArray.zeros([2048, 3072, 1]),
+            "talker.model.embed_tokens.weight": MLXArray.zeros([3072, 2048]),
+            "speech_tokenizer.decoder.weight": MLXArray.zeros([1024, 512]),
+            "model.layers.0.weight": MLXArray.zeros([2048, 2048]),
+        ]
+
+        let sanitized = Qwen3TTSSpeakerEncoder.sanitize(weights: weights)
+
+        #expect(sanitized.count == 1,
+                "Only 1 speaker_encoder key should pass through, got \(sanitized.count)")
+        #expect(sanitized["fc.weight"] != nil,
+                "fc.weight should be present")
+    }
+
+    /// Verify sanitize returns empty dict when no speaker_encoder keys exist
+    @Test func testSanitizeReturnsEmptyForNoMatchingKeys() {
+        let weights: [String: MLXArray] = [
+            "talker.model.embed_tokens.weight": MLXArray.zeros([3072, 2048]),
+            "model.layers.0.weight": MLXArray.zeros([2048, 2048]),
+        ]
+
+        let sanitized = Qwen3TTSSpeakerEncoder.sanitize(weights: weights)
+
+        #expect(sanitized.isEmpty,
+                "Sanitize should return empty dict when no speaker_encoder keys exist")
+    }
+
+    // MARK: - Sanitize Conv1d weight transposition
+
+    /// Verify sanitize transposes 3D weights (Conv1d) from [O, I, K] to [O, K, I]
+    @Test func testSanitizeTransposesConv1dWeights() {
+        // PyTorch Conv1d: [out_channels=64, in_channels=128, kernel_size=5]
+        // MLX Conv1d:     [out_channels=64, kernel_size=5, in_channels=128]
+        let pytorchWeight = MLXArray.zeros([64, 128, 5])
+        let weights: [String: MLXArray] = [
+            "speaker_encoder.blocks.0.conv.weight": pytorchWeight,
+        ]
+
+        let sanitized = Qwen3TTSSpeakerEncoder.sanitize(weights: weights)
+        let transposed = sanitized["blocks.0.conv.weight"]!
+        eval(transposed)
+
+        #expect(transposed.shape == [64, 5, 128],
+                "Expected transposed shape [64, 5, 128] (O,K,I), got \(transposed.shape)")
+    }
+
+    /// Verify sanitize transposes kernel_size=1 Conv1d weights correctly
+    @Test func testSanitizeTransposesKernel1ConvWeights() {
+        // kernel_size=1: [2048, 3072, 1] -> [2048, 1, 3072]
+        let pytorchWeight = MLXArray.zeros([2048, 3072, 1])
+        let weights: [String: MLXArray] = [
+            "speaker_encoder.fc.weight": pytorchWeight,
+        ]
+
+        let sanitized = Qwen3TTSSpeakerEncoder.sanitize(weights: weights)
+        let transposed = sanitized["fc.weight"]!
+        eval(transposed)
+
+        #expect(transposed.shape == [2048, 1, 3072],
+                "Expected transposed shape [2048, 1, 3072], got \(transposed.shape)")
+    }
+
+    /// Verify sanitize does NOT transpose 1D weights (biases)
+    @Test func testSanitizeDoesNotTransposeBias() {
+        let bias = MLXArray.zeros([64])
+        let weights: [String: MLXArray] = [
+            "speaker_encoder.blocks.0.conv.bias": bias,
+        ]
+
+        let sanitized = Qwen3TTSSpeakerEncoder.sanitize(weights: weights)
+        let result = sanitized["blocks.0.conv.bias"]!
+        eval(result)
+
+        #expect(result.shape == [64],
+                "Bias should not be transposed, got shape \(result.shape)")
+        #expect(result.ndim == 1,
+                "Bias should remain 1D")
+    }
+
+    /// Verify sanitize does NOT transpose 2D weights (e.g., linear layers)
+    @Test func testSanitizeDoesNotTranspose2DWeights() {
+        // A hypothetical 2D weight that shouldn't be transposed
+        let weight2d = MLXArray.zeros([128, 64])
+        let weights: [String: MLXArray] = [
+            "speaker_encoder.some_layer.weight": weight2d,
+        ]
+
+        let sanitized = Qwen3TTSSpeakerEncoder.sanitize(weights: weights)
+        let result = sanitized["some_layer.weight"]!
+        eval(result)
+
+        #expect(result.shape == [128, 64],
+                "2D weights should not be transposed, got shape \(result.shape)")
+    }
+
+    // MARK: - Model property integration
+
+    /// Verify Qwen3TTSModel has speakerEncoder property, initially nil
+    @Test func testModelSpeakerEncoderPropertyDefaultsToNil() throws {
+        let json = """
+        {
+            "model_type": "qwen3_tts",
+            "tts_model_type": "voice_design"
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSModelConfig.self, from: json)
+        let model = Qwen3TTSModel(config: config)
+
+        #expect(model.speakerEncoder == nil,
+                "speakerEncoder should default to nil")
+    }
+
+    /// Verify speakerEncoder can be assigned on a Qwen3TTSModel
+    @Test func testModelSpeakerEncoderCanBeSet() throws {
+        let modelJson = """
+        {
+            "model_type": "qwen3_tts",
+            "tts_model_type": "base",
+            "speaker_encoder_config": {
+                "enc_dim": 2048,
+                "sample_rate": 24000
+            }
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSModelConfig.self, from: modelJson)
+        let model = Qwen3TTSModel(config: config)
+
+        let encoderConfig = config.speakerEncoderConfig!
+        let encoder = Qwen3TTSSpeakerEncoder(config: encoderConfig)
+        model.speakerEncoder = encoder
+
+        #expect(model.speakerEncoder != nil,
+                "speakerEncoder should be non-nil after assignment")
+        #expect(model.speakerEncoder?.config.encDim == 2048,
+                "Assigned encoder should have encDim 2048")
+    }
+
+    /// Verify that VoiceDesign config does not trigger speaker encoder loading
+    /// (speakerEncoderConfig is nil for VoiceDesign)
+    @Test func testVoiceDesignConfigHasNoSpeakerEncoder() throws {
+        let json = """
+        {
+            "model_type": "qwen3_tts",
+            "tts_model_type": "voice_design"
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSModelConfig.self, from: json)
+
+        #expect(config.speakerEncoderConfig == nil,
+                "VoiceDesign config should not have speakerEncoderConfig")
+    }
+
+    /// Verify that Base config has speakerEncoderConfig
+    @Test func testBaseConfigHasSpeakerEncoderConfig() throws {
+        let json = """
+        {
+            "model_type": "qwen3_tts",
+            "tts_model_type": "base",
+            "speaker_encoder_config": {
+                "enc_dim": 2048
+            }
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSModelConfig.self, from: json)
+
+        #expect(config.speakerEncoderConfig != nil,
+                "Base config should have speakerEncoderConfig")
+        #expect(config.speakerEncoderConfig?.encDim == 2048,
+                "Base config speakerEncoderConfig encDim should be 2048")
     }
 }
