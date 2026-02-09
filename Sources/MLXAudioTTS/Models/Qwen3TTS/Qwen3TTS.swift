@@ -538,7 +538,174 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         )
     }
 
-    // MARK: - Prepare generation inputs
+    // MARK: - Prepare Base/CustomVoice inputs
+
+    /// Prepares input embeddings for Base and CustomVoice generation paths.
+    ///
+    /// This is the Swift port of `_prepare_generation_inputs()` from the Python
+    /// reference (`qwen3_tts.py:249-404`). It handles:
+    /// - Speaker ID lookup from `config.talkerConfig.spkId`
+    /// - Dialect override from `config.talkerConfig.spkIsDialect`
+    /// - Optional instruct embedding
+    /// - Codec prefix construction: `[think/nothink, thinkBos, langId?, thinkEos, speaker?, pad, bos]`
+    /// - Text embedding and trailing text hidden states
+    ///
+    /// Key differences from VoiceDesign's `prepareGenerationInputs()`:
+    /// - VoiceDesign does NOT handle speaker IDs or dialect override
+    /// - The codec prefix for Base/CustomVoice includes speaker token(s) after thinkEos
+    ///
+    /// - Parameters:
+    ///   - text: The text to synthesise.
+    ///   - language: Resolved language name (e.g. "english", "chinese", "auto").
+    ///   - speaker: Optional speaker name to look up in `spkId`.
+    ///   - speakerEmbedding: Optional pre-computed speaker embedding from speaker encoder
+    ///     (x-vector). Takes priority over speaker name lookup.
+    ///   - instruct: Optional delivery instruction (e.g. "speak in a whisper").
+    /// - Returns: Tuple of (inputEmbeds, trailingTextHidden, ttsPadEmbed).
+    /// - Throws: `AudioGenerationError.invalidInput` if the specified speaker is not found
+    ///   in the model's `spkId` configuration.
+    func prepareBaseInputs(
+        text: String,
+        language: String,
+        speaker: String? = nil,
+        speakerEmbedding: MLXArray? = nil,
+        instruct: String? = nil
+    ) throws -> (MLXArray, MLXArray, MLXArray) {
+        guard let tokenizer, let talkerConfig = config.talkerConfig else {
+            throw AudioGenerationError.modelNotInitialized("Tokenizer/config not loaded")
+        }
+
+        // --- Speaker embedding ---
+        // Priority: pre-computed speaker embedding > speaker name lookup > none
+        var speakerEmbed: MLXArray? = nil
+        var effectiveLanguage = language
+
+        if let speakerEmbedding {
+            // Pre-computed embedding from speaker encoder (used by ICL and Base with ref audio)
+            speakerEmbed = speakerEmbedding
+        } else if let speaker, let spkIdMap = talkerConfig.spkId,
+                  let tokenIds = spkIdMap[speaker.lowercased()] {
+            // Look up speaker token IDs from config.
+            // Each speaker maps to an array of codec token IDs (typically one).
+            // Embed each token via the codec embedding layer and sum.
+            let spkIds = MLXArray(tokenIds.map { Int32($0) }).reshaped(1, -1)
+            let embeds = talker.getInputEmbeddings()(spkIds)  // [1, N, hidden]
+            speakerEmbed = embeds.sum(axis: 1, keepDims: true)  // [1, 1, hidden]
+        } else if let speaker, speaker.lowercased() != "",
+                  let spkIdMap = talkerConfig.spkId, !spkIdMap.isEmpty {
+            // Speaker was specified but not found in spkId
+            let available = spkIdMap.keys.sorted().joined(separator: ", ")
+            throw AudioGenerationError.invalidInput(
+                "Speaker '\(speaker)' not found in model configuration. Available speakers: \(available)"
+            )
+        }
+
+        // --- Dialect override ---
+        // If the speaker has a dialect entry and the language is compatible
+        // (Chinese or auto), override the language with the dialect.
+        if let speaker,
+           let dialectMap = talkerConfig.spkIsDialect,
+           let dialect = dialectMap[speaker.lowercased()],
+           (effectiveLanguage.lowercased() == "chinese" || effectiveLanguage.lowercased() == "auto"),
+           let langMap = talkerConfig.codecLanguageId,
+           langMap[dialect] != nil {
+            effectiveLanguage = dialect
+        }
+
+        // --- Tokenize text with ChatML template ---
+        let chatText = "<|im_start|>assistant\n\(text)<|im_end|>\n<|im_start|>assistant\n"
+        let inputIds = MLXArray(tokenizer.encode(text: chatText).map { Int32($0) }).reshaped(1, -1)
+        let textEmbed = talker.textProjection(talker.getTextEmbeddings()(inputIds))
+
+        // --- TTS special token embeddings ---
+        let ttsTokens = MLXArray(
+            [Int32(config.ttsBosTokenId), Int32(config.ttsEosTokenId), Int32(config.ttsPadTokenId)]
+        ).reshaped(1, 3)
+        let ttsEmbeds = talker.textProjection(talker.getTextEmbeddings()(ttsTokens))
+        let ttsBosEmbed = ttsEmbeds[0..., 0 ..< 1, 0...]
+        let ttsEosEmbed = ttsEmbeds[0..., 1 ..< 2, 0...]
+        let ttsPadEmbed = ttsEmbeds[0..., 2 ..< 3, 0...]
+
+        // --- Language ID ---
+        var languageId: Int? = nil
+        if effectiveLanguage.lowercased() != "auto", let langMap = talkerConfig.codecLanguageId {
+            languageId = langMap[effectiveLanguage.lowercased()]
+        }
+
+        // --- Build codec prefix ---
+        // Sequence: [think/nothink, thinkBos, langId?, thinkEos]
+        var codecPrefill: [Int32]
+        if let langId = languageId {
+            codecPrefill = [
+                Int32(talkerConfig.codecThinkId),
+                Int32(talkerConfig.codecThinkBosId),
+                Int32(langId),
+                Int32(talkerConfig.codecThinkEosId),
+            ]
+        } else {
+            codecPrefill = [
+                Int32(talkerConfig.codecNothinkId),
+                Int32(talkerConfig.codecThinkBosId),
+                Int32(talkerConfig.codecThinkEosId),
+            ]
+        }
+
+        var codecEmbed = talker.getInputEmbeddings()(MLXArray(codecPrefill).reshaped(1, -1))
+
+        // Suffix: [pad, bos]
+        let codecEmbedSuffix = talker.getInputEmbeddings()(
+            MLXArray([Int32(talkerConfig.codecPadId), Int32(talkerConfig.codecBosId)]).reshaped(1, 2)
+        )
+
+        // Insert speaker embed between prefix and suffix if present
+        if let speakerEmbed {
+            codecEmbed = concatenated(
+                [codecEmbed, speakerEmbed.reshaped(1, 1, -1), codecEmbedSuffix],
+                axis: 1
+            )
+        } else {
+            codecEmbed = concatenated([codecEmbed, codecEmbedSuffix], axis: 1)
+        }
+
+        // --- Instruct embedding ---
+        var instructEmbed: MLXArray? = nil
+        if let instruct, !instruct.isEmpty {
+            let instructText = "<|im_start|>user\n\(instruct)<|im_end|>\n"
+            let instructIds = MLXArray(tokenizer.encode(text: instructText).map { Int32($0) }).reshaped(1, -1)
+            instructEmbed = talker.textProjection(talker.getTextEmbeddings()(instructIds))
+        }
+
+        // --- Role embedding (first 3 tokens: <|im_start|>assistant\n) ---
+        let roleEmbed = textEmbed[0..., ..<3, 0...]
+
+        // --- Build combined embed from pad + bos + codec prefix ---
+        let padCount = codecEmbed.dim(1) - 2
+        let padEmbeds = broadcast(ttsPadEmbed, to: [1, padCount, ttsPadEmbed.dim(-1)])
+        var combinedEmbed = concatenated([padEmbeds, ttsBosEmbed], axis: 1)
+        combinedEmbed = combinedEmbed + codecEmbed[0..., ..<(-1), 0...]
+
+        // --- Assemble full input embedding ---
+        var inputEmbeds: MLXArray
+        if let instructEmbed {
+            inputEmbeds = concatenated([instructEmbed, roleEmbed, combinedEmbed], axis: 1)
+        } else {
+            inputEmbeds = concatenated([roleEmbed, combinedEmbed], axis: 1)
+        }
+
+        // Add first text token (index 3) + last codec embed
+        let firstTextEmbed = textEmbed[0..., 3 ..< 4, 0...] + codecEmbed[0..., (-1)..., 0...]
+        inputEmbeds = concatenated([inputEmbeds, firstTextEmbed], axis: 1)
+
+        // --- Trailing text hidden states ---
+        let trailingTextHidden = concatenated(
+            [textEmbed[0..., 4 ..< (textEmbed.dim(1) - 5), 0...], ttsEosEmbed],
+            axis: 1
+        )
+
+        return (inputEmbeds, trailingTextHidden, ttsPadEmbed)
+    }
+
+    // MARK: - Prepare VoiceDesign inputs
 
     func prepareGenerationInputs(
         text: String,
