@@ -2181,3 +2181,553 @@ struct Qwen3TTSSpeakerEmbeddingTests {
                 "Same input should produce identical embeddings, diff = \(diffVal)")
     }
 }
+
+
+// MARK: - Qwen3-TTS Base Model Integration Tests (requires model download)
+
+// Run Qwen3TTSBaseModelTests with:  xcodebuild test \
+// -scheme MLXAudio-Package \
+// -destination 'platform=macOS' \
+// -only-testing:MLXAudioTests/Qwen3TTSBaseModelTests \
+// 2>&1 | grep -E "(Suite.*started|Test test.*started|Loading|Loaded|Generating|Generated|Saved|passed after|failed after|TEST SUCCEEDED|TEST FAILED|Suite.*passed|Test run)"
+
+struct Qwen3TTSBaseModelTests {
+
+    /// The HuggingFace repo ID for the Base model
+    static let baseModelRepo = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16"
+
+    /// Test loading and generating audio with the Base model (no speaker)
+    @Test func testBaseGenerateAudio() async throws {
+        // 1. Load Qwen3-TTS Base model
+        print("\u{001B}[33mLoading Qwen3-TTS Base model...\u{001B}[0m")
+        let model = try await Qwen3TTSModel.fromPretrained(Self.baseModelRepo)
+        print("\u{001B}[32mQwen3-TTS Base model loaded!\u{001B}[0m")
+
+        #expect(model.sampleRate == 24000, "Base model should output 24kHz audio")
+
+        // 2. Generate audio without specifying a speaker
+        let text = "Hello, this is a test of the base model."
+        print("\u{001B}[33mGenerating audio for: \"\(text)\"...\u{001B}[0m")
+
+        let parameters = GenerateParameters(
+            maxTokens: 2048,
+            temperature: 0.6,
+            topP: 0.8,
+            repetitionPenalty: 1.05,
+            repetitionContextSize: 20
+        )
+
+        let audio = try await model.generate(
+            text: text,
+            voice: nil,
+            refAudio: nil,
+            refText: nil,
+            language: "en",
+            generationParameters: parameters
+        )
+
+        print("\u{001B}[32mGenerated audio shape: \(audio.shape)\u{001B}[0m")
+
+        // 3. Verify audio is non-empty
+        #expect(audio.shape[0] > 0, "Audio should have samples")
+
+        // 4. Save to WAV and verify file
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen3_tts_base_test_output.wav")
+        try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+        print("\u{001B}[32mSaved Base audio to\u{001B}[0m: \(outputURL.path)")
+
+        // 5. Verify WAV file exists and has content
+        let fileData = try Data(contentsOf: outputURL)
+        #expect(fileData.count > 44, "WAV file should be larger than just the header (44 bytes)")
+
+        // 6. Verify sample rate by reading back with AVFoundation
+        let audioFile = try AVAudioFile(forReading: outputURL)
+        let actualSampleRate = audioFile.processingFormat.sampleRate
+        #expect(actualSampleRate == 24000.0, "Output WAV should be 24kHz, got \(actualSampleRate)")
+
+        // 7. Verify non-zero duration
+        let duration = Double(audioFile.length) / actualSampleRate
+        #expect(duration > 0.1, "Audio duration should be > 0.1s, got \(duration)s")
+        print("\u{001B}[32mAudio duration: \(String(format: "%.2f", duration))s at \(Int(actualSampleRate))Hz\u{001B}[0m")
+    }
+
+    /// Test generating audio with different language settings
+    @Test func testBaseGenerateWithDifferentLanguages() async throws {
+        // 1. Load model
+        print("\u{001B}[33mLoading Qwen3-TTS Base model...\u{001B}[0m")
+        let model = try await Qwen3TTSModel.fromPretrained(Self.baseModelRepo)
+        print("\u{001B}[32mQwen3-TTS Base model loaded!\u{001B}[0m")
+
+        let parameters = GenerateParameters(
+            maxTokens: 2048,
+            temperature: 0.6,
+            topP: 0.8,
+            repetitionPenalty: 1.05,
+            repetitionContextSize: 20
+        )
+
+        // 2. Generate with English
+        let englishText = "Good morning, how are you today?"
+        print("\u{001B}[33mGenerating English audio...\u{001B}[0m")
+        let englishAudio = try await model.generate(
+            text: englishText,
+            voice: nil,
+            refAudio: nil,
+            refText: nil,
+            language: "en",
+            generationParameters: parameters
+        )
+        #expect(englishAudio.shape[0] > 0, "English audio should have samples")
+        print("\u{001B}[32mEnglish audio shape: \(englishAudio.shape)\u{001B}[0m")
+
+        // 3. Generate with auto language detection
+        let autoText = "This is a test with automatic language detection."
+        print("\u{001B}[33mGenerating auto-detect audio...\u{001B}[0m")
+        let autoAudio = try await model.generate(
+            text: autoText,
+            voice: nil,
+            refAudio: nil,
+            refText: nil,
+            language: "auto",
+            generationParameters: parameters
+        )
+        #expect(autoAudio.shape[0] > 0, "Auto-detected audio should have samples")
+        print("\u{001B}[32mAuto-detect audio shape: \(autoAudio.shape)\u{001B}[0m")
+    }
+}
+
+
+// MARK: - Qwen3-TTS CustomVoice Model Integration Tests (requires model download)
+
+// Run Qwen3TTSCustomVoiceTests with:  xcodebuild test \
+// -scheme MLXAudio-Package \
+// -destination 'platform=macOS' \
+// -only-testing:MLXAudioTests/Qwen3TTSCustomVoiceTests \
+// 2>&1 | grep -E "(Suite.*started|Test test.*started|Loading|Loaded|Generating|Generated|Saved|passed after|failed after|TEST SUCCEEDED|TEST FAILED|Suite.*passed|Test run)"
+
+struct Qwen3TTSCustomVoiceTests {
+
+    /// The HuggingFace repo ID for the CustomVoice model
+    static let customVoiceModelRepo = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16"
+
+    /// Test loading and generating audio with a named speaker
+    @Test func testCustomVoiceGenerateWithSpeaker() async throws {
+        // 1. Load Qwen3-TTS CustomVoice model
+        print("\u{001B}[33mLoading Qwen3-TTS CustomVoice model...\u{001B}[0m")
+        let model = try await Qwen3TTSModel.fromPretrained(Self.customVoiceModelRepo)
+        print("\u{001B}[32mQwen3-TTS CustomVoice model loaded!\u{001B}[0m")
+
+        #expect(model.sampleRate == 24000, "CustomVoice model should output 24kHz audio")
+
+        // 2. Generate audio with a named speaker (e.g., "serena")
+        let text = "Hello, this is a test of the custom voice model."
+        let speaker = "serena"
+        print("\u{001B}[33mGenerating audio for: \"\(text)\" with speaker: \"\(speaker)\"...\u{001B}[0m")
+
+        let parameters = GenerateParameters(
+            maxTokens: 2048,
+            temperature: 0.6,
+            topP: 0.8,
+            repetitionPenalty: 1.05,
+            repetitionContextSize: 20
+        )
+
+        let audio = try await model.generate(
+            text: text,
+            voice: speaker,
+            refAudio: nil,
+            refText: nil,
+            language: "en",
+            generationParameters: parameters
+        )
+
+        print("\u{001B}[32mGenerated audio shape: \(audio.shape)\u{001B}[0m")
+
+        // 3. Verify audio is non-empty
+        #expect(audio.shape[0] > 0, "Audio should have samples")
+
+        // 4. Save to WAV and verify file
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen3_tts_customvoice_test_output.wav")
+        try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+        print("\u{001B}[32mSaved CustomVoice audio to\u{001B}[0m: \(outputURL.path)")
+
+        // 5. Verify WAV file exists and has content
+        let fileData = try Data(contentsOf: outputURL)
+        #expect(fileData.count > 44, "WAV file should be larger than just the header (44 bytes)")
+
+        // 6. Verify sample rate
+        let audioFile = try AVAudioFile(forReading: outputURL)
+        let actualSampleRate = audioFile.processingFormat.sampleRate
+        #expect(actualSampleRate == 24000.0, "Output WAV should be 24kHz, got \(actualSampleRate)")
+
+        // 7. Verify non-zero duration
+        let duration = Double(audioFile.length) / actualSampleRate
+        #expect(duration > 0.1, "Audio duration should be > 0.1s, got \(duration)s")
+        print("\u{001B}[32mAudio duration: \(String(format: "%.2f", duration))s at \(Int(actualSampleRate))Hz\u{001B}[0m")
+    }
+
+    /// Test that an invalid speaker name throws an error
+    @Test func testInvalidSpeakerThrowsError() async throws {
+        // 1. Load model
+        print("\u{001B}[33mLoading Qwen3-TTS CustomVoice model...\u{001B}[0m")
+        let model = try await Qwen3TTSModel.fromPretrained(Self.customVoiceModelRepo)
+        print("\u{001B}[32mQwen3-TTS CustomVoice model loaded!\u{001B}[0m")
+
+        let parameters = GenerateParameters(
+            maxTokens: 2048,
+            temperature: 0.6,
+            topP: 0.8,
+            repetitionPenalty: 1.05,
+            repetitionContextSize: 20
+        )
+
+        // 2. Attempt to generate with a nonexistent speaker
+        let text = "This should fail."
+        let invalidSpeaker = "nonexistent_speaker_12345"
+
+        do {
+            _ = try await model.generate(
+                text: text,
+                voice: invalidSpeaker,
+                refAudio: nil,
+                refText: nil,
+                language: "en",
+                generationParameters: parameters
+            )
+            Issue.record("Expected an error for invalid speaker name, but generation succeeded")
+        } catch let error as AudioGenerationError {
+            if case .invalidInput(let msg) = error {
+                #expect(msg.contains("not found"),
+                        "Error should mention speaker not found, got: \(msg)")
+                print("\u{001B}[32mCorrectly received error for invalid speaker: \(msg)\u{001B}[0m")
+            } else {
+                Issue.record("Expected invalidInput error, got: \(error)")
+            }
+        }
+    }
+
+    /// Test generating audio with a different speaker to verify speaker variation
+    @Test func testCustomVoiceGenerateWithDifferentSpeaker() async throws {
+        // 1. Load model
+        print("\u{001B}[33mLoading Qwen3-TTS CustomVoice model...\u{001B}[0m")
+        let model = try await Qwen3TTSModel.fromPretrained(Self.customVoiceModelRepo)
+        print("\u{001B}[32mQwen3-TTS CustomVoice model loaded!\u{001B}[0m")
+
+        let parameters = GenerateParameters(
+            maxTokens: 2048,
+            temperature: 0.6,
+            topP: 0.8,
+            repetitionPenalty: 1.05,
+            repetitionContextSize: 20
+        )
+
+        // 2. Generate with "ryan" speaker
+        let text = "Hello, testing with a different voice."
+        let speaker = "ryan"
+        print("\u{001B}[33mGenerating audio with speaker: \"\(speaker)\"...\u{001B}[0m")
+
+        let audio = try await model.generate(
+            text: text,
+            voice: speaker,
+            refAudio: nil,
+            refText: nil,
+            language: "en",
+            generationParameters: parameters
+        )
+
+        #expect(audio.shape[0] > 0, "Audio should have samples")
+        print("\u{001B}[32mGenerated audio with \"\(speaker)\": shape \(audio.shape)\u{001B}[0m")
+
+        // Save for manual inspection
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen3_tts_customvoice_ryan_test_output.wav")
+        try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+        print("\u{001B}[32mSaved CustomVoice audio (ryan) to\u{001B}[0m: \(outputURL.path)")
+    }
+}
+
+
+// MARK: - Qwen3-TTS ICL Voice Cloning Integration Tests (requires model download)
+
+// Run Qwen3TTSCloningTests with:  xcodebuild test \
+// -scheme MLXAudio-Package \
+// -destination 'platform=macOS' \
+// -only-testing:MLXAudioTests/Qwen3TTSCloningTests \
+// 2>&1 | grep -E "(Suite.*started|Test test.*started|Loading|Loaded|Generating|Generated|Saved|passed after|failed after|TEST SUCCEEDED|TEST FAILED|Suite.*passed|Test run)"
+
+struct Qwen3TTSCloningTests {
+
+    /// The HuggingFace repo ID for the Base model (required for ICL cloning)
+    static let baseModelRepo = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16"
+
+    /// Create a synthetic reference audio waveform for testing.
+    /// Generates a 2-second sine wave at 440Hz, sampled at 24kHz.
+    private func makeSyntheticReferenceAudio(durationSeconds: Float = 2.0, frequency: Float = 440.0) -> MLXArray {
+        let sampleRate: Float = 24000.0
+        let numSamples = Int(sampleRate * durationSeconds)
+        var samples = [Float](repeating: 0, count: numSamples)
+        for i in 0 ..< numSamples {
+            samples[i] = sin(2.0 * .pi * frequency * Float(i) / sampleRate) * 0.5
+        }
+        return MLXArray(samples)
+    }
+
+    /// Test that the Base model with encoder can encode reference audio into codec codes
+    @Test func testEncodeReferenceAudio() async throws {
+        // 1. Load Base model (includes speech encoder)
+        print("\u{001B}[33mLoading Qwen3-TTS Base model for encoding test...\u{001B}[0m")
+        let model = try await Qwen3TTSModel.fromPretrained(Self.baseModelRepo)
+        print("\u{001B}[32mBase model loaded!\u{001B}[0m")
+
+        // 2. Create synthetic reference audio
+        let refAudio = makeSyntheticReferenceAudio()
+        print("\u{001B}[33mEncoding reference audio (shape: \(refAudio.shape))...\u{001B}[0m")
+
+        // 3. Create a clone prompt to trigger encoding
+        let clonePrompt = try model.createVoiceClonePrompt(
+            refAudio: refAudio,
+            refText: "This is a reference audio sample.",
+            language: "en"
+        )
+
+        // 4. Verify refCodes shape: [1, 16, refTime]
+        let refCodes = clonePrompt.refCodes
+        eval(refCodes)
+        #expect(refCodes.ndim == 3, "refCodes should be 3D, got \(refCodes.ndim)")
+        #expect(refCodes.dim(0) == 1, "refCodes batch dim should be 1, got \(refCodes.dim(0))")
+        #expect(refCodes.dim(1) == 16, "refCodes should have 16 codebooks, got \(refCodes.dim(1))")
+        #expect(refCodes.dim(2) > 0, "refCodes should have positive time dimension, got \(refCodes.dim(2))")
+        print("\u{001B}[32mrefCodes shape: \(refCodes.shape)\u{001B}[0m")
+    }
+
+    /// Test end-to-end ICL voice cloning generation
+    @Test func testICLGeneration() async throws {
+        // 1. Load Base model
+        print("\u{001B}[33mLoading Qwen3-TTS Base model for ICL generation...\u{001B}[0m")
+        let model = try await Qwen3TTSModel.fromPretrained(Self.baseModelRepo)
+        print("\u{001B}[32mBase model loaded!\u{001B}[0m")
+
+        // 2. Create synthetic reference audio
+        let refAudio = makeSyntheticReferenceAudio()
+        let refText = "This is the reference text transcript."
+
+        // 3. Generate audio using ICL (voice cloning)
+        let text = "Hello, this is a voice cloning test."
+        print("\u{001B}[33mGenerating ICL audio for: \"\(text)\"...\u{001B}[0m")
+
+        let parameters = GenerateParameters(
+            maxTokens: 2048,
+            temperature: 0.9,
+            topP: 1.0,
+            repetitionPenalty: 1.5,
+            repetitionContextSize: 20
+        )
+
+        let audio = try await model.generate(
+            text: text,
+            voice: nil,
+            refAudio: refAudio,
+            refText: refText,
+            language: "en",
+            generationParameters: parameters
+        )
+
+        print("\u{001B}[32mGenerated ICL audio shape: \(audio.shape)\u{001B}[0m")
+
+        // 4. Verify audio is non-empty
+        #expect(audio.shape[0] > 0, "ICL-generated audio should have samples")
+
+        // 5. Save to WAV
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen3_tts_icl_test_output.wav")
+        try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+        print("\u{001B}[32mSaved ICL audio to\u{001B}[0m: \(outputURL.path)")
+
+        // 6. Verify WAV file
+        let fileData = try Data(contentsOf: outputURL)
+        #expect(fileData.count > 44, "WAV file should be larger than just the header")
+    }
+
+    /// Test VoiceClonePrompt creation, serialization, deserialization, and generation
+    @Test func testClonePromptRoundTrip() async throws {
+        // 1. Load Base model
+        print("\u{001B}[33mLoading Qwen3-TTS Base model for clone prompt round-trip...\u{001B}[0m")
+        let model = try await Qwen3TTSModel.fromPretrained(Self.baseModelRepo)
+        print("\u{001B}[32mBase model loaded!\u{001B}[0m")
+
+        // 2. Create a clone prompt from synthetic audio
+        let refAudio = makeSyntheticReferenceAudio()
+        let refText = "This is a reference sentence for cloning."
+        let language = "en"
+
+        print("\u{001B}[33mCreating VoiceClonePrompt...\u{001B}[0m")
+        let originalPrompt = try model.createVoiceClonePrompt(
+            refAudio: refAudio,
+            refText: refText,
+            language: language
+        )
+
+        // 3. Verify prompt fields
+        #expect(originalPrompt.refText == refText, "refText should match")
+        #expect(originalPrompt.language == language, "language should match")
+        #expect(originalPrompt.refCodes.ndim == 3, "refCodes should be 3D")
+        #expect(originalPrompt.speakerEmbedding != nil,
+                "Base model should produce a speaker embedding")
+        if let emb = originalPrompt.speakerEmbedding {
+            #expect(emb.shape[0] == 1, "Speaker embedding batch dim should be 1")
+            #expect(emb.shape[1] > 0, "Speaker embedding dim should be positive")
+            print("\u{001B}[32mSpeaker embedding shape: \(emb.shape)\u{001B}[0m")
+        }
+
+        // 4. Serialize
+        print("\u{001B}[33mSerializing VoiceClonePrompt...\u{001B}[0m")
+        let serializedData = try originalPrompt.serialize()
+        #expect(serializedData.count > 0, "Serialized data should be non-empty")
+        print("\u{001B}[32mSerialized to \(serializedData.count) bytes\u{001B}[0m")
+
+        // 5. Deserialize
+        print("\u{001B}[33mDeserializing VoiceClonePrompt...\u{001B}[0m")
+        let restoredPrompt = try VoiceClonePrompt.deserialize(from: serializedData)
+        #expect(restoredPrompt.refText == refText, "Deserialized refText should match")
+        #expect(restoredPrompt.language == language, "Deserialized language should match")
+        #expect(restoredPrompt.refCodes.shape == originalPrompt.refCodes.shape,
+                "Deserialized refCodes shape should match original")
+        #expect(restoredPrompt.speakerEmbedding != nil,
+                "Deserialized prompt should have speaker embedding")
+
+        // 6. Verify refCodes values match
+        let refCodesDiff = MLX.abs(restoredPrompt.refCodes - originalPrompt.refCodes).sum()
+        eval(refCodesDiff)
+        let codeDiffVal: Float = refCodesDiff.item()
+        #expect(codeDiffVal < 1e-6,
+                "Deserialized refCodes should match original, diff = \(codeDiffVal)")
+
+        // 7. Generate audio using the deserialized clone prompt
+        let text = "Testing generation from deserialized clone prompt."
+        print("\u{001B}[33mGenerating from deserialized clone prompt...\u{001B}[0m")
+        let audio = try model.generateWithClonePrompt(
+            text: text,
+            clonePrompt: restoredPrompt,
+            temperature: 0.9,
+            topP: 1.0,
+            repetitionPenalty: 1.5,
+            maxTokens: 2048
+        )
+
+        #expect(audio.shape[0] > 0, "Audio from clone prompt should have samples")
+        print("\u{001B}[32mGenerated audio from clone prompt: shape \(audio.shape)\u{001B}[0m")
+
+        // 8. Save to WAV
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen3_tts_clone_prompt_roundtrip_output.wav")
+        try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+        print("\u{001B}[32mSaved clone prompt audio to\u{001B}[0m: \(outputURL.path)")
+    }
+}
+
+
+// MARK: - Qwen3-TTS Speaker Encoder Integration Tests (requires model download)
+
+// Run Qwen3TTSSpeakerEncoderIntegrationTests with:  xcodebuild test \
+// -scheme MLXAudio-Package \
+// -destination 'platform=macOS' \
+// -only-testing:MLXAudioTests/Qwen3TTSSpeakerEncoderIntegrationTests \
+// 2>&1 | grep -E "(Suite.*started|Test test.*started|Loading|Loaded|Generating|Generated|Saved|passed after|failed after|TEST SUCCEEDED|TEST FAILED|Suite.*passed|Test run)"
+
+struct Qwen3TTSSpeakerEncoderIntegrationTests {
+
+    /// The HuggingFace repo ID for the Base model (only Base has a speaker encoder)
+    static let baseModelRepo = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16"
+
+    /// Create a synthetic audio waveform with a specific frequency.
+    private func makeSyntheticAudio(
+        durationSeconds: Float = 2.0,
+        frequency: Float = 440.0,
+        amplitude: Float = 0.5
+    ) -> MLXArray {
+        let sampleRate: Float = 24000.0
+        let numSamples = Int(sampleRate * durationSeconds)
+        var samples = [Float](repeating: 0, count: numSamples)
+        for i in 0 ..< numSamples {
+            samples[i] = sin(2.0 * .pi * frequency * Float(i) / sampleRate) * amplitude
+        }
+        return MLXArray(samples)
+    }
+
+    /// Test extracting a speaker embedding from the loaded Base model
+    @Test func testExtractSpeakerEmbedding() async throws {
+        // 1. Load Base model (includes speaker encoder)
+        print("\u{001B}[33mLoading Qwen3-TTS Base model for speaker embedding extraction...\u{001B}[0m")
+        let model = try await Qwen3TTSModel.fromPretrained(Self.baseModelRepo)
+        print("\u{001B}[32mBase model loaded!\u{001B}[0m")
+
+        // 2. Verify speaker encoder is present
+        #expect(model.speakerEncoder != nil, "Base model should have a speaker encoder")
+
+        // 3. Extract speaker embedding from synthetic audio
+        let audio = makeSyntheticAudio()
+        print("\u{001B}[33mExtracting speaker embedding from audio (shape: \(audio.shape))...\u{001B}[0m")
+
+        let embedding = try model.extractSpeakerEmbedding(audio: audio)
+        eval(embedding)
+
+        // 4. Verify shape: [1, enc_dim] where enc_dim is 2048 for Base model
+        #expect(embedding.ndim == 2, "Embedding should be 2D, got \(embedding.ndim)")
+        #expect(embedding.dim(0) == 1, "Embedding batch dim should be 1, got \(embedding.dim(0))")
+        #expect(embedding.dim(1) == 2048,
+                "Embedding dim should be 2048 (Base model enc_dim), got \(embedding.dim(1))")
+        print("\u{001B}[32mSpeaker embedding shape: \(embedding.shape)\u{001B}[0m")
+
+        // 5. Verify embedding contains non-zero values
+        let sumAbsEmb = MLX.abs(embedding).sum()
+        eval(sumAbsEmb)
+        let sumVal: Float = sumAbsEmb.item()
+        #expect(sumVal > 0, "Speaker embedding should contain non-zero values")
+        print("\u{001B}[32mEmbedding L1 norm: \(sumVal)\u{001B}[0m")
+    }
+
+    /// Test that two different audio clips produce different speaker embeddings
+    @Test func testDifferentAudioProducesDifferentEmbeddings() async throws {
+        // 1. Load Base model
+        print("\u{001B}[33mLoading Qwen3-TTS Base model for embedding comparison...\u{001B}[0m")
+        let model = try await Qwen3TTSModel.fromPretrained(Self.baseModelRepo)
+        print("\u{001B}[32mBase model loaded!\u{001B}[0m")
+
+        // 2. Create two clearly different synthetic audio clips
+        // Audio 1: Low frequency sine wave (220 Hz)
+        let audio1 = makeSyntheticAudio(durationSeconds: 2.0, frequency: 220.0, amplitude: 0.5)
+        // Audio 2: High frequency sine wave (880 Hz)
+        let audio2 = makeSyntheticAudio(durationSeconds: 2.0, frequency: 880.0, amplitude: 0.3)
+
+        // 3. Extract embeddings for both
+        print("\u{001B}[33mExtracting embeddings for two different audio clips...\u{001B}[0m")
+        let embedding1 = try model.extractSpeakerEmbedding(audio: audio1)
+        let embedding2 = try model.extractSpeakerEmbedding(audio: audio2)
+        eval(embedding1, embedding2)
+
+        // 4. Verify both have the same shape
+        #expect(embedding1.shape == embedding2.shape,
+                "Both embeddings should have the same shape")
+        print("\u{001B}[32mEmbedding 1 shape: \(embedding1.shape), Embedding 2 shape: \(embedding2.shape)\u{001B}[0m")
+
+        // 5. Verify they are not identical
+        let diff = MLX.abs(embedding1 - embedding2).sum()
+        eval(diff)
+        let diffVal: Float = diff.item()
+        #expect(diffVal > 1e-4,
+                "Different audio clips should produce different embeddings, diff = \(diffVal)")
+        print("\u{001B}[32mEmbedding L1 distance: \(diffVal)\u{001B}[0m")
+
+        // 6. Verify determinism: same audio produces same embedding
+        let embedding1Again = try model.extractSpeakerEmbedding(audio: audio1)
+        eval(embedding1Again)
+        let selfDiff = MLX.abs(embedding1 - embedding1Again).sum()
+        eval(selfDiff)
+        let selfDiffVal: Float = selfDiff.item()
+        #expect(selfDiffVal < 1e-6,
+                "Same audio should produce identical embeddings, diff = \(selfDiffVal)")
+        print("\u{001B}[32mSelf-consistency check passed (diff = \(selfDiffVal))\u{001B}[0m")
+    }
+}
