@@ -290,36 +290,37 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return nil
     }
 
-    // MARK: - VoiceDesign generation
+    // MARK: - Shared autoregressive generation loop
 
-    func generateVoiceDesign(
-        text: String,
-        instruct: String?,
-        language: String,
+    /// Run the autoregressive generation loop shared across all generation modes
+    /// (VoiceDesign, Base, CustomVoice, ICL). Takes prepared input embeddings and
+    /// produces a sequence of codec code tensors.
+    ///
+    /// The loop performs: Talker forward pass -> sample first codebook token ->
+    /// CodePredictor loop for codes 2-16 -> prepare next input embedding from
+    /// trailing text hidden states and summed code embeddings.
+    ///
+    /// - Parameters:
+    ///   - inputEmbeds: Initial input embeddings from the mode-specific preparation step.
+    ///   - trailingTextHidden: Text hidden states to feed one-per-step after the first step.
+    ///   - ttsPadEmbed: Pad embedding used when trailing text is exhausted.
+    ///   - temperature: Sampling temperature.
+    ///   - topP: Nucleus sampling threshold.
+    ///   - repetitionPenalty: Penalty for repeated tokens.
+    ///   - maxTokens: Maximum number of autoregressive steps.
+    ///   - onToken: Optional callback invoked with each generated token ID.
+    /// - Returns: Array of generated code tensors, each of shape `[1, num_code_groups]`.
+    func generateFromEmbeddings(
+        inputEmbeds inputEmbedsInit: MLXArray,
+        trailingTextHidden: MLXArray,
+        ttsPadEmbed: MLXArray,
         temperature: Float,
         topP: Float,
         repetitionPenalty: Float,
         maxTokens: Int,
-        onToken: ((Int) -> Void)? = nil,
-        onInfo: ((AudioGenerationInfo) -> Void)? = nil
-    ) -> MLXArray {
-        guard let speechTokenizer, let tokenizer else {
-            return MLXArray.zeros([1])
-        }
-
+        onToken: ((Int) -> Void)? = nil
+    ) -> [MLXArray] {
         let talkerConfig = config.talkerConfig!
-
-        // Prepare inputs
-        let (inputEmbedsInit, trailingTextHidden, ttsPadEmbed) = prepareGenerationInputs(
-            text: text, language: language, instruct: instruct
-        )
-
-        // Cap max tokens based on text length
-        let targetTokenCount = tokenizer.encode(text: text).count
-        let effectiveMaxTokens = min(maxTokens, max(75, targetTokenCount * 6))
-
-        // Initialize cache and timing
-        let startTime = Date()
         let cache = talker.makeCache()
         var generatedCodes = [MLXArray]()
         let eosTokenId = talkerConfig.codecEosTokenId
@@ -331,7 +332,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         var trailingIdx = 0
         var inputEmbeds = inputEmbedsInit
 
-        for step in 0 ..< effectiveMaxTokens {
+        for step in 0 ..< maxTokens {
             // Forward pass through talker
             let (logits, hidden) = talker(inputEmbeds, cache: cache)
 
@@ -402,6 +403,48 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                 Memory.clearCache()
             }
         }
+
+        return generatedCodes
+    }
+
+    // MARK: - VoiceDesign generation
+
+    func generateVoiceDesign(
+        text: String,
+        instruct: String?,
+        language: String,
+        temperature: Float,
+        topP: Float,
+        repetitionPenalty: Float,
+        maxTokens: Int,
+        onToken: ((Int) -> Void)? = nil,
+        onInfo: ((AudioGenerationInfo) -> Void)? = nil
+    ) -> MLXArray {
+        guard let speechTokenizer, let tokenizer else {
+            return MLXArray.zeros([1])
+        }
+
+        // Prepare inputs
+        let (inputEmbeds, trailingTextHidden, ttsPadEmbed) = prepareGenerationInputs(
+            text: text, language: language, instruct: instruct
+        )
+
+        // Cap max tokens based on text length
+        let targetTokenCount = tokenizer.encode(text: text).count
+        let effectiveMaxTokens = min(maxTokens, max(75, targetTokenCount * 6))
+
+        // Run the shared autoregressive generation loop
+        let startTime = Date()
+        let generatedCodes = generateFromEmbeddings(
+            inputEmbeds: inputEmbeds,
+            trailingTextHidden: trailingTextHidden,
+            ttsPadEmbed: ttsPadEmbed,
+            temperature: temperature,
+            topP: topP,
+            repetitionPenalty: repetitionPenalty,
+            maxTokens: effectiveMaxTokens,
+            onToken: onToken
+        )
 
         guard !generatedCodes.isEmpty else {
             return MLXArray.zeros([1])
