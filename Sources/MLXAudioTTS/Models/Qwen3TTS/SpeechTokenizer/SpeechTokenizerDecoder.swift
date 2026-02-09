@@ -156,63 +156,48 @@ public class Qwen3TTSSpeechTokenizerDecoder: Module {
             fatalError("Expected \(config.numQuantizers) layers of codes, got \(codes.shape[1])")
         }
 
-        // Helper to log tensor stats
-        func logStats(_ name: String, _ tensor: MLXArray) {
-            let minVal = tensor.min().item(Float.self)
-            let maxVal = tensor.max().item(Float.self)
-            let absMax = max(abs(minVal), abs(maxVal))
-        }
+        // Build computation graph in two phases to avoid excessively large lazy
+        // graphs that cause numerical issues on iPhone Metal GPU.
+        // Force float32 to avoid precision loss (float16 corrupts temporal data).
 
+        // ── Phase 1: quantizer → pre_conv → transformer ──
         // Dequantize: [batch, 16, time] -> [batch, codebook_dim, time]
-        var hidden = quantizer.decode(codes)
-        eval(hidden)
-        Memory.clearCache()
-        logStats("1_quantizer", hidden)
+        var hidden = quantizer.decode(codes).asType(.float32)
 
         // Pre-conv: [batch, 512, time] -> [batch, 1024, time]
         hidden = preConv(hidden)
-        eval(hidden)
-        Memory.clearCache()
-        logStats("2_preConv", hidden)
 
         // Transpose for transformer: [batch, 1024, time] -> [batch, time, 1024]
         hidden = hidden.transposed(0, 2, 1)
 
         // Transformer (no caching needed for decoder-only inference)
         hidden = preTransformer(hidden)
-        eval(hidden)
-        Memory.clearCache()
-        logStats("3_transformer", hidden)
 
         // Back to conv format: [batch, time, 1024] -> [batch, 1024, time]
         hidden = hidden.transposed(0, 2, 1)
 
+        // Materialize phase 1 to bound graph size on iPhone Metal GPU.
+        eval(hidden)
+
+        // ── Phase 2: upsample → decoder blocks → output (lazy) ──
+
         // Upsampling: [batch, 1024, time] -> [batch, 1024, time*4]
-        for (i, upsampleBlock) in upsample.enumerated() {
+        for upsampleBlock in upsample {
             hidden = upsampleBlock(hidden)
-            eval(hidden)
-            Memory.clearCache()
-            logStats("4_upsample[\(i)]", hidden)
         }
 
         // Main decoder: [batch, 1024, time*4] -> [batch, 1, samples]
         var wav = hidden
-        for (i, decoderLayer) in decoder.enumerated() {
+        for decoderLayer in decoder {
             if let initialConv = decoderLayer as? DecoderInitialConv {
                 wav = initialConv(wav)
-                logStats("5_decoder[\(i)]_initialConv", wav)
             } else if let block = decoderLayer as? DecoderBlock {
                 wav = block(wav)
-                logStats("5_decoder[\(i)]_block", wav)
             } else if let snake = decoderLayer as? DecoderOutputSnake {
                 wav = snake(wav)
-                logStats("5_decoder[\(i)]_snake", wav)
             } else if let outputConv = decoderLayer as? DecoderOutputConv {
                 wav = outputConv(wav)
-                logStats("5_decoder[\(i)]_outputConv", wav)
             }
-            eval(wav)
-            Memory.clearCache()
         }
 
         // Clip to valid audio range
@@ -251,7 +236,10 @@ public class Qwen3TTSSpeechTokenizerDecoder: Module {
                 wav = wav[0..., 0..., contextSamples...]
             }
 
+            // Evaluate each chunk and free GPU memory (matches PR#23 pattern)
+            eval(wav)
             wavs.append(wav)
+            Memory.clearCache()
             startIndex = endIndex
         }
 

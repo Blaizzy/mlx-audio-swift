@@ -136,21 +136,11 @@ public class ResidualVectorQuantization: Module {
     /// - Returns: Quantized vectors [batch, dim, time] (NCL format)
     public func decode(_ codes: MLXArray) -> MLXArray {
         // codes: [num_quantizers, batch, time]
-        let numQuantizers = codes.shape[0]
-
-        // Decode first layer to get the dtype and initialize
-        let firstLayerCodes = codes[0]
-        var quantized = layers[0].decode(firstLayerCodes)
-        eval(quantized)
-
-        // Sum outputs from remaining quantizer layers
-        for idx in 1..<numQuantizers {
-            let layerCodes = codes[idx]  // [batch, time]
-            let layerOutput = layers[idx].decode(layerCodes)  // [batch, dim, time]
-            quantized = quantized + layerOutput
-            eval(quantized)
+        // Build lazy computation graph — no intermediate eval() calls
+        var quantized = layers[0].decode(codes[0])
+        for idx in 1..<codes.shape[0] {
+            quantized = quantized + layers[idx].decode(codes[idx])
         }
-
         return quantized
     }
 }
@@ -306,24 +296,11 @@ public class SplitResidualVectorQuantizer: Module {
     /// - Returns: Quantized vectors [batch, outputDim, time] (NCL format)
     public func decode(_ codes: MLXArray) -> MLXArray {
         // codes: [batch, num_quantizers, time]
-
-        // Decode semantic codes (first n_q_semantic)
-        let semanticCodes = codes[0..., 0..<nQSemantic, 0...]
-        var quantized = rvqFirst.decode(semanticCodes)
-        eval(quantized)
-        Memory.clearCache()
-
-        // Decode acoustic codes if present
+        // Build lazy computation graph — no intermediate eval()/clearCache()
+        var quantized = rvqFirst.decode(codes[0..., 0..<nQSemantic, 0...])
         if codes.shape[1] > nQSemantic {
-            let acousticCodes = codes[0..., nQSemantic..., 0...]
-            let acousticQuantized = rvqRest.decode(acousticCodes)
-            eval(acousticQuantized)
-            Memory.clearCache()
-            quantized = quantized + acousticQuantized
-            eval(quantized)
-            Memory.clearCache()
+            quantized = quantized + rvqRest.decode(codes[0..., nQSemantic..., 0...])
         }
-
         return quantized
     }
 }

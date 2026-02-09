@@ -321,6 +321,7 @@ public class Qwen3TTSTalkerForConditionalGeneration: Module {
         topP: Float = 1.0,
         repetitionPenalty: Float = 1.0,
         generatedTokens: [Int] = [],
+        suppressTokens: [Int]? = nil,
         eosTokenId: Int? = nil
     ) -> MLXArray {
         // Take last position logits [batch, vocab_size]
@@ -329,6 +330,13 @@ public class Qwen3TTSTalkerForConditionalGeneration: Module {
 
         var processedLogits = lastLogits
         let vocabSize = processedLogits.shape[processedLogits.ndim - 1]
+
+        // Suppress special codec tokens (language, thinking, pad) to prevent audio artifacts
+        if let suppressTokens, !suppressTokens.isEmpty {
+            let indices = MLXArray(suppressTokens.map { Int32($0) }).reshaped([1, -1])
+            let negInf = MLXArray([Float](repeating: -1e9, count: suppressTokens.count)).reshaped([1, -1])
+            processedLogits = putAlong(processedLogits, indices, values: negInf, axis: -1)
+        }
 
         // Apply repetition penalty
         if repetitionPenalty != 1.0 && !generatedTokens.isEmpty {
@@ -390,12 +398,14 @@ public class Qwen3TTSTalkerForConditionalGeneration: Module {
     ///   - speaker: Optional speaker name for voice selection (CustomVoice models)
     ///   - speakerEmbedding: Optional speaker embedding from reference audio [1, enc_dim]
     ///   - instructIds: Optional tokenized instruct IDs for voice design/style (VoiceDesign/CustomVoice models)
+    ///   - language: Optional language code (e.g. "en", "zh") for language ID injection
     /// - Returns: Tuple of (inputEmbeds, trailingTextHidden, ttsPadEmbed)
     public func prepareGenerationInputs(
         inputIds: MLXArray,
         speaker: String? = nil,
         speakerEmbedding: MLXArray? = nil,
-        instructIds: MLXArray? = nil
+        instructIds: MLXArray? = nil,
+        language: String? = nil
     ) -> (inputEmbeds: MLXArray, trailingTextHidden: MLXArray, ttsPadEmbed: MLXArray) {
         // Get text embeddings and project to talker hidden size
         // Note: textEmbed is computed but currently unused as we build embeddings piece by piece
@@ -420,7 +430,14 @@ public class Qwen3TTSTalkerForConditionalGeneration: Module {
         let codecBosId = config.codecBosId
 
         // Create codec prefix embeddings
-        let codecPrefill = MLXArray([Int32(codecNothinkId), Int32(codecThinkBosId), Int32(codecThinkEosId)]).reshaped([1, 3])
+        // Optionally prepend language ID token when codecLanguageId map is available
+        var prefillTokens = [Int32]()
+        if let lang = language?.lowercased(),
+           let langId = config.codecLanguageId?[lang] {
+            prefillTokens.append(Int32(langId))
+        }
+        prefillTokens.append(contentsOf: [Int32(codecNothinkId), Int32(codecThinkBosId), Int32(codecThinkEosId)])
+        let codecPrefill = MLXArray(prefillTokens).reshaped([1, prefillTokens.count])
         var codecEmbed = model.codecEmbedding(codecPrefill)
 
         // Add speaker embedding - prioritize ref_audio embedding over speaker name lookup
@@ -505,6 +522,7 @@ public class Qwen3TTSTalkerForConditionalGeneration: Module {
     ///   - speaker: Optional speaker name for voice selection (CustomVoice models)
     ///   - speakerEmbedding: Optional speaker embedding from reference audio [1, enc_dim]
     ///   - instructIds: Optional tokenized instruct IDs for voice design/style
+    ///   - language: Optional language code (e.g. "en", "zh") for language ID injection
     /// - Returns: Generated codes [batch, seq_len, num_code_groups]
     public func generate(
         inputIds: MLXArray,
@@ -515,10 +533,11 @@ public class Qwen3TTSTalkerForConditionalGeneration: Module {
         repetitionPenalty: Float = 1.0,
         speaker: String? = nil,
         speakerEmbedding: MLXArray? = nil,
-        instructIds: MLXArray? = nil
+        instructIds: MLXArray? = nil,
+        language: String? = nil
     ) -> MLXArray {
         // Prepare initial embeddings
-        let (initialEmbeds, trailingTextHidden, ttsPadEmbed) = prepareGenerationInputs(inputIds: inputIds, speaker: speaker, speakerEmbedding: speakerEmbedding, instructIds: instructIds)
+        let (initialEmbeds, trailingTextHidden, ttsPadEmbed) = prepareGenerationInputs(inputIds: inputIds, speaker: speaker, speakerEmbedding: speakerEmbedding, instructIds: instructIds, language: language)
         eval(initialEmbeds)
         eval(trailingTextHidden)
         eval(ttsPadEmbed)
@@ -533,6 +552,9 @@ public class Qwen3TTSTalkerForConditionalGeneration: Module {
         generatedTokens.reserveCapacity(maxTokens)
 
         let eosTokenId = config.codecEosTokenId
+
+        // Suppress special codec tokens (last 1024 in vocab) to prevent audio artifacts
+        let suppressTokens = Array((config.vocabSize - 1024)..<config.vocabSize).filter { $0 != eosTokenId }
 
         // Autoregressive generation loop
         for step in 0..<maxTokens {
@@ -549,6 +571,7 @@ public class Qwen3TTSTalkerForConditionalGeneration: Module {
                 topP: topP,
                 repetitionPenalty: repetitionPenalty,
                 generatedTokens: generatedTokens,
+                suppressTokens: suppressTokens,
                 eosTokenId: eosTokenId
             )
             eval(nextToken)
@@ -619,12 +642,6 @@ public class Qwen3TTSTalkerForConditionalGeneration: Module {
 
             inputEmbeds = textEmbed + codecEmbed
             eval(inputEmbeds)
-
-            // Clear GPU cache periodically to prevent memory buildup on iOS
-            // MLX lazy evaluation builds computation graphs that grow until iOS kills the app
-            if (step + 1) % 25 == 0 {
-                Memory.clearCache()
-            }
         }
 
         // Final cache clear after generation

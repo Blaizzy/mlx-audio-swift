@@ -56,18 +56,7 @@ public class DecoderResidualUnit: Module, UnaryLayer {
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
         // x: [batch, channels, time] (NCL format)
-        let residual = x
-        var out = act1(x)
-        eval(out)
-        out = conv1(out)
-        eval(out)
-        out = act2(out)
-        eval(out)
-        out = conv2(out)
-        eval(out)
-        let result = out + residual
-        eval(result)
-        return result
+        return x + conv2(act2(conv1(act1(x))))
     }
 }
 
