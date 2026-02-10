@@ -160,7 +160,11 @@ public enum MossFormer2DSP {
         winInc: Int,
         numMels: Int,
         winType: String,
-        preemphasis: Float
+        preemphasis: Float,
+        dither: Float = 0.0,
+        removeDCOffset: Bool = true,
+        roundToPowerOfTwo: Bool = true,
+        lowFreq: Float = 20.0
     ) -> MLXArray {
         guard sampleRate > 0, winLen > 0, winInc > 0, numMels > 0 else {
             return MLXArray.zeros([0, 0], type: Float.self)
@@ -170,6 +174,14 @@ public enum MossFormer2DSP {
         let audioLen = signal.shape[0]
         guard audioLen > 0 else {
             return MLXArray.zeros([0, numMels], type: Float.self)
+        }
+
+        if dither > 0 {
+            signal = signal + MLXRandom.normal([audioLen], scale: dither)
+        }
+
+        if removeDCOffset {
+            signal = signal - MLX.mean(signal)
         }
 
         if preemphasis > 0, audioLen > 1 {
@@ -196,6 +208,7 @@ public enum MossFormer2DSP {
         }
 
         var frameTensor = MLX.stacked(frames, axis: 0)
+        let nFft = roundToPowerOfTwo ? nextPowerOfTwo(winLen) : winLen
         let lowerType = winType.lowercased()
         let analysisWindow: MLXArray
         if lowerType.contains("hann") {
@@ -205,8 +218,14 @@ public enum MossFormer2DSP {
         }
 
         frameTensor = frameTensor * analysisWindow
+        if nFft > winLen {
+            let rightPad = MLXArray.zeros([numFrames, nFft - winLen], type: Float.self)
+            frameTensor = MLX.concatenated([frameTensor, rightPad], axis: 1)
+        } else if nFft < winLen {
+            frameTensor = frameTensor[0..<numFrames, 0..<nFft]
+        }
         let powerSpectrum = MLX.abs(MLXFFT.rfft(frameTensor, axis: 1)).square()
-        let melBank = melFilterbank(sampleRate: sampleRate, nFft: winLen, numMels: numMels)
+        let melBank = melFilterbank(sampleRate: sampleRate, nFft: nFft, numMels: numMels, fMin: lowFreq)
         let fbanks = MLX.matmul(powerSpectrum, melBank)
         return MLX.log(MLX.maximum(fbanks, MLXArray(Float(1e-10))))
     }
@@ -222,11 +241,11 @@ public enum MossFormer2DSP {
         return computeDeltasKaldi2D(features, winLength: winLength)
     }
 
-    public static func melFilterbank(sampleRate: Int, nFft: Int, numMels: Int) -> MLXArray {
+    public static func melFilterbank(sampleRate: Int, nFft: Int, numMels: Int, fMin: Float = 0) -> MLXArray {
         guard sampleRate > 0, nFft > 0, numMels > 0 else {
             return MLXArray.zeros([0, 0], type: Float.self)
         }
-        return melFilters(sampleRate: sampleRate, nFft: nFft, nMels: numMels)
+        return melFilters(sampleRate: sampleRate, nFft: nFft, nMels: numMels, fMin: fMin)
     }
 
     private static func adjustedWindow(_ window: MLXArray, targetLength: Int) -> MLXArray {
@@ -237,6 +256,15 @@ public enum MossFormer2DSP {
         }
         let rightPad = MLXArray.zeros([targetLength - window.shape[0]], type: Float.self)
         return MLX.concatenated([window, rightPad], axis: 0)
+    }
+
+    private static func nextPowerOfTwo(_ value: Int) -> Int {
+        guard value > 1 else { return max(value, 1) }
+        var n = 1
+        while n < value {
+            n <<= 1
+        }
+        return n
     }
 
     static func hannWindow(size: Int, periodic: Bool = true) -> MLXArray {

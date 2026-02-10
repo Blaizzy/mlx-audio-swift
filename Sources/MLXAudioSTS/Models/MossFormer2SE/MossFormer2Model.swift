@@ -321,6 +321,8 @@ public final class MossFormer2SEModel {
         }
 
         let audio = audioInput.asType(.float32)
+        let kaldiInt16Scale = MLXArray(Float(32768.0))
+        let kaldiAudio = audio * kaldiInt16Scale
         let lowerType = config.winType.lowercased()
         let window: MLXArray
         if lowerType.contains("hann") {
@@ -330,13 +332,17 @@ public final class MossFormer2SEModel {
         }
 
         let fbank = MossFormer2DSP.computeFbankKaldi(
-            audio: audio,
+            audio: kaldiAudio,
             sampleRate: config.sampleRate,
             winLen: config.winLen,
             winInc: config.winInc,
             numMels: config.numMels,
             winType: config.winType,
-            preemphasis: config.preemphasis
+            preemphasis: config.preemphasis,
+            dither: 1.0,
+            removeDCOffset: true,
+            roundToPowerOfTwo: true,
+            lowFreq: 20.0
         )
         let fbankT = fbank.transposed(1, 0)
         let deltaT = MossFormer2DSP.computeDeltasKaldi(fbankT, winLength: 5)
@@ -351,7 +357,7 @@ public final class MossFormer2SEModel {
         }
 
         var stftComplex = MossFormer2DSP.stft(
-            audio: audio,
+            audio: kaldiAudio,
             fftLen: config.fftLen,
             hopLength: config.winInc,
             winLen: config.winLen,
@@ -373,7 +379,7 @@ public final class MossFormer2SEModel {
         let enhancedReal = enhancedComplex.realPart().transposed(1, 0).expandedDimensions(axis: 0)
         let enhancedImag = enhancedComplex.imaginaryPart().transposed(1, 0).expandedDimensions(axis: 0)
 
-        return MossFormer2DSP.istft(
+        let enhanced = MossFormer2DSP.istft(
             real: enhancedReal,
             imag: enhancedImag,
             fftLen: config.fftLen,
@@ -381,7 +387,8 @@ public final class MossFormer2SEModel {
             winLen: config.winLen,
             window: window,
             center: false,
-            audioLength: audio.shape[0]
+            audioLength: kaldiAudio.shape[0]
         )
+        return enhanced / kaldiInt16Scale
     }
 }

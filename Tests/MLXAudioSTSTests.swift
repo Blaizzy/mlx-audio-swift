@@ -282,6 +282,79 @@ struct MossFormer2SEDSPTests {
         #expect(fbank.shape[1] == 60)
     }
 
+    @Test func computeFbankKaldiDitherAffectsFeatures() {
+        let signal = MLXArray(Array(repeating: Float(0.05), count: 9600))
+
+        let clean = MossFormer2DSP.computeFbankKaldi(
+            audio: signal,
+            sampleRate: 48000,
+            winLen: 1920,
+            winInc: 384,
+            numMels: 60,
+            winType: "hamming",
+            preemphasis: 0.97,
+            dither: 0.0,
+            removeDCOffset: true,
+            roundToPowerOfTwo: true,
+            lowFreq: 20.0
+        )
+
+        let dithered = MossFormer2DSP.computeFbankKaldi(
+            audio: signal,
+            sampleRate: 48000,
+            winLen: 1920,
+            winInc: 384,
+            numMels: 60,
+            winType: "hamming",
+            preemphasis: 0.97,
+            dither: 1.0,
+            removeDCOffset: true,
+            roundToPowerOfTwo: true,
+            lowFreq: 20.0
+        )
+
+        #expect(clean.shape == dithered.shape)
+        let meanAbsDiff = MLX.mean(MLX.abs(clean - dithered)).item(Float.self)
+        #expect(meanAbsDiff > 0)
+    }
+
+    @Test func computeFbankKaldiRoundToPowerOfTwoChangesFeatures() {
+        let sampleRate = Float(48000)
+        let signal = MLXArray(Array(stride(from: Float(0), to: Float(0.3), by: 1.0 / sampleRate).map { sin(2 * .pi * 440 * $0) }))
+
+        let rounded = MossFormer2DSP.computeFbankKaldi(
+            audio: signal,
+            sampleRate: 48000,
+            winLen: 1920,
+            winInc: 384,
+            numMels: 60,
+            winType: "hamming",
+            preemphasis: 0.97,
+            dither: 0.0,
+            removeDCOffset: true,
+            roundToPowerOfTwo: true,
+            lowFreq: 20.0
+        )
+
+        let fixedNfft = MossFormer2DSP.computeFbankKaldi(
+            audio: signal,
+            sampleRate: 48000,
+            winLen: 1920,
+            winInc: 384,
+            numMels: 60,
+            winType: "hamming",
+            preemphasis: 0.97,
+            dither: 0.0,
+            removeDCOffset: true,
+            roundToPowerOfTwo: false,
+            lowFreq: 20.0
+        )
+
+        #expect(rounded.shape == fixedNfft.shape)
+        let meanAbsDiff = MLX.mean(MLX.abs(rounded - fixedNfft)).item(Float.self)
+        #expect(meanAbsDiff > 0)
+    }
+
     @Test func computeDeltasKaldiShape() {
         let features = MLXArray.ones([10, 60])
         let deltas = MossFormer2DSP.computeDeltasKaldi(features)
