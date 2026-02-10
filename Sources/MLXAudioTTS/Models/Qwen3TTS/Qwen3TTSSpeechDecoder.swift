@@ -4,6 +4,7 @@
 @preconcurrency import MLX
 import MLXNN
 @preconcurrency import MLXLMCommon
+import MLXAudioCore
 import Foundation
 
 // MARK: - Vector Quantization
@@ -707,16 +708,33 @@ final class Qwen3TTSSpeechTokenizerDecoder: Module {
 final class Qwen3TTSSpeechTokenizer: Module {
     let config: Qwen3TTSTokenizerConfig
     let decodeUpsampleRate: Int
+    let encodeDownsampleRate: Int
     @ModuleInfo var decoder: Qwen3TTSSpeechTokenizerDecoder
+    @ModuleInfo(key: "encoder_model") var encoderModel: Qwen3TTSSpeechTokenizerEncoder?
+
+    /// Whether the speech tokenizer encoder is available.
+    /// When true, the tokenizer can encode audio waveforms into codec tokens
+    /// (required for ICL voice cloning).
+    var hasEncoder: Bool {
+        encoderModel != nil
+    }
 
     init(config: Qwen3TTSTokenizerConfig) {
         self.config = config
         self.decodeUpsampleRate = config.decodeUpsampleRate
+        self.encodeDownsampleRate = config.encodeDownsampleRate
         let decoderConfig = config.decoderConfig ?? {
             let json = "{}".data(using: .utf8)!
             return try! JSONDecoder().decode(Qwen3TTSTokenizerDecoderConfig.self, from: json)
         }()
         self._decoder.wrappedValue = Qwen3TTSSpeechTokenizerDecoder(config: decoderConfig)
+
+        // Create encoder if encoder config is provided
+        if let encoderConfig = config.encoderConfig {
+            self._encoderModel.wrappedValue = Qwen3TTSSpeechTokenizerEncoder(config: encoderConfig)
+        } else {
+            self._encoderModel.wrappedValue = nil
+        }
     }
 
     func decode(_ audioCodes: MLXArray) -> (MLXArray, MLXArray) {
@@ -727,6 +745,18 @@ final class Qwen3TTSSpeechTokenizer: Module {
         // Calculate valid lengths
         let audioLengths = (audioCodes[0..., 0..., 0] .> 0).sum(axis: 1).asType(.int32) * Int32(decodeUpsampleRate)
         return (wav, audioLengths)
+    }
+
+    /// Encode audio waveform to discrete codec tokens.
+    ///
+    /// - Parameter audio: Audio waveform of shape `[batch, 1, samples]`
+    /// - Returns: Codec tokens of shape `[batch, num_quantizers, time]`
+    /// - Throws: `AudioGenerationError` if encoder is not available
+    func encode(_ audio: MLXArray) throws -> MLXArray {
+        guard let encoderModel else {
+            throw AudioGenerationError.modelNotInitialized("Encoder not available for this speech tokenizer")
+        }
+        return encoderModel.encode(audio)
     }
 
     func streamingDecode(_ audioCodes: MLXArray, chunkTokens: Int = 100) -> [MLXArray] {
@@ -755,9 +785,40 @@ final class Qwen3TTSSpeechTokenizer: Module {
         var sanitized = [String: MLXArray]()
         var codebookData = [String: [String: MLXArray]]()
 
+        // Encoder-specific collections
+        var encoderTransformerQKV = [Int: [String: MLXArray]]()
+        var encoderCodebookData = [String: [String: MLXArray]]()
+
+        // SeanetEncoder layer mapping (PyTorch flat index -> Mimi structured path)
+        // N=0: init_conv, N=3,6,9,12: downsample, N=14: final_conv
+        // N=1,4,7,10: residual blocks
+        let seanetConvMap: [Int: String] = [
+            0: "encoder_model.encoder.init_conv1d",
+            3: "encoder_model.encoder.layers.0.downsample",
+            6: "encoder_model.encoder.layers.1.downsample",
+            9: "encoder_model.encoder.layers.2.downsample",
+            12: "encoder_model.encoder.layers.3.downsample",
+            14: "encoder_model.encoder.final_conv1d",
+        ]
+        let seanetResidualMap: [Int: Int] = [1: 0, 4: 1, 7: 2, 10: 3]
+        let seanetBlockMap: [Int: Int] = [1: 0, 3: 1]
+
         for (k, var v) in weights {
-            // Skip encoder weights (not needed for VoiceDesign)
-            if k.hasPrefix("encoder.") { continue }
+            if k.hasPrefix("encoder.") {
+                // --- Handle encoder weights ---
+                sanitizeEncoderWeight(
+                    key: k, value: v,
+                    sanitized: &sanitized,
+                    encoderTransformerQKV: &encoderTransformerQKV,
+                    encoderCodebookData: &encoderCodebookData,
+                    seanetConvMap: seanetConvMap,
+                    seanetResidualMap: seanetResidualMap,
+                    seanetBlockMap: seanetBlockMap
+                )
+                continue
+            }
+
+            // --- Handle decoder weights ---
 
             // Collect codebook cluster_usage and embedding_sum
             if k.contains("_codebook.cluster_usage") || k.contains("_codebook.embedding_sum") {
@@ -771,7 +832,7 @@ final class Qwen3TTSSpeechTokenizer: Module {
                 continue
             }
 
-            // Transpose conv weights: PyTorch [out, in, kernel] → MLX format
+            // Transpose conv weights: PyTorch [out, in, kernel] -> MLX format
             let isTransposeConv = (k.contains("upsample") && k.contains(".0.conv.weight"))
                 || (k.contains("decoder.decoder") && k.contains("block.1.conv.weight"))
 
@@ -789,9 +850,7 @@ final class Qwen3TTSSpeechTokenizer: Module {
                 }
             }
 
-            // Remap: upsample.X.Y.rest → upsample.X.layers.Y.rest
-            // MLXNN unflattened() creates .array for numeric keys, but UpsampleLayer
-            // exposes children via named "layers" property, so we insert "layers."
+            // Remap: upsample.X.Y.rest -> upsample.X.layers.Y.rest
             var key = k
             if key.contains("upsample.") {
                 key = key.replacingOccurrences(
@@ -804,7 +863,7 @@ final class Qwen3TTSSpeechTokenizer: Module {
             sanitized[key] = v
         }
 
-        // Compute embeddings from cluster_usage and embedding_sum
+        // Compute decoder embeddings from cluster_usage and embedding_sum
         let eps: Float = 1e-5
         for (basePath, data) in codebookData {
             guard let clusterUsage = data["cluster_usage"],
@@ -813,7 +872,163 @@ final class Qwen3TTSSpeechTokenizer: Module {
             sanitized["\(basePath).codebook.embed.weight"] = embedding
         }
 
+        // Process encoder transformer q/k/v into combined in_proj weights
+        for (layerIdx, qkv) in encoderTransformerQKV {
+            if let q = qkv["q"], let k = qkv["k"], let v = qkv["v"] {
+                let inProjWeight = concatenated([q, k, v], axis: 0)
+                let newKey = "encoder_model.encoder_transformer.transformer.layers.\(layerIdx).self_attn.in_proj.weight"
+                sanitized[newKey] = inProjWeight
+            }
+        }
+
+        // Process encoder codebook data into embedding_sum and cluster_usage
+        for (basePath, data) in encoderCodebookData {
+            guard let clusterUsage = data["cluster_usage"],
+                  let embeddingSum = data["embedding_sum"] else { continue }
+            if basePath.contains("semantic_residual_vector_quantizer") {
+                // Extract layer index
+                if let range = basePath.range(of: #"layers\.(\d+)"#, options: .regularExpression) {
+                    let match = basePath[range]
+                    let layerIdx = String(match.split(separator: ".").last ?? "0")
+                    let prefix = "encoder_model.quantizer.rvq_first.vq.layers.\(layerIdx).codebook"
+                    sanitized["\(prefix).embedding_sum"] = embeddingSum
+                    sanitized["\(prefix).cluster_usage"] = clusterUsage
+                }
+            } else if basePath.contains("acoustic_residual_vector_quantizer") {
+                if let range = basePath.range(of: #"layers\.(\d+)"#, options: .regularExpression) {
+                    let match = basePath[range]
+                    let layerIdx = String(match.split(separator: ".").last ?? "0")
+                    let prefix = "encoder_model.quantizer.rvq_rest.vq.layers.\(layerIdx).codebook"
+                    sanitized["\(prefix).embedding_sum"] = embeddingSum
+                    sanitized["\(prefix).cluster_usage"] = clusterUsage
+                }
+            }
+        }
+
         return sanitized
+    }
+
+    /// Process a single encoder weight key, mapping PyTorch naming to Mimi/MLX naming.
+    private static func sanitizeEncoderWeight(
+        key k: String,
+        value v: MLXArray,
+        sanitized: inout [String: MLXArray],
+        encoderTransformerQKV: inout [Int: [String: MLXArray]],
+        encoderCodebookData: inout [String: [String: MLXArray]],
+        seanetConvMap: [Int: String],
+        seanetResidualMap: [Int: Int],
+        seanetBlockMap: [Int: Int]
+    ) {
+        var v = v
+        let parts = k.split(separator: ".").map(String.init)
+
+        // SeanetEncoder convolutions: encoder.encoder.layers.{N}...
+        if k.hasPrefix("encoder.encoder.layers.") {
+            guard parts.count > 3, let n = Int(parts[3]) else { return }
+
+            if k.contains("block") {
+                // Residual block: encoder.encoder.layers.{N}.block.{B}.conv.{w/b}
+                guard let layerIdx = seanetResidualMap[n],
+                      parts.count > 5,
+                      let blockIdx = Int(parts[5]),
+                      let convIdx = seanetBlockMap[blockIdx] else { return }
+                let basePath = "encoder_model.encoder.layers.\(layerIdx).residuals.0.block.\(convIdx)"
+                let suffix = parts[6...].joined(separator: ".")
+                let newKey = "\(basePath).conv.\(suffix)"
+                if suffix.contains("weight") && v.ndim == 3 {
+                    v = v.transposed(0, 2, 1)  // PyTorch [out, in, kernel] -> MLX [out, kernel, in]
+                }
+                sanitized[newKey] = v
+            } else {
+                // Direct conv: encoder.encoder.layers.{N}.conv.{w/b}
+                guard let basePath = seanetConvMap[n] else { return }
+                let suffix = parts[4...].joined(separator: ".")
+                let newKey = "\(basePath).conv.\(suffix)"
+                if suffix.contains("weight") && v.ndim == 3 {
+                    v = v.transposed(0, 2, 1)
+                }
+                sanitized[newKey] = v
+            }
+        }
+        // Encoder transformer layers: encoder.encoder_transformer.layers.{i}...
+        else if k.hasPrefix("encoder.encoder_transformer.layers.") {
+            guard parts.count > 4, let layerIdx = Int(parts[3]) else { return }
+            let rest = parts[4...].joined(separator: ".")
+
+            if rest.contains("self_attn.q_proj.weight") {
+                if encoderTransformerQKV[layerIdx] == nil { encoderTransformerQKV[layerIdx] = [:] }
+                encoderTransformerQKV[layerIdx]!["q"] = v
+            } else if rest.contains("self_attn.k_proj.weight") {
+                if encoderTransformerQKV[layerIdx] == nil { encoderTransformerQKV[layerIdx] = [:] }
+                encoderTransformerQKV[layerIdx]!["k"] = v
+            } else if rest.contains("self_attn.v_proj.weight") {
+                if encoderTransformerQKV[layerIdx] == nil { encoderTransformerQKV[layerIdx] = [:] }
+                encoderTransformerQKV[layerIdx]!["v"] = v
+            } else if rest.contains("self_attn.o_proj.weight") {
+                let newKey = "encoder_model.encoder_transformer.transformer.layers.\(layerIdx).self_attn.out_proj.weight"
+                sanitized[newKey] = v
+            } else if rest.contains("mlp.fc1.weight") {
+                let newKey = "encoder_model.encoder_transformer.transformer.layers.\(layerIdx).gating.linear1.weight"
+                sanitized[newKey] = v
+            } else if rest.contains("mlp.fc2.weight") {
+                let newKey = "encoder_model.encoder_transformer.transformer.layers.\(layerIdx).gating.linear2.weight"
+                sanitized[newKey] = v
+            } else if rest.contains("input_layernorm.weight") {
+                let newKey = "encoder_model.encoder_transformer.transformer.layers.\(layerIdx).norm1.weight"
+                sanitized[newKey] = v
+            } else if rest.contains("input_layernorm.bias") {
+                let newKey = "encoder_model.encoder_transformer.transformer.layers.\(layerIdx).norm1.bias"
+                sanitized[newKey] = v
+            } else if rest.contains("post_attention_layernorm.weight") {
+                let newKey = "encoder_model.encoder_transformer.transformer.layers.\(layerIdx).norm2.weight"
+                sanitized[newKey] = v
+            } else if rest.contains("post_attention_layernorm.bias") {
+                let newKey = "encoder_model.encoder_transformer.transformer.layers.\(layerIdx).norm2.bias"
+                sanitized[newKey] = v
+            } else if rest.contains("self_attn_layer_scale.scale") {
+                let newKey = "encoder_model.encoder_transformer.transformer.layers.\(layerIdx).layer_scale_1.scale"
+                sanitized[newKey] = v
+            } else if rest.contains("mlp_layer_scale.scale") {
+                let newKey = "encoder_model.encoder_transformer.transformer.layers.\(layerIdx).layer_scale_2.scale"
+                sanitized[newKey] = v
+            }
+        }
+        // Encoder downsample conv: encoder.downsample.*
+        else if k.hasPrefix("encoder.downsample.") {
+            let suffix = k.replacingOccurrences(of: "encoder.downsample.", with: "")
+            let newKey = "encoder_model.downsample.conv.conv.\(suffix)"
+            if suffix.contains("weight") && v.ndim == 3 {
+                v = v.transposed(0, 2, 1)
+            }
+            sanitized[newKey] = v
+        }
+        // Encoder quantizer: encoder.quantizer.*
+        else if k.hasPrefix("encoder.quantizer.") {
+            let rest = k.replacingOccurrences(of: "encoder.quantizer.", with: "")
+
+            // Codebook data (cluster_usage / embed_sum)
+            if rest.contains(".codebook.cluster_usage") || rest.contains(".codebook.embed_sum") {
+                let base = rest.components(separatedBy: ".codebook.").first ?? rest
+                if encoderCodebookData[base] == nil { encoderCodebookData[base] = [:] }
+                if rest.contains("cluster_usage") {
+                    encoderCodebookData[base]!["cluster_usage"] = v
+                } else if rest.contains("embed_sum") {
+                    encoderCodebookData[base]!["embedding_sum"] = v
+                }
+            } else if rest.contains(".codebook.initialized") {
+                // Skip initialized flag
+            }
+            // Input/output projections
+            else if rest.contains("input_proj.weight") || rest.contains("output_proj.weight") {
+                let projType = rest.contains("input_proj") ? "input_proj" : "output_proj"
+                let rvqType = rest.contains("semantic_residual_vector_quantizer") ? "rvq_first" : "rvq_rest"
+                let newKey = "encoder_model.quantizer.\(rvqType).\(projType).weight"
+                if v.ndim == 3 {
+                    v = v.transposed(0, 2, 1)  // Conv1d weight transpose
+                }
+                sanitized[newKey] = v
+            }
+        }
     }
 }
 

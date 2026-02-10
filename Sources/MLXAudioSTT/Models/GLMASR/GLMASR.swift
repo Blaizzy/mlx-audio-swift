@@ -742,7 +742,7 @@ public class GLMASRModel: Module {
     ) async throws -> URL {
         let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
         let modelDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("mlx-audio")
+            .appendingPathComponent("intrusive-memory/Models/Audio")
             .appendingPathComponent(modelSubdir)
 
         // Check if model already exists

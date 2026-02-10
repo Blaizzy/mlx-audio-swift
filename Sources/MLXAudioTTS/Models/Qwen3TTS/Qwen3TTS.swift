@@ -11,12 +11,21 @@ import Foundation
 
 // MARK: - Qwen3TTS Model
 
+/// Qwen3-TTS conditional generation model supporting multiple generation paths:
+/// VoiceDesign, Base, CustomVoice, and ICL (in-context learning voice cloning).
+///
+/// Wraps a `Qwen3TTSTalkerForConditionalGeneration` transformer, an optional
+/// speech tokenizer (encoder + decoder), and an optional ECAPA-TDNN speaker
+/// encoder.  Use ``fromPretrained(_:)`` to load a model from a HuggingFace
+/// repository.
 public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Sendable {
     let config: Qwen3TTSModelConfig
     let talker: Qwen3TTSTalkerForConditionalGeneration
     var speechTokenizer: Qwen3TTSSpeechTokenizer?
+    var speakerEncoder: Qwen3TTSSpeakerEncoder?
     var tokenizer: Tokenizer?
 
+    /// The output audio sample rate in Hz (typically 24000).
     public var sampleRate: Int { config.sampleRate }
 
     init(config: Qwen3TTSModelConfig) {
@@ -28,8 +37,348 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         self.talker = Qwen3TTSTalkerForConditionalGeneration(config: talkerConfig)
     }
 
+    // MARK: - Speaker embedding extraction
+
+    /// Extract x-vector speaker embedding from raw audio using the ECAPA-TDNN speaker encoder.
+    ///
+    /// Computes a mel spectrogram from the audio waveform using the speaker encoder's
+    /// expected parameters (n_fft=1024, num_mels=128, sr=24000, hop_size=256, win_size=1024,
+    /// fmin=0, fmax=12000), then passes it through the speaker encoder to produce an
+    /// x-vector embedding suitable for use as a speaker conditioning signal.
+    ///
+    /// - Parameter audio: Raw audio waveform as MLXArray, shape `[samples]` or `[1, samples]`.
+    ///   Expected sample rate: 24000 Hz (matching `speakerEncoderConfig.sampleRate`).
+    /// - Returns: Speaker embedding of shape `[1, enc_dim]`.
+    /// - Throws: `AudioGenerationError.modelNotInitialized` if the speaker encoder is not loaded
+    ///   (only Base models ship with a speaker encoder).
+    func extractSpeakerEmbedding(audio: MLXArray) throws -> MLXArray {
+        guard let speakerEncoder else {
+            throw AudioGenerationError.modelNotInitialized(
+                "Speaker encoder not loaded. Only Base models have a speaker encoder."
+            )
+        }
+
+        let speakerConfig = speakerEncoder.config
+
+        // Flatten to 1D if batched [1, samples] -> [samples]
+        var wav = audio
+        if wav.ndim == 2 {
+            wav = wav.squeezed(axis: 0)
+        }
+
+        // Compute mel spectrogram with speaker-encoder-specific parameters
+        // Python reference: n_fft=1024, num_mels=128, sr=24000, hop_size=256,
+        //                   win_size=1024, fmin=0, fmax=12000
+        let mel = computeSpeakerEncoderMel(
+            audio: wav,
+            sampleRate: speakerConfig.sampleRate,
+            nFft: 1024,
+            hopLength: 256,
+            winSize: 1024,
+            nMels: speakerConfig.melDim,
+            fMin: 0,
+            fMax: 12000
+        )
+
+        // Add batch dimension: [time, mel_dim] -> [1, time, mel_dim]
+        let melBatched = mel.expandedDimensions(axis: 0)
+
+        // Run through speaker encoder -> [1, enc_dim]
+        return speakerEncoder(melBatched)
+    }
+
+    /// Compute mel spectrogram for the speaker encoder.
+    ///
+    /// This uses a standard mel spectrogram computation (power spectrum + mel filterbank + log)
+    /// without Whisper-style normalization. The parameters match the Python reference's
+    /// `extract_speaker_embedding()` function.
+    ///
+    /// - Parameters:
+    ///   - audio: 1D audio waveform `[samples]`
+    ///   - sampleRate: Audio sample rate (typically 24000)
+    ///   - nFft: FFT size (1024)
+    ///   - hopLength: Hop length between STFT frames (256)
+    ///   - winSize: Window size (1024, same as nFft for speaker encoder)
+    ///   - nMels: Number of mel filterbank channels (128)
+    ///   - fMin: Minimum frequency for mel filterbank (0)
+    ///   - fMax: Maximum frequency for mel filterbank (12000)
+    /// - Returns: Mel spectrogram of shape `[time, nMels]`
+    private func computeSpeakerEncoderMel(
+        audio: MLXArray,
+        sampleRate: Int,
+        nFft: Int,
+        hopLength: Int,
+        winSize: Int,
+        nMels: Int,
+        fMin: Float,
+        fMax: Float
+    ) -> MLXArray {
+        // Use Accelerate path (vDSP + BLAS) -- avoids MLXArray overhead
+        // and uses Apple Silicon NEON SIMD for the entire DSP pipeline.
+        let samples = audio.asArray(Float.self)
+        return computeMelSpectrogramAccelerate(
+            samples: samples,
+            sampleRate: sampleRate,
+            nFft: nFft,
+            hopLength: hopLength,
+            nMels: nMels,
+            fMin: fMin,
+            fMax: fMax,
+            norm: "slaney",
+            logScale: .standard
+        )
+    }
+
+
+    // MARK: - ICL input preparation
+
+    /// Prepares input embeddings for in-context learning (voice cloning) generation.
+    ///
+    /// This is the Swift port of `_prepare_icl_generation_inputs()` from the Python
+    /// reference (`qwen3_tts.py`). It encodes reference audio into codec tokens,
+    /// builds combined text+codec embeddings with non-streaming overlay, and
+    /// constructs the full input sequence for the autoregressive generation loop.
+    ///
+    /// - Parameters:
+    ///   - text: The target text to synthesise.
+    ///   - refAudio: Reference audio waveform for voice cloning.
+    ///   - refText: Transcript of the reference audio.
+    ///   - language: Resolved language name (e.g. "english", "chinese", "auto").
+    /// - Returns: Tuple of (inputEmbeds, trailingTextHidden, ttsPadEmbed, refCodes).
+    /// - Throws: If speech tokenizer encoder is unavailable or tokenizer is not loaded.
+    func prepareICLInputs(
+        text: String,
+        refAudio: MLXArray,
+        refText: String,
+        language: String
+    ) throws -> (inputEmbeds: MLXArray, trailingTextHidden: MLXArray, ttsPadEmbed: MLXArray, refCodes: MLXArray) {
+        guard let speechTokenizer else {
+            throw AudioGenerationError.modelNotInitialized("Speech tokenizer not loaded")
+        }
+
+        // --- Step 1: Encode reference audio → refCodes [1, 16, refTime] ---
+        let audioForSpk = refAudio
+
+        var refAudioReshaped = refAudio
+        if refAudioReshaped.ndim == 1 {
+            refAudioReshaped = refAudioReshaped.reshaped(1, 1, -1)
+        } else if refAudioReshaped.ndim == 2 {
+            refAudioReshaped = refAudioReshaped.expandedDimensions(axis: 1)
+        }
+
+        let refCodes = try speechTokenizer.encode(refAudioReshaped)  // [1, 16, refTime]
+        eval(refCodes)
+
+        // --- Step 2: Extract speaker embedding ---
+        var speakerEmbed: MLXArray? = nil
+        if speakerEncoder != nil {
+            speakerEmbed = try extractSpeakerEmbedding(audio: audioForSpk)
+        }
+
+        // --- Step 3: Delegate to the pre-computed overload ---
+        let result = try prepareICLInputs(
+            text: text,
+            refCodes: refCodes,
+            speakerEmbedding: speakerEmbed,
+            refText: refText,
+            language: language
+        )
+
+        return (inputEmbeds: result.inputEmbeds, trailingTextHidden: result.trailingTextHidden, ttsPadEmbed: result.ttsPadEmbed, refCodes: refCodes)
+    }
+
+    /// Prepare ICL input embeddings from pre-computed reference codes and speaker embedding.
+    ///
+    /// This overload skips the expensive audio encoding and speaker embedding extraction
+    /// steps, reusing cached values instead. Both `prepareICLInputs(text:refAudio:...)` and
+    /// `generateWithClonePrompt()` delegate to this method.
+    ///
+    /// - Parameters:
+    ///   - text: Target text to synthesize
+    ///   - refCodes: Pre-encoded reference audio codes, shape `[1, 16, refTime]`
+    ///   - speakerEmbedding: Pre-extracted speaker embedding, shape `[1, encDim]` (or nil)
+    ///   - refText: Transcript of the reference audio
+    ///   - language: Resolved language string
+    /// - Returns: Tuple of (inputEmbeds, trailingTextHidden, ttsPadEmbed)
+    func prepareICLInputs(
+        text: String,
+        refCodes: MLXArray,
+        speakerEmbedding: MLXArray?,
+        refText: String,
+        language: String
+    ) throws -> (inputEmbeds: MLXArray, trailingTextHidden: MLXArray, ttsPadEmbed: MLXArray) {
+        guard let tokenizer, let talkerConfig = config.talkerConfig else {
+            throw AudioGenerationError.modelNotInitialized("Tokenizer/config not loaded")
+        }
+
+        // --- Step 1: Tokenize reference text ---
+        // Template: "<|im_start|>assistant\n{refText}<|im_end|>\n"
+        // Skip first 3 tokens (<|im_start|>assistant\n) and last 2 (<|im_end|>\n)
+        let refChat = "<|im_start|>assistant\n\(refText)<|im_end|>\n"
+        let refChatIds = MLXArray(tokenizer.encode(text: refChat).map { Int32($0) }).reshaped(1, -1)
+        let refTextIds = refChatIds[0..., 3 ..< (refChatIds.dim(1) - 2)]
+
+        // --- Step 2: Tokenize target text ---
+        // Template: "<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
+        // Skip first 3 and last 5 tokens
+        let targetChat = "<|im_start|>assistant\n\(text)<|im_end|>\n<|im_start|>assistant\n"
+        let targetIds = MLXArray(tokenizer.encode(text: targetChat).map { Int32($0) }).reshaped(1, -1)
+        let textIds = targetIds[0..., 3 ..< (targetIds.dim(1) - 5)]
+
+        // --- Step 3: TTS special token embeddings ---
+        let ttsTokens = MLXArray(
+            [Int32(config.ttsBosTokenId), Int32(config.ttsEosTokenId), Int32(config.ttsPadTokenId)]
+        ).reshaped(1, 3)
+        let ttsEmbeds = talker.textProjection(talker.getTextEmbeddings()(ttsTokens))
+        let ttsBosEmbed = ttsEmbeds[0..., 0 ..< 1, 0...]
+        let ttsEosEmbed = ttsEmbeds[0..., 1 ..< 2, 0...]
+        let ttsPadEmbed = ttsEmbeds[0..., 2 ..< 3, 0...]
+
+        // --- Step 4: Build text_embed ---
+        // Concatenate ref text + target text tokens, project, and append tts_eos
+        let combinedTextIds = concatenated([refTextIds, textIds], axis: 1)
+        var textEmbed = talker.textProjection(talker.getTextEmbeddings()(combinedTextIds))
+        textEmbed = concatenated([textEmbed, ttsEosEmbed], axis: 1)
+        let textLens = textEmbed.dim(1)
+
+        // --- Step 5: Build codec_embed ---
+        // codec_bos + sum of all 16 codebook embeddings for reference codes
+        let numCodeGroups = talkerConfig.numCodeGroups
+
+        // First codebook embedding
+        var refCodecEmbed = talker.getInputEmbeddings()(refCodes[0..., 0, 0...])  // [1, refTime]
+
+        // Sum remaining codebook embeddings (codebooks 1-15)
+        for i in 0 ..< (numCodeGroups - 1) {
+            refCodecEmbed = refCodecEmbed + talker.codePredictor.codecEmbedding[i](refCodes[0..., i + 1, 0...])
+        }
+
+        // Prepend codec_bos
+        let codecBosEmbed = talker.getInputEmbeddings()(MLXArray([Int32(talkerConfig.codecBosId)]).reshaped(1, -1))
+        let codecEmbedICL = concatenated([codecBosEmbed, refCodecEmbed], axis: 1)  // [1, refTime+1, hidden]
+        let codecLens = codecEmbedICL.dim(1)
+
+        // --- Step 6: Non-streaming overlay ---
+        let hiddenDim = ttsPadEmbed.dim(-1)
+        let codecPadEmbed = talker.getInputEmbeddings()(MLXArray([Int32(talkerConfig.codecPadId)]).reshaped(1, -1))
+        let textWithCodecPad = textEmbed + broadcast(codecPadEmbed, to: [1, textLens, hiddenDim])
+        let codecWithTextPad = codecEmbedICL + broadcast(ttsPadEmbed, to: [1, codecLens, hiddenDim])
+        let iclInputEmbed = concatenated([textWithCodecPad, codecWithTextPad], axis: 1)
+        let trailingTextHidden = ttsPadEmbed  // Single pad embed for non-streaming mode
+
+        // --- Step 7: Language ID ---
+        var languageId: Int? = nil
+        if language.lowercased() != "auto", let langMap = talkerConfig.codecLanguageId {
+            languageId = langMap[language.lowercased()]
+        }
+
+        // --- Step 8: Build codec prefix ---
+        // Sequence: [think/nothink, thinkBos, langId?, thinkEos]
+        var codecPrefill: [Int32]
+        if let langId = languageId {
+            codecPrefill = [
+                Int32(talkerConfig.codecThinkId),
+                Int32(talkerConfig.codecThinkBosId),
+                Int32(langId),
+                Int32(talkerConfig.codecThinkEosId),
+            ]
+        } else {
+            codecPrefill = [
+                Int32(talkerConfig.codecNothinkId),
+                Int32(talkerConfig.codecThinkBosId),
+                Int32(talkerConfig.codecThinkEosId),
+            ]
+        }
+
+        var codecPrefixEmbed = talker.getInputEmbeddings()(MLXArray(codecPrefill).reshaped(1, -1))
+
+        // Suffix: [pad, bos]
+        let codecEmbedSuffix = talker.getInputEmbeddings()(
+            MLXArray([Int32(talkerConfig.codecPadId), Int32(talkerConfig.codecBosId)]).reshaped(1, 2)
+        )
+
+        // Insert speaker embed between prefix and suffix if present
+        if let speakerEmbedding {
+            codecPrefixEmbed = concatenated(
+                [codecPrefixEmbed, speakerEmbedding.reshaped(1, 1, -1), codecEmbedSuffix],
+                axis: 1
+            )
+        } else {
+            codecPrefixEmbed = concatenated([codecPrefixEmbed, codecEmbedSuffix], axis: 1)
+        }
+
+        // --- Step 9: Role embedding (first 3 tokens of target chat) ---
+        let roleEmbed = talker.textProjection(talker.getTextEmbeddings()(targetIds[0..., ..<3]))
+
+        // --- Step 10: Build pad/bos prefix ---
+        let padCount = codecPrefixEmbed.dim(1) - 2
+        let padEmbeds = broadcast(ttsPadEmbed, to: [1, padCount, hiddenDim])
+        var combinedPrefix = concatenated([padEmbeds, ttsBosEmbed], axis: 1)
+        combinedPrefix = combinedPrefix + codecPrefixEmbed[0..., ..<(-1), 0...]
+
+        // --- Step 11: Assemble full input_embeds ---
+        let inputEmbeds = concatenated([roleEmbed, combinedPrefix, iclInputEmbed], axis: 1)
+
+        eval(inputEmbeds)
+        return (inputEmbeds: inputEmbeds, trailingTextHidden: trailingTextHidden, ttsPadEmbed: ttsPadEmbed)
+    }
+
+    // MARK: - Generation path routing
+
+    /// The generation path that will be used based on model type and inputs.
+    enum GenerationPath: Equatable, Sendable {
+        case voiceDesign
+        case customVoice
+        case base
+        case icl
+    }
+
+    /// Determines which generation path to use based on config, inputs, and encoder availability.
+    ///
+    /// - Parameters:
+    ///   - refAudio: Reference audio for voice cloning (optional).
+    ///   - refText: Reference text transcript for voice cloning (optional).
+    /// - Returns: The generation path to use.
+    /// - Throws: `AudioGenerationError.invalidInput` if `ttsModelType` is unknown.
+    func resolveGenerationPath(refAudio: MLXArray?, refText: String?) throws -> GenerationPath {
+        switch config.ttsModelType {
+        case "voice_design":
+            return .voiceDesign
+        case "custom_voice":
+            return .customVoice
+        case "base":
+            if refAudio != nil, refText != nil, speechTokenizer?.hasEncoder == true {
+                return .icl
+            } else {
+                return .base
+            }
+        default:
+            throw AudioGenerationError.invalidInput(
+                "Unknown tts_model_type: '\(config.ttsModelType)'. Expected 'voice_design', 'custom_voice', or 'base'."
+            )
+        }
+    }
+
     // MARK: - SpeechGenerationModel protocol
 
+    /// Generate audio from text using the appropriate generation path.
+    ///
+    /// The generation path is automatically selected based on the model type
+    /// and the presence of reference audio:
+    /// - VoiceDesign: `voice` is interpreted as a voice description (instruct).
+    /// - CustomVoice: `voice` is a predefined speaker name.
+    /// - Base: `voice` is an optional speaker name; if `refAudio` and `refText`
+    ///   are provided and the speech encoder is available, ICL is used instead.
+    /// - ICL: In-context learning voice cloning from reference audio.
+    ///
+    /// - Parameters:
+    ///   - text: The text to synthesise.
+    ///   - voice: Voice description (VoiceDesign) or speaker name (Base/CustomVoice).
+    ///   - refAudio: Reference audio waveform for ICL voice cloning (optional).
+    ///   - refText: Transcript of the reference audio (optional).
+    ///   - language: Language code (e.g. "en", "chinese", "auto"). Defaults to "auto".
+    ///   - generationParameters: Sampling parameters (temperature, topP, etc.).
+    /// - Returns: Generated audio waveform as a 1-D MLXArray.
     public func generate(
         text: String,
         voice: String?,
@@ -45,26 +394,78 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             throw AudioGenerationError.modelNotInitialized("Text tokenizer not loaded")
         }
 
-        // VoiceDesign: voice parameter is the instruct (voice description)
-        let instruct = voice
         let lang = language ?? "auto"
         let temp = generationParameters.temperature
         let topP = generationParameters.topP
         let repPenalty = generationParameters.repetitionPenalty ?? 1.05
         let maxTokens = generationParameters.maxTokens ?? 4096
 
-        let audio = generateVoiceDesign(
-            text: text,
-            instruct: instruct,
-            language: lang,
-            temperature: temp,
-            topP: topP,
-            repetitionPenalty: repPenalty,
-            maxTokens: maxTokens
-        )
-        return audio
+        let path = try resolveGenerationPath(refAudio: refAudio, refText: refText)
+
+        switch path {
+        case .voiceDesign:
+            // VoiceDesign: voice parameter is the instruct (voice description)
+            return generateVoiceDesign(
+                text: text,
+                instruct: voice,
+                language: lang,
+                temperature: temp,
+                topP: topP,
+                repetitionPenalty: repPenalty,
+                maxTokens: maxTokens
+            )
+
+        case .customVoice:
+            return try generateCustomVoice(
+                text: text,
+                speaker: voice,
+                language: lang,
+                temperature: temp,
+                topP: topP,
+                repetitionPenalty: repPenalty,
+                maxTokens: maxTokens
+            )
+
+        case .base:
+            return try generateBase(
+                text: text,
+                voice: voice,
+                language: lang,
+                temperature: temp,
+                topP: topP,
+                repetitionPenalty: repPenalty,
+                maxTokens: maxTokens
+            )
+
+        case .icl:
+            return try generateICL(
+                text: text,
+                refAudio: refAudio!,
+                refText: refText!,
+                language: lang,
+                temperature: temp,
+                topP: topP,
+                repetitionPenalty: repPenalty,
+                maxTokens: maxTokens
+            )
+        }
     }
 
+    /// Generate audio from text as an asynchronous stream of ``AudioGeneration`` events.
+    ///
+    /// Yields `.token(id)` for each generated codec token, `.info(...)` with
+    /// generation statistics, and `.audio(waveform)` as the final event.
+    /// See ``generate(text:voice:refAudio:refText:language:generationParameters:)``
+    /// for details on path selection.
+    ///
+    /// - Parameters:
+    ///   - text: The text to synthesise.
+    ///   - voice: Voice description or speaker name (depends on model type).
+    ///   - refAudio: Reference audio waveform for ICL voice cloning (optional).
+    ///   - refText: Transcript of the reference audio (optional).
+    ///   - language: Language code (e.g. "en", "chinese", "auto"). Defaults to "auto".
+    ///   - generationParameters: Sampling parameters (temperature, topP, etc.).
+    /// - Returns: An ``AsyncThrowingStream`` of ``AudioGeneration`` events.
     public func generateStream(
         text: String,
         voice: String?,
@@ -84,29 +485,81 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                     throw AudioGenerationError.modelNotInitialized("Text tokenizer not loaded")
                 }
 
-                // VoiceDesign: voice parameter is the instruct (voice description)
-                let instruct = voice
                 let lang = language ?? "auto"
                 let temp = generationParameters.temperature
                 let topP = generationParameters.topP
                 let repPenalty = generationParameters.repetitionPenalty ?? 1.05
                 let maxTokens = generationParameters.maxTokens ?? 4096
 
-                let audio = generateVoiceDesign(
-                    text: text,
-                    instruct: instruct,
-                    language: lang,
-                    temperature: temp,
-                    topP: topP,
-                    repetitionPenalty: repPenalty,
-                    maxTokens: maxTokens,
-                    onToken: { tokenId in
-                        continuation.yield(.token(tokenId))
-                    },
-                    onInfo: { info in
-                        continuation.yield(.info(info))
-                    }
-                )
+                let path = try resolveGenerationPath(refAudio: refAudio, refText: refText)
+                let audio: MLXArray
+
+                switch path {
+                case .voiceDesign:
+                    audio = generateVoiceDesign(
+                        text: text,
+                        instruct: voice,
+                        language: lang,
+                        temperature: temp,
+                        topP: topP,
+                        repetitionPenalty: repPenalty,
+                        maxTokens: maxTokens,
+                        onToken: { tokenId in
+                            continuation.yield(.token(tokenId))
+                        },
+                        onInfo: { info in
+                            continuation.yield(.info(info))
+                        }
+                    )
+
+                case .customVoice:
+                    audio = try generateCustomVoice(
+                        text: text,
+                        speaker: voice,
+                        language: lang,
+                        temperature: temp,
+                        topP: topP,
+                        repetitionPenalty: repPenalty,
+                        maxTokens: maxTokens,
+                        onToken: { tokenId in
+                            continuation.yield(.token(tokenId))
+                        },
+                        onInfo: { info in
+                            continuation.yield(.info(info))
+                        }
+                    )
+
+                case .icl:
+                    // Streaming not yet implemented for ICL; fall back to non-streaming
+                    audio = try generateICL(
+                        text: text,
+                        refAudio: refAudio!,
+                        refText: refText!,
+                        language: lang,
+                        temperature: temp,
+                        topP: topP,
+                        repetitionPenalty: repPenalty,
+                        maxTokens: maxTokens
+                    )
+
+                case .base:
+                    audio = try generateBase(
+                        text: text,
+                        voice: voice,
+                        language: lang,
+                        temperature: temp,
+                        topP: topP,
+                        repetitionPenalty: repPenalty,
+                        maxTokens: maxTokens,
+                        onToken: { tokenId in
+                            continuation.yield(.token(tokenId))
+                        },
+                        onInfo: { info in
+                            continuation.yield(.info(info))
+                        }
+                    )
+                }
+
                 continuation.yield(.audio(audio))
                 continuation.finish()
             } catch {
@@ -116,36 +569,96 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return stream
     }
 
-    // MARK: - VoiceDesign generation
+    // MARK: - Language resolution
 
-    func generateVoiceDesign(
-        text: String,
-        instruct: String?,
-        language: String,
+    /// ISO 639-1 to Qwen3-TTS internal language name mapping.
+    private static let isoToLanguageName: [String: String] = [
+        "en": "english",
+        "zh": "chinese",
+        "ja": "japanese",
+        "ko": "korean",
+        "de": "german",
+        "fr": "french",
+        "ru": "russian",
+        "pt": "portuguese",
+        "es": "spanish",
+        "it": "italian",
+    ]
+
+    /// Resolves a language code to the internal language string used by Qwen3-TTS.
+    ///
+    /// Accepts ISO 639-1 codes (e.g. "en", "zh"), full language names (e.g. "english",
+    /// "chinese"), or the special value "auto". The resolved language is validated against
+    /// the model's `codecLanguageId` dictionary when a config is provided.
+    ///
+    /// - Parameters:
+    ///   - code: An ISO 639-1 language code, a full language name, or "auto".
+    ///   - config: Optional talker config used to validate the resolved language against
+    ///     supported languages. When nil, validation is skipped and the static mapping
+    ///     is used directly.
+    /// - Returns: The resolved language string, or nil if the code is unsupported.
+    public static func resolveLanguage(_ code: String, config: Qwen3TTSTalkerConfig? = nil) -> String? {
+        let lowered = code.lowercased()
+
+        // "auto" is always a valid pass-through
+        if lowered == "auto" {
+            return "auto"
+        }
+
+        // Try ISO 639-1 mapping first
+        if let mapped = isoToLanguageName[lowered] {
+            // If config is provided, validate against supported languages
+            if let langMap = config?.codecLanguageId {
+                return langMap[mapped] != nil ? mapped : nil
+            }
+            return mapped
+        }
+
+        // Try as a full language name (pass-through if valid)
+        if let langMap = config?.codecLanguageId {
+            // Validate against config's supported languages
+            return langMap[lowered] != nil ? lowered : nil
+        }
+
+        // Without config, check if it's a known full language name from our mapping values
+        if isoToLanguageName.values.contains(lowered) {
+            return lowered
+        }
+
+        return nil
+    }
+
+    // MARK: - Shared autoregressive generation loop
+
+    /// Run the autoregressive generation loop shared across all generation modes
+    /// (VoiceDesign, Base, CustomVoice, ICL). Takes prepared input embeddings and
+    /// produces a sequence of codec code tensors.
+    ///
+    /// The loop performs: Talker forward pass -> sample first codebook token ->
+    /// CodePredictor loop for codes 2-16 -> prepare next input embedding from
+    /// trailing text hidden states and summed code embeddings.
+    ///
+    /// - Parameters:
+    ///   - inputEmbeds: Initial input embeddings from the mode-specific preparation step.
+    ///   - trailingTextHidden: Text hidden states to feed one-per-step after the first step.
+    ///   - ttsPadEmbed: Pad embedding used when trailing text is exhausted.
+    ///   - temperature: Sampling temperature.
+    ///   - topP: Nucleus sampling threshold.
+    ///   - repetitionPenalty: Penalty for repeated tokens.
+    ///   - maxTokens: Maximum number of autoregressive steps.
+    ///   - onToken: Optional callback invoked with each generated token ID.
+    /// - Returns: Array of generated code tensors, each of shape `[1, num_code_groups]`.
+    func generateFromEmbeddings(
+        inputEmbeds inputEmbedsInit: MLXArray,
+        trailingTextHidden: MLXArray,
+        ttsPadEmbed: MLXArray,
         temperature: Float,
         topP: Float,
         repetitionPenalty: Float,
         maxTokens: Int,
-        onToken: ((Int) -> Void)? = nil,
-        onInfo: ((AudioGenerationInfo) -> Void)? = nil
-    ) -> MLXArray {
-        guard let speechTokenizer, let tokenizer else {
-            return MLXArray.zeros([1])
-        }
-
+        onToken: ((Int) -> Void)? = nil
+    ) -> [MLXArray] {
         let talkerConfig = config.talkerConfig!
-
-        // Prepare inputs
-        let (inputEmbedsInit, trailingTextHidden, ttsPadEmbed) = prepareGenerationInputs(
-            text: text, language: language, instruct: instruct
-        )
-
-        // Cap max tokens based on text length
-        let targetTokenCount = tokenizer.encode(text: text).count
-        let effectiveMaxTokens = min(maxTokens, max(75, targetTokenCount * 6))
-
-        // Initialize cache and timing
-        let startTime = Date()
         let cache = talker.makeCache()
         var generatedCodes = [MLXArray]()
         let eosTokenId = talkerConfig.codecEosTokenId
@@ -157,9 +670,13 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         var trailingIdx = 0
         var inputEmbeds = inputEmbedsInit
 
-        for step in 0 ..< effectiveMaxTokens {
+        for step in 0 ..< maxTokens {
             // Forward pass through talker
             let (logits, hidden) = talker(inputEmbeds, cache: cache)
+
+            // Schedule GPU evaluation asynchronously so CPU can proceed
+            // with sampling setup while GPU computes the forward pass result.
+            asyncEval(logits, hidden)
 
             // Sample first codebook token
             let nextToken = sampleToken(
@@ -229,6 +746,48 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             }
         }
 
+        return generatedCodes
+    }
+
+    // MARK: - VoiceDesign generation
+
+    func generateVoiceDesign(
+        text: String,
+        instruct: String?,
+        language: String,
+        temperature: Float,
+        topP: Float,
+        repetitionPenalty: Float,
+        maxTokens: Int,
+        onToken: ((Int) -> Void)? = nil,
+        onInfo: ((AudioGenerationInfo) -> Void)? = nil
+    ) -> MLXArray {
+        guard let speechTokenizer, let tokenizer else {
+            return MLXArray.zeros([1])
+        }
+
+        // Prepare inputs
+        let (inputEmbeds, trailingTextHidden, ttsPadEmbed) = prepareGenerationInputs(
+            text: text, language: language, instruct: instruct
+        )
+
+        // Cap max tokens based on text length
+        let targetTokenCount = tokenizer.encode(text: text).count
+        let effectiveMaxTokens = min(maxTokens, max(75, targetTokenCount * 6))
+
+        // Run the shared autoregressive generation loop
+        let startTime = Date()
+        let generatedCodes = generateFromEmbeddings(
+            inputEmbeds: inputEmbeds,
+            trailingTextHidden: trailingTextHidden,
+            ttsPadEmbed: ttsPadEmbed,
+            temperature: temperature,
+            topP: topP,
+            repetitionPenalty: repetitionPenalty,
+            maxTokens: effectiveMaxTokens,
+            onToken: onToken
+        )
+
         guard !generatedCodes.isEmpty else {
             return MLXArray.zeros([1])
         }
@@ -266,7 +825,437 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return audio
     }
 
-    // MARK: - Prepare generation inputs
+    // MARK: - Base generation
+
+    /// Generate audio using the Base model path (no reference audio / no ICL).
+    /// Uses `prepareBaseInputs()` which handles speaker lookups, dialect override,
+    /// and instruct embedding.
+    func generateBase(
+        text: String,
+        voice: String?,
+        language: String,
+        temperature: Float,
+        topP: Float,
+        repetitionPenalty: Float,
+        maxTokens: Int,
+        onToken: ((Int) -> Void)? = nil,
+        onInfo: ((AudioGenerationInfo) -> Void)? = nil
+    ) throws -> MLXArray {
+        guard let speechTokenizer, let tokenizer else {
+            throw AudioGenerationError.modelNotInitialized("Speech tokenizer or tokenizer not loaded")
+        }
+
+        // Prepare inputs using Base path (handles speaker, dialect, instruct)
+        let (inputEmbeds, trailingTextHidden, ttsPadEmbed) = try prepareBaseInputs(
+            text: text,
+            language: language,
+            speaker: voice  // 'voice' maps to speaker name for Base model
+        )
+
+        // Cap max tokens based on text length
+        let targetTokenCount = tokenizer.encode(text: text).count
+        let effectiveMaxTokens = min(maxTokens, max(75, targetTokenCount * 6))
+
+        // Run the shared autoregressive generation loop
+        let startTime = Date()
+        let generatedCodes = generateFromEmbeddings(
+            inputEmbeds: inputEmbeds,
+            trailingTextHidden: trailingTextHidden,
+            ttsPadEmbed: ttsPadEmbed,
+            temperature: temperature,
+            topP: topP,
+            repetitionPenalty: repetitionPenalty,
+            maxTokens: effectiveMaxTokens,
+            onToken: onToken
+        )
+
+        guard !generatedCodes.isEmpty else {
+            return MLXArray.zeros([1])
+        }
+
+        // Emit generation info
+        let generateTime = Date().timeIntervalSince(startTime)
+        let tokenCount = generatedCodes.count
+        let info = AudioGenerationInfo(
+            promptTokenCount: 0,
+            generationTokenCount: tokenCount,
+            prefillTime: 0,
+            generateTime: generateTime,
+            tokensPerSecond: Double(tokenCount) / generateTime,
+            peakMemoryUsage: Double(Memory.peakMemory) / 1e9
+        )
+        onInfo?(info)
+
+        // Stack and decode
+        let codes = stacked(generatedCodes, axis: 1)
+
+        var audioChunks = [MLXArray]()
+        for chunk in speechTokenizer.streamingDecode(codes, chunkTokens: 100) {
+            audioChunks.append(chunk)
+        }
+        var audio = concatenated(audioChunks, axis: -1)[0]
+
+        // Trim to valid length
+        let validLen = Int((codes[0..., 0..., 0] .> 0).sum().item(Int32.self)) * speechTokenizer.decodeUpsampleRate
+        if validLen > 0 && validLen < audio.dim(0) {
+            audio = audio[..<validLen]
+        }
+
+        eval(audio)
+        return audio
+    }
+
+    // MARK: - CustomVoice generation
+
+    /// Generate audio using a predefined speaker from the CustomVoice model.
+    /// Validates that the speaker exists in the model's `spkId` configuration,
+    /// then delegates to `prepareBaseInputs()` with the speaker name.
+    func generateCustomVoice(
+        text: String,
+        speaker: String?,
+        language: String,
+        temperature: Float,
+        topP: Float,
+        repetitionPenalty: Float,
+        maxTokens: Int,
+        onToken: ((Int) -> Void)? = nil,
+        onInfo: ((AudioGenerationInfo) -> Void)? = nil
+    ) throws -> MLXArray {
+        guard let speechTokenizer, let tokenizer else {
+            throw AudioGenerationError.modelNotInitialized("Speech tokenizer or tokenizer not loaded")
+        }
+
+        // Validate speaker exists in config
+        guard let speaker, !speaker.isEmpty else {
+            throw AudioGenerationError.invalidInput(
+                "CustomVoice generation requires a speaker name."
+            )
+        }
+
+        guard let spkIdMap = config.talkerConfig?.spkId, spkIdMap[speaker.lowercased()] != nil else {
+            let available = config.talkerConfig?.spkId?.keys.sorted().joined(separator: ", ") ?? "none"
+            throw AudioGenerationError.invalidInput(
+                "Speaker '\(speaker)' not found. Available speakers: \(available)"
+            )
+        }
+
+        // CustomVoice delegates to prepareBaseInputs with speaker name
+        let (inputEmbeds, trailingTextHidden, ttsPadEmbed) = try prepareBaseInputs(
+            text: text,
+            language: language,
+            speaker: speaker
+        )
+
+        // Cap max tokens
+        let targetTokenCount = tokenizer.encode(text: text).count
+        let effectiveMaxTokens = min(maxTokens, max(75, targetTokenCount * 6))
+
+        let startTime = Date()
+        let generatedCodes = generateFromEmbeddings(
+            inputEmbeds: inputEmbeds,
+            trailingTextHidden: trailingTextHidden,
+            ttsPadEmbed: ttsPadEmbed,
+            temperature: temperature,
+            topP: topP,
+            repetitionPenalty: repetitionPenalty,
+            maxTokens: effectiveMaxTokens,
+            onToken: onToken
+        )
+
+        guard !generatedCodes.isEmpty else {
+            return MLXArray.zeros([1])
+        }
+
+        let generateTime = Date().timeIntervalSince(startTime)
+        let tokenCount = generatedCodes.count
+        let info = AudioGenerationInfo(
+            promptTokenCount: 0,
+            generationTokenCount: tokenCount,
+            prefillTime: 0,
+            generateTime: generateTime,
+            tokensPerSecond: Double(tokenCount) / generateTime,
+            peakMemoryUsage: Double(Memory.peakMemory) / 1e9
+        )
+        onInfo?(info)
+
+        let codes = stacked(generatedCodes, axis: 1)
+
+        var audioChunks = [MLXArray]()
+        for chunk in speechTokenizer.streamingDecode(codes, chunkTokens: 100) {
+            audioChunks.append(chunk)
+        }
+        var audio = concatenated(audioChunks, axis: -1)[0]
+
+        let validLen = Int((codes[0..., 0..., 0] .> 0).sum().item(Int32.self)) * speechTokenizer.decodeUpsampleRate
+        if validLen > 0 && validLen < audio.dim(0) {
+            audio = audio[..<validLen]
+        }
+
+        eval(audio)
+        return audio
+    }
+
+    // MARK: - ICL voice cloning generation
+
+    /// Generate audio using in-context learning (voice cloning) with reference audio.
+    ///
+    /// This is the Swift port of `_generate_icl()` from the Python reference. It prepares
+    /// combined text+codec embeddings from the reference audio and text, runs the shared
+    /// autoregressive generation loop, then prepends reference codes and proportionally
+    /// trims to produce cloned voice output.
+    ///
+    /// - Parameters:
+    ///   - text: The target text to synthesise in the cloned voice.
+    ///   - refAudio: Reference audio waveform for voice cloning.
+    ///   - refText: Transcript of the reference audio.
+    ///   - language: Resolved language name (e.g. "english", "chinese", "auto").
+    ///   - temperature: Sampling temperature.
+    ///   - topP: Nucleus sampling threshold.
+    ///   - repetitionPenalty: Penalty for repeated tokens (minimum 1.5 for ICL).
+    ///   - maxTokens: Maximum number of autoregressive steps.
+    /// - Returns: Generated audio waveform as MLXArray.
+    func generateICL(
+        text: String,
+        refAudio: MLXArray,
+        refText: String,
+        language: String,
+        temperature: Float,
+        topP: Float,
+        repetitionPenalty: Float,
+        maxTokens: Int
+    ) throws -> MLXArray {
+        guard let speechTokenizer, let tokenizer else {
+            throw AudioGenerationError.modelNotInitialized("Speech tokenizer or text tokenizer not loaded")
+        }
+
+        // Step 1: Prepare ICL inputs
+        let (inputEmbeds, trailingTextHidden, ttsPadEmbed, refCodes) = try prepareICLInputs(
+            text: text,
+            refAudio: refAudio,
+            refText: refText,
+            language: language
+        )
+
+        // Step 2: Cap max tokens based on text length
+        let targetTokenCount = tokenizer.encode(text: text).count
+        let effectiveMaxTokens = min(maxTokens, max(75, targetTokenCount * 6))
+
+        // Step 3: Apply minimum repetition penalty of 1.5 for ICL
+        // Prevents code degeneration with long reference prefills
+        let effectiveRepPenalty = max(repetitionPenalty, 1.5)
+
+        // Step 4: Run shared autoregressive generation loop
+        let generatedCodes = generateFromEmbeddings(
+            inputEmbeds: inputEmbeds,
+            trailingTextHidden: trailingTextHidden,
+            ttsPadEmbed: ttsPadEmbed,
+            temperature: temperature,
+            topP: topP,
+            repetitionPenalty: effectiveRepPenalty,
+            maxTokens: effectiveMaxTokens
+        )
+
+        // Step 5: Check for empty generation
+        guard !generatedCodes.isEmpty else {
+            return MLXArray.zeros([1])
+        }
+
+        // Step 6: Prepend reference codes to generated codes before decoding
+        let genCodes = stacked(generatedCodes, axis: 1)  // [1, genLen, numCodeGroups]
+        let refCodesT = refCodes.transposed(0, 2, 1)  // [1, refTime, 16]
+        let fullCodes = concatenated([refCodesT, genCodes], axis: 1)  // [1, refTime+genLen, 16]
+
+        // Step 7: Decode full codes
+        let (audio, audioLengths) = speechTokenizer.decode(fullCodes)
+        var audioOut = audio[0]  // Remove batch dim
+
+        // Step 8: Trim to valid length
+        let validLen = Int(audioLengths[0].item(Int32.self))
+        if validLen > 0 && validLen < audioOut.dim(0) {
+            audioOut = audioOut[..<validLen]
+        }
+
+        // Step 9: Proportional trimming — remove the reference audio portion
+        let refLen = refCodes.dim(2)  // refTime
+        let totalLen = fullCodes.dim(1)  // refTime + genLen
+        let cut = Int(Float(refLen) / Float(max(totalLen, 1)) * Float(audioOut.dim(0)))
+        if cut > 0 && cut < audioOut.dim(0) {
+            audioOut = audioOut[cut...]
+        }
+
+        // Step 10: Evaluate and return
+        eval(audioOut)
+        return audioOut
+    }
+
+    // MARK: - Prepare Base/CustomVoice inputs
+
+    /// Prepares input embeddings for Base and CustomVoice generation paths.
+    ///
+    /// This is the Swift port of `_prepare_generation_inputs()` from the Python
+    /// reference (`qwen3_tts.py:249-404`). It handles:
+    /// - Speaker ID lookup from `config.talkerConfig.spkId`
+    /// - Dialect override from `config.talkerConfig.spkIsDialect`
+    /// - Optional instruct embedding
+    /// - Codec prefix construction: `[think/nothink, thinkBos, langId?, thinkEos, speaker?, pad, bos]`
+    /// - Text embedding and trailing text hidden states
+    ///
+    /// Key differences from VoiceDesign's `prepareGenerationInputs()`:
+    /// - VoiceDesign does NOT handle speaker IDs or dialect override
+    /// - The codec prefix for Base/CustomVoice includes speaker token(s) after thinkEos
+    ///
+    /// - Parameters:
+    ///   - text: The text to synthesise.
+    ///   - language: Resolved language name (e.g. "english", "chinese", "auto").
+    ///   - speaker: Optional speaker name to look up in `spkId`.
+    ///   - speakerEmbedding: Optional pre-computed speaker embedding from speaker encoder
+    ///     (x-vector). Takes priority over speaker name lookup.
+    ///   - instruct: Optional delivery instruction (e.g. "speak in a whisper").
+    /// - Returns: Tuple of (inputEmbeds, trailingTextHidden, ttsPadEmbed).
+    /// - Throws: `AudioGenerationError.invalidInput` if the specified speaker is not found
+    ///   in the model's `spkId` configuration.
+    func prepareBaseInputs(
+        text: String,
+        language: String,
+        speaker: String? = nil,
+        speakerEmbedding: MLXArray? = nil,
+        instruct: String? = nil
+    ) throws -> (MLXArray, MLXArray, MLXArray) {
+        guard let tokenizer, let talkerConfig = config.talkerConfig else {
+            throw AudioGenerationError.modelNotInitialized("Tokenizer/config not loaded")
+        }
+
+        // --- Speaker embedding ---
+        // Priority: pre-computed speaker embedding > speaker name lookup > none
+        var speakerEmbed: MLXArray? = nil
+        var effectiveLanguage = language
+
+        if let speakerEmbedding {
+            // Pre-computed embedding from speaker encoder (used by ICL and Base with ref audio)
+            speakerEmbed = speakerEmbedding
+        } else if let speaker, let spkIdMap = talkerConfig.spkId,
+                  let tokenIds = spkIdMap[speaker.lowercased()] {
+            // Look up speaker token IDs from config.
+            // Each speaker maps to an array of codec token IDs (typically one).
+            // Embed each token via the codec embedding layer and sum.
+            let spkIds = MLXArray(tokenIds.map { Int32($0) }).reshaped(1, -1)
+            let embeds = talker.getInputEmbeddings()(spkIds)  // [1, N, hidden]
+            speakerEmbed = embeds.sum(axis: 1, keepDims: true)  // [1, 1, hidden]
+        } else if let speaker, speaker.lowercased() != "",
+                  let spkIdMap = talkerConfig.spkId, !spkIdMap.isEmpty {
+            // Speaker was specified but not found in spkId
+            let available = spkIdMap.keys.sorted().joined(separator: ", ")
+            throw AudioGenerationError.invalidInput(
+                "Speaker '\(speaker)' not found in model configuration. Available speakers: \(available)"
+            )
+        }
+
+        // --- Dialect override ---
+        // If the speaker has a dialect entry and the language is compatible
+        // (Chinese or auto), override the language with the dialect.
+        if let speaker,
+           let dialectMap = talkerConfig.spkIsDialect,
+           let dialect = dialectMap[speaker.lowercased()],
+           (effectiveLanguage.lowercased() == "chinese" || effectiveLanguage.lowercased() == "auto"),
+           let langMap = talkerConfig.codecLanguageId,
+           langMap[dialect] != nil {
+            effectiveLanguage = dialect
+        }
+
+        // --- Tokenize text with ChatML template ---
+        let chatText = "<|im_start|>assistant\n\(text)<|im_end|>\n<|im_start|>assistant\n"
+        let inputIds = MLXArray(tokenizer.encode(text: chatText).map { Int32($0) }).reshaped(1, -1)
+        let textEmbed = talker.textProjection(talker.getTextEmbeddings()(inputIds))
+
+        // --- TTS special token embeddings ---
+        let ttsTokens = MLXArray(
+            [Int32(config.ttsBosTokenId), Int32(config.ttsEosTokenId), Int32(config.ttsPadTokenId)]
+        ).reshaped(1, 3)
+        let ttsEmbeds = talker.textProjection(talker.getTextEmbeddings()(ttsTokens))
+        let ttsBosEmbed = ttsEmbeds[0..., 0 ..< 1, 0...]
+        let ttsEosEmbed = ttsEmbeds[0..., 1 ..< 2, 0...]
+        let ttsPadEmbed = ttsEmbeds[0..., 2 ..< 3, 0...]
+
+        // --- Language ID ---
+        var languageId: Int? = nil
+        if effectiveLanguage.lowercased() != "auto", let langMap = talkerConfig.codecLanguageId {
+            languageId = langMap[effectiveLanguage.lowercased()]
+        }
+
+        // --- Build codec prefix ---
+        // Sequence: [think/nothink, thinkBos, langId?, thinkEos]
+        var codecPrefill: [Int32]
+        if let langId = languageId {
+            codecPrefill = [
+                Int32(talkerConfig.codecThinkId),
+                Int32(talkerConfig.codecThinkBosId),
+                Int32(langId),
+                Int32(talkerConfig.codecThinkEosId),
+            ]
+        } else {
+            codecPrefill = [
+                Int32(talkerConfig.codecNothinkId),
+                Int32(talkerConfig.codecThinkBosId),
+                Int32(talkerConfig.codecThinkEosId),
+            ]
+        }
+
+        var codecEmbed = talker.getInputEmbeddings()(MLXArray(codecPrefill).reshaped(1, -1))
+
+        // Suffix: [pad, bos]
+        let codecEmbedSuffix = talker.getInputEmbeddings()(
+            MLXArray([Int32(talkerConfig.codecPadId), Int32(talkerConfig.codecBosId)]).reshaped(1, 2)
+        )
+
+        // Insert speaker embed between prefix and suffix if present
+        if let speakerEmbed {
+            codecEmbed = concatenated(
+                [codecEmbed, speakerEmbed.reshaped(1, 1, -1), codecEmbedSuffix],
+                axis: 1
+            )
+        } else {
+            codecEmbed = concatenated([codecEmbed, codecEmbedSuffix], axis: 1)
+        }
+
+        // --- Instruct embedding ---
+        var instructEmbed: MLXArray? = nil
+        if let instruct, !instruct.isEmpty {
+            let instructText = "<|im_start|>user\n\(instruct)<|im_end|>\n"
+            let instructIds = MLXArray(tokenizer.encode(text: instructText).map { Int32($0) }).reshaped(1, -1)
+            instructEmbed = talker.textProjection(talker.getTextEmbeddings()(instructIds))
+        }
+
+        // --- Role embedding (first 3 tokens: <|im_start|>assistant\n) ---
+        let roleEmbed = textEmbed[0..., ..<3, 0...]
+
+        // --- Build combined embed from pad + bos + codec prefix ---
+        let padCount = codecEmbed.dim(1) - 2
+        let padEmbeds = broadcast(ttsPadEmbed, to: [1, padCount, ttsPadEmbed.dim(-1)])
+        var combinedEmbed = concatenated([padEmbeds, ttsBosEmbed], axis: 1)
+        combinedEmbed = combinedEmbed + codecEmbed[0..., ..<(-1), 0...]
+
+        // --- Assemble full input embedding ---
+        var inputEmbeds: MLXArray
+        if let instructEmbed {
+            inputEmbeds = concatenated([instructEmbed, roleEmbed, combinedEmbed], axis: 1)
+        } else {
+            inputEmbeds = concatenated([roleEmbed, combinedEmbed], axis: 1)
+        }
+
+        // Add first text token (index 3) + last codec embed
+        let firstTextEmbed = textEmbed[0..., 3 ..< 4, 0...] + codecEmbed[0..., (-1)..., 0...]
+        inputEmbeds = concatenated([inputEmbeds, firstTextEmbed], axis: 1)
+
+        // --- Trailing text hidden states ---
+        let trailingTextHidden = concatenated(
+            [textEmbed[0..., 4 ..< (textEmbed.dim(1) - 5), 0...], ttsEosEmbed],
+            axis: 1
+        )
+
+        return (inputEmbeds, trailingTextHidden, ttsPadEmbed)
+    }
+
+    // MARK: - Prepare VoiceDesign inputs
 
     func prepareGenerationInputs(
         text: String,
@@ -437,6 +1426,15 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
     // MARK: - fromPretrained
 
+    /// Load a Qwen3-TTS model from a HuggingFace repository.
+    ///
+    /// Downloads (or resolves from cache) the model weights, tokenizer, speech
+    /// tokenizer, and optional speaker encoder.  If the repository ships only a
+    /// slow tokenizer (`vocab.json` + `merges.txt`), a fast `tokenizer.json`
+    /// is generated automatically.
+    ///
+    /// - Parameter modelRepo: HuggingFace repository ID (e.g. "Qwen/Qwen3-TTS").
+    /// - Returns: A fully initialised ``Qwen3TTSModel`` ready for generation.
     public static func fromPretrained(_ modelRepo: String) async throws -> Qwen3TTSModel {
         let repoID = Repo.ID(rawValue: modelRepo)!
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
@@ -510,6 +1508,21 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             )
         } else {
             print("Warning: speech_tokenizer directory not found, speech decoding unavailable")
+        }
+
+        // Load speaker encoder if config has speaker_encoder_config (Base model only)
+        if let speakerEncoderConfig = config.speakerEncoderConfig {
+            let speakerEncoder = Qwen3TTSSpeakerEncoder(config: speakerEncoderConfig)
+            let sanitizedWeights = Qwen3TTSSpeakerEncoder.sanitize(weights: allWeights)
+            if !sanitizedWeights.isEmpty {
+                let pairs = sanitizedWeights.map { ($0.key, $0.value) }
+                try speakerEncoder.update(parameters: ModuleParameters.unflattened(pairs), verify: .noUnusedKeys)
+                eval(speakerEncoder.parameters())
+                model.speakerEncoder = speakerEncoder
+                print("Loaded speaker encoder (\(speakerEncoderConfig.encDim)-dim)")
+            } else {
+                print("Warning: speaker_encoder_config present but no speaker_encoder weights found")
+            }
         }
 
         print("Loaded Qwen3-TTS model (\(config.ttsModelType))")

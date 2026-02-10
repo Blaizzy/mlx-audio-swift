@@ -657,7 +657,9 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
                     let nextTokenExpanded = nextToken.reshaped([1, 1])
                     logits = self(nextTokenExpanded, cache: cache)
                     logits = logits[0..., -1, 0...]  // [1, V]
-                    eval(logits)
+                    // Schedule GPU evaluation asynchronously -- the result
+                    // will be consumed at the top of the next iteration.
+                    asyncEval(logits)
                 }
 
                 return value
@@ -793,23 +795,25 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
                             let nextTokenExpanded = nextToken.reshaped([1, 1])
                             logits = self(nextTokenExpanded, cache: cache)
                             logits = logits[0..., -1, 0...]  // [1, V]
-                            eval(logits)
+                            // Schedule GPU evaluation asynchronously -- the result
+                            // will be consumed at the top of the next iteration.
+                            asyncEval(logits)
                         }
-                        
+
                         return value
                     }
-                    
+
                     tokenCount += 1
-                    
+
                     continuation.yield(.token(tokenValue))
-                    
+
                     if tokenValue == endOfSpeech {
                         break
                     }
-                    
+
                     generatedTokens.append(Int32(tokenValue))
                 }
-                
+
                 Memory.clearCache()
                 
                 let generateTime = Date().timeIntervalSince(generateStartTime)
@@ -954,7 +958,7 @@ func resolveOrDownloadModel(
     // Use a persistent cache directory based on repo ID
     let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
     let modelDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        .appendingPathComponent("mlx-audio")
+        .appendingPathComponent("intrusive-memory/Models/Audio")
         .appendingPathComponent(modelSubdir)
 
     // Check if model already exists with required files

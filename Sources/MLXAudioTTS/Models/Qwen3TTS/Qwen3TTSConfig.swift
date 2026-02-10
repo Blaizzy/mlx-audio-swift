@@ -6,6 +6,8 @@ import MLXLMCommon
 
 // MARK: - Code Predictor Config
 
+/// Configuration for the Qwen3-TTS code predictor sub-model that generates
+/// codec tokens 2-16 conditioned on the first codebook token and hidden states.
 public struct Qwen3TTSTalkerCodePredictorConfig: Codable, Sendable {
     var vocabSize: Int
     var hiddenSize: Int
@@ -69,6 +71,8 @@ public struct Qwen3TTSTalkerCodePredictorConfig: Codable, Sendable {
 
 // MARK: - Talker Config
 
+/// Configuration for the Qwen3-TTS talker transformer with multimodal 3D RoPE.
+/// Includes codec special token IDs, speaker ID mappings, and language ID mappings.
 public struct Qwen3TTSTalkerConfig: Codable, Sendable {
     var codePredictorConfig: Qwen3TTSTalkerCodePredictorConfig?
     var vocabSize: Int
@@ -98,6 +102,9 @@ public struct Qwen3TTSTalkerConfig: Codable, Sendable {
     var codecBosId: Int
     var codecLanguageId: [String: Int]?
     var spkId: [String: [Int]]?
+    /// Dialect override map. Values are either `false` (no dialect) or a dialect
+    /// string like `"sichuan_dialect"`. The HuggingFace JSON uses mixed bool/string
+    /// types; this property normalises to `[String: String]` by dropping false entries.
     var spkIsDialect: [String: String]?
 
     enum CodingKeys: String, CodingKey {
@@ -161,8 +168,28 @@ public struct Qwen3TTSTalkerConfig: Codable, Sendable {
         codecPadId = try c.decodeIfPresent(Int.self, forKey: .codecPadId) ?? 2148
         codecBosId = try c.decodeIfPresent(Int.self, forKey: .codecBosId) ?? 2149
         codecLanguageId = try c.decodeIfPresent([String: Int].self, forKey: .codecLanguageId)
-        spkId = try c.decodeIfPresent([String: [Int]].self, forKey: .spkId)
-        spkIsDialect = try c.decodeIfPresent([String: String].self, forKey: .spkIsDialect)
+
+        // spk_id can be {name: int} or {name: [int]} in HuggingFace JSON.
+        // Normalise to [String: [Int]] by wrapping bare integers in arrays.
+        if let rawSpkId = try c.decodeIfPresent([String: IntOrIntArray].self, forKey: .spkId) {
+            var normalised = [String: [Int]]()
+            for (k, v) in rawSpkId { normalised[k] = v.asArray }
+            spkId = normalised
+        } else {
+            spkId = nil
+        }
+
+        // spk_is_dialect can have mixed bool/string values in HuggingFace JSON.
+        // Entries with value `false` are dropped; only dialect strings are kept.
+        if let rawDialect = try c.decodeIfPresent([String: BoolOrString].self, forKey: .spkIsDialect) {
+            var normalised = [String: String]()
+            for (k, v) in rawDialect {
+                if let str = v.asString { normalised[k] = str }
+            }
+            spkIsDialect = normalised
+        } else {
+            spkIsDialect = nil
+        }
     }
 
     var mropeSection: [Int]? {
@@ -174,6 +201,7 @@ public struct Qwen3TTSTalkerConfig: Codable, Sendable {
 
 // MARK: - Tokenizer Decoder Config
 
+/// Configuration for the speech tokenizer decoder (VQ + transformer + upsampling).
 public struct Qwen3TTSTokenizerDecoderConfig: Codable, Sendable {
     var attentionBias: Bool
     var attentionDropout: Float
@@ -256,10 +284,123 @@ public struct Qwen3TTSTokenizerDecoderConfig: Codable, Sendable {
     }
 }
 
+// MARK: - Tokenizer Encoder Config
+
+/// Configuration for the speech tokenizer encoder (SeanetEncoder + transformer + RVQ).
+/// Used for encoding reference audio into codec tokens for ICL voice cloning.
+public struct Qwen3TTSTokenizerEncoderConfig: Codable, Sendable {
+    var frameRate: Float
+    var attentionBias: Bool
+    var attentionDropout: Float
+    var audioChannels: Int
+    var codebookDim: Int
+    var codebookSize: Int
+    var compress: Int
+    var dilationGrowthRate: Int
+    var headDim: Int
+    var hiddenAct: String
+    var hiddenSize: Int
+    var intermediateSize: Int
+    var kernelSize: Int
+    var lastKernelSize: Int
+    var layerScaleInitialScale: Float
+    var maxPositionEmbeddings: Int
+    var normEps: Float
+    var numAttentionHeads: Int
+    var numFilters: Int
+    var numHiddenLayers: Int
+    var numKeyValueHeads: Int
+    var numQuantizers: Int
+    var numResidualLayers: Int
+    var numSemanticQuantizers: Int
+    var residualKernelSize: Int
+    var ropeTheta: Float
+    var samplingRate: Int
+    var slidingWindow: Int
+    var upsamplingRatios: [Int]
+    var useCausalConv: Bool
+    var useConvShortcut: Bool
+    var vectorQuantizationHiddenDimension: Int
+
+    enum CodingKeys: String, CodingKey {
+        case frameRate = "frame_rate"
+        case attentionBias = "attention_bias"
+        case attentionDropout = "attention_dropout"
+        case audioChannels = "audio_channels"
+        case codebookDim = "codebook_dim"
+        case codebookSize = "codebook_size"
+        case compress
+        case dilationGrowthRate = "dilation_growth_rate"
+        case headDim = "head_dim"
+        case hiddenAct = "hidden_act"
+        case hiddenSize = "hidden_size"
+        case intermediateSize = "intermediate_size"
+        case kernelSize = "kernel_size"
+        case lastKernelSize = "last_kernel_size"
+        case layerScaleInitialScale = "layer_scale_initial_scale"
+        case maxPositionEmbeddings = "max_position_embeddings"
+        case normEps = "norm_eps"
+        case numAttentionHeads = "num_attention_heads"
+        case numFilters = "num_filters"
+        case numHiddenLayers = "num_hidden_layers"
+        case numKeyValueHeads = "num_key_value_heads"
+        case numQuantizers = "num_quantizers"
+        case numResidualLayers = "num_residual_layers"
+        case numSemanticQuantizers = "num_semantic_quantizers"
+        case residualKernelSize = "residual_kernel_size"
+        case ropeTheta = "rope_theta"
+        case samplingRate = "sampling_rate"
+        case slidingWindow = "sliding_window"
+        case upsamplingRatios = "upsampling_ratios"
+        case useCausalConv = "use_causal_conv"
+        case useConvShortcut = "use_conv_shortcut"
+        case vectorQuantizationHiddenDimension = "vector_quantization_hidden_dimension"
+    }
+
+    public init(from decoder: Swift.Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        frameRate = try c.decodeIfPresent(Float.self, forKey: .frameRate) ?? 12.5
+        attentionBias = try c.decodeIfPresent(Bool.self, forKey: .attentionBias) ?? false
+        attentionDropout = try c.decodeIfPresent(Float.self, forKey: .attentionDropout) ?? 0
+        audioChannels = try c.decodeIfPresent(Int.self, forKey: .audioChannels) ?? 1
+        codebookDim = try c.decodeIfPresent(Int.self, forKey: .codebookDim) ?? 256
+        codebookSize = try c.decodeIfPresent(Int.self, forKey: .codebookSize) ?? 2048
+        compress = try c.decodeIfPresent(Int.self, forKey: .compress) ?? 2
+        dilationGrowthRate = try c.decodeIfPresent(Int.self, forKey: .dilationGrowthRate) ?? 2
+        headDim = try c.decodeIfPresent(Int.self, forKey: .headDim) ?? 64
+        hiddenAct = try c.decodeIfPresent(String.self, forKey: .hiddenAct) ?? "gelu"
+        hiddenSize = try c.decodeIfPresent(Int.self, forKey: .hiddenSize) ?? 512
+        intermediateSize = try c.decodeIfPresent(Int.self, forKey: .intermediateSize) ?? 2048
+        kernelSize = try c.decodeIfPresent(Int.self, forKey: .kernelSize) ?? 7
+        lastKernelSize = try c.decodeIfPresent(Int.self, forKey: .lastKernelSize) ?? 3
+        layerScaleInitialScale = try c.decodeIfPresent(Float.self, forKey: .layerScaleInitialScale) ?? 0.01
+        maxPositionEmbeddings = try c.decodeIfPresent(Int.self, forKey: .maxPositionEmbeddings) ?? 8000
+        normEps = try c.decodeIfPresent(Float.self, forKey: .normEps) ?? 1e-5
+        numAttentionHeads = try c.decodeIfPresent(Int.self, forKey: .numAttentionHeads) ?? 8
+        numFilters = try c.decodeIfPresent(Int.self, forKey: .numFilters) ?? 64
+        numHiddenLayers = try c.decodeIfPresent(Int.self, forKey: .numHiddenLayers) ?? 8
+        numKeyValueHeads = try c.decodeIfPresent(Int.self, forKey: .numKeyValueHeads) ?? 8
+        numQuantizers = try c.decodeIfPresent(Int.self, forKey: .numQuantizers) ?? 32
+        numResidualLayers = try c.decodeIfPresent(Int.self, forKey: .numResidualLayers) ?? 1
+        numSemanticQuantizers = try c.decodeIfPresent(Int.self, forKey: .numSemanticQuantizers) ?? 1
+        residualKernelSize = try c.decodeIfPresent(Int.self, forKey: .residualKernelSize) ?? 3
+        ropeTheta = try c.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? 10000
+        samplingRate = try c.decodeIfPresent(Int.self, forKey: .samplingRate) ?? 24000
+        slidingWindow = try c.decodeIfPresent(Int.self, forKey: .slidingWindow) ?? 250
+        upsamplingRatios = try c.decodeIfPresent([Int].self, forKey: .upsamplingRatios) ?? [8, 6, 5, 4]
+        useCausalConv = try c.decodeIfPresent(Bool.self, forKey: .useCausalConv) ?? true
+        useConvShortcut = try c.decodeIfPresent(Bool.self, forKey: .useConvShortcut) ?? false
+        vectorQuantizationHiddenDimension = try c.decodeIfPresent(Int.self, forKey: .vectorQuantizationHiddenDimension) ?? 256
+    }
+}
+
 // MARK: - Tokenizer Config (wrapper)
 
+/// Wrapper configuration for the Qwen3-TTS speech tokenizer, containing
+/// optional encoder and decoder sub-configs along with sample rate settings.
 public struct Qwen3TTSTokenizerConfig: Codable, Sendable {
     var decoderConfig: Qwen3TTSTokenizerDecoderConfig?
+    var encoderConfig: Qwen3TTSTokenizerEncoderConfig?
     var encoderValidNumQuantizers: Int
     var inputSampleRate: Int
     var outputSampleRate: Int
@@ -268,6 +409,7 @@ public struct Qwen3TTSTokenizerConfig: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case decoderConfig = "decoder_config"
+        case encoderConfig = "encoder_config"
         case encoderValidNumQuantizers = "encoder_valid_num_quantizers"
         case inputSampleRate = "input_sample_rate"
         case outputSampleRate = "output_sample_rate"
@@ -278,6 +420,7 @@ public struct Qwen3TTSTokenizerConfig: Codable, Sendable {
     public init(from decoder: Swift.Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         decoderConfig = try c.decodeIfPresent(Qwen3TTSTokenizerDecoderConfig.self, forKey: .decoderConfig)
+        encoderConfig = try c.decodeIfPresent(Qwen3TTSTokenizerEncoderConfig.self, forKey: .encoderConfig)
         encoderValidNumQuantizers = try c.decodeIfPresent(Int.self, forKey: .encoderValidNumQuantizers) ?? 16
         inputSampleRate = try c.decodeIfPresent(Int.self, forKey: .inputSampleRate) ?? 24000
         outputSampleRate = try c.decodeIfPresent(Int.self, forKey: .outputSampleRate) ?? 24000
@@ -286,12 +429,57 @@ public struct Qwen3TTSTokenizerConfig: Codable, Sendable {
     }
 }
 
+// MARK: - Speaker Encoder Config
+
+/// Configuration for the ECAPA-TDNN speaker encoder that extracts x-vector
+/// speaker embeddings from mel spectrograms. Only present in Base models.
+public struct Qwen3TTSSpeakerEncoderConfig: Codable, Sendable {
+    var melDim: Int
+    var encDim: Int
+    var encChannels: [Int]
+    var encKernelSizes: [Int]
+    var encDilations: [Int]
+    var encAttentionChannels: Int
+    var encRes2netScale: Int
+    var encSeChannels: Int
+    var sampleRate: Int
+
+    enum CodingKeys: String, CodingKey {
+        case melDim = "mel_dim"
+        case encDim = "enc_dim"
+        case encChannels = "enc_channels"
+        case encKernelSizes = "enc_kernel_sizes"
+        case encDilations = "enc_dilations"
+        case encAttentionChannels = "enc_attention_channels"
+        case encRes2netScale = "enc_res2net_scale"
+        case encSeChannels = "enc_se_channels"
+        case sampleRate = "sample_rate"
+    }
+
+    public init(from decoder: Swift.Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        melDim = try c.decodeIfPresent(Int.self, forKey: .melDim) ?? 128
+        encDim = try c.decodeIfPresent(Int.self, forKey: .encDim) ?? 1024
+        encChannels = try c.decodeIfPresent([Int].self, forKey: .encChannels) ?? [512, 512, 512, 512, 1536]
+        encKernelSizes = try c.decodeIfPresent([Int].self, forKey: .encKernelSizes) ?? [5, 3, 3, 3, 1]
+        encDilations = try c.decodeIfPresent([Int].self, forKey: .encDilations) ?? [1, 2, 3, 4, 1]
+        encAttentionChannels = try c.decodeIfPresent(Int.self, forKey: .encAttentionChannels) ?? 128
+        encRes2netScale = try c.decodeIfPresent(Int.self, forKey: .encRes2netScale) ?? 8
+        encSeChannels = try c.decodeIfPresent(Int.self, forKey: .encSeChannels) ?? 128
+        sampleRate = try c.decodeIfPresent(Int.self, forKey: .sampleRate) ?? 24000
+    }
+}
+
 // MARK: - Top-level Model Config
 
+/// Top-level configuration for a Qwen3-TTS model, decoded from the
+/// repository's `config.json`. Contains sub-configs for the talker,
+/// speech tokenizer, and optional speaker encoder.
 public struct Qwen3TTSModelConfig: Codable, Sendable {
     var modelType: String
     var talkerConfig: Qwen3TTSTalkerConfig?
     var tokenizerConfig: Qwen3TTSTokenizerConfig?
+    var speakerEncoderConfig: Qwen3TTSSpeakerEncoderConfig?
     var tokenizerType: String
     var ttsModelSize: String
     var ttsModelType: String
@@ -306,6 +494,7 @@ public struct Qwen3TTSModelConfig: Codable, Sendable {
         case modelType = "model_type"
         case talkerConfig = "talker_config"
         case tokenizerConfig = "tokenizer_config"
+        case speakerEncoderConfig = "speaker_encoder_config"
         case tokenizerType = "tokenizer_type"
         case ttsModelSize = "tts_model_size"
         case ttsModelType = "tts_model_type"
@@ -322,6 +511,7 @@ public struct Qwen3TTSModelConfig: Codable, Sendable {
         modelType = try c.decodeIfPresent(String.self, forKey: .modelType) ?? "qwen3_tts"
         talkerConfig = try c.decodeIfPresent(Qwen3TTSTalkerConfig.self, forKey: .talkerConfig)
         tokenizerConfig = try c.decodeIfPresent(Qwen3TTSTokenizerConfig.self, forKey: .tokenizerConfig)
+        speakerEncoderConfig = try c.decodeIfPresent(Qwen3TTSSpeakerEncoderConfig.self, forKey: .speakerEncoderConfig)
         tokenizerType = try c.decodeIfPresent(String.self, forKey: .tokenizerType) ?? "qwen3_tts_tokenizer_12hz"
         ttsModelSize = try c.decodeIfPresent(String.self, forKey: .ttsModelSize) ?? "0b6"
         ttsModelType = try c.decodeIfPresent(String.self, forKey: .ttsModelType) ?? "base"
@@ -339,3 +529,70 @@ public struct Qwen3TTSModelConfig: Codable, Sendable {
 // Note: StringOrNumber is already defined in MLXLMCommon (imported by the existing Qwen3 config).
 // We re-use that type here for rope_scaling parsing.
 // If needed, add: import MLXLMCommon
+
+// MARK: - IntOrIntArray helper for spk_id
+
+/// Handles HuggingFace JSON where `spk_id` values can be either bare integers
+/// (`"serena": 3066`) or integer arrays (`"serena": [3066]`).
+enum IntOrIntArray: Codable, Sendable {
+    case single(Int)
+    case array([Int])
+
+    var asArray: [Int] {
+        switch self {
+        case .single(let v): return [v]
+        case .array(let v): return v
+        }
+    }
+
+    init(from decoder: Swift.Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let intVal = try? container.decode(Int.self) {
+            self = .single(intVal)
+        } else {
+            self = .array(try container.decode([Int].self))
+        }
+    }
+
+    func encode(to encoder: Swift.Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .single(let v): try container.encode(v)
+        case .array(let v): try container.encode(v)
+        }
+    }
+}
+
+// MARK: - BoolOrString helper for spk_is_dialect
+
+/// Handles HuggingFace JSON where `spk_is_dialect` values can be either `false`
+/// (no dialect override) or a dialect string like `"sichuan_dialect"`.
+enum BoolOrString: Codable, Sendable {
+    case bool(Bool)
+    case string(String)
+
+    /// Returns the string value if present, or nil for boolean entries.
+    var asString: String? {
+        switch self {
+        case .bool: return nil
+        case .string(let v): return v
+        }
+    }
+
+    init(from decoder: Swift.Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let boolVal = try? container.decode(Bool.self) {
+            self = .bool(boolVal)
+        } else {
+            self = .string(try container.decode(String.self))
+        }
+    }
+
+    func encode(to encoder: Swift.Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .bool(let v): try container.encode(v)
+        case .string(let v): try container.encode(v)
+        }
+    }
+}
