@@ -599,4 +599,45 @@ struct SortformerInferenceTests {
         #expect(chunkCount > 0, "Should process at least one chunk")
         #expect(allSegments.count > 0, "Should detect segments across chunks")
     }
+
+    @Test func sortformerChunkedInference() async throws {
+        let audioURL = Bundle.module.url(forResource: "multi_speaker", withExtension: "wav", subdirectory: "media")!
+        let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
+        let audio = audioData
+        print("Loaded audio: \(audio.shape), sample rate: \(sampleRate)")
+
+        let model = try await SortformerModel.fromPretrained("mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16")
+
+        // --- README "Streaming from chunks" example ---
+        let chunkSize = Int(5.0 * Float(sampleRate))
+        var state = model.initStreamingState()
+        var allSegments = [DiarizationSegment]()
+
+        for start in stride(from: 0, to: audio.dim(0), by: chunkSize) {
+            let end = min(start + chunkSize, audio.dim(0))
+            let chunk = audio[start..<end]
+
+            let (result, newState) = model.feed(
+                chunk: chunk,
+                state: state,
+                threshold: 0.5
+            )
+            state = newState
+
+            allSegments.append(contentsOf: result.segments)
+            for seg in result.segments {
+                print("Speaker \(seg.speaker): \(String(format: "%.2f", seg.start))s - \(String(format: "%.2f", seg.end))s")
+            }
+        }
+
+        print("Total segments: \(allSegments.count)")
+        #expect(allSegments.count > 0, "Should detect segments from chunked feed")
+        #expect(state.framesProcessed > 0, "State should track processed frames")
+
+        for seg in allSegments {
+            #expect(seg.start >= 0)
+            #expect(seg.end > seg.start)
+            #expect(seg.speaker >= 0 && seg.speaker < 4)
+        }
+    }
 }
