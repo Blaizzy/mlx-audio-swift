@@ -113,32 +113,20 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         fMin: Float,
         fMax: Float
     ) -> MLXArray {
-        // Create Hanning window of win_size (same as nFft for speaker encoder)
-        let window = hanningWindow(size: winSize)
-
-        // Compute STFT using existing DSP utility
-        let freqs = stft(audio: audio, window: window, nFft: nFft, hopLength: hopLength)
-
-        // Compute power spectrum (magnitude squared)
-        let magnitudes = MLX.abs(freqs).square()
-
-        // Create mel filterbank [nFreqs, nMels] with fMin/fMax, slaney normalization
-        let filters = melFilters(
+        // Use Accelerate path (vDSP + BLAS) -- avoids MLXArray overhead
+        // and uses Apple Silicon NEON SIMD for the entire DSP pipeline.
+        let samples = audio.asArray(Float.self)
+        return computeMelSpectrogramAccelerate(
+            samples: samples,
             sampleRate: sampleRate,
             nFft: nFft,
+            hopLength: hopLength,
             nMels: nMels,
             fMin: fMin,
             fMax: fMax,
-            norm: "slaney"
+            norm: "slaney",
+            logScale: .standard
         )
-
-        // Apply mel filterbank: [numFrames, nFreqs] @ [nFreqs, nMels] = [numFrames, nMels]
-        var melSpec = MLX.matmul(magnitudes, filters)
-
-        // Apply log scaling (standard log-mel, NOT Whisper normalization)
-        melSpec = MLX.log(MLX.maximum(melSpec, MLXArray(Float(1e-5))))
-
-        return melSpec
     }
 
 
@@ -685,6 +673,10 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         for step in 0 ..< maxTokens {
             // Forward pass through talker
             let (logits, hidden) = talker(inputEmbeds, cache: cache)
+
+            // Schedule GPU evaluation asynchronously so CPU can proceed
+            // with sampling setup while GPU computes the forward pass result.
+            asyncEval(logits, hidden)
 
             // Sample first codebook token
             let nextToken = sampleToken(

@@ -247,6 +247,11 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
 
         for step in 0 ..< maxGenLen {
             let (nextLatent, isEos) = runFlowLMAndIncrementStep(&state, backboneInputLatents: backboneInput)
+
+            // Schedule GPU evaluation asynchronously -- overlap GPU work with
+            // CPU-side loop bookkeeping before blocking on the EOS check.
+            asyncEval(nextLatent, isEos)
+
             if eosStep == nil {
                 let eos = isEos.asArray(Bool.self).first ?? false
                 if eos { eosStep = step }

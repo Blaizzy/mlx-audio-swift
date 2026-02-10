@@ -436,7 +436,7 @@ public extension MarvisTTSModel {
                     
                     for _ in 0 ..< maxAudioFrames {
                         if Task.isCancelled { break outerLoop }
-                        
+
                         let frame = model.generateFrame(
                             maxCodebooks: qualityLevel.rawValue,
                             tokens: currTokens,
@@ -444,7 +444,11 @@ public extension MarvisTTSModel {
                             inputPos: currPos,
                             sampler: sampleFn
                         ) // [1, K]
-                        
+
+                        // Schedule GPU evaluation asynchronously -- overlap GPU work
+                        // with CPU-side loop bookkeeping before blocking on EOS check.
+                        asyncEval(frame)
+
                         // EOS if every codebook is 0
                         if frame.sum().item(Int32.self) == 0 {
                             break

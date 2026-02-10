@@ -840,6 +840,9 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
                     let (newLogits, newHiddenStates) = self.forwardWithHiddenStates(nextTokenExpanded, cache: cache)
 
                     let newLastHiddenState = newHiddenStates[0..., (newHiddenStates.shape[1] - 1)..<newHiddenStates.shape[1], 0...]
+                    // Schedule GPU evaluation asynchronously -- overlap GPU work
+                    // with CPU-side bookkeeping before blocking on the result.
+                    asyncEval(newLastHiddenState, newLogits)
                     eval(newLastHiddenState)
                     continuation.yield((tokenId, newLastHiddenState))
 

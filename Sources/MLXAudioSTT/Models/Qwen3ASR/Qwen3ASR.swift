@@ -826,6 +826,107 @@ public class Qwen3ASRModel: Module {
         return (inputFeatures, featureAttentionMask, numAudioTokens)
     }
 
+    // MARK: - Batch Audio Preprocessing
+
+    /// Compute mel spectrograms for multiple audio chunks, pad to equal length, and return
+    /// a batched tensor with an attention mask. This allows the audio encoder to process
+    /// all chunks in a single forward pass rather than sequentially.
+    ///
+    /// - Parameter audioChunks: Array of 1D audio waveforms.
+    /// - Returns: Tuple of (batchedFeatures [B, nMels, maxFrames], featureAttentionMask [B, maxFrames], numAudioTokensPerChunk [Int]).
+    private func batchPreprocessAudio(_ audioChunks: [MLXArray]) -> (MLXArray, MLXArray, [Int]) {
+        let nMels = config.audioConfig.numMelBins
+        var melSpecs: [MLXArray] = []
+        var frameCounts: [Int] = []
+
+        for chunk in audioChunks {
+            let melSpec = MLXAudioCore.computeMelSpectrogram(
+                audio: chunk,
+                sampleRate: 16000,
+                nFft: 400,
+                hopLength: 160,
+                nMels: nMels
+            )
+            melSpecs.append(melSpec)
+            frameCounts.append(melSpec.dim(0))
+        }
+
+        let maxFrames = frameCounts.max() ?? 0
+
+        // Pad each mel spectrogram to maxFrames and stack into a batch
+        var paddedSpecs: [MLXArray] = []
+        for (i, spec) in melSpecs.enumerated() {
+            // spec is [numFrames, nMels] -> transpose to [nMels, numFrames]
+            let transposed = spec.transposed(1, 0)
+            let padAmount = maxFrames - frameCounts[i]
+            if padAmount > 0 {
+                let padded = MLX.padded(transposed, widths: [IntOrPair((0, 0)), IntOrPair((0, padAmount))])
+                paddedSpecs.append(padded)
+            } else {
+                paddedSpecs.append(transposed)
+            }
+        }
+
+        // [B, nMels, maxFrames]
+        let batchedFeatures = MLX.stacked(paddedSpecs, axis: 0)
+
+        // Build attention mask: 1 for valid frames, 0 for padding
+        var maskRows: [MLXArray] = []
+        for count in frameCounts {
+            let ones = MLX.ones([count]).asType(.int32)
+            if maxFrames - count > 0 {
+                let zeros = MLX.zeros([maxFrames - count]).asType(.int32)
+                maskRows.append(MLX.concatenated([ones, zeros], axis: 0))
+            } else {
+                maskRows.append(ones)
+            }
+        }
+        let featureAttentionMask = MLX.stacked(maskRows, axis: 0)  // [B, maxFrames]
+
+        // Compute number of audio tokens per chunk after CNN downsampling
+        let frameLensArray = MLXArray(frameCounts.map { Int32($0) })
+        let aftercnnLens = getFeatExtractOutputLengths(frameLensArray)
+        let numAudioTokens = (0..<audioChunks.count).map {
+            Int(aftercnnLens[$0].item(Int32.self))
+        }
+
+        return (batchedFeatures, featureAttentionMask, numAudioTokens)
+    }
+
+    // MARK: - Batch Audio Encoding
+
+    /// Encode multiple audio chunks through the audio encoder in a single batched forward pass.
+    /// The Qwen3 audio encoder concatenates all valid-length features from all batch items
+    /// into a flat [totalLen, outputDim] tensor, so we slice by per-chunk token counts.
+    ///
+    /// - Parameter audioChunks: Array of 1D audio waveforms.
+    /// - Returns: Array of (audioFeatures, numAudioTokens) tuples, one per chunk.
+    private func batchEncodeAudioChunks(
+        _ audioChunks: [MLXArray]
+    ) -> [(audioFeatures: MLXArray, numAudioTokens: Int)] {
+        let (batchedFeatures, featureAttentionMask, numAudioTokensPerChunk) =
+            batchPreprocessAudio(audioChunks)
+
+        // Single batched forward pass through the audio encoder
+        let allAudioFeatures = getAudioFeatures(
+            batchedFeatures,
+            featureAttentionMask: featureAttentionMask
+        )
+        eval(allAudioFeatures)
+
+        // The encoder concatenates all valid features into [totalLen, outputDim].
+        // Slice them back into per-chunk features using the token counts.
+        var results: [(audioFeatures: MLXArray, numAudioTokens: Int)] = []
+        var offset = 0
+        for numTokens in numAudioTokensPerChunk {
+            let chunkFeatures = allAudioFeatures[offset..<(offset + numTokens)]
+            results.append((audioFeatures: chunkFeatures, numAudioTokens: numTokens))
+            offset += numTokens
+        }
+
+        return results
+    }
+
     // MARK: - Prompt Building
 
     public func buildPrompt(numAudioTokens: Int, language: String = "English") -> MLXArray {
@@ -915,16 +1016,94 @@ public class Qwen3ASRModel: Module {
         return (text.trimmingCharacters(in: .whitespacesAndNewlines), promptTokenCount, generatedTokens.count)
     }
 
+    // MARK: - Single Chunk Generation from Pre-computed Features
+
+    /// Generate text from pre-computed audio encoder features. Used by the batched path
+    /// where audio encoding has already been done in batch.
+    private func generateSingleChunkFromAudioFeatures(
+        audioFeatures: MLXArray,
+        numAudioTokens: Int,
+        maxTokens: Int,
+        temperature: Float,
+        language: String
+    ) -> (text: String, promptTokens: Int, generationTokens: Int) {
+        guard let tokenizer = tokenizer else {
+            fatalError("Tokenizer not loaded")
+        }
+
+        let eosTokenIds = [151645, 151643]
+
+        let inputIds = buildPrompt(numAudioTokens: numAudioTokens, language: language)
+        let promptTokenCount = inputIds.dim(1)
+
+        let embeds = model.embedTokens(inputIds)
+        let inputsEmbeds = mergeAudioFeatures(
+            inputsEmbeds: embeds,
+            audioFeatures: audioFeatures.asType(embeds.dtype),
+            inputIds: inputIds
+        )
+
+        let cache = makeCache()
+        var logits = callAsFunction(
+            inputIds: inputIds,
+            inputEmbeddings: inputsEmbeds,
+            cache: cache
+        )
+        eval(logits)
+
+        var generatedTokens: [Int] = []
+
+        for _ in 0..<maxTokens {
+            var lastLogits = logits[0..., -1, 0...]
+            if temperature > 0 {
+                lastLogits = lastLogits / temperature
+            }
+            let nextToken = lastLogits.argMax(axis: -1).item(Int.self)
+
+            if eosTokenIds.contains(nextToken) {
+                break
+            }
+
+            generatedTokens.append(nextToken)
+
+            let nextTokenArray = MLXArray([Int32(nextToken)]).expandedDimensions(axis: 0)
+            logits = callAsFunction(inputIds: nextTokenArray, cache: cache)
+            eval(logits)
+        }
+
+        let text = tokenizer.decode(tokens: generatedTokens)
+        return (
+            text.trimmingCharacters(in: .whitespacesAndNewlines),
+            promptTokenCount,
+            generatedTokens.count
+        )
+    }
+
+    /// Maximum number of audio chunks to encode in a single batch. Controls memory usage.
+    public static let defaultMaxBatchSize: Int = 8
+
     // MARK: - Generation
 
     /// Generate transcription from audio, automatically chunking long audio at low-energy boundaries.
+    /// When multiple chunks exist, audio encoding is batched for faster feature extraction.
+    ///
+    /// - Parameters:
+    ///   - audio: 1D audio waveform as MLXArray.
+    ///   - maxTokens: Maximum total tokens to generate across all chunks.
+    ///   - temperature: Sampling temperature (0 = greedy).
+    ///   - language: Language name for the prompt.
+    ///   - chunkDuration: Maximum chunk duration in seconds.
+    ///   - minChunkDuration: Minimum chunk duration in seconds.
+    ///   - maxBatchSize: Maximum number of chunks to encode in a single batch (controls memory).
+    /// - Returns: STTOutput with full transcription and per-chunk segments.
     public func generate(
         audio: MLXArray,
         maxTokens: Int = 8192,
         temperature: Float = 0.0,
         language: String = "English",
         chunkDuration: Float = 1200.0,
-        minChunkDuration: Float = 1.0
+        minChunkDuration: Float = 1.0,
+        maxBatchSize: Int = Qwen3ASRModel.defaultMaxBatchSize
     ) -> STTOutput {
         let startTime = Date()
 
@@ -942,9 +1121,9 @@ public class Qwen3ASRModel: Module {
         var totalGenerationTokens = 0
         var remainingTokens = maxTokens
 
-        for (chunkAudio, offsetSec) in chunks {
-            if remainingTokens <= 0 { break }
-
+        // Single chunk: use direct path (no batching overhead)
+        if chunks.count == 1 {
+            let (chunkAudio, offsetSec) = chunks[0]
             let actualChunkDuration = Float(chunkAudio.dim(0)) / Float(sampleRate)
 
             let result = generateSingleChunk(
@@ -957,15 +1136,56 @@ public class Qwen3ASRModel: Module {
             allTexts.append(result.text)
             totalPromptTokens += result.promptTokens
             totalGenerationTokens += result.generationTokens
-            remainingTokens -= result.generationTokens
 
             segments.append([
                 "text": result.text,
                 "start": Double(offsetSec),
                 "end": Double(offsetSec + actualChunkDuration),
             ])
+        } else {
+            // Multiple chunks: batch the audio encoder, then decode sequentially.
+            // Process in sub-batches to limit memory usage.
+            let effectiveBatchSize = max(1, min(maxBatchSize, chunks.count))
+            var chunkIndex = 0
 
-            Memory.clearCache()
+            while chunkIndex < chunks.count && remainingTokens > 0 {
+                let batchEnd = min(chunkIndex + effectiveBatchSize, chunks.count)
+                let batchChunks = chunks[chunkIndex..<batchEnd]
+                let audioChunks = batchChunks.map { $0.0 }
+
+                // Batch encode all audio chunks in this sub-batch
+                let encodedChunks = batchEncodeAudioChunks(audioChunks)
+
+                // Sequential text decode for each chunk using pre-computed features
+                for (batchOffset, (chunkAudio, offsetSec)) in batchChunks.enumerated() {
+                    if remainingTokens <= 0 { break }
+
+                    let actualChunkDuration = Float(chunkAudio.dim(0)) / Float(sampleRate)
+                    let encoded = encodedChunks[batchOffset]
+
+                    let result = generateSingleChunkFromAudioFeatures(
+                        audioFeatures: encoded.audioFeatures,
+                        numAudioTokens: encoded.numAudioTokens,
+                        maxTokens: remainingTokens,
+                        temperature: temperature,
+                        language: language
+                    )
+
+                    allTexts.append(result.text)
+                    totalPromptTokens += result.promptTokens
+                    totalGenerationTokens += result.generationTokens
+                    remainingTokens -= result.generationTokens
+
+                    segments.append([
+                        "text": result.text,
+                        "start": Double(offsetSec),
+                        "end": Double(offsetSec + actualChunkDuration),
+                    ])
+                }
+
+                chunkIndex = batchEnd
+                Memory.clearCache()
+            }
         }
 
         let endTime = Date()
@@ -986,13 +1206,25 @@ public class Qwen3ASRModel: Module {
     }
 
     /// Generate transcription with streaming output, automatically chunking long audio.
+    /// When multiple chunks exist, audio encoding is batched for faster feature extraction.
+    ///
+    /// - Parameters:
+    ///   - audio: 1D audio waveform as MLXArray.
+    ///   - maxTokens: Maximum total tokens to generate across all chunks.
+    ///   - temperature: Sampling temperature (0 = greedy).
+    ///   - language: Language name for the prompt.
+    ///   - chunkDuration: Maximum chunk duration in seconds.
+    ///   - minChunkDuration: Minimum chunk duration in seconds.
+    ///   - maxBatchSize: Maximum number of chunks to encode in a single batch (controls memory).
+    /// - Returns: AsyncThrowingStream of STTGeneration events.
     public func generateStream(
         audio: MLXArray,
         maxTokens: Int = 8192,
         temperature: Float = 0.0,
         language: String = "English",
         chunkDuration: Float = 1200.0,
-        minChunkDuration: Float = 1.0
+        minChunkDuration: Float = 1.0,
+        maxBatchSize: Int = Qwen3ASRModel.defaultMaxBatchSize
     ) -> AsyncThrowingStream<STTGeneration, Error> {
         AsyncThrowingStream { continuation in
             do {
@@ -1016,20 +1248,14 @@ public class Qwen3ASRModel: Module {
                 var remainingTokens = maxTokens
                 var allGeneratedTokens: [Int] = []
 
-                for (chunkAudio, _) in chunks {
-                    if remainingTokens <= 0 { break }
-
-                    // Preprocess this chunk
-                    let (inputFeatures, featureAttentionMask, numAudioTokens) = self.preprocessAudio(chunkAudio)
+                /// Helper: streaming token decode for a single chunk given pre-computed audio features.
+                func streamDecodeFromFeatures(
+                    audioFeatures: MLXArray,
+                    numAudioTokens: Int
+                ) {
                     let inputIds = self.buildPrompt(numAudioTokens: numAudioTokens, language: language)
                     let promptTokenCount = inputIds.dim(1)
                     totalPromptTokens += promptTokenCount
-
-                    // Encode audio
-                    let audioFeatures = self.getAudioFeatures(
-                        inputFeatures, featureAttentionMask: featureAttentionMask
-                    )
-                    eval(audioFeatures)
 
                     let embeds = self.model.embedTokens(inputIds)
                     let inputsEmbeds = self.mergeAudioFeatures(
@@ -1072,8 +1298,49 @@ public class Qwen3ASRModel: Module {
 
                     totalGenerationTokens += chunkTokens.count
                     remainingTokens -= chunkTokens.count
+                }
 
-                    Memory.clearCache()
+                if chunks.count == 1 {
+                    // Single chunk: preprocess + encode + stream decode directly
+                    let (chunkAudio, _) = chunks[0]
+                    let (inputFeatures, featureAttentionMask, numAudioTokens) =
+                        self.preprocessAudio(chunkAudio)
+                    let audioFeatures = self.getAudioFeatures(
+                        inputFeatures, featureAttentionMask: featureAttentionMask
+                    )
+                    eval(audioFeatures)
+
+                    streamDecodeFromFeatures(
+                        audioFeatures: audioFeatures,
+                        numAudioTokens: numAudioTokens
+                    )
+                } else {
+                    // Multiple chunks: batch encode, then stream decode sequentially
+                    let effectiveBatchSize = max(1, min(maxBatchSize, chunks.count))
+                    var chunkIndex = 0
+
+                    while chunkIndex < chunks.count && remainingTokens > 0 {
+                        let batchEnd = min(chunkIndex + effectiveBatchSize, chunks.count)
+                        let batchChunks = chunks[chunkIndex..<batchEnd]
+                        let audioChunks = batchChunks.map { $0.0 }
+
+                        // Batch encode all audio chunks in this sub-batch
+                        let encodedChunks = self.batchEncodeAudioChunks(audioChunks)
+
+                        // Sequential streaming decode for each chunk
+                        for (batchOffset, _) in batchChunks.enumerated() {
+                            if remainingTokens <= 0 { break }
+
+                            let encoded = encodedChunks[batchOffset]
+                            streamDecodeFromFeatures(
+                                audioFeatures: encoded.audioFeatures,
+                                numAudioTokens: encoded.numAudioTokens
+                            )
+                        }
+
+                        chunkIndex = batchEnd
+                        Memory.clearCache()
+                    }
                 }
 
                 let endTime = Date()

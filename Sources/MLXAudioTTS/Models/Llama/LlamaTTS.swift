@@ -714,7 +714,9 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
                 if value != OrpheusTokens.endOfSpeech {
                     let nextTokenExpanded = nextToken.reshaped([1, 1])
                     logits = self(nextTokenExpanded, cache: cache)
-                    eval(logits)
+                    // Schedule GPU evaluation asynchronously -- the result
+                    // will be consumed at the top of the next iteration.
+                    asyncEval(logits)
                 }
 
                 return value
@@ -840,26 +842,28 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
                         if value != OrpheusTokens.endOfSpeech {
                             let nextTokenExpanded = nextToken.reshaped([1, 1])
                             logits = self(nextTokenExpanded, cache: cache)
-                            eval(logits)
+                            // Schedule GPU evaluation asynchronously -- the result
+                            // will be consumed at the top of the next iteration.
+                            asyncEval(logits)
                         }
-                        
+
                         return value
                     }
-                    
+
                     tokenCount += 1
                     continuation.yield(.token(tokenValue))
-                    
+
                     if tokenValue == OrpheusTokens.endOfSpeech {
                         break
                     }
-                    
+
                     generatedTokens.append(Int32(tokenValue))
-                    
+
                     if i % 50 == 0 {
                         Memory.clearCache()
                     }
                 }
-                
+
                 let generateTime = Date().timeIntervalSince(generateStartTime)
                 
                 let allTokens = MLXArray(generatedTokens).expandedDimensions(axis: 0)
