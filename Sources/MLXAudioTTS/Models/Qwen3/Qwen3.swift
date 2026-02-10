@@ -538,6 +538,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         refAudio: MLXArray?,
         refText: String?,
         language _: String?,
+        instruct _: String?,
         generationParameters: GenerateParameters
     ) async throws -> MLXArray {
         try await generate(
@@ -556,6 +557,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         refAudio: MLXArray?,
         refText: String?,
         language _: String?,
+        instruct _: String?,
         generationParameters: GenerateParameters
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(

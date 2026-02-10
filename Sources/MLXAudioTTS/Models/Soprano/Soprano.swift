@@ -275,6 +275,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
         refAudio _: MLXArray?,
         refText _: String?,
         language _: String?,
+        instruct _: String?,
         generationParameters: GenerateParameters
     ) async throws -> MLXArray {
         try await generate(
@@ -291,6 +292,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
         refAudio _: MLXArray?,
         refText _: String?,
         language _: String?,
+        instruct _: String?,
         generationParameters: GenerateParameters
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(

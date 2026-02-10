@@ -30,55 +30,75 @@ struct VoicesView: View {
         }
     }
 
-    #if os(iOS)
-    private let sectionSpacing: CGFloat = 16
-    #else
-    private let sectionSpacing: CGFloat = 24
-    #endif
-
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: sectionSpacing) {
-                    // Search bar
-                    SearchBar(text: $searchText)
-                        .padding(.horizontal)
-
-                    // Add new voice button
+            List {
+                // Add new voice button
+                Section {
                     AddVoiceButton {
                         showAddVoice = true
                     }
-                    .padding(.horizontal)
+                }
+                .listRowBackground(Color.clear)
 
-                    // Recently used section
-                    if !filteredRecentlyUsed.isEmpty {
-                        RecentlyUsedSection(
-                            voices: filteredRecentlyUsed,
-                            onVoiceTap: { voice in
-                                selectedVoice = voice
-                                onVoiceSelected?(voice)
+                // Recently used section
+                if !filteredRecentlyUsed.isEmpty {
+                    Section {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(filteredRecentlyUsed) { voice in
+                                    VoiceChip(voice: voice) {
+                                        selectedVoice = voice
+                                        onVoiceSelected?(voice)
+                                    }
+                                }
                             }
-                        )
-                        .padding(.horizontal)
-                    }
-
-                    // Your voices section
-                    if !filteredCustomVoices.isEmpty {
-                        YourVoicesSection(
-                            voices: filteredCustomVoices,
-                            onVoiceTap: { voice in
-                                selectedVoice = voice
-                                onVoiceSelected?(voice)
-                            },
-                            onDelete: { voice in
-                                customVoices.removeAll { $0.id == voice.id }
-                            }
-                        )
-                        .padding(.horizontal)
+                        }
+                    } header: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Recently used")
+                            Text("Voices you've used recently")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .textCase(nil)
+                        }
                     }
                 }
-                .padding(.vertical, 8)
+
+                // Your voices section
+                if !filteredCustomVoices.isEmpty {
+                    Section {
+                        ForEach(filteredCustomVoices) { voice in
+                            VoiceRow(
+                                voice: voice,
+                                onTap: {
+                                    selectedVoice = voice
+                                    onVoiceSelected?(voice)
+                                }
+                            )
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    customVoices.removeAll { $0.id == voice.id }
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                        }
+                    } header: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Your Voices")
+                            Text("Voices you've created")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .textCase(nil)
+                        }
+                    }
+                }
             }
+            #if os(iOS)
+            .listStyle(.insetGrouped)
+            #endif
+            .searchable(text: $searchText, prompt: "Search voices")
             .navigationTitle("Voices")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -98,43 +118,9 @@ struct VoicesView: View {
                 }
             }
         }
-    }
-}
-
-// MARK: - Search Bar
-
-struct SearchBar: View {
-    @Binding var text: String
-
-    #if os(iOS)
-    private let padding: CGFloat = 10
-    private let cornerRadius: CGFloat = 10
-    #else
-    private let padding: CGFloat = 12
-    private let cornerRadius: CGFloat = 12
-    #endif
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-
-            TextField("Search", text: $text)
-                .font(.footnote)
-                .textFieldStyle(.plain)
-
-            if !text.isEmpty {
-                Button(action: { text = "" }) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .padding(padding)
-        .background(Color.gray.opacity(0.15))
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+        #if os(macOS)
+        .frame(minWidth: 400, minHeight: 400)
+        #endif
     }
 }
 
@@ -185,86 +171,6 @@ struct AddVoiceButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-}
-
-// MARK: - Recently Used Section
-
-struct RecentlyUsedSection: View {
-    let voices: [Voice]
-    var onVoiceTap: ((Voice) -> Void)?
-
-    #if os(iOS)
-    private let titleFont: Font = .subheadline
-    private let subtitleFont: Font = .caption
-    #else
-    private let titleFont: Font = .title2
-    private let subtitleFont: Font = .subheadline
-    #endif
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Recently used")
-                    .font(titleFont)
-                    .fontWeight(.bold)
-
-                Text("Voices you've used recently")
-                    .font(subtitleFont)
-                    .foregroundStyle(.secondary)
-            }
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(voices) { voice in
-                        VoiceChip(voice: voice) {
-                            onVoiceTap?(voice)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// MARK: - Your Voices Section
-
-struct YourVoicesSection: View {
-    let voices: [Voice]
-    var onVoiceTap: ((Voice) -> Void)?
-    var onDelete: ((Voice) -> Void)?
-
-    #if os(iOS)
-    private let titleFont: Font = .subheadline
-    private let subtitleFont: Font = .caption
-    #else
-    private let titleFont: Font = .title2
-    private let subtitleFont: Font = .subheadline
-    #endif
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Your Voices")
-                    .font(titleFont)
-                    .fontWeight(.bold)
-
-                Text("Voices you've created")
-                    .font(subtitleFont)
-                    .foregroundStyle(.secondary)
-            }
-
-            VStack(spacing: 6) {
-                ForEach(voices) { voice in
-                    VoiceRow(
-                        voice: voice,
-                        showDeleteButton: true,
-                        onDelete: { onDelete?(voice) },
-                        onTap: { onVoiceTap?(voice) }
-                    )
-                }
-            }
-        }
     }
 }
 

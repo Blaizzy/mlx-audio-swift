@@ -6,9 +6,16 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                settingsContent
+            Form {
+                modelSection
+                generationSection
+                chunkingSection
+                resetSection
             }
+            #if os(macOS)
+            .formStyle(.grouped)
+            .padding(.horizontal)
+            #endif
             .navigationTitle("Settings")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -20,242 +27,148 @@ struct SettingsView: View {
             }
         }
         #if os(macOS)
-        .frame(minWidth: 450, minHeight: 700)
+        .frame(minWidth: 550, minHeight: 500)
         #endif
     }
 
-    #if os(iOS)
-    private let sectionSpacing: CGFloat = 12
-    private let labelFont: Font = .caption
-    private let textFont: Font = .footnote
-    private let horizontalPadding: CGFloat = 16
-    #else
-    private let sectionSpacing: CGFloat = 16
-    private let labelFont: Font = .subheadline
-    private let textFont: Font = .subheadline
-    private let horizontalPadding: CGFloat = 20
-    #endif
+    // MARK: - Model
 
-    private var settingsContent: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Model Section
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Model")
-                    .font(labelFont)
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 6) {
-                    TextField("Model ID", text: $viewModel.modelId)
-                        .font(textFont)
-                        .textFieldStyle(.plain)
-                        .padding(8)
-                        .background(Color.gray.opacity(0.15))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-
-                    Button(action: {
-                        Task {
-                            await viewModel.reloadModel()
-                        }
-                    }) {
-                        Text("Load")
-                            .font(textFont)
-                            .fontWeight(.medium)
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(Color.blue)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(viewModel.isLoading)
+    private var modelSection: some View {
+        Section {
+            Picker("Model Type", selection: Binding(
+                get: { viewModel.modelType },
+                set: { viewModel.switchModelType(to: $0) }
+            )) {
+                ForEach(TTSModelType.allCases) { type in
+                    Text(type.rawValue).tag(type)
                 }
-                .padding(.top, 4)
             }
-            .padding(.bottom, sectionSpacing)
 
-            // Length Section
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Length")
-                    .font(labelFont)
-                    .foregroundStyle(.secondary)
-
-                HStack {
-                    Text("Max Tokens")
-                        .font(textFont)
-                    Spacer()
-                    Text("\(viewModel.maxTokens)")
-                        .font(textFont)
-                        .foregroundStyle(.secondary)
+            Picker("Variant", selection: $viewModel.modelId) {
+                ForEach(viewModel.modelType.availableModels, id: \.id) { model in
+                    Text(model.name).tag(model.id)
                 }
-                .padding(.top, 4)
-
-                #if os(iOS)
-                CompactSlider(
-                    value: Binding(
-                        get: { Double(viewModel.maxTokens) },
-                        set: { viewModel.maxTokens = Int($0) }
-                    ),
-                    range: 100...2000,
-                    step: 100
-                )
-                #else
-                Slider(
-                    value: Binding(
-                        get: { Double(viewModel.maxTokens) },
-                        set: { viewModel.maxTokens = Int($0) }
-                    ),
-                    in: 100...2000,
-                    step: 100
-                )
-                .tint(.blue)
-                #endif
             }
-            .padding(.bottom, sectionSpacing)
+            .onChange(of: viewModel.modelId) { _, newValue in
+                // Auto-reload when a known preset is selected via picker
+                if viewModel.modelType.availableModels.contains(where: { $0.id == newValue }),
+                   newValue != viewModel.loadedModelId {
+                    Task { await viewModel.reloadModel() }
+                }
+            }
 
-            // Temperature Section
-            VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                TextField("Model ID", text: $viewModel.modelId)
+                    .textFieldStyle(.plain)
+
+                Button {
+                    Task { await viewModel.reloadModel() }
+                } label: {
+                    Text("Load")
+                        .fontWeight(.medium)
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isLoading)
+            }
+        } header: {
+            Text("Model")
+        }
+    }
+
+    // MARK: - Generation Parameters
+
+    private var generationSection: some View {
+        Section {
+            HStack {
+                Text("Max Tokens")
+                Spacer()
+                Text("\(viewModel.maxTokens)")
+                    .foregroundStyle(.secondary)
+            }
+            Slider(
+                value: Binding(
+                    get: { Double(viewModel.maxTokens) },
+                    set: { viewModel.maxTokens = Int($0) }
+                ),
+                in: 100...2000,
+                step: 100
+            )
+            .tint(.blue)
+
+            HStack {
                 Text("Temperature")
-                    .font(labelFont)
+                Spacer()
+                Text(String(format: "%.2f", viewModel.temperature))
                     .foregroundStyle(.secondary)
-
-                HStack {
-                    Text("Temperature")
-                        .font(textFont)
-                    Spacer()
-                    Text(String(format: "%.2f", viewModel.temperature))
-                        .font(textFont)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.top, 4)
-
-                #if os(iOS)
-                CompactSlider(
-                    value: Binding(
-                        get: { Double(viewModel.temperature) },
-                        set: { viewModel.temperature = Float($0) }
-                    ),
-                    range: 0.0...1.0,
-                    step: 0.05
-                )
-                #else
-                Slider(
-                    value: Binding(
-                        get: { Double(viewModel.temperature) },
-                        set: { viewModel.temperature = Float($0) }
-                    ),
-                    in: 0.0...1.0,
-                    step: 0.05
-                )
-                .tint(.blue)
-                #endif
             }
-            .padding(.bottom, sectionSpacing)
+            Slider(
+                value: Binding(
+                    get: { Double(viewModel.temperature) },
+                    set: { viewModel.temperature = Float($0) }
+                ),
+                in: 0.0...1.0,
+                step: 0.05
+            )
+            .tint(.blue)
 
-            // Top P Section
-            VStack(alignment: .leading, spacing: 2) {
+            HStack {
                 Text("Top P")
-                    .font(labelFont)
+                Spacer()
+                Text(String(format: "%.2f", viewModel.topP))
                     .foregroundStyle(.secondary)
+            }
+            Slider(
+                value: Binding(
+                    get: { Double(viewModel.topP) },
+                    set: { viewModel.topP = Float($0) }
+                ),
+                in: 0.0...1.0,
+                step: 0.05
+            )
+            .tint(.blue)
+        } header: {
+            Text("Generation")
+        }
+    }
+
+    // MARK: - Text Chunking
+
+    private var chunkingSection: some View {
+        Section {
+            Toggle("Chunk Text", isOn: $viewModel.enableChunking)
+
+            if viewModel.enableChunking {
+                Toggle("Stream Audio", isOn: $viewModel.streamingPlayback)
 
                 HStack {
-                    Text("Top P")
-                        .font(textFont)
+                    Text("Max Chunk Length")
                     Spacer()
-                    Text(String(format: "%.2f", viewModel.topP))
-                        .font(textFont)
+                    Text("\(viewModel.maxChunkLength)")
                         .foregroundStyle(.secondary)
                 }
-                .padding(.top, 4)
-
-                #if os(iOS)
-                CompactSlider(
-                    value: Binding(
-                        get: { Double(viewModel.topP) },
-                        set: { viewModel.topP = Float($0) }
-                    ),
-                    range: 0.0...1.0,
-                    step: 0.05
-                )
-                #else
                 Slider(
                     value: Binding(
-                        get: { Double(viewModel.topP) },
-                        set: { viewModel.topP = Float($0) }
+                        get: { Double(viewModel.maxChunkLength) },
+                        set: { viewModel.maxChunkLength = Int($0) }
                     ),
-                    in: 0.0...1.0,
-                    step: 0.05
+                    in: 100...500,
+                    step: 50
                 )
                 .tint(.blue)
-                #endif
+
             }
-            .padding(.bottom, sectionSpacing)
+        } header: {
+            Text("Text Chunking")
+        }
+    }
 
-            // Text Chunking Section
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Text Chunking")
-                    .font(labelFont)
-                    .foregroundStyle(.secondary)
+    // MARK: - Reset
 
-                #if os(iOS)
-                CompactToggle(label: "Chunk text", isOn: $viewModel.enableChunking, font: textFont)
-                    .padding(.top, 4)
-                #else
-                Toggle("Chunk text", isOn: $viewModel.enableChunking)
-                    .font(textFont)
-                    .padding(.top, 4)
-                #endif
-
-                if viewModel.enableChunking {
-                    #if os(iOS)
-                    CompactToggle(label: "Stream audio", isOn: $viewModel.streamingPlayback, font: textFont)
-                    #else
-                    Toggle("Stream audio", isOn: $viewModel.streamingPlayback)
-                        .font(textFont)
-                    #endif
-
-                    HStack {
-                        Text("Max chunk length")
-                            .font(textFont)
-                        Spacer()
-                        Text("\(viewModel.maxChunkLength)")
-                            .font(textFont)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.top, 4)
-
-                    #if os(iOS)
-                    CompactSlider(
-                        value: Binding(
-                            get: { Double(viewModel.maxChunkLength) },
-                            set: { viewModel.maxChunkLength = Int($0) }
-                        ),
-                        range: 100...500,
-                        step: 50
-                    )
-                    #else
-                    Slider(
-                        value: Binding(
-                            get: { Double(viewModel.maxChunkLength) },
-                            set: { viewModel.maxChunkLength = Int($0) }
-                        ),
-                        in: 100...500,
-                        step: 50
-                    )
-                    .tint(.blue)
-                    #endif
-
-                    TextField("Split pattern", text: $viewModel.splitPattern)
-                        .font(textFont)
-                        .textFieldStyle(.plain)
-                        .padding(8)
-                        .background(Color.gray.opacity(0.15))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-            }
-
-            // Reset button
-            Button(action: {
-                viewModel.modelId = "mlx-community/VyvoTTS-EN-Beta-4bit"
+    private var resetSection: some View {
+        Section {
+            Button("Reset to Defaults") {
+                viewModel.modelType = .qwen3TTS
+                viewModel.modelId = viewModel.modelType.defaultModelId
                 viewModel.maxTokens = 1200
                 viewModel.temperature = 0.6
                 viewModel.topP = 0.8
@@ -263,21 +176,8 @@ struct SettingsView: View {
                 viewModel.maxChunkLength = 200
                 viewModel.splitPattern = "\n"
                 viewModel.streamingPlayback = true
-            }) {
-                Text("Reset to Defaults")
-                    .font(textFont)
-                    .fontWeight(.medium)
-                    .foregroundStyle(.blue)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.blue.opacity(0.15))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
             }
-            .buttonStyle(.plain)
-            .padding(.top, 16)
-            .padding(.bottom, 12)
         }
-        .padding(.horizontal, horizontalPadding)
     }
 }
 

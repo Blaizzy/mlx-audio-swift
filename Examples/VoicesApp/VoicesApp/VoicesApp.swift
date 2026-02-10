@@ -8,8 +8,7 @@ struct VoicesApp: App {
             ContentView()
         }
         #if os(macOS)
-        .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 500, height: 800)
+        .defaultSize(width: 700, height: 600)
         #endif
     }
 }

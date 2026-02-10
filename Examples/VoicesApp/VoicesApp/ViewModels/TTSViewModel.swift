@@ -6,6 +6,46 @@ import MLX
 import AVFoundation
 import Combine
 
+/// What voice controls to show based on current model
+enum VoiceMode {
+    case voiceList       // VyvoTTS - browse voice list
+    case presetVoices    // Qwen3 CustomVoice - pick from preset names
+    case voiceCloning    // Qwen3 Base - reference audio
+    case voiceDesign     // Qwen3 VoiceDesign - describe the voice
+}
+
+/// Available TTS model types
+enum TTSModelType: String, CaseIterable, Identifiable {
+    case vyvoTTS = "VyvoTTS"
+    case qwen3TTS = "Qwen3-TTS"
+
+    var id: String { rawValue }
+
+    var defaultModelId: String {
+        switch self {
+        case .vyvoTTS:
+            return "mlx-community/VyvoTTS-EN-Beta-4bit"
+        case .qwen3TTS:
+            return "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit"
+        }
+    }
+
+    var availableModels: [(id: String, name: String)] {
+        switch self {
+        case .vyvoTTS:
+            return [
+                ("mlx-community/VyvoTTS-EN-Beta-4bit", "VyvoTTS EN Beta (4-bit)")
+            ]
+        case .qwen3TTS:
+            return [
+                ("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit", "0.6B CustomVoice (4-bit)"),
+                ("mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit", "0.6B Base (4-bit)"),
+                ("mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit", "1.7B VoiceDesign (4-bit)")
+            ]
+        }
+    }
+}
+
 @MainActor
 @Observable
 class TTSViewModel {
@@ -17,12 +57,12 @@ class TTSViewModel {
     var tokensPerSecond: Double = 0
 
     // Generation parameters
-    var maxTokens: Int = 1200
+    var maxTokens: Int = 2000
     var temperature: Float = 0.6
-    var topP: Float = 0.8
+    var topP: Float = 1.0
 
     // Text chunking
-    var enableChunking: Bool = true
+    var enableChunking: Bool = false
     var maxChunkLength: Int = 200
     var splitPattern: String = "\n"  // Can be regex like "\\n" or "[.!?]\\s+"
 
@@ -30,15 +70,41 @@ class TTSViewModel {
     var streamingPlayback: Bool = true  // Play audio as chunks are generated
 
     // Model configuration
-    var modelId: String = "mlx-community/VyvoTTS-EN-Beta-4bit"
-    private var loadedModelId: String?
+    var modelType: TTSModelType = .qwen3TTS
+    var modelId: String = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit"
+    private(set) var loadedModelId: String?
+
+    // Qwen3 voice selection
+    var selectedQwen3Voice: String = "serena"
+    var voiceInstruct: String = ""
+
+    // Qwen3 voice cloning (Base model)
+    var referenceAudioURL: URL?
+    var referenceTranscription: String = ""
+
+    static let qwen3Voices: [(id: String, name: String)] = [
+        ("serena", "Serena"), ("vivian", "Vivian"), ("ryan", "Ryan"),
+        ("aiden", "Aiden"), ("eric", "Eric"), ("dylan", "Dylan"),
+        ("uncle_fu", "Uncle Fu"), ("ono_anna", "Ono Anna"), ("sohee", "Sohee")
+    ]
+
+    /// What voice controls to show based on current model
+    var voiceMode: VoiceMode {
+        switch modelType {
+        case .vyvoTTS: return .voiceList
+        case .qwen3TTS:
+            if modelId.contains("Base") { return .voiceCloning }
+            if modelId.contains("VoiceDesign") { return .voiceDesign }
+            return .presetVoices
+        }
+    }
 
     // Audio player state (manually synced from AudioPlayerManager)
     var isPlaying: Bool = false
     var currentTime: TimeInterval = 0
     var duration: TimeInterval = 0
 
-    private var model: Qwen3Model?
+    private var model: SpeechGenerationModel?
     private let audioPlayer = AudioPlayerManager()
     private var cancellables = Set<AnyCancellable>()
     private var generationTask: Task<Void, Never>?
@@ -80,10 +146,11 @@ class TTSViewModel {
 
         isLoading = true
         errorMessage = nil
-        generationProgress = "Downloading model..."
+        generationProgress = "Loading model..."
 
         do {
-            model = try await Qwen3Model.fromPretrained(modelId)
+            // Use TTSModelUtils which auto-routes based on model_type in config
+            model = try await TTSModelUtils.loadModel(modelRepo: modelId)
             loadedModelId = modelId
             generationProgress = ""  // Clear progress on success
         } catch {
@@ -92,6 +159,12 @@ class TTSViewModel {
         }
 
         isLoading = false
+    }
+
+    /// Switch model type and update to default model for that type
+    func switchModelType(to type: TTSModelType) {
+        modelType = type
+        modelId = type.defaultModelId
     }
 
     func reloadModel() async {
@@ -184,7 +257,30 @@ class TTSViewModel {
     /// Start synthesis in a cancellable task
     func startSynthesis(text: String, voice: Voice? = nil) {
         generationTask = Task {
-            await synthesize(text: text, voice: voice)
+            let effectiveVoice: Voice?
+            switch voiceMode {
+            case .presetVoices:
+                // Qwen3 CustomVoice: use preset voice name
+                effectiveVoice = Voice(name: selectedQwen3Voice)
+            case .voiceCloning:
+                // Qwen3 Base: use reference audio for voice cloning
+                if let refURL = referenceAudioURL {
+                    effectiveVoice = Voice(
+                        name: refURL.deletingPathExtension().lastPathComponent,
+                        audioFileURL: refURL,
+                        transcription: referenceTranscription.isEmpty ? nil : referenceTranscription
+                    )
+                } else {
+                    effectiveVoice = nil
+                }
+            case .voiceDesign:
+                // Qwen3 VoiceDesign: no voice object needed (instruct not yet in protocol)
+                effectiveVoice = nil
+            case .voiceList:
+                // VyvoTTS: use the selected voice from VoicesView
+                effectiveVoice = voice
+            }
+            await synthesize(text: text, voice: effectiveVoice)
         }
     }
 
@@ -218,6 +314,9 @@ class TTSViewModel {
                 refText = transcription
             }
 
+            // Pass voice instruct for VoiceDesign/CustomVoice models
+            let instruct: String? = voiceInstruct.isEmpty ? nil : voiceInstruct
+
             // Split text into chunks
             let chunks = chunkText(text)
             let sampleRate = Double(model.sampleRate)
@@ -227,8 +326,6 @@ class TTSViewModel {
                 .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension("wav")
             let wavWriter = try StreamingWAVWriter(url: tempURL, sampleRate: sampleRate)
-
-            var totalTokenCount = 0
 
             // Start streaming playback if enabled and we have multiple chunks
             let useStreaming = streamingPlayback && chunks.count > 1
@@ -244,47 +341,32 @@ class TTSViewModel {
                     generationProgress = "Processing chunk \(index + 1)/\(chunks.count)..."
                 }
 
-                var chunkTokenCount = 0
                 var audio: MLXArray?
 
                 // Set cache limit for this chunk
-                Memory.cacheLimit = 512 * 1024 * 1024  // 512MB cache limit
+                Memory.cacheLimit = 100 * 1024 * 1024  // 100MB cache limit (match CLI)
 
-                // Each chunk needs a fresh cache - don't reuse across chunks
-                for try await event in model.generateStream(
+                generationProgress = "Generating..."
+
+                // Use the same non-streaming code path as the CLI
+                let startTime = Date()
+                let audioData = try await model.generate(
                     text: chunk,
                     voice: voice?.name,
                     refAudio: refAudio,
                     refText: refText,
-                    cache: nil,
-                    parameters: .init(
+                    language: nil,
+                    instruct: instruct,
+                    generationParameters: .init(
                         maxTokens: maxTokens,
                         temperature: temperature,
                         topP: topP,
-                        repetitionPenalty: 1.3,
+                        repetitionPenalty: 1.0,
                         repetitionContextSize: 20
                     )
-                ) {
-                    // Throw if cancelled - this will exit the loop and be caught below
-                    try Task.checkCancellation()
-
-                    switch event {
-                    case .token:
-                        chunkTokenCount += 1
-                        totalTokenCount += 1
-                        if chunkTokenCount % 50 == 0 {
-                            if chunks.count > 1 {
-                                generationProgress = "Chunk \(index + 1)/\(chunks.count): \(chunkTokenCount) tokens..."
-                            } else {
-                                generationProgress = "Generated \(chunkTokenCount) tokens..."
-                            }
-                        }
-                    case .info(let info):
-                        tokensPerSecond = info.tokensPerSecond
-                    case .audio(let audioData):
-                        audio = audioData
-                    }
-                }
+                )
+                audio = audioData
+                let elapsed = Date().timeIntervalSince(startTime)
 
                 // Convert to CPU samples and write directly to file
                 if let audioData = audio {
