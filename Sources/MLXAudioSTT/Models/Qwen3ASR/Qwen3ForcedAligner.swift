@@ -368,8 +368,7 @@ public class Qwen3ForcedAlignerModel: Module {
             let audioFeatures = audioTower(features, featureAttentionMask: featureAttentionMask)
                 .asType(inputsEmbeds.dtype)
 
-            let audioTokenMask = inputIds .== MLXArray(Int32(config.audioTokenId))
-            let flatMask = audioTokenMask.reshaped(-1)
+            let flatMask = (inputIds .== MLXArray(Int32(config.audioTokenId))).reshaped(-1)
             let batchSize = inputsEmbeds.dim(0)
             let seqLen = inputsEmbeds.dim(1)
             let hiddenDim = inputsEmbeds.dim(2)
@@ -378,22 +377,26 @@ public class Qwen3ForcedAlignerModel: Module {
             if numAudioTokens > 0 && audioFeatures.dim(0) > 0 {
                 let numToReplace = min(numAudioTokens, audioFeatures.dim(0))
                 let flatEmbeds = inputsEmbeds.reshaped(-1, hiddenDim)
-
-                var resultList: [MLXArray] = []
-                var audioIdx = 0
                 let totalLen = flatEmbeds.dim(0)
 
-                for i in 0..<totalLen {
-                    let isAudioToken = Int(flatMask[i].item(Int32.self)) != 0
-                    if audioIdx < numToReplace && isAudioToken {
-                        resultList.append(audioFeatures[audioIdx])
-                        audioIdx += 1
-                    } else {
-                        resultList.append(flatEmbeds[i])
-                    }
+                // Audio tokens are contiguous — find start and splice directly
+                let maskValues = flatMask.asType(.int32).asArray(Int32.self)
+                var firstAudioPos = -1
+                for (i, v) in maskValues.enumerated() {
+                    if v != 0 { firstAudioPos = i; break }
                 }
-
-                inputsEmbeds = MLX.stacked(resultList, axis: 0).reshaped(batchSize, seqLen, hiddenDim)
+                if firstAudioPos >= 0 {
+                    let endAudioPos = firstAudioPos + numToReplace
+                    var parts: [MLXArray] = []
+                    if firstAudioPos > 0 {
+                        parts.append(flatEmbeds[0..<firstAudioPos])
+                    }
+                    parts.append(audioFeatures[0..<numToReplace])
+                    if endAudioPos < totalLen {
+                        parts.append(flatEmbeds[endAudioPos..<totalLen])
+                    }
+                    inputsEmbeds = MLX.concatenated(parts, axis: 0).reshaped(batchSize, seqLen, hiddenDim)
+                }
             }
         }
 

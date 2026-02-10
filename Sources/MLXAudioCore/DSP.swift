@@ -129,15 +129,8 @@ public func stft(
     let paddedLen = padded.shape[0]
     let numFrames = 1 + (paddedLen - nFft) / hopLength
 
-    // Create frames
-    var frames: [MLXArray] = []
-    for i in 0..<numFrames {
-        let start = i * hopLength
-        let frame = padded[start..<(start + nFft)]
-        frames.append(frame)
-    }
-
-    let framesStacked = MLX.stacked(frames, axis: 0)  // [numFrames, nFft]
+    // Create frames using strided view — zero-copy, no per-frame loop
+    let framesStacked = asStrided(padded, [numFrames, nFft], strides: [hopLength, 1], offset: 0)
 
     // Apply window
     let windowed = framesStacked * window
@@ -166,6 +159,7 @@ public func computeMelSpectrogram(
 
         // Compute magnitude squared (power spectrum)
         let magnitudes = MLX.abs(freqs).square()
+        eval(magnitudes)  // Allow MLX to free STFT complex output
 
         // Create mel filterbank [nFreqs, nMels]
         let filters = melFilters(
@@ -177,6 +171,7 @@ public func computeMelSpectrogram(
 
         // Apply mel filterbank: [numFrames, nFreqs] @ [nFreqs, nMels] = [numFrames, nMels]
         var melSpec = MLX.matmul(magnitudes, filters)
+        eval(melSpec)  // Allow MLX to free magnitudes and filters
 
         // Apply log scaling with clamping (Whisper-style normalization)
         melSpec = MLX.maximum(melSpec, MLXArray(Float(1e-10)))

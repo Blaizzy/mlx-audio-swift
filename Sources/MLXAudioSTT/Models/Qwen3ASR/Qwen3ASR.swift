@@ -13,6 +13,12 @@ import MLXLMCommon
 import HuggingFace
 import Tokenizers
 
+/// Wrapper to pass non-Sendable values across concurrency boundaries when safety is managed externally.
+struct UncheckedSendableBox<T>: @unchecked Sendable {
+    let value: T
+    init(_ value: T) { self.value = value }
+}
+
 // MARK: - Helper Functions
 
 private func floorDiv(_ a: MLXArray, _ b: Int) -> MLXArray {
@@ -73,35 +79,38 @@ public func splitAudioIntoChunks(
         return [(wav, 0.0)]
     }
 
-    let samples = wav.asArray(Float.self)
     var chunks: [(MLXArray, Float)] = []
     var startSample = 0
     let maxChunkSamples = Int(chunkDuration * Float(sampleRate))
     let searchSamples = Int(searchExpandSec * Float(sampleRate))
     let minWindowSamples = Int(minWindowMs * Float(sampleRate) / 1000.0)
+    let minSamples = Int(minChunkDuration * Float(sampleRate))
 
     while startSample < totalSamples {
         let endSample = min(startSample + maxChunkSamples, totalSamples)
 
         if endSample >= totalSamples {
-            var chunkSamples = Array(samples[startSample..<totalSamples])
+            let chunkLen = totalSamples - startSample
+            var chunk = wav[startSample..<totalSamples]
             let offsetSec = Float(startSample) / Float(sampleRate)
-            // Pad if too short
-            let minSamples = Int(minChunkDuration * Float(sampleRate))
-            if chunkSamples.count < minSamples {
-                chunkSamples.append(contentsOf: [Float](repeating: 0, count: minSamples - chunkSamples.count))
+            if chunkLen < minSamples {
+                let padWidth = minSamples - chunkLen
+                chunk = MLX.padded(chunk, widths: [IntOrPair((0, padWidth))])
             }
-            chunks.append((MLXArray(chunkSamples), offsetSec))
+            chunks.append((chunk, offsetSec))
             break
         }
 
         // Search for low-energy point around the cut
         let searchStart = max(startSample, endSample - searchSamples)
         let searchEnd = min(totalSamples, endSample + searchSamples)
-        let searchRegion = Array(samples[searchStart..<searchEnd])
 
         var cutSample: Int
-        if searchRegion.count > minWindowSamples {
+        let searchLen = searchEnd - searchStart
+        if searchLen > minWindowSamples {
+            // Only pull the search region to CPU for energy calculation
+            let searchRegion = wav[searchStart..<searchEnd].asArray(Float.self)
+
             let energyLen = searchRegion.count - minWindowSamples + 1
             var energy = [Float](repeating: 0, count: energyLen)
             let invWindow = 1.0 / Float(minWindowSamples)
@@ -136,16 +145,17 @@ public func splitAudioIntoChunks(
 
         cutSample = max(cutSample, startSample + sampleRate)
 
-        var chunkSamples = Array(samples[startSample..<min(cutSample, totalSamples)])
+        let actualEnd = min(cutSample, totalSamples)
+        let chunkLen = actualEnd - startSample
+        var chunk = wav[startSample..<actualEnd]
         let offsetSec = Float(startSample) / Float(sampleRate)
 
-        // Pad if too short
-        let minSamples = Int(minChunkDuration * Float(sampleRate))
-        if chunkSamples.count < minSamples {
-            chunkSamples.append(contentsOf: [Float](repeating: 0, count: minSamples - chunkSamples.count))
+        if chunkLen < minSamples {
+            let padWidth = minSamples - chunkLen
+            chunk = MLX.padded(chunk, widths: [IntOrPair((0, padWidth))])
         }
 
-        chunks.append((MLXArray(chunkSamples), offsetSec))
+        chunks.append((chunk, offsetSec))
         startSample = cutSample
     }
 
@@ -340,8 +350,9 @@ public class Qwen3ASRAudioEncoder: Module {
     ) -> MLXArray {
         var maskValues = [Float](repeating: -1e9, count: seqLen * seqLen)
         for i in 0..<(cuSeqlens.count - 1) {
-            let start = cuSeqlens[i]
+            let start = min(cuSeqlens[i], seqLen)
             let end = min(cuSeqlens[i + 1], seqLen)
+            guard start < end else { continue }
             for r in start..<end {
                 for c in start..<end {
                     maskValues[r * seqLen + c] = 0.0
@@ -412,8 +423,6 @@ public class Qwen3ASRAudioEncoder: Module {
             }
         }
 
-        let paddedFeature = MLX.stacked(paddedChunks, axis: 0)  // [numChunks, n_mels, maxChunkLen]
-
         // Compute output lengths after CNN for each chunk
         let chunkLensArray = MLXArray(chunkLengths.map { Int32($0) })
         let featureLensAfterCnn = getFeatExtractOutputLengths(chunkLensArray)
@@ -422,79 +431,203 @@ public class Qwen3ASRAudioEncoder: Module {
         }
         let maxLenAfterCnn = featureLensAfterCnnValues.max() ?? 0
 
-        // Apply Conv2d layers: input [numChunks, n_mels, maxChunkLen, 1]
-        var x = paddedFeature.expandedDimensions(axis: -1)  // Add channel dim
-        x = gelu(conv2d1(x))
-        x = gelu(conv2d2(x))
-        x = gelu(conv2d3(x))
-
-        // Reshape: [b, f, t, c] -> [b, t, c*f]
-        let b = x.dim(0)
-        let f = x.dim(1)
-        let t = x.dim(2)
-        let c = x.dim(3)
-        x = x.transposed(0, 2, 3, 1).reshaped(b, t, c * f)
-        x = convOut(x)  // [b, t, d_model]
-
-        // Add positional embeddings
-        let posEmb = positionalEmbedding(x.dim(1))
-        x = x + posEmb.expandedDimensions(axis: 0)
-
-        // Extract valid-length hidden states and concatenate
+        // Process Conv2d layers in batches
+        let convBatchSize = 128
         var hiddenList: [MLXArray] = []
-        for i in 0..<x.dim(0) {
-            let validLen = featureLensAfterCnnValues[i]
-            hiddenList.append(x[i, 0..<validLen])
+        var chunkIdx = 0
+
+        for batchStart in stride(from: 0, to: paddedChunks.count, by: convBatchSize) {
+            let batchEnd = min(batchStart + convBatchSize, paddedChunks.count)
+            let batchSlice = Array(paddedChunks[batchStart..<batchEnd])
+            let batchLen = batchSlice.count
+
+            // Stack batch and apply Conv2d: [batchLen, n_mels, maxChunkLen, 1]
+            var x = MLX.stacked(batchSlice, axis: 0).expandedDimensions(axis: -1)
+            x = gelu(conv2d1(x))
+            x = gelu(conv2d2(x))
+            x = gelu(conv2d3(x))
+
+            // Reshape: [batchLen, f, t, c] -> [batchLen, t, c*f]
+            let f = x.dim(1)
+            let t = x.dim(2)
+            let c = x.dim(3)
+            x = x.transposed(0, 2, 3, 1).reshaped(batchLen, t, c * f)
+            x = convOut(x)  // [batchLen, t, d_model]
+
+            // Add positional embeddings
+            let posEmb = positionalEmbedding(x.dim(1))
+            x = x + posEmb.expandedDimensions(axis: 0)
+
+            eval(x) 
+
+            // Extract valid-length hidden states
+            for i in 0..<batchLen {
+                let validLen = featureLensAfterCnnValues[chunkIdx]
+                hiddenList.append(x[i, 0..<validLen])
+                chunkIdx += 1
+            }
         }
+
         var hiddenStates = MLX.concatenated(hiddenList, axis: 0)  // [totalValidLen, d_model]
 
-        // Build block attention mask
+        // Process transformer layers per-window instead of building dense O(seqLen²) mask.
+        // Block attention makes each window self-contained, so we batch windows
+        // independently — O(numWindows × windowLen²) instead of O(seqLen²).
         let aftercnnLensValues = (0..<batchSize).map {
             Int(aftercnnLens[$0].item(Int32.self))
         }
         let windowAftercnn = maxLenAfterCnn * (nWindowInfer / (nWindow * 2))
 
-        var cuChunkLens: [Int] = [0]
+        // Compute per-window lengths
+        var windowLengths: [Int] = []
         for cnnLen in aftercnnLensValues {
             let numFullWindows = cnnLen / windowAftercnn
             for _ in 0..<numFullWindows {
-                cuChunkLens.append(windowAftercnn)
+                windowLengths.append(windowAftercnn)
             }
             let remainder = cnnLen % windowAftercnn
             if remainder != 0 {
-                cuChunkLens.append(remainder)
+                windowLengths.append(remainder)
             }
         }
 
-        var cuSeqlens: [Int] = []
-        var cumSum = 0
-        for len in cuChunkLens {
-            cumSum += len
-            cuSeqlens.append(cumSum)
-        }
-
+        // Extract windows and group by length for batched processing
         let seqLen = hiddenStates.dim(0)
-        var attentionMask = createBlockAttentionMask(
-            seqLen: seqLen, cuSeqlens: cuSeqlens, dtype: hiddenStates.dtype
-        )
-        // [1, 1, seqLen, seqLen]
-        attentionMask = attentionMask.expandedDimensions(axes: [0, 1])
-
-        // [1, seqLen, d_model]
-        hiddenStates = hiddenStates.expandedDimensions(axis: 0)
-
-        // Apply transformer layers
-        for layer in layers {
-            hiddenStates = layer(hiddenStates, mask: attentionMask)
+        var windowsByLen: [Int: [(index: Int, data: MLXArray)]] = [:]
+        var windowOffset = 0
+        for (i, winLen) in windowLengths.enumerated() {
+            let end = min(windowOffset + winLen, seqLen)
+            guard windowOffset < end else { continue }
+            let window = hiddenStates[windowOffset..<end]
+            windowsByLen[winLen, default: []].append((index: i, data: window))
+            windowOffset = end
         }
+
+        // Process each size-group through all transformer layers
+        let encoderBatchSize = 256
+        var processedWindows: [(index: Int, data: MLXArray)] = []
+
+        for (_, group) in windowsByLen {
+            for bStart in stride(from: 0, to: group.count, by: encoderBatchSize) {
+                let bEnd = min(bStart + encoderBatchSize, group.count)
+                let batchItems = Array(group[bStart..<bEnd])
+
+                // [batchLen, windowLen, d_model] — full self-attention within each window
+                var batch = MLX.stacked(batchItems.map { $0.data }, axis: 0)
+                for layer in layers {
+                    batch = layer(batch, mask: nil)
+                }
+                eval(batch)
+
+                for (j, item) in batchItems.enumerated() {
+                    processedWindows.append((index: item.index, data: batch[j]))
+                }
+            }
+        }
+
+        // Reconstruct in original order
+        processedWindows.sort { $0.index < $1.index }
+        hiddenStates = MLX.concatenated(processedWindows.map { $0.data }, axis: 0)
 
         // Post-processing
-        hiddenStates = hiddenStates[0]  // Remove batch dim
         hiddenStates = lnPost(hiddenStates)
         hiddenStates = gelu(proj1(hiddenStates))
         hiddenStates = proj2(hiddenStates)
 
         return hiddenStates  // [seqLen, outputDim]
+    }
+
+    // MARK: - Single Window Encoding (for streaming)
+
+    /// Encode a single window of mel frames for streaming inference.
+    ///
+    /// Extracts the per-window encoding logic: Conv2d frontend → positional embedding
+    /// → transformer layers (with self-attention, no cross-window attention) → ln_post → proj1 → proj2.
+    ///
+    /// - Parameter melFrames: Mel spectrogram frames `[numFrames, nMels]` where numFrames ≤ nWindowInfer (800).
+    ///   Frames are automatically split into conv-sized chunks internally.
+    /// - Returns: Encoded features `[numTokens, outputDim]`
+    public func encodeSingleWindow(_ melFrames: MLXArray) -> MLXArray {
+        let numFrames = melFrames.dim(0)
+        let chunkSize = nWindow * 2  // 100 mel frames per conv chunk
+
+        // Split into conv-sized chunks
+        let numChunks = Int(ceil(Double(numFrames) / Double(chunkSize)))
+        var chunks: [MLXArray] = []
+        var chunkLengths: [Int] = []
+
+        for j in 0..<numChunks {
+            let start = j * chunkSize
+            let end = min(start + chunkSize, numFrames)
+            let chunk = melFrames[start..<end]  // [clen, nMels]
+            let transposed = chunk.transposed(1, 0)  // [nMels, clen]
+            chunks.append(transposed)
+            chunkLengths.append(end - start)
+        }
+
+        let maxChunkLen = chunkLengths.max() ?? 0
+
+        // Pad chunks to same length
+        var paddedChunks: [MLXArray] = []
+        for (idx, chunk) in chunks.enumerated() {
+            let clen = chunkLengths[idx]
+            if clen < maxChunkLen {
+                let padWidth = maxChunkLen - clen
+                let padded = MLX.padded(chunk, widths: [IntOrPair((0, 0)), IntOrPair((0, padWidth))])
+                paddedChunks.append(padded)
+            } else {
+                paddedChunks.append(chunk)
+            }
+        }
+
+        // Compute output lengths after CNN
+        let chunkLensArray = MLXArray(chunkLengths.map { Int32($0) })
+        let featureLensAfterCnn = getFeatExtractOutputLengths(chunkLensArray)
+        let featureLensAfterCnnValues = (0..<chunkLengths.count).map {
+            Int(featureLensAfterCnn[$0].item(Int32.self))
+        }
+
+        // Conv2d frontend: [batch, nMels, time, 1]
+        var x = MLX.stacked(paddedChunks, axis: 0).expandedDimensions(axis: -1)
+        x = gelu(conv2d1(x))
+        x = gelu(conv2d2(x))
+        x = gelu(conv2d3(x))
+
+        let f = x.dim(1)
+        let t = x.dim(2)
+        let c = x.dim(3)
+        x = x.transposed(0, 2, 3, 1).reshaped(numChunks, t, c * f)
+        x = convOut(x)
+
+        let posEmb = positionalEmbedding(x.dim(1))
+        x = x + posEmb.expandedDimensions(axis: 0)
+        eval(x)
+
+        // Extract valid-length hidden states
+        var hiddenList: [MLXArray] = []
+        for i in 0..<numChunks {
+            let validLen = featureLensAfterCnnValues[i]
+            hiddenList.append(x[i, 0..<validLen])
+        }
+
+        // Concatenate all chunks into a single sequence
+        var hiddenStates = MLX.concatenated(hiddenList, axis: 0)  // [totalTokens, dModel]
+
+        // Self-attention across the full window (no cross-window mask needed)
+        hiddenStates = hiddenStates.expandedDimensions(axis: 0)  // [1, totalTokens, dModel]
+        for layer in layers {
+            hiddenStates = layer(hiddenStates, mask: nil)
+        }
+        eval(hiddenStates)
+
+        hiddenStates = hiddenStates.squeezed(axis: 0)  // [totalTokens, dModel]
+
+        // Post-processing
+        hiddenStates = lnPost(hiddenStates)
+        hiddenStates = gelu(proj1(hiddenStates))
+        hiddenStates = proj2(hiddenStates)
+
+        return hiddenStates  // [numTokens, outputDim]
     }
 }
 
@@ -758,20 +891,16 @@ public class Qwen3ASRModel: Module {
 
     // MARK: - Audio-Text Merging
 
-    private func mergeAudioFeatures(
+    public func mergeAudioFeatures(
         inputsEmbeds: MLXArray,
         audioFeatures: MLXArray,
         inputIds: MLXArray
     ) -> MLXArray {
-        let audioTokenMask = inputIds .== MLXArray(Int32(config.audioTokenId))
-
-        // Find audio token positions
-        let flatMask = audioTokenMask.reshaped(-1)
+        let flatMask = (inputIds .== MLXArray(Int32(config.audioTokenId))).reshaped(-1)
         let batchSize = inputsEmbeds.dim(0)
         let seqLen = inputsEmbeds.dim(1)
         let hiddenDim = inputsEmbeds.dim(2)
 
-        // Count audio tokens
         let numAudioTokens = Int(flatMask.asType(.int32).sum().item(Int32.self))
         guard numAudioTokens > 0 && audioFeatures.dim(0) > 0 else {
             return inputsEmbeds
@@ -779,23 +908,27 @@ public class Qwen3ASRModel: Module {
 
         let numToReplace = min(numAudioTokens, audioFeatures.dim(0))
         let flatEmbeds = inputsEmbeds.reshaped(-1, hiddenDim)
-
-        // Build indices for replacement
-        var resultList: [MLXArray] = []
-        var audioIdx = 0
         let totalLen = flatEmbeds.dim(0)
 
-        for i in 0..<totalLen {
-            let isAudioToken = Int(flatMask[i].item(Int32.self)) != 0
-            if audioIdx < numToReplace && isAudioToken {
-                resultList.append(audioFeatures[audioIdx])
-                audioIdx += 1
-            } else {
-                resultList.append(flatEmbeds[i])
-            }
+        // Audio tokens are contiguous in the prompt — find start and splice directly
+        let maskValues = flatMask.asType(.int32).asArray(Int32.self)
+        var firstAudioPos = -1
+        for (i, v) in maskValues.enumerated() {
+            if v != 0 { firstAudioPos = i; break }
+        }
+        guard firstAudioPos >= 0 else { return inputsEmbeds }
+
+        let endAudioPos = firstAudioPos + numToReplace
+        var parts: [MLXArray] = []
+        if firstAudioPos > 0 {
+            parts.append(flatEmbeds[0..<firstAudioPos])
+        }
+        parts.append(audioFeatures[0..<numToReplace])
+        if endAudioPos < totalLen {
+            parts.append(flatEmbeds[endAudioPos..<totalLen])
         }
 
-        return MLX.stacked(resultList, axis: 0).reshaped(batchSize, seqLen, hiddenDim)
+        return MLX.concatenated(parts, axis: 0).reshaped(batchSize, seqLen, hiddenDim)
     }
 
     // MARK: - Audio Preprocessing
@@ -994,120 +1127,131 @@ public class Qwen3ASRModel: Module {
         chunkDuration: Float = 1200.0,
         minChunkDuration: Float = 1.0
     ) -> AsyncThrowingStream<STTGeneration, Error> {
-        AsyncThrowingStream { continuation in
-            do {
-                guard let tokenizer = self.tokenizer else {
-                    throw STTError.modelNotInitialized("Tokenizer not loaded")
-                }
-
-                let startTime = Date()
-                let eosTokenIds = [151645, 151643]
-
-                // Split audio into chunks
-                let chunks = splitAudioIntoChunks(
-                    audio,
-                    sampleRate: self.sampleRate,
-                    chunkDuration: chunkDuration,
-                    minChunkDuration: minChunkDuration
-                )
-
-                var totalPromptTokens = 0
-                var totalGenerationTokens = 0
-                var remainingTokens = maxTokens
-                var allGeneratedTokens: [Int] = []
-
-                for (chunkAudio, _) in chunks {
-                    if remainingTokens <= 0 { break }
-
-                    // Preprocess this chunk
-                    let (inputFeatures, featureAttentionMask, numAudioTokens) = self.preprocessAudio(chunkAudio)
-                    let inputIds = self.buildPrompt(numAudioTokens: numAudioTokens, language: language)
-                    let promptTokenCount = inputIds.dim(1)
-                    totalPromptTokens += promptTokenCount
-
-                    // Encode audio
-                    let audioFeatures = self.getAudioFeatures(
-                        inputFeatures, featureAttentionMask: featureAttentionMask
-                    )
-                    eval(audioFeatures)
-
-                    let embeds = self.model.embedTokens(inputIds)
-                    let inputsEmbeds = self.mergeAudioFeatures(
-                        inputsEmbeds: embeds,
-                        audioFeatures: audioFeatures.asType(embeds.dtype),
-                        inputIds: inputIds
-                    )
-
-                    let cache = self.makeCache()
-                    var logits = self.callAsFunction(
-                        inputIds: inputIds,
-                        inputEmbeddings: inputsEmbeds,
-                        cache: cache
-                    )
-                    eval(logits)
-
-                    var chunkTokens: [Int] = []
-
-                    for _ in 0..<remainingTokens {
-                        var lastLogits = logits[0..., -1, 0...]
-                        if temperature > 0 {
-                            lastLogits = lastLogits / temperature
-                        }
-                        let nextToken = lastLogits.argMax(axis: -1).item(Int.self)
-
-                        if eosTokenIds.contains(nextToken) {
-                            break
-                        }
-
-                        chunkTokens.append(nextToken)
-                        allGeneratedTokens.append(nextToken)
-
-                        let tokenText = tokenizer.decode(tokens: [nextToken])
-                        continuation.yield(.token(tokenText))
-
-                        let nextTokenArray = MLXArray([Int32(nextToken)]).expandedDimensions(axis: 0)
-                        logits = self.callAsFunction(inputIds: nextTokenArray, cache: cache)
-                        eval(logits)
+        let sendableModel = UncheckedSendableBox(self)
+        let sendableAudio = UncheckedSendableBox(audio)
+        return AsyncThrowingStream { continuation in
+            Task.detached {
+                let model = sendableModel.value
+                let audio = sendableAudio.value
+                do {
+                    guard let tokenizer = model.tokenizer else {
+                        throw STTError.modelNotInitialized("Tokenizer not loaded")
                     }
 
-                    totalGenerationTokens += chunkTokens.count
-                    remainingTokens -= chunkTokens.count
+                    let startTime = Date()
+                    let eosTokenIds = [151645, 151643]
 
-                    Memory.clearCache()
+                    // Split audio into chunks
+                    let chunks = splitAudioIntoChunks(
+                        audio,
+                        sampleRate: model.sampleRate,
+                        chunkDuration: chunkDuration,
+                        minChunkDuration: minChunkDuration
+                    )
+
+                    var totalPromptTokens = 0
+                    var totalGenerationTokens = 0
+                    var remainingTokens = maxTokens
+                    var allGeneratedTokens: [Int] = []
+
+                    for (chunkAudio, _) in chunks {
+                        if remainingTokens <= 0 { break }
+                        try Task.checkCancellation()
+
+                        // Preprocess this chunk
+                        let (inputFeatures, featureAttentionMask, numAudioTokens) = model.preprocessAudio(chunkAudio)
+                        let inputIds = model.buildPrompt(numAudioTokens: numAudioTokens, language: language)
+                        let promptTokenCount = inputIds.dim(1)
+                        totalPromptTokens += promptTokenCount
+
+                        // Encode audio
+                        let audioFeatures = model.getAudioFeatures(
+                            inputFeatures, featureAttentionMask: featureAttentionMask
+                        )
+                        eval(audioFeatures)
+
+                        let embeds = model.model.embedTokens(inputIds)
+                        let inputsEmbeds = model.mergeAudioFeatures(
+                            inputsEmbeds: embeds,
+                            audioFeatures: audioFeatures.asType(embeds.dtype),
+                            inputIds: inputIds
+                        )
+
+                        let cache = model.makeCache()
+                        var logits = model.callAsFunction(
+                            inputIds: inputIds,
+                            inputEmbeddings: inputsEmbeds,
+                            cache: cache
+                        )
+                        eval(logits)
+
+                        var chunkTokens: [Int] = []
+
+                        for _ in 0..<remainingTokens {
+                            try Task.checkCancellation()
+
+                            var lastLogits = logits[0..., -1, 0...]
+                            if temperature > 0 {
+                                lastLogits = lastLogits / temperature
+                            }
+                            let nextToken = lastLogits.argMax(axis: -1).item(Int.self)
+
+                            if eosTokenIds.contains(nextToken) {
+                                break
+                            }
+
+                            chunkTokens.append(nextToken)
+                            allGeneratedTokens.append(nextToken)
+
+                            let tokenText = tokenizer.decode(tokens: [nextToken])
+                            continuation.yield(.token(tokenText))
+
+                            let nextTokenArray = MLXArray([Int32(nextToken)]).expandedDimensions(axis: 0)
+                            logits = model.callAsFunction(inputIds: nextTokenArray, cache: cache)
+                            eval(logits)
+                        }
+
+                        totalGenerationTokens += chunkTokens.count
+                        remainingTokens -= chunkTokens.count
+
+                        Memory.clearCache()
+                    }
+
+                    let endTime = Date()
+                    let totalTime = endTime.timeIntervalSince(startTime)
+
+                    // Emit generation info
+                    let tokensPerSecond = totalTime > 0 ? Double(totalGenerationTokens) / totalTime : 0
+                    let peakMemory = Double(Memory.peakMemory) / 1e9
+                    let info = STTGenerationInfo(
+                        promptTokenCount: totalPromptTokens,
+                        generationTokenCount: totalGenerationTokens,
+                        prefillTime: 0,
+                        generateTime: totalTime,
+                        tokensPerSecond: tokensPerSecond,
+                        peakMemoryUsage: peakMemory
+                    )
+                    continuation.yield(.info(info))
+
+                    // Emit final result
+                    let text = tokenizer.decode(tokens: allGeneratedTokens)
+                    let output = STTOutput(
+                        text: text.trimmingCharacters(in: .whitespacesAndNewlines),
+                        promptTokens: totalPromptTokens,
+                        generationTokens: totalGenerationTokens,
+                        totalTokens: totalPromptTokens + totalGenerationTokens,
+                        promptTps: totalTime > 0 ? Double(totalPromptTokens) / totalTime : 0,
+                        generationTps: tokensPerSecond,
+                        totalTime: totalTime,
+                        peakMemoryUsage: peakMemory
+                    )
+                    continuation.yield(.result(output))
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
                 }
-
-                let endTime = Date()
-                let totalTime = endTime.timeIntervalSince(startTime)
-
-                // Emit generation info
-                let tokensPerSecond = totalTime > 0 ? Double(totalGenerationTokens) / totalTime : 0
-                let peakMemory = Double(Memory.peakMemory) / 1e9
-                let info = STTGenerationInfo(
-                    promptTokenCount: totalPromptTokens,
-                    generationTokenCount: totalGenerationTokens,
-                    prefillTime: 0,
-                    generateTime: totalTime,
-                    tokensPerSecond: tokensPerSecond,
-                    peakMemoryUsage: peakMemory
-                )
-                continuation.yield(.info(info))
-
-                // Emit final result
-                let text = tokenizer.decode(tokens: allGeneratedTokens)
-                let output = STTOutput(
-                    text: text.trimmingCharacters(in: .whitespacesAndNewlines),
-                    promptTokens: totalPromptTokens,
-                    generationTokens: totalGenerationTokens,
-                    totalTokens: totalPromptTokens + totalGenerationTokens,
-                    promptTps: totalTime > 0 ? Double(totalPromptTokens) / totalTime : 0,
-                    generationTps: tokensPerSecond,
-                    totalTime: totalTime,
-                    peakMemoryUsage: peakMemory
-                )
-                continuation.yield(.result(output))
-                continuation.finish()
-            } catch {
-                continuation.finish(throwing: error)
             }
         }
     }
