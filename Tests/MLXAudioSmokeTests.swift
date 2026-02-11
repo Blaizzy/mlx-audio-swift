@@ -338,7 +338,7 @@ struct TTSSmokeTests {
         testHeader("sopranoGenerate")
         defer { testCleanup("sopranoGenerate") }
         print("\u{001B}[33mLoading Soprano TTS model...\u{001B}[0m")
-        let model = try await SopranoModel.fromPretrained("mlx-community/Soprano-80M-bf16")
+        let model = try await SopranoModel.fromPretrained("mlx-community/Soprano-1.1-80M-bf16")
         print("\u{001B}[32mSoprano model loaded!\u{001B}[0m")
 
         let text = "Performance Optimization: Automatic model quantization and hardware optimization that delivers 30%-100% faster inference than standard implementations."

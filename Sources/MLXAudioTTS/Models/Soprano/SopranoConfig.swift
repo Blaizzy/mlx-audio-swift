@@ -17,6 +17,7 @@ public struct SopranoDecoderConfig: Codable, Sendable {
     public var hopLength: Int
     public var nFft: Int
     public var upscale: Int
+    public var inputKernel: Int
     public var dwKernel: Int
     public var tokenSize: Int
     public var receptiveField: Int
@@ -28,6 +29,7 @@ public struct SopranoDecoderConfig: Codable, Sendable {
         case hopLength = "hop_length"
         case nFft = "n_fft"
         case upscale
+        case inputKernel = "input_kernel"
         case dwKernel = "dw_kernel"
         case tokenSize = "token_size"
         case receptiveField = "receptive_field"
@@ -35,11 +37,12 @@ public struct SopranoDecoderConfig: Codable, Sendable {
 
     public init(
         decoderNumLayers: Int = 8,
-        decoderDim: Int = 512,
-        decoderIntermediateDim: Int = 1536,
+        decoderDim: Int = 768,
+        decoderIntermediateDim: Int = 2304,
         hopLength: Int = 512,
         nFft: Int = 2048,
         upscale: Int = 4,
+        inputKernel: Int = 1,
         dwKernel: Int = 3,
         tokenSize: Int = 2048,
         receptiveField: Int = 4
@@ -50,6 +53,7 @@ public struct SopranoDecoderConfig: Codable, Sendable {
         self.hopLength = hopLength
         self.nFft = nFft
         self.upscale = upscale
+        self.inputKernel = inputKernel
         self.dwKernel = dwKernel
         self.tokenSize = tokenSize
         self.receptiveField = receptiveField
@@ -87,6 +91,7 @@ public struct SopranoConfiguration: Codable, Sendable {
     public var hopLength: Int
     public var nFft: Int
     public var upscale: Int
+    public var inputKernel: Int
     public var dwKernel: Int
     public var tokenSize: Int
     public var receptiveField: Int
@@ -117,6 +122,7 @@ public struct SopranoConfiguration: Codable, Sendable {
         case hopLength = "hop_length"
         case nFft = "n_fft"
         case upscale
+        case inputKernel = "input_kernel"
         case dwKernel = "dw_kernel"
         case tokenSize = "token_size"
         case receptiveField = "receptive_field"
@@ -146,13 +152,14 @@ public struct SopranoConfiguration: Codable, Sendable {
         // Audio config
         self.sampleRate = try container.decodeIfPresent(Int.self, forKey: .sampleRate) ?? 32000
 
-        // Decoder config
+        // Decoder config (defaults match Soprano-1.1)
         self.decoderNumLayers = try container.decodeIfPresent(Int.self, forKey: .decoderNumLayers) ?? 8
-        self.decoderDim = try container.decodeIfPresent(Int.self, forKey: .decoderDim) ?? 512
-        self.decoderIntermediateDim = try container.decodeIfPresent(Int.self, forKey: .decoderIntermediateDim) ?? 1536
+        self.decoderDim = try container.decodeIfPresent(Int.self, forKey: .decoderDim) ?? 768
+        self.decoderIntermediateDim = try container.decodeIfPresent(Int.self, forKey: .decoderIntermediateDim) ?? 2304
         self.hopLength = try container.decodeIfPresent(Int.self, forKey: .hopLength) ?? 512
         self.nFft = try container.decodeIfPresent(Int.self, forKey: .nFft) ?? 2048
         self.upscale = try container.decodeIfPresent(Int.self, forKey: .upscale) ?? 4
+        self.inputKernel = try container.decodeIfPresent(Int.self, forKey: .inputKernel) ?? 1
         self.dwKernel = try container.decodeIfPresent(Int.self, forKey: .dwKernel) ?? 3
         self.tokenSize = try container.decodeIfPresent(Int.self, forKey: .tokenSize) ?? 2048
         self.receptiveField = try container.decodeIfPresent(Int.self, forKey: .receptiveField) ?? 4
@@ -186,6 +193,7 @@ public struct SopranoConfiguration: Codable, Sendable {
         try container.encode(hopLength, forKey: .hopLength)
         try container.encode(nFft, forKey: .nFft)
         try container.encode(upscale, forKey: .upscale)
+        try container.encode(inputKernel, forKey: .inputKernel)
         try container.encode(dwKernel, forKey: .dwKernel)
         try container.encode(tokenSize, forKey: .tokenSize)
         try container.encode(receptiveField, forKey: .receptiveField)
@@ -200,6 +208,7 @@ public struct SopranoConfiguration: Codable, Sendable {
             hopLength: hopLength,
             nFft: nFft,
             upscale: upscale,
+            inputKernel: inputKernel,
             dwKernel: dwKernel,
             tokenSize: tokenSize,
             receptiveField: receptiveField

@@ -215,6 +215,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
             hopLength: config.hopLength,
             nFft: config.nFft,
             upscale: config.upscale,
+            inputKernel: config.inputKernel,
             dwKernel: config.dwKernel
         )
 
@@ -306,25 +307,25 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
         for (key, value) in weights {
             var newKey = key
 
-            // Remove "model." prefix if present (this appears before language_model in some cases)
+            // Remove "model." prefix if present (e.g. "model.language_model.*" → "language_model.*")
             if newKey.hasPrefix("model.") {
                 newKey = String(newKey.dropFirst(6))
-            }
-
-            // Map language_model weights to our model structure
-            // lm_head stays at the top level, other language_model weights go to model.*
-            if newKey.hasPrefix("language_model.lm_head") {
-                // lm_head is directly on SopranoModel, not inside model
-                newKey = newKey.replacingOccurrences(of: "language_model.", with: "")
-            } else if newKey.hasPrefix("language_model.") {
-                // Other language_model weights go to model.* (SopranoModelInner)
-                newKey = newKey.replacingOccurrences(of: "language_model.", with: "model.")
             }
 
             // Decoder weights should be float32
             var newValue = value
             if newKey.hasPrefix("decoder.") {
                 newValue = value.asType(.float32)
+            } else if newKey.hasPrefix("language_model.lm_head") {
+                // lm_head is directly on SopranoModel, not inside model
+                newKey = newKey.replacingOccurrences(of: "language_model.", with: "")
+            } else if newKey.hasPrefix("language_model.") {
+                // Other language_model weights go to model.* (SopranoModelInner)
+                newKey = newKey.replacingOccurrences(of: "language_model.", with: "model.")
+            } else if !newKey.hasPrefix("lm_head") {
+                // Bare inner model keys (e.g. "embed_tokens.*", "layers.*", "norm.*")
+                // need "model." prefix to map to SopranoModelInner
+                newKey = "model." + newKey
             }
 
             sanitized[newKey] = newValue
@@ -896,7 +897,16 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
         // Load config
         let configPath = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configPath)
-        let config = try JSONDecoder().decode(SopranoConfiguration.self, from: configData)
+        var config = try JSONDecoder().decode(SopranoConfiguration.self, from: configData)
+
+        // Adjust decoder config based on model version (matching Python's __post_init__)
+        // Soprano-1.1 uses the defaults (decoder_dim=768, input_kernel=1)
+        // Older models use decoder_dim=512, input_kernel=3
+        if !modelRepo.lowercased().contains("soprano-1.1") {
+            config.decoderDim = 512
+            config.decoderIntermediateDim = 1536
+            config.inputKernel = 3
+        }
 
         let model = SopranoModel(config)
 
