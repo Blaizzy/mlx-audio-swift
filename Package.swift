@@ -17,6 +17,9 @@ let package = Package(
         // Speech-to-Text (placeholder)
         .library(name: "MLXAudioSTT", targets: ["MLXAudioSTT"]),
 
+        // Voice Activity Detection / Speaker Diarization
+        .library(name: "MLXAudioVAD", targets: ["MLXAudioVAD"]),
+
         // Speech-to-Speech
         .library(name: "MLXAudioSTS", targets: ["MLXAudioSTS"]),
 
@@ -26,7 +29,7 @@ let package = Package(
         // Legacy combined library (for backwards compatibility)
         .library(
             name: "MLXAudio",
-            targets: ["MLXAudioCore", "MLXAudioCodecs", "MLXAudioTTS", "MLXAudioSTT", "MLXAudioSTS", "MLXAudioUI"]
+            targets: ["MLXAudioCore", "MLXAudioCodecs", "MLXAudioTTS", "MLXAudioSTT", "MLXAudioVAD", "MLXAudioSTS", "MLXAudioUI"]
         ),
         .executable(
             name: "mlx-audio-swift-tts",
@@ -100,6 +103,19 @@ let package = Package(
             path: "Sources/MLXAudioSTT"
         ),
 
+        // MARK: - MLXAudioVAD
+        .target(
+            name: "MLXAudioVAD",
+            dependencies: [
+                "MLXAudioCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "HuggingFace", package: "swift-huggingface"),
+            ],
+            path: "Sources/MLXAudioVAD"
+        ),
+
         // MARK: - MLXAudioSTS
         .target(
             name: "MLXAudioSTS",
@@ -141,6 +157,7 @@ let package = Package(
                 "MLXAudioCodecs",
                 "MLXAudioTTS",
                 "MLXAudioSTT",
+                "MLXAudioVAD",
                 "MLXAudioSTS",
             ],
             path: "Tests",

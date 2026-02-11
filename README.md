@@ -14,6 +14,7 @@ MLXAudio follows a modular design allowing you to import only what you need:
 - **MLXAudioCodecs**: Audio codec implementations (SNAC, Vocos, Mimi)
 - **MLXAudioTTS**: Text-to-Speech models (Soprano, VyvoTTS, Orpheus, Marvis TTS, Pocket TTS)
 - **MLXAudioSTT**: Speech-to-Text models (GLMASR)
+- **MLXAudioVAD**: Voice Activity Detection & Speaker Diarization (Sortformer)
 - **MLXAudioSTS**: Speech-to-Speech (future)
 - **MLXAudioUI**: SwiftUI components for audio interfaces
 
@@ -73,6 +74,27 @@ let output = model.generate(audio: audioData)
 print(output.text)
 ```
 
+### Speaker Diarization
+
+```swift
+import MLXAudioVAD
+import MLXAudioCore
+
+// Load audio file
+let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
+
+// Load diarization model
+let model = try await SortformerModel.fromPretrained(
+    "mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16"
+)
+
+// Detect who is speaking when
+let output = try await model.generate(audio: audioData, threshold: 0.5)
+for segment in output.segments {
+    print("Speaker \(segment.speaker): \(segment.start)s - \(segment.end)s")
+}
+```
+
 ### Streaming Generation
 
 ```swift
@@ -105,6 +127,12 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | Model | Model README | HuggingFace Repo |
 |-------|--------------|------------------|
 | GLMASR | [GLMASR README](Sources/MLXAudioSTT/Models/GLMASR/README.md) | [mlx-community/GLM-ASR-Nano-2512-4bit](https://huggingface.co/mlx-community/GLM-ASR-Nano-2512-4bit) |
+
+### VAD / Speaker Diarization Models
+
+| Model | Model README | HuggingFace Repo |
+|-------|--------------|------------------|
+| Sortformer | [Sortformer README](Sources/MLXAudioVAD/Models/Sortformer/README.md) | [mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16](https://huggingface.co/mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16) |
 
 ## Features
 
