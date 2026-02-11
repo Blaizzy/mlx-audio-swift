@@ -384,6 +384,7 @@ private func resolveOrDownloadPocketTTSModel(
         kind: .model,
         to: modelDir,
         revision: "main",
+        matching: ["*.json", "*.safetensors", "embeddings/*.safetensors"],
         progressHandler: { progress in
             print("\(progress.completedUnitCount)/\(progress.totalUnitCount) files")
         }

@@ -357,9 +357,14 @@ public extension Mimi {
             }
             if k.hasSuffix(".convtr.weight") {
                 if v.ndim == 3 {
-                    var w = swappedAxes(v, 0, 1) // [1,0,2]
-                    w = swappedAxes(w, 1, 2) // [1,2,0]
-                    v = w
+                    // PyTorch (inCh, outCh/groups, ksize) → MLX (outCh, ksize, inCh/groups)
+                    if v.shape[1] == 1 {
+                        // Depthwise: (dim, 1, ksize) → (dim, ksize, 1)
+                        v = swappedAxes(v, 1, 2)
+                    } else {
+                        // Regular: (inCh, outCh, ksize) → (outCh, ksize, inCh)
+                        v = v.transposed(1, 2, 0)
+                    }
                 }
             }
 

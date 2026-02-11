@@ -231,11 +231,12 @@ public class SopranoDecoder: Module {
     public init(
         numInputChannels: Int = 512,
         decoderNumLayers: Int = 8,
-        decoderDim: Int = 512,
+        decoderDim: Int = 768,
         decoderIntermediateDim: Int? = nil,
         hopLength: Int = 512,
         nFft: Int = 2048,
         upscale: Int = 4,
+        inputKernel: Int = 1,
         dwKernel: Int = 3
     ) {
         self.decoderInitialChannels = numInputChannels
@@ -248,7 +249,7 @@ public class SopranoDecoder: Module {
             dim: decoderDim,
             intermediateDim: intermediateDim,
             numLayers: decoderNumLayers,
-            inputKernelSize: dwKernel,
+            inputKernelSize: inputKernel,
             dwKernelSize: dwKernel
         )
 
