@@ -73,6 +73,103 @@ struct SettingsView: View {
             }
             .padding(.bottom, sectionSpacing)
 
+            // Voice Design Section
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Voice Design")
+                        .font(labelFont)
+                        .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    #if os(iOS)
+                    CompactToggle(label: "", isOn: $viewModel.useVoiceDesign, font: textFont, toggleWidth: 36, toggleHeight: 20, thumbSize: 16)
+                    #else
+                    Toggle("", isOn: $viewModel.useVoiceDesign)
+                        .labelsHidden()
+                    #endif
+                }
+
+                // Info box about VoiceDesign
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "info.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.blue)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("VoiceDesign Feature")
+                                .font(.caption)
+                                .fontWeight(.medium)
+
+                            Text("Describe the voice you want in natural language. Only works with VoiceDesign models.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    // Recommended models
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Recommended Models:")
+                            .font(.caption2)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.secondary)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            ModelHintRow(modelId: "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16")
+                        }
+                    }
+
+                    // Example descriptions
+                    if viewModel.useVoiceDesign {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Example Descriptions:")
+                                .font(.caption2)
+                                .fontWeight(.medium)
+                                .foregroundStyle(.secondary)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                ExampleDescription(text: "A young woman with a bright, energetic voice")
+                                ExampleDescription(text: "A deep, calm male narrator")
+                                ExampleDescription(text: "An elderly person speaking slowly")
+                            }
+                        }
+                    }
+                }
+                .padding(10)
+                .background(Color.blue.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                // Voice description input (only shown when enabled)
+                if viewModel.useVoiceDesign {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Voice Description")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+
+                        TextEditor(text: $viewModel.voiceDescription)
+                            .font(textFont)
+                            .frame(height: 80)
+                            .scrollContentBackground(.hidden)
+                            .padding(8)
+                            .background(Color.gray.opacity(0.15))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .overlay(alignment: .topLeading) {
+                                if viewModel.voiceDescription.isEmpty {
+                                    Text("Describe the voice you want...")
+                                        .font(textFont)
+                                        .foregroundStyle(.tertiary)
+                                        .padding(.horizontal, 12)
+                                        .padding(.top, 16)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+                    }
+                }
+            }
+            .padding(.bottom, sectionSpacing)
+
             // Length Section
             VStack(alignment: .leading, spacing: 2) {
                 Text("Length")
@@ -190,6 +287,61 @@ struct SettingsView: View {
             }
             .padding(.bottom, sectionSpacing)
 
+            // Repetition Penalty Section
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Repetition Penalty")
+                    .font(labelFont)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Text("Repetition Penalty")
+                        .font(textFont)
+                    Spacer()
+                    Text(String(format: "%.2f", viewModel.repetitionPenalty))
+                        .font(textFont)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, 4)
+
+                #if os(iOS)
+                CompactSlider(
+                    value: Binding(
+                        get: { Double(viewModel.repetitionPenalty) },
+                        set: { viewModel.repetitionPenalty = Float($0) }
+                    ),
+                    range: 1.0...2.0,
+                    step: 0.05
+                )
+                #else
+                Slider(
+                    value: Binding(
+                        get: { Double(viewModel.repetitionPenalty) },
+                        set: { viewModel.repetitionPenalty = Float($0) }
+                    ),
+                    in: 1.0...2.0,
+                    step: 0.05
+                )
+                .tint(.blue)
+                #endif
+
+                // Hint for VoiceDesign models
+                HStack(spacing: 6) {
+                    Image(systemName: "info.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+
+                    Text("For Qwen3-TTS VoiceDesign, use minimum 1.1 to reduce repetition")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 4)
+                .padding(8)
+                .background(Color.orange.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .padding(.bottom, sectionSpacing)
+
             // Text Chunking Section
             VStack(alignment: .leading, spacing: 2) {
                 Text("Text Chunking")
@@ -259,6 +411,9 @@ struct SettingsView: View {
                 viewModel.maxTokens = 1200
                 viewModel.temperature = 0.6
                 viewModel.topP = 0.8
+                viewModel.repetitionPenalty = 1.3
+                viewModel.useVoiceDesign = false
+                viewModel.voiceDescription = ""
                 viewModel.enableChunking = true
                 viewModel.maxChunkLength = 200
                 viewModel.splitPattern = "\n"
@@ -278,6 +433,45 @@ struct SettingsView: View {
             .padding(.bottom, 12)
         }
         .padding(.horizontal, horizontalPadding)
+    }
+}
+
+// MARK: - Helper Views
+
+struct ModelHintRow: View {
+    let modelId: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "arrow.forward.circle.fill")
+                .font(.caption2)
+                .foregroundStyle(.blue.opacity(0.6))
+
+            Text(modelId)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help("Click to select and copy")
+        }
+    }
+}
+
+struct ExampleDescription: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "quote.bubble.fill")
+                .font(.caption2)
+                .foregroundStyle(.blue.opacity(0.4))
+
+            Text(text)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .italic()
+        }
     }
 }
 

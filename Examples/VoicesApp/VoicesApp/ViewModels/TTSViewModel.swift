@@ -5,6 +5,9 @@ import MLXAudioCore
 import MLX
 import AVFoundation
 import Combine
+#if os(macOS)
+import AppKit
+#endif
 
 @MainActor
 @Observable
@@ -20,6 +23,11 @@ class TTSViewModel {
     var maxTokens: Int = 1200
     var temperature: Float = 0.6
     var topP: Float = 0.8
+    var repetitionPenalty: Float = 1.3
+
+    // Voice Design (for Qwen3-TTS VoiceDesign models)
+    var voiceDescription: String = ""
+    var useVoiceDesign: Bool = false
 
     // Text chunking
     var enableChunking: Bool = true
@@ -38,7 +46,7 @@ class TTSViewModel {
     var currentTime: TimeInterval = 0
     var duration: TimeInterval = 0
 
-    private var model: Qwen3Model?
+    private var model: SpeechGenerationModel?
     private let audioPlayer = AudioPlayerManager()
     private var cancellables = Set<AnyCancellable>()
     private var generationTask: Task<Void, Never>?
@@ -83,7 +91,7 @@ class TTSViewModel {
         generationProgress = "Downloading model..."
 
         do {
-            model = try await Qwen3Model.fromPretrained(modelId)
+            model = try await TTSModelUtils.loadModel(modelRepo: modelId)
             loadedModelId = modelId
             generationProgress = ""  // Clear progress on success
         } catch {
@@ -250,18 +258,23 @@ class TTSViewModel {
                 // Set cache limit for this chunk
                 Memory.cacheLimit = 512 * 1024 * 1024  // 512MB cache limit
 
-                // Each chunk needs a fresh cache - don't reuse across chunks
+                // Determine voice parameter (VoiceDesign description or voice name)
+                let voiceParam: String? = useVoiceDesign && !voiceDescription.isEmpty
+                    ? voiceDescription
+                    : voice?.name
+
+                // Each chunk needs a fresh generation
                 for try await event in model.generateStream(
                     text: chunk,
-                    voice: voice?.name,
+                    voice: voiceParam,
                     refAudio: refAudio,
                     refText: refText,
-                    cache: nil,
-                    parameters: .init(
+                    language: nil,
+                    generationParameters: .init(
                         maxTokens: maxTokens,
                         temperature: temperature,
                         topP: topP,
-                        repetitionPenalty: 1.3,
+                        repetitionPenalty: repetitionPenalty,
                         repetitionContextSize: 20
                     )
                 ) {
@@ -369,5 +382,39 @@ class TTSViewModel {
 
     func seek(to time: TimeInterval) {
         audioPlayer.seek(to: time)
+    }
+
+    func saveAudioFile() {
+        guard let audioURL = audioURL else { return }
+
+        #if os(macOS)
+        let savePanel = NSSavePanel()
+        savePanel.allowedContentTypes = [.wav]
+        savePanel.canCreateDirectories = true
+        savePanel.isExtensionHidden = false
+        savePanel.title = "Save Audio File"
+        savePanel.nameFieldStringValue = "generated_audio.wav"
+
+        savePanel.begin { response in
+            if response == .OK, let destinationURL = savePanel.url {
+                do {
+                    // If file exists, remove it first
+                    if FileManager.default.fileExists(atPath: destinationURL.path) {
+                        try FileManager.default.removeItem(at: destinationURL)
+                    }
+                    // Copy the audio file to the selected location
+                    try FileManager.default.copyItem(at: audioURL, to: destinationURL)
+                } catch {
+                    DispatchQueue.main.async {
+                        self.errorMessage = "Failed to save file: \(error.localizedDescription)"
+                    }
+                }
+            }
+        }
+        #else
+        // iOS implementation would use UIDocumentPickerViewController
+        // For now, just show error message
+        errorMessage = "Save functionality is available on macOS"
+        #endif
     }
 }
