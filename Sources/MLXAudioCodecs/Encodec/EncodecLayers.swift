@@ -28,7 +28,7 @@ public class EncodecLSTM: Module {
     public func callAsFunction(_ x: MLXArray, hidden: MLXArray? = nil, cell: MLXArray? = nil) -> MLXArray {
         var xProj: MLXArray
         if let b = bias {
-            xProj = MLX.addmm(b, x, Wx.T)
+            xProj = MLX.addMM(b, x, Wx.T)
         } else {
             xProj = MLX.matmul(x, Wx.T)
         }
@@ -148,8 +148,6 @@ public class EncodecConv1d: Module {
 
         // Reflect padding - manually build reflected values
         let length = hiddenStates.shape[1]
-        let batch = hiddenStates.shape[0]
-        let channels = hiddenStates.shape[2]
 
         // For reflect padding, we need indices: [n, n-1, ..., 2, 1] for left pad
         // and [length-2, length-3, ...] for right pad

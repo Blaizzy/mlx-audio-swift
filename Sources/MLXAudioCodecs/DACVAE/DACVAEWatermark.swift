@@ -7,7 +7,6 @@
 
 import Foundation
 import MLX
-import MLXRandom
 import MLXNN
 
 // MARK: - Message Processor

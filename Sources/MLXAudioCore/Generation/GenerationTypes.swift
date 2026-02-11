@@ -6,7 +6,7 @@
 //
 
 import Foundation
-import MLX
+@preconcurrency import MLX
 
 // MARK: - Generation Info
 

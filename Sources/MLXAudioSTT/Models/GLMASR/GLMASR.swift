@@ -7,7 +7,6 @@
 
 import Foundation
 import MLX
-import MLXFast
 import MLXNN
 import MLXAudioCore
 import MLXLMCommon
@@ -432,79 +431,77 @@ public class GLMASRModel: Module {
         topP: Float = 0.95
     ) -> AsyncThrowingStream<STTGeneration, Error> {
         AsyncThrowingStream { continuation in
-            Task {
-                do {
-                    guard let tokenizer = self.tokenizer else {
-                        throw STTError.modelNotInitialized("Tokenizer not loaded")
-                    }
-
-                    let startTime = Date()
-
-                    // Prepare for generation
-                    let (context, promptTokenCount) = self.prepareGeneration(audio: audio, tokenizer: tokenizer)
-                    var ctx = context
-
-                    let prefillEndTime = Date()
-                    let prefillTime = prefillEndTime.timeIntervalSince(startTime)
-
-                    let generateStartTime = Date()
-                    var generatedTokens: [Int] = []
-
-                    // Generate tokens
-                    for _ in 0..<maxTokens {
-                        let nextToken = ctx.sampleNextToken(temperature: temperature)
-
-                        if ctx.isEOS(nextToken) {
-                            break
-                        }
-
-                        generatedTokens.append(nextToken)
-
-                        // Emit token
-                        let tokenText = ctx.decode(nextToken)
-                        continuation.yield(.token(tokenText))
-
-                        // Step to next token
-                        ctx = self.stepGeneration(context: ctx, nextToken: nextToken)
-                    }
-
-                    let endTime = Date()
-                    let generateTime = endTime.timeIntervalSince(generateStartTime)
-                    let totalTime = endTime.timeIntervalSince(startTime)
-
-                    Memory.clearCache()
-
-                    // Emit generation info
-                    let tokensPerSecond = generateTime > 0 ? Double(generatedTokens.count) / generateTime : 0
-                    let peakMemory = Double(Memory.peakMemory) / 1e9
-                    let info = STTGenerationInfo(
-                        promptTokenCount: promptTokenCount,
-                        generationTokenCount: generatedTokens.count,
-                        prefillTime: prefillTime,
-                        generateTime: generateTime,
-                        tokensPerSecond: tokensPerSecond,
-                        peakMemoryUsage: peakMemory
-                    )
-                    continuation.yield(.info(info))
-
-                    // Emit final result
-                    let text = ctx.decode(generatedTokens)
-                    let output = STTOutput(
-                        text: text.trimmingCharacters(in: .whitespacesAndNewlines),
-                        promptTokens: promptTokenCount,
-                        generationTokens: generatedTokens.count,
-                        totalTokens: promptTokenCount + generatedTokens.count,
-                        promptTps: Double(promptTokenCount) / prefillTime,
-                        generationTps: tokensPerSecond,
-                        totalTime: totalTime,
-                        peakMemoryUsage: peakMemory
-                    )
-                    continuation.yield(.result(output))
-
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
+            do {
+                guard let tokenizer = self.tokenizer else {
+                    throw STTError.modelNotInitialized("Tokenizer not loaded")
                 }
+                
+                let startTime = Date()
+                
+                // Prepare for generation
+                let (context, promptTokenCount) = self.prepareGeneration(audio: audio, tokenizer: tokenizer)
+                var ctx = context
+                
+                let prefillEndTime = Date()
+                let prefillTime = prefillEndTime.timeIntervalSince(startTime)
+                
+                let generateStartTime = Date()
+                var generatedTokens: [Int] = []
+                
+                // Generate tokens
+                for _ in 0..<maxTokens {
+                    let nextToken = ctx.sampleNextToken(temperature: temperature)
+                    
+                    if ctx.isEOS(nextToken) {
+                        break
+                    }
+                    
+                    generatedTokens.append(nextToken)
+                    
+                    // Emit token
+                    let tokenText = ctx.decode(nextToken)
+                    continuation.yield(.token(tokenText))
+                    
+                    // Step to next token
+                    ctx = self.stepGeneration(context: ctx, nextToken: nextToken)
+                }
+                
+                let endTime = Date()
+                let generateTime = endTime.timeIntervalSince(generateStartTime)
+                let totalTime = endTime.timeIntervalSince(startTime)
+                
+                Memory.clearCache()
+                
+                // Emit generation info
+                let tokensPerSecond = generateTime > 0 ? Double(generatedTokens.count) / generateTime : 0
+                let peakMemory = Double(Memory.peakMemory) / 1e9
+                let info = STTGenerationInfo(
+                    promptTokenCount: promptTokenCount,
+                    generationTokenCount: generatedTokens.count,
+                    prefillTime: prefillTime,
+                    generateTime: generateTime,
+                    tokensPerSecond: tokensPerSecond,
+                    peakMemoryUsage: peakMemory
+                )
+                continuation.yield(.info(info))
+                
+                // Emit final result
+                let text = ctx.decode(generatedTokens)
+                let output = STTOutput(
+                    text: text.trimmingCharacters(in: .whitespacesAndNewlines),
+                    promptTokens: promptTokenCount,
+                    generationTokens: generatedTokens.count,
+                    totalTokens: promptTokenCount + generatedTokens.count,
+                    promptTps: Double(promptTokenCount) / prefillTime,
+                    generationTps: tokensPerSecond,
+                    totalTime: totalTime,
+                    peakMemoryUsage: peakMemory
+                )
+                continuation.yield(.result(output))
+                
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
             }
         }
     }
@@ -650,7 +647,7 @@ public class GLMASRModel: Module {
         audioLength: [[Int]]?,
         cache: [KVCache]?
     ) -> MLXArray {
-        var textEmbeds = getInputEmbeddings()(inputIds)
+        let textEmbeds = getInputEmbeddings()(inputIds)
 
         // Skip if no audio or cache already populated
         guard let audioEmbeds = audioEmbeds else { return textEmbeds }

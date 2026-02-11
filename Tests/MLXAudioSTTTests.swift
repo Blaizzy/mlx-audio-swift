@@ -423,6 +423,1191 @@ struct GLMASRModuleSetupTests {
 }
 
 
+// MARK: - Qwen3 ASR Module Setup Tests
+
+struct Qwen3ASRModuleSetupTests {
+
+    // MARK: - Audio Encoder Config Tests
+
+    @Test func qwen3AudioEncoderConfigDefaults() {
+        let config = Qwen3AudioEncoderConfig()
+
+        #expect(config.numMelBins == 128)
+        #expect(config.encoderLayers == 24)
+        #expect(config.encoderAttentionHeads == 16)
+        #expect(config.encoderFfnDim == 4096)
+        #expect(config.dModel == 1024)
+        #expect(config.dropout == 0.0)
+        #expect(config.activationFunction == "gelu")
+        #expect(config.maxSourcePositions == 1500)
+        #expect(config.nWindow == 50)
+        #expect(config.outputDim == 2048)
+        #expect(config.nWindowInfer == 800)
+        #expect(config.convChunksize == 500)
+        #expect(config.downsampleHiddenSize == 480)
+    }
+
+    @Test func qwen3AudioEncoderConfigCustom() {
+        let config = Qwen3AudioEncoderConfig(
+            numMelBins: 80,
+            encoderLayers: 12,
+            encoderAttentionHeads: 8,
+            dModel: 512,
+            outputDim: 1024
+        )
+
+        #expect(config.numMelBins == 80)
+        #expect(config.encoderLayers == 12)
+        #expect(config.encoderAttentionHeads == 8)
+        #expect(config.dModel == 512)
+        #expect(config.outputDim == 1024)
+    }
+
+    @Test func qwen3AudioEncoderConfigDecoding() throws {
+        let json = """
+        {
+            "num_mel_bins": 80,
+            "encoder_layers": 12,
+            "encoder_attention_heads": 8,
+            "encoder_ffn_dim": 2048,
+            "d_model": 512,
+            "n_window": 25,
+            "output_dim": 1024,
+            "n_window_infer": 400,
+            "conv_chunksize": 250,
+            "downsample_hidden_size": 240
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3AudioEncoderConfig.self, from: data)
+
+        #expect(config.numMelBins == 80)
+        #expect(config.encoderLayers == 12)
+        #expect(config.encoderAttentionHeads == 8)
+        #expect(config.encoderFfnDim == 2048)
+        #expect(config.dModel == 512)
+        #expect(config.nWindow == 25)
+        #expect(config.outputDim == 1024)
+        #expect(config.nWindowInfer == 400)
+        #expect(config.convChunksize == 250)
+        #expect(config.downsampleHiddenSize == 240)
+    }
+
+    @Test func qwen3AudioEncoderConfigDecodingDefaults() throws {
+        // Empty JSON should use all defaults
+        let json = "{}"
+        let data = json.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3AudioEncoderConfig.self, from: data)
+
+        #expect(config.numMelBins == 128)
+        #expect(config.encoderLayers == 24)
+        #expect(config.dModel == 1024)
+    }
+
+    // MARK: - Text Config Tests
+
+    @Test func qwen3TextConfigDefaults() {
+        let config = Qwen3TextConfig()
+
+        #expect(config.modelType == "qwen3")
+        #expect(config.vocabSize == 151936)
+        #expect(config.hiddenSize == 1024)
+        #expect(config.intermediateSize == 3072)
+        #expect(config.numHiddenLayers == 28)
+        #expect(config.numAttentionHeads == 16)
+        #expect(config.numKeyValueHeads == 8)
+        #expect(config.headDim == 128)
+        #expect(config.hiddenAct == "silu")
+        #expect(config.rmsNormEps == 1e-6)
+        #expect(config.tieWordEmbeddings == true)
+        #expect(config.ropeTheta == 1000000.0)
+        #expect(config.attentionBias == false)
+    }
+
+    @Test func qwen3TextConfigDecoding() throws {
+        let json = """
+        {
+            "model_type": "qwen3",
+            "vocab_size": 152064,
+            "hidden_size": 1024,
+            "intermediate_size": 3072,
+            "num_hidden_layers": 28,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 8,
+            "head_dim": 128,
+            "tie_word_embeddings": false,
+            "rope_theta": 1000000.0,
+            "rms_norm_eps": 1e-6
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TextConfig.self, from: data)
+
+        #expect(config.vocabSize == 152064)
+        #expect(config.hiddenSize == 1024)
+        #expect(config.numHiddenLayers == 28)
+        #expect(config.numAttentionHeads == 16)
+        #expect(config.numKeyValueHeads == 8)
+        #expect(config.headDim == 128)
+        #expect(config.tieWordEmbeddings == false)
+    }
+
+    // MARK: - Qwen3ASRConfig Tests
+
+    @Test func qwen3ASRConfigDefaults() {
+        let config = Qwen3ASRConfig()
+
+        #expect(config.modelType == "qwen3_asr")
+        #expect(config.audioTokenId == 151676)
+        #expect(config.audioStartTokenId == 151669)
+        #expect(config.audioEndTokenId == 151670)
+        #expect(config.supportLanguages.isEmpty)
+        #expect(config.isForcedAligner == false)
+        #expect(config.timestampTokenId == nil)
+        #expect(config.timestampSegmentTime == nil)
+        #expect(config.classifyNum == nil)
+    }
+
+    @Test func qwen3ASRConfigForcedAlignerDetection() {
+        // Via model_type
+        let config1 = Qwen3ASRConfig(modelType: "qwen3_forced_aligner")
+        #expect(config1.isForcedAligner == true)
+
+        // Via classify_num
+        let config2 = Qwen3ASRConfig(classifyNum: 5000)
+        #expect(config2.isForcedAligner == true)
+
+        // Regular ASR
+        let config3 = Qwen3ASRConfig()
+        #expect(config3.isForcedAligner == false)
+    }
+
+    @Test func qwen3ASRConfigFlatDecoding() throws {
+        let json = """
+        {
+            "model_type": "qwen3_asr",
+            "audio_config": {
+                "num_mel_bins": 128,
+                "encoder_layers": 18,
+                "d_model": 896
+            },
+            "text_config": {
+                "vocab_size": 151936,
+                "hidden_size": 1024,
+                "tie_word_embeddings": true
+            },
+            "audio_token_id": 151676,
+            "audio_start_token_id": 151669,
+            "audio_end_token_id": 151670,
+            "support_languages": ["English", "Chinese"]
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3ASRConfig.self, from: data)
+
+        #expect(config.modelType == "qwen3_asr")
+        #expect(config.audioConfig.numMelBins == 128)
+        #expect(config.audioConfig.encoderLayers == 18)
+        #expect(config.audioConfig.dModel == 896)
+        #expect(config.textConfig.vocabSize == 151936)
+        #expect(config.textConfig.hiddenSize == 1024)
+        #expect(config.textConfig.tieWordEmbeddings == true)
+        #expect(config.audioTokenId == 151676)
+        #expect(config.supportLanguages == ["English", "Chinese"])
+        #expect(config.isForcedAligner == false)
+    }
+
+    @Test func qwen3ASRConfigThinkerDecoding() throws {
+        // HuggingFace nested thinker_config format
+        let json = """
+        {
+            "model_type": "qwen3_asr",
+            "thinker_config": {
+                "model_type": "qwen3_asr",
+                "audio_config": {
+                    "num_mel_bins": 128,
+                    "encoder_layers": 18,
+                    "encoder_attention_heads": 14,
+                    "d_model": 896,
+                    "output_dim": 1024
+                },
+                "text_config": {
+                    "vocab_size": 151936,
+                    "hidden_size": 1024,
+                    "num_hidden_layers": 28,
+                    "tie_word_embeddings": true
+                },
+                "audio_token_id": 151676,
+                "audio_start_token_id": 151669,
+                "audio_end_token_id": 151670
+            },
+            "support_languages": ["English", "Chinese", "Japanese"]
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3ASRConfig.self, from: data)
+
+        #expect(config.audioConfig.encoderLayers == 18)
+        #expect(config.audioConfig.encoderAttentionHeads == 14)
+        #expect(config.audioConfig.dModel == 896)
+        #expect(config.audioConfig.outputDim == 1024)
+        #expect(config.textConfig.vocabSize == 151936)
+        #expect(config.textConfig.hiddenSize == 1024)
+        #expect(config.textConfig.tieWordEmbeddings == true)
+        #expect(config.audioTokenId == 151676)
+        #expect(config.supportLanguages == ["English", "Chinese", "Japanese"])
+    }
+
+    @Test func qwen3ASRConfigForcedAlignerThinkerDecoding() throws {
+        // HuggingFace ForcedAligner config with thinker_config
+        let json = """
+        {
+            "model_type": "qwen3_forced_aligner",
+            "timestamp_token_id": 151705,
+            "timestamp_segment_time": 80.0,
+            "thinker_config": {
+                "model_type": "qwen3_forced_aligner",
+                "audio_config": {
+                    "num_mel_bins": 128,
+                    "encoder_layers": 24,
+                    "d_model": 1024
+                },
+                "text_config": {
+                    "vocab_size": 152064,
+                    "hidden_size": 1024,
+                    "tie_word_embeddings": false
+                },
+                "audio_token_id": 151676,
+                "classify_num": 5000,
+                "timestamp_token_id": 151705,
+                "timestamp_segment_time": 80.0
+            }
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3ASRConfig.self, from: data)
+
+        #expect(config.isForcedAligner == true)
+        #expect(config.modelType == "qwen3_forced_aligner")
+        #expect(config.classifyNum == 5000)
+        #expect(config.timestampTokenId == 151705)
+        #expect(config.timestampSegmentTime == 80.0)
+        #expect(config.textConfig.tieWordEmbeddings == false)
+        #expect(config.textConfig.vocabSize == 152064)
+        #expect(config.audioConfig.encoderLayers == 24)
+        #expect(config.audioConfig.dModel == 1024)
+    }
+
+    // MARK: - StringAnyCodable Tests
+
+    @Test func stringAnyCodableInt() throws {
+        let json = """
+        {"value": 42}
+        """
+        struct Container: Codable { let value: StringAnyCodable }
+        let data = json.data(using: .utf8)!
+        let container = try JSONDecoder().decode(Container.self, from: data)
+
+        if case .int(let v) = container.value.value {
+            #expect(v == 42)
+        } else {
+            #expect(Bool(false), "Expected .int")
+        }
+    }
+
+    @Test func stringAnyCodableString() throws {
+        let json = """
+        {"value": "hello"}
+        """
+        struct Container: Codable { let value: StringAnyCodable }
+        let data = json.data(using: .utf8)!
+        let container = try JSONDecoder().decode(Container.self, from: data)
+
+        if case .string(let v) = container.value.value {
+            #expect(v == "hello")
+        } else {
+            #expect(Bool(false), "Expected .string")
+        }
+    }
+
+    @Test func stringAnyCodableDouble() throws {
+        let json = """
+        {"value": 3.14}
+        """
+        struct Container: Codable { let value: StringAnyCodable }
+        let data = json.data(using: .utf8)!
+        let container = try JSONDecoder().decode(Container.self, from: data)
+
+        if case .double(let v) = container.value.value {
+            #expect(abs(v - 3.14) < 0.001)
+        } else {
+            #expect(Bool(false), "Expected .double")
+        }
+    }
+
+    @Test func stringAnyCodableBool() throws {
+        let json = """
+        {"value": true}
+        """
+        struct Container: Codable { let value: StringAnyCodable }
+        let data = json.data(using: .utf8)!
+        let container = try JSONDecoder().decode(Container.self, from: data)
+
+        if case .bool(let v) = container.value.value {
+            #expect(v == true)
+        } else {
+            #expect(Bool(false), "Expected .bool")
+        }
+    }
+
+    @Test func stringAnyCodableRoundTrip() throws {
+        let json = """
+        {"value": "test_string"}
+        """
+        struct Container: Codable { let value: StringAnyCodable }
+        let data = json.data(using: .utf8)!
+        let container = try JSONDecoder().decode(Container.self, from: data)
+
+        // Re-encode
+        let encoded = try JSONEncoder().encode(container)
+        let decoded = try JSONDecoder().decode(Container.self, from: encoded)
+
+        if case .string(let v) = decoded.value.value {
+            #expect(v == "test_string")
+        } else {
+            #expect(Bool(false), "Expected .string after round trip")
+        }
+    }
+
+    // MARK: - Audio Layer Shape Tests
+
+    @Test func qwen3SinusoidalPEShape() {
+        let length = 100
+        let channels = 64
+        let pe = Qwen3ASRSinusoidalPE(length: length, channels: channels)
+
+        let output = pe(50)
+        #expect(output.shape == [50, channels])
+
+        let outputFull = pe(length)
+        #expect(outputFull.shape == [length, channels])
+    }
+
+    @Test func qwen3AudioAttentionShape() {
+        let config = Qwen3AudioEncoderConfig(
+            encoderAttentionHeads: 4,
+            dModel: 256
+        )
+
+        let attention = Qwen3ASRAttention(config)
+
+        let batchSize = 2
+        let seqLen = 10
+        let hiddenStates = MLXArray.ones([batchSize, seqLen, config.dModel])
+
+        let output = attention(hiddenStates)
+
+        #expect(output.shape == [batchSize, seqLen, config.dModel])
+    }
+
+    @Test func qwen3AudioAttentionWithMask() {
+        let config = Qwen3AudioEncoderConfig(
+            encoderAttentionHeads: 4,
+            dModel: 256
+        )
+
+        let attention = Qwen3ASRAttention(config)
+
+        let batchSize = 1
+        let seqLen = 8
+        let hiddenStates = MLXArray.ones([batchSize, seqLen, config.dModel])
+
+        // Create a simple mask
+        let mask = MLX.zeros([seqLen, seqLen])
+        let output = attention(hiddenStates, mask: mask)
+
+        #expect(output.shape == [batchSize, seqLen, config.dModel])
+    }
+
+    @Test func qwen3AudioEncoderLayerShape() {
+        let config = Qwen3AudioEncoderConfig(
+            encoderAttentionHeads: 4,
+            encoderFfnDim: 1024,
+            dModel: 256
+        )
+
+        let layer = Qwen3ASRAudioEncoderLayer(config)
+
+        let batchSize = 2
+        let seqLen = 10
+        let hiddenStates = MLXArray.ones([batchSize, seqLen, config.dModel])
+
+        let output = layer(hiddenStates)
+
+        #expect(output.shape == [batchSize, seqLen, config.dModel])
+    }
+
+    // MARK: - Text Layer Shape Tests
+
+    @Test func qwen3TextMLPShape() {
+        let config = Qwen3TextConfig(
+            hiddenSize: 256,
+            intermediateSize: 512
+        )
+
+        let mlp = Qwen3ASRTextMLP(config)
+
+        let batchSize = 2
+        let seqLen = 10
+        let input = MLXArray.ones([batchSize, seqLen, config.hiddenSize])
+
+        let output = mlp(input)
+
+        #expect(output.shape == [batchSize, seqLen, config.hiddenSize])
+    }
+
+    @Test func qwen3TextAttentionShape() {
+        let config = Qwen3TextConfig(
+            hiddenSize: 256,
+            numHiddenLayers: 2,
+            numAttentionHeads: 4,
+            numKeyValueHeads: 2,
+            headDim: 64
+        )
+
+        let attention = Qwen3ASRTextAttention(config, layerIdx: 0)
+
+        let batchSize = 1
+        let seqLen = 8
+        let hiddenStates = MLXArray.ones([batchSize, seqLen, config.hiddenSize])
+
+        let output = attention(hiddenStates, mask: .none, cache: nil)
+
+        #expect(output.shape == [batchSize, seqLen, config.hiddenSize])
+    }
+
+    @Test func qwen3TextDecoderLayerShape() {
+        let config = Qwen3TextConfig(
+            hiddenSize: 256,
+            intermediateSize: 512,
+            numHiddenLayers: 2,
+            numAttentionHeads: 4,
+            numKeyValueHeads: 2,
+            headDim: 64
+        )
+
+        let layer = Qwen3ASRTextDecoderLayer(config, layerIdx: 0)
+
+        let batchSize = 1
+        let seqLen = 8
+        let hiddenStates = MLXArray.ones([batchSize, seqLen, config.hiddenSize])
+
+        let output = layer(hiddenStates, mask: .none, cache: nil)
+
+        #expect(output.shape == [batchSize, seqLen, config.hiddenSize])
+    }
+
+    @Test func qwen3TextModelShape() {
+        let config = Qwen3TextConfig(
+            vocabSize: 1000,
+            hiddenSize: 256,
+            intermediateSize: 512,
+            numHiddenLayers: 2,
+            numAttentionHeads: 4,
+            numKeyValueHeads: 2,
+            headDim: 64
+        )
+
+        let textModel = Qwen3ASRTextModel(config)
+
+        let batchSize = 1
+        let seqLen = 8
+        let inputIds = MLXArray.zeros([batchSize, seqLen]).asType(.int32)
+
+        let output = textModel(inputIds: inputIds)
+
+        #expect(output.shape == [batchSize, seqLen, config.hiddenSize])
+    }
+
+    @Test func qwen3TextModelWithEmbeddings() {
+        let config = Qwen3TextConfig(
+            vocabSize: 1000,
+            hiddenSize: 256,
+            intermediateSize: 512,
+            numHiddenLayers: 2,
+            numAttentionHeads: 4,
+            numKeyValueHeads: 2,
+            headDim: 64
+        )
+
+        let textModel = Qwen3ASRTextModel(config)
+
+        let batchSize = 1
+        let seqLen = 8
+        let embeddings = MLXArray.ones([batchSize, seqLen, config.hiddenSize])
+
+        let output = textModel(inputsEmbeds: embeddings)
+
+        #expect(output.shape == [batchSize, seqLen, config.hiddenSize])
+    }
+
+    // MARK: - Model Construction Tests
+
+    @Test func qwen3ASRModelConstruction() {
+        let config = Qwen3ASRConfig(
+            audioConfig: Qwen3AudioEncoderConfig(
+                encoderLayers: 1,
+                encoderAttentionHeads: 4,
+                encoderFfnDim: 512,
+                dModel: 256,
+                maxSourcePositions: 100,
+                outputDim: 128
+            ),
+            textConfig: Qwen3TextConfig(
+                vocabSize: 1000,
+                hiddenSize: 128,
+                intermediateSize: 256,
+                numHiddenLayers: 1,
+                numAttentionHeads: 4,
+                numKeyValueHeads: 2,
+                headDim: 32,
+                tieWordEmbeddings: true
+            )
+        )
+
+        let model = Qwen3ASRModel(config)
+
+        // With tieWordEmbeddings=true, lmHead should be nil
+        #expect(model.config.textConfig.tieWordEmbeddings == true)
+    }
+
+    @Test func qwen3ASRModelConstructionWithLmHead() {
+        let config = Qwen3ASRConfig(
+            audioConfig: Qwen3AudioEncoderConfig(
+                encoderLayers: 1,
+                encoderAttentionHeads: 4,
+                encoderFfnDim: 512,
+                dModel: 256,
+                outputDim: 128
+            ),
+            textConfig: Qwen3TextConfig(
+                vocabSize: 1000,
+                hiddenSize: 128,
+                intermediateSize: 256,
+                numHiddenLayers: 1,
+                numAttentionHeads: 4,
+                numKeyValueHeads: 2,
+                headDim: 32,
+                tieWordEmbeddings: false
+            )
+        )
+
+        let model = Qwen3ASRModel(config)
+
+        // With tieWordEmbeddings=false, lmHead should exist
+        #expect(model.config.textConfig.tieWordEmbeddings == false)
+    }
+
+    @Test func qwen3ForcedAlignerModelConstruction() {
+        let config = Qwen3ASRConfig(
+            audioConfig: Qwen3AudioEncoderConfig(
+                encoderLayers: 1,
+                encoderAttentionHeads: 4,
+                encoderFfnDim: 512,
+                dModel: 256,
+                outputDim: 128
+            ),
+            textConfig: Qwen3TextConfig(
+                vocabSize: 1000,
+                hiddenSize: 128,
+                intermediateSize: 256,
+                numHiddenLayers: 1,
+                numAttentionHeads: 4,
+                numKeyValueHeads: 2,
+                headDim: 32,
+                tieWordEmbeddings: false
+            ),
+            modelType: "qwen3_forced_aligner",
+            classifyNum: 5000
+        )
+
+        let model = Qwen3ForcedAlignerModel(config)
+
+        #expect(config.isForcedAligner == true)
+        #expect(config.classifyNum == 5000)
+        // Model should have been created without error
+        _ = model
+    }
+
+    // MARK: - Cache Tests
+
+    @Test func qwen3ASRModelMakeCache() {
+        let config = Qwen3ASRConfig(
+            textConfig: Qwen3TextConfig(
+                numHiddenLayers: 4
+            )
+        )
+
+        let model = Qwen3ASRModel(config)
+        let cache = model.makeCache()
+
+        #expect(cache.count == 4)
+    }
+
+    // MARK: - Weight Sanitization Tests
+
+    @Test func qwen3ASRSanitizeStripsThinkerPrefix() {
+        let weights: [String: MLXArray] = [
+            "thinker.model.layers.0.self_attn.q_proj.weight": MLXArray.ones([64, 64]),
+            "thinker.model.layers.0.self_attn.k_proj.weight": MLXArray.ones([64, 64]),
+            "thinker.audio_tower.conv2d1.weight": MLXArray.ones([32, 3, 3, 1]),
+        ]
+
+        let sanitized = Qwen3ASRModel.sanitize(weights: weights)
+
+        #expect(sanitized["model.layers.0.self_attn.q_proj.weight"] != nil)
+        #expect(sanitized["model.layers.0.self_attn.k_proj.weight"] != nil)
+        #expect(sanitized["audio_tower.conv2d1.weight"] != nil)
+        #expect(sanitized["thinker.model.layers.0.self_attn.q_proj.weight"] == nil)
+    }
+
+    @Test func qwen3ASRSanitizeSkipsLmHead() {
+        let weights: [String: MLXArray] = [
+            "thinker.lm_head.weight": MLXArray.ones([1000, 128]),
+            "thinker.model.norm.weight": MLXArray.ones([128]),
+        ]
+
+        // skipLmHead = true (default)
+        let sanitized = Qwen3ASRModel.sanitize(weights: weights, skipLmHead: true)
+        #expect(sanitized["lm_head.weight"] == nil)
+        #expect(sanitized["model.norm.weight"] != nil)
+
+        // skipLmHead = false
+        let sanitizedKeep = Qwen3ASRModel.sanitize(weights: weights, skipLmHead: false)
+        #expect(sanitizedKeep["lm_head.weight"] != nil)
+    }
+
+    @Test func qwen3ASRSanitizeTransposesConv2d() {
+        // Simulate PyTorch conv2d weights: (O, I, H, W) shape
+        let weights: [String: MLXArray] = [
+            "thinker.audio_tower.conv2d1.weight": MLXArray.ones([32, 1, 3, 3]),
+        ]
+
+        let sanitized = Qwen3ASRModel.sanitize(weights: weights)
+
+        // Should be transposed to (O, H, W, I)
+        let w = sanitized["audio_tower.conv2d1.weight"]!
+        #expect(w.shape == [32, 3, 3, 1])
+    }
+
+    @Test func qwen3ForcedAlignerSanitizeKeepsLmHead() {
+        let weights: [String: MLXArray] = [
+            "thinker.lm_head.weight": MLXArray.ones([5000, 128]),
+            "thinker.model.norm.weight": MLXArray.ones([128]),
+        ]
+
+        let sanitized = Qwen3ForcedAlignerModel.sanitize(weights: weights)
+
+        // ForcedAligner should keep lm_head
+        #expect(sanitized["lm_head.weight"] != nil)
+        #expect(sanitized["model.norm.weight"] != nil)
+    }
+}
+
+// MARK: - Force Align Processor Tests
+
+struct ForceAlignProcessorTests {
+
+    @Test func isKeptChar() {
+        let processor = ForceAlignProcessor()
+
+        #expect(processor.isKeptChar("a") == true)
+        #expect(processor.isKeptChar("Z") == true)
+        #expect(processor.isKeptChar("5") == true)
+        #expect(processor.isKeptChar("'") == true)
+        #expect(processor.isKeptChar(" ") == false)
+        #expect(processor.isKeptChar(",") == false)
+        #expect(processor.isKeptChar(".") == false)
+    }
+
+    @Test func cleanToken() {
+        let processor = ForceAlignProcessor()
+
+        #expect(processor.cleanToken("hello!") == "hello")
+        #expect(processor.cleanToken("it's") == "it's")
+        #expect(processor.cleanToken("...test...") == "test")
+        #expect(processor.cleanToken("hello world") == "helloworld")
+        #expect(processor.cleanToken("") == "")
+    }
+
+    @Test func isCJKChar() {
+        let processor = ForceAlignProcessor()
+
+        // Chinese characters
+        #expect(processor.isCJKChar("\u{4E00}") == true)  // 一
+        #expect(processor.isCJKChar("\u{9FFF}") == true)
+        #expect(processor.isCJKChar("中") == true)
+        #expect(processor.isCJKChar("文") == true)
+
+        // Non-CJK
+        #expect(processor.isCJKChar("a") == false)
+        #expect(processor.isCJKChar("1") == false)
+        #expect(processor.isCJKChar(" ") == false)
+    }
+
+    @Test func tokenizeSpaceLangEnglish() {
+        let processor = ForceAlignProcessor()
+
+        let tokens = processor.tokenizeSpaceLang("Hello, world! This is a test.")
+        #expect(tokens == ["Hello", "world", "This", "is", "a", "test"])
+    }
+
+    @Test func tokenizeSpaceLangEmpty() {
+        let processor = ForceAlignProcessor()
+
+        let tokens = processor.tokenizeSpaceLang("")
+        #expect(tokens.isEmpty)
+    }
+
+    @Test func tokenizeSpaceLangWithPunctuation() {
+        let processor = ForceAlignProcessor()
+
+        let tokens = processor.tokenizeSpaceLang("I'm don't can't")
+        #expect(tokens == ["I'm", "don't", "can't"])
+    }
+
+    @Test func tokenizeChineseMixed() {
+        let processor = ForceAlignProcessor()
+
+        let tokens = processor.tokenizeChineseMixed("你好world")
+        #expect(tokens == ["你", "好", "world"])
+    }
+
+    @Test func tokenizeChinesePure() {
+        let processor = ForceAlignProcessor()
+
+        let tokens = processor.tokenizeChineseMixed("你好世界")
+        #expect(tokens == ["你", "好", "世", "界"])
+    }
+
+    @Test func tokenizeChineseMixedWithSpaces() {
+        let processor = ForceAlignProcessor()
+
+        let tokens = processor.tokenizeChineseMixed("hello 你好 world")
+        #expect(tokens == ["hello", "你", "好", "world"])
+    }
+
+    @Test func encodeTimestampEnglish() {
+        let processor = ForceAlignProcessor()
+
+        let (wordList, inputText) = processor.encodeTimestamp(
+            text: "Hello world",
+            language: "English"
+        )
+
+        #expect(wordList == ["Hello", "world"])
+        #expect(inputText.contains("<|audio_start|>"))
+        #expect(inputText.contains("<|audio_pad|>"))
+        #expect(inputText.contains("<|audio_end|>"))
+        #expect(inputText.contains("<timestamp>"))
+        #expect(inputText.contains("Hello"))
+        #expect(inputText.contains("world"))
+    }
+
+    @Test func encodeTimestampChinese() {
+        let processor = ForceAlignProcessor()
+
+        let (wordList, inputText) = processor.encodeTimestamp(
+            text: "你好世界",
+            language: "Chinese"
+        )
+
+        #expect(wordList == ["你", "好", "世", "界"])
+        #expect(inputText.contains("<timestamp>"))
+    }
+
+    @Test func fixTimestampMonotonic() {
+        let processor = ForceAlignProcessor()
+
+        // Already monotonic
+        let result = processor.fixTimestamp([100, 200, 300, 400])
+        #expect(result == [100, 200, 300, 400])
+    }
+
+    @Test func fixTimestampEmpty() {
+        let processor = ForceAlignProcessor()
+
+        let result = processor.fixTimestamp([])
+        #expect(result.isEmpty)
+    }
+
+    @Test func fixTimestampSingleElement() {
+        let processor = ForceAlignProcessor()
+
+        let result = processor.fixTimestamp([500])
+        #expect(result == [500])
+    }
+
+    @Test func fixTimestampNonMonotonic() {
+        let processor = ForceAlignProcessor()
+
+        // Non-monotonic: 300 is out of place
+        let result = processor.fixTimestamp([100, 200, 300, 150, 400, 500])
+
+        // Result should be monotonically non-decreasing
+        for i in 1..<result.count {
+            #expect(result[i] >= result[i - 1], "Timestamps should be non-decreasing at index \(i)")
+        }
+    }
+
+    @Test func parseTimestamp() {
+        let processor = ForceAlignProcessor()
+
+        let wordList = ["Hello", "world"]
+        // 4 timestamps: start1, end1, start2, end2
+        let timestamps: [Double] = [1000, 2000, 2500, 3500]
+
+        let items = processor.parseTimestamp(wordList: wordList, timestamp: timestamps)
+
+        #expect(items.count == 2)
+        #expect(items[0].text == "Hello")
+        #expect(items[0].startTime == 1.0)
+        #expect(items[0].endTime == 2.0)
+        #expect(items[1].text == "world")
+        #expect(items[1].startTime == 2.5)
+        #expect(items[1].endTime == 3.5)
+    }
+}
+
+// MARK: - ForcedAlignResult Tests
+
+struct ForcedAlignResultTests {
+
+    @Test func forcedAlignResultText() {
+        let result = ForcedAlignResult(items: [
+            ForcedAlignItem(text: "Hello", startTime: 0.0, endTime: 0.5),
+            ForcedAlignItem(text: "world", startTime: 0.5, endTime: 1.0),
+        ])
+
+        #expect(result.text == "Hello world")
+    }
+
+    @Test func forcedAlignResultSegments() {
+        let result = ForcedAlignResult(items: [
+            ForcedAlignItem(text: "Hello", startTime: 0.0, endTime: 0.5),
+            ForcedAlignItem(text: "world", startTime: 0.5, endTime: 1.0),
+        ])
+
+        let segments = result.segments
+        #expect(segments.count == 2)
+        #expect(segments[0]["text"] as? String == "Hello")
+        #expect(segments[0]["start"] as? Double == 0.0)
+        #expect(segments[0]["end"] as? Double == 0.5)
+        #expect(segments[1]["text"] as? String == "world")
+    }
+
+    @Test func forcedAlignResultEmpty() {
+        let result = ForcedAlignResult(items: [])
+        #expect(result.text == "")
+        #expect(result.segments.isEmpty)
+    }
+}
+
+// MARK: - Helper Function Tests
+
+struct Qwen3ASRHelperTests {
+
+    @Test func getFeatExtractOutputLengthsBasic() {
+        // Test with a known input length
+        let inputLengths = MLXArray([Int32(200)])
+        let output = getFeatExtractOutputLengths(inputLengths)
+        let result = Int(output[0].item(Int32.self))
+
+        // Should produce a positive output length
+        #expect(result > 0)
+    }
+
+    @Test func getFeatExtractOutputLengthsMultiple() {
+        let inputLengths = MLXArray([Int32(100), Int32(200), Int32(300)])
+        let output = getFeatExtractOutputLengths(inputLengths)
+
+        // All output lengths should be positive
+        for i in 0..<3 {
+            let result = Int(output[i].item(Int32.self))
+            #expect(result > 0, "Output length at index \(i) should be positive")
+        }
+
+        // Longer input should produce longer or equal output
+        let len1 = Int(output[0].item(Int32.self))
+        let len2 = Int(output[1].item(Int32.self))
+        let len3 = Int(output[2].item(Int32.self))
+        #expect(len2 >= len1)
+        #expect(len3 >= len2)
+    }
+
+    @Test func getFeatExtractOutputLengthsChunkBoundary() {
+        // Test at chunk boundary (100)
+        let inputLengths = MLXArray([Int32(100)])
+        let output = getFeatExtractOutputLengths(inputLengths)
+        let result = Int(output[0].item(Int32.self))
+
+        // At boundary of 100, should get 13 tokens from the chunk
+        #expect(result == 13)
+    }
+}
+
+// MARK: - Audio Chunking Tests
+
+struct SplitAudioIntoChunksTests {
+
+    @Test func shortAudioReturnsOneChunk() {
+        // 1 second of audio at 16kHz
+        let sampleRate = 16000
+        let audio = MLXArray(Array(repeating: Float(0.5), count: sampleRate))
+
+        let chunks = splitAudioIntoChunks(audio, sampleRate: sampleRate, chunkDuration: 1200.0)
+
+        #expect(chunks.count == 1)
+        #expect(chunks[0].1 == 0.0, "Offset should be 0")
+        #expect(chunks[0].0.dim(0) == sampleRate)
+    }
+
+    @Test func veryShortAudioGetsPadded() {
+        // 0.1 seconds at 16kHz = 1600 samples
+        let sampleRate = 16000
+        let audio = MLXArray(Array(repeating: Float(0.1), count: 1600))
+
+        let chunks = splitAudioIntoChunks(
+            audio,
+            sampleRate: sampleRate,
+            chunkDuration: 1200.0,
+            minChunkDuration: 1.0
+        )
+
+        #expect(chunks.count == 1)
+        // Should be padded to at least 1.0 second = 16000 samples
+        #expect(chunks[0].0.dim(0) >= sampleRate)
+    }
+
+    @Test func longAudioGetsSplit() {
+        // 10 seconds of audio, chunk at 3 seconds
+        let sampleRate = 16000
+        let totalSamples = sampleRate * 10
+        let audio = MLXArray(Array(repeating: Float(0.3), count: totalSamples))
+
+        let chunks = splitAudioIntoChunks(
+            audio,
+            sampleRate: sampleRate,
+            chunkDuration: 3.0,
+            minChunkDuration: 0.5
+        )
+
+        // Should have multiple chunks
+        #expect(chunks.count > 1, "10 seconds of audio with 3s chunk duration should produce multiple chunks")
+
+        // All offsets should be non-negative and increasing
+        for i in 1..<chunks.count {
+            #expect(chunks[i].1 > chunks[i - 1].1, "Offsets should be increasing")
+        }
+
+        // First offset should be 0
+        #expect(chunks[0].1 == 0.0)
+    }
+
+    @Test func chunksSplitAtLowEnergy() {
+        let sampleRate = 16000
+
+        // Create audio with loud and silent sections:
+        // 2s loud -> 1s silence -> 2s loud -> 1s silence -> 2s loud = 8s total
+        var samples = [Float]()
+        for i in 0..<(sampleRate * 8) {
+            let t = Float(i) / Float(sampleRate)
+            if t < 2.0 || (t >= 3.0 && t < 5.0) || t >= 6.0 {
+                // Loud section: sine wave
+                samples.append(sin(t * 440.0 * 2.0 * .pi) * 0.8)
+            } else {
+                // Silent section
+                samples.append(0.0)
+            }
+        }
+        let audio = MLXArray(samples)
+
+        let chunks = splitAudioIntoChunks(
+            audio,
+            sampleRate: sampleRate,
+            chunkDuration: 3.0,
+            minChunkDuration: 0.5,
+            searchExpandSec: 1.5,
+            minWindowMs: 50.0
+        )
+
+        // Should produce multiple chunks
+        #expect(chunks.count >= 2, "Should split into at least 2 chunks")
+
+        // Each chunk should have positive length
+        for (chunk, _) in chunks {
+            #expect(chunk.dim(0) > 0, "Chunk should not be empty")
+        }
+    }
+
+    @Test func multidimensionalAudioReduced() {
+        // Stereo audio (2D)
+        let sampleRate = 16000
+        let left = Array(repeating: Float(0.5), count: sampleRate)
+        let right = Array(repeating: Float(0.3), count: sampleRate)
+        let stereo = MLXArray(left + right).reshaped(2, sampleRate).transposed()
+        // shape: [sampleRate, 2]
+
+        let chunks = splitAudioIntoChunks(stereo, sampleRate: sampleRate)
+
+        #expect(chunks.count == 1)
+        // After mean(axis: -1), should be 1D
+        #expect(chunks[0].0.ndim == 1)
+    }
+
+    @Test func exactChunkBoundary() {
+        // Audio exactly at chunk duration
+        let sampleRate = 16000
+        let chunkDuration: Float = 5.0
+        let totalSamples = Int(chunkDuration * Float(sampleRate))
+        let audio = MLXArray(Array(repeating: Float(0.2), count: totalSamples))
+
+        let chunks = splitAudioIntoChunks(
+            audio,
+            sampleRate: sampleRate,
+            chunkDuration: chunkDuration
+        )
+
+        // Should be exactly 1 chunk since totalSec <= chunkDuration
+        #expect(chunks.count == 1)
+    }
+
+    @Test func allChunksCoverFullAudio() {
+        // Verify no samples are lost
+        let sampleRate = 16000
+        let totalSamples = sampleRate * 7  // 7 seconds
+        let audio = MLXArray(Array(repeating: Float(0.1), count: totalSamples))
+
+        let chunks = splitAudioIntoChunks(
+            audio,
+            sampleRate: sampleRate,
+            chunkDuration: 2.0,
+            minChunkDuration: 0.5
+        )
+
+        // Sum of chunk samples should be >= total (may include padding)
+        let totalChunkSamples = chunks.reduce(0) { $0 + $1.0.dim(0) }
+        #expect(totalChunkSamples >= totalSamples, "Chunks should cover all audio samples")
+    }
+}
+
+// Run Qwen3ASR tests with:  xcodebuild test \
+// -scheme MLXAudio-Package \
+// -destination 'platform=macOS' \
+// -only-testing:MLXAudioTests/Qwen3ASRTests \
+// 2>&1 | grep -E "(Suite.*started|Test .*started|Loading|Loaded|Generating|Generated|Transcription|passed after|failed after|TEST SUCCEEDED|TEST FAILED|Suite.*passed|Test run)"
+
+
+struct Qwen3ASRTests {
+
+    /// Test basic transcription with Qwen3 ASR model
+    @Test func qwen3ASRTranscribe() async throws {
+        let audioURL = Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media")!
+        let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
+        print("\u{001B}[33mLoaded audio: \(audioData.shape), sample rate: \(sampleRate)\u{001B}[0m")
+
+        print("\u{001B}[33mLoading Qwen3 ASR model...\u{001B}[0m")
+        let model = try await Qwen3ASRModel.fromPretrained("mlx-community/Qwen3-ASR-0.6B-4bit")
+        print("\u{001B}[32mQwen3 ASR model loaded!\u{001B}[0m")
+
+        let output = model.generate(audio: audioData)
+        print("\u{001B}[32m Qwen3 ASR Transcription: \(output.text)\u{001B}[0m")
+        print("\u{001B}[32m Qwen3 ASR Generation Stats: \(output)\u{001B}[0m")
+
+        #expect(!output.text.isEmpty, "Transcription text should not be empty")
+        #expect(output.generationTokens > 0, "Generation tokens should be greater than 0")
+    }
+
+    /// Test streaming transcription with Qwen3 ASR model
+    @Test func qwen3ASRTranscribeStream() async throws {
+        let audioURL = Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media")!
+        let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
+        print("\u{001B}[33mLoaded audio: \(audioData.shape), sample rate: \(sampleRate)\u{001B}[0m")
+
+        print("\u{001B}[33mLoading Qwen3 ASR model...\u{001B}[0m")
+        let model = try await Qwen3ASRModel.fromPretrained("mlx-community/Qwen3-ASR-0.6B-4bit")
+        print("\u{001B}[32mQwen3 ASR model loaded!\u{001B}[0m")
+
+        print("\u{001B}[33mStreaming transcription ...\u{001B}[0m")
+
+        var tokenCount = 0
+        var transcribedText = ""
+        var finalOutput: STTOutput?
+        var generationInfo: STTGenerationInfo?
+
+        for try await event in model.generateStream(audio: audioData) {
+            switch event {
+            case .token(let token):
+                tokenCount += 1
+                transcribedText += token
+            case .info(let info):
+                generationInfo = info
+                print("\n\u{001B}[36m\(info.summary)\u{001B}[0m")
+            case .result(let output):
+                finalOutput = output
+                print("\u{001B}[32m Qwen3 ASR Streaming Transcription: \(output.text)\u{001B}[0m")
+                print("\u{001B}[32m Qwen3 ASR Streaming Stats: \(output)\u{001B}[0m")
+            }
+        }
+
+        #expect(tokenCount > 0, "Should have generated tokens")
+        #expect(finalOutput != nil, "Should have received final output")
+        #expect(generationInfo != nil, "Should have received generation info")
+
+        if let output = finalOutput {
+            #expect(!output.text.isEmpty, "Transcription text should not be empty")
+            #expect(output.generationTokens > 0, "Generation tokens should be greater than 0")
+            print("\u{001B}[32m\(output)\u{001B}[0m")
+        }
+    }
+
+    /// Test forced alignment with Qwen3 ForcedAligner model
+    @Test func qwen3ForcedAlignerAlign() async throws {
+        let audioURL = Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media")!
+        let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
+        print("\u{001B}[33mLoaded audio: \(audioData.shape), sample rate: \(sampleRate)\u{001B}[0m")
+
+        print("\u{001B}[33mLoading Qwen3 ForcedAligner model...\u{001B}[0m")
+        let model = try await Qwen3ForcedAlignerModel.fromPretrained("mlx-community/Qwen3-ForcedAligner-0.6B-4bit")
+        print("\u{001B}[32mQwen3 ForcedAligner model loaded!\u{001B}[0m")
+
+        // First transcribe with ASR to get the text, or use a known transcript
+        let transcript = "Coffee's story likely begins in Ethiopia, where legend tells of a goat herder named Kaldi, who notices goats became energetic after eating red berries from a particular bush. Curious, he tried them himself and felt invigorated."
+
+        print("\u{001B}[33mRunning forced alignment...\u{001B}[0m")
+        let result = model.generate(audio: audioData, text: transcript, language: "English")
+
+        print("\u{001B}[32m Qwen3 ForcedAligner Result:\u{001B}[0m")
+        for item in result.items {
+            print("\u{001B}[32m  [\(String(format: "%.3f", item.startTime))s - \(String(format: "%.3f", item.endTime))s] \(item.text)\u{001B}[0m")
+        }
+
+        #expect(!result.items.isEmpty, "Alignment should produce items")
+        #expect(!result.text.isEmpty, "Alignment text should not be empty")
+
+        // Each item should have valid timing
+        for item in result.items {
+            #expect(item.startTime >= 0, "Start time should be non-negative")
+            #expect(item.endTime >= item.startTime, "End time should be >= start time")
+        }
+        print("\u{001B}[32m Qwen3 ForcedAligner Summary:\u{001B}[0m")
+        print("\u{001B}[32m  Text: \(result.text)\u{001B}[0m")
+        print("\u{001B}[32m  Prompt Tokens: \(result.promptTokens)\u{001B}[0m")
+        print("\u{001B}[32m  Total Time: \(String(format: "%.3f", result.totalTime))s\u{001B}[0m")
+        print("\u{001B}[32m  Peak Memory: \(String(format: "%.2f", result.peakMemoryUsage))GB\u{001B}[0m")
+    }
+}
+
 // Run GLMASR tests with:  xcodebuild test \
 // -scheme MLXAudio-Package \
 // -destination 'platform=macOS' \

@@ -35,7 +35,7 @@ public class AudioSessionManager {
             try AVAudioSession.sharedInstance().setActive(true)
 
             // Log the current audio route for debugging
-            let currentRoute = AVAudioSession.sharedInstance().currentRoute
+            let _ = AVAudioSession.sharedInstance().currentRoute
         } catch {
             print("Audio session setup failed: \(error)")
         }

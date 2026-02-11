@@ -6,6 +6,7 @@ claudedocs/
 .DS_Store
 .xcbkptlist
 .claude
+Examples/VoicesApp/Config/Local.xcconfig
 xcuserdata/*
 *.pbxproj
 *.resolved

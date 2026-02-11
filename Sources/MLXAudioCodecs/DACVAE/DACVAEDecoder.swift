@@ -7,7 +7,6 @@
 
 import Foundation
 import MLX
-import MLXRandom
 import MLXNN
 
 // MARK: - DACVAE LSTM
@@ -37,7 +36,7 @@ public class DACVAEStackedLSTM: Module {
         var newH: [MLXArray] = []
         var newC: [MLXArray] = []
 
-        for (i, layer) in layers.enumerated() {
+        for layer in layers {
             let (allH, allC) = layer(output)
             output = allH
             // Keep final timestep for hidden state

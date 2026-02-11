@@ -21,6 +21,22 @@ public func hanningWindow(size: Int) -> MLXArray {
     return MLXArray(window)
 }
 
+/// Mel scale variants for filterbank computation.
+public enum MelScale {
+    /// HTK formula: mel = 2595 * log10(1 + f/700)
+    case htk
+    /// Slaney (Auditory Toolbox): linear below 1000 Hz, logarithmic above
+    case slaney
+}
+
+/// Padding mode for STFT.
+public enum PadMode {
+    /// Reflect padding (default, used by Whisper)
+    case reflect
+    /// Zero (constant) padding (used by NeMo/Sortformer)
+    case constant
+}
+
 /// Create mel filterbank matrix.
 public func melFilters(
     sampleRate: Int,
@@ -28,26 +44,48 @@ public func melFilters(
     nMels: Int,
     fMin: Float = 0,
     fMax: Float? = nil,
-    norm: String? = "slaney"
+    norm: String? = "slaney",
+    melScale: MelScale = .htk
 ) -> MLXArray {
     let fMaxVal = fMax ?? Float(sampleRate) / 2.0
-
-    // Hz to mel conversion (HTK formula)
-    func hzToMel(_ freq: Float) -> Float {
-        return 2595.0 * log10(1.0 + freq / 700.0)
-    }
-
-    // Mel to Hz conversion
-    func melToHz(_ mel: Float) -> Float {
-        return 700.0 * (pow(10.0, mel / 2595.0) - 1.0)
-    }
-
     let nFreqs = nFft / 2 + 1
 
     // Generate frequency points
     var allFreqs = [Float](repeating: 0, count: nFreqs)
     for i in 0..<nFreqs {
         allFreqs[i] = Float(i) * Float(sampleRate) / Float(nFft)
+    }
+
+    // Mel scale conversion functions
+    let hzToMel: (Float) -> Float
+    let melToHz: (Float) -> Float
+
+    switch melScale {
+    case .htk:
+        hzToMel = { freq in 2595.0 * log10(1.0 + freq / 700.0) }
+        melToHz = { mel in 700.0 * (pow(10.0, mel / 2595.0) - 1.0) }
+
+    case .slaney:
+        // Slaney (Auditory Toolbox) piecewise linear/log scale
+        let fSp: Float = 200.0 / 3.0
+        let minLogHz: Float = 1000.0
+        let minLogMel = (minLogHz - fMin) / fSp
+        let logStep = log(Float(6.4)) / 27.0
+
+        hzToMel = { freq in
+            if freq < minLogHz {
+                return (freq - fMin) / fSp
+            } else {
+                return minLogMel + log(freq / minLogHz) / logStep
+            }
+        }
+        melToHz = { mel in
+            if mel < minLogMel {
+                return fMin + fSp * mel
+            } else {
+                return minLogHz * exp(logStep * (mel - minLogMel))
+            }
+        }
     }
 
     // Convert to mel scale and back
@@ -108,36 +146,40 @@ public func stft(
     audio: MLXArray,
     window: MLXArray,
     nFft: Int,
-    hopLength: Int
+    hopLength: Int,
+    padMode: PadMode = .reflect
 ) -> MLXArray {
     // Pad audio for centering
     let padding = nFft / 2
     let audioLen = audio.shape[0]
 
-    // Reflect padding: reverse slices at both ends
-    let prefixSlice = audio[1..<(min(padding + 1, audioLen))]
-    let prefix = reverseArray(prefixSlice)
+    let padded: MLXArray
+    switch padMode {
+    case .reflect:
+        // Reflect padding: reverse slices at both ends
+        let prefixSlice = audio[1..<(min(padding + 1, audioLen))]
+        let prefix = reverseArray(prefixSlice)
 
-    let suffixStart = max(0, audioLen - padding - 1)
-    let suffixEnd = max(1, audioLen - 1)
-    let suffixSlice = audio[suffixStart..<suffixEnd]
-    let suffix = reverseArray(suffixSlice)
+        let suffixStart = max(0, audioLen - padding - 1)
+        let suffixEnd = max(1, audioLen - 1)
+        let suffixSlice = audio[suffixStart..<suffixEnd]
+        let suffix = reverseArray(suffixSlice)
 
-    let padded = MLX.concatenated([prefix, audio, suffix])
+        padded = MLX.concatenated([prefix, audio, suffix])
+
+    case .constant:
+        // Zero padding
+        let prefix = MLXArray.zeros([padding])
+        let suffix = MLXArray.zeros([padding])
+        padded = MLX.concatenated([prefix, audio, suffix])
+    }
 
     // Calculate number of frames
     let paddedLen = padded.shape[0]
     let numFrames = 1 + (paddedLen - nFft) / hopLength
 
-    // Create frames
-    var frames: [MLXArray] = []
-    for i in 0..<numFrames {
-        let start = i * hopLength
-        let frame = padded[start..<(start + nFft)]
-        frames.append(frame)
-    }
-
-    let framesStacked = MLX.stacked(frames, axis: 0)  // [numFrames, nFft]
+    // Create frames using strided view — zero-copy, no per-frame loop
+    let framesStacked = asStrided(padded, [numFrames, nFft], strides: [hopLength, 1], offset: 0)
 
     // Apply window
     let windowed = framesStacked * window
@@ -166,6 +208,7 @@ public func computeMelSpectrogram(
 
         // Compute magnitude squared (power spectrum)
         let magnitudes = MLX.abs(freqs).square()
+        eval(magnitudes)  // Allow MLX to free STFT complex output
 
         // Create mel filterbank [nFreqs, nMels]
         let filters = melFilters(
@@ -177,6 +220,7 @@ public func computeMelSpectrogram(
 
         // Apply mel filterbank: [numFrames, nFreqs] @ [nFreqs, nMels] = [numFrames, nMels]
         var melSpec = MLX.matmul(magnitudes, filters)
+        eval(melSpec)  // Allow MLX to free magnitudes and filters
 
         // Apply log scaling with clamping (Whisper-style normalization)
         melSpec = MLX.maximum(melSpec, MLXArray(Float(1e-10)))

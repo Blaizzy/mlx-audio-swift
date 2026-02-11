@@ -7,7 +7,6 @@
 
 import Foundation
 import MLX
-import MLXRandom
 import MLXNN
 
 // MARK: - Weight Normalization Helper
@@ -303,7 +302,7 @@ public class DACVAEWNConvTranspose1d: Module {
             }
         }
 
-        var output = MLXArray(outData).reshaped([batch, outChannels, outputLength])
+        let output = MLXArray(outData).reshaped([batch, outChannels, outputLength])
 
         // Transpose back to NLC
         return output.transposed(0, 2, 1)

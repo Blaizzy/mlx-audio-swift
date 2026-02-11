@@ -152,13 +152,24 @@ struct ContentView: View {
 
                 // Audio player
                 if viewModel.audioURL != nil {
-                    CompactAudioPlayer(
-                        isPlaying: viewModel.isPlaying,
-                        currentTime: viewModel.currentTime,
-                        duration: viewModel.duration,
-                        onPlayPause: { viewModel.togglePlayPause() },
-                        onSeek: { viewModel.seek(to: $0) }
-                    )
+                    HStack(spacing: 8) {
+                        CompactAudioPlayer(
+                            isPlaying: viewModel.isPlaying,
+                            currentTime: viewModel.currentTime,
+                            duration: viewModel.duration,
+                            onPlayPause: { viewModel.togglePlayPause() },
+                            onSeek: { viewModel.seek(to: $0) }
+                        )
+
+                        // Download button
+                        Button(action: { viewModel.saveAudioFile() }) {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .font(.system(size: 32))
+                                .foregroundStyle(.blue)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Save audio file")
+                    }
                     .padding(.horizontal)
                 }
             }

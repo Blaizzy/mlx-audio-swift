@@ -8,7 +8,6 @@
 import Foundation
 import MLX
 import MLXNN
-import MLXRandom
 
 // MARK: - Sequential (matches Python nn.Sequential serialization)
 
@@ -270,7 +269,6 @@ public class NoiseBlock: Module, UnaryLayer {
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
         let B = x.shape[0]
-        let C = x.shape[1]
         let T = x.shape[2]
 
         let noise = MLXRandom.normal([B, 1, T])

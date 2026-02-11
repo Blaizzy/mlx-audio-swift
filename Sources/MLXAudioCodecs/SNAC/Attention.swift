@@ -29,12 +29,10 @@ public class LocalMHA: Module, UnaryLayer {
     }
     
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let B = x.shape[0]
-        let C = x.shape[1]
         let T = x.shape[2]
         
         let residual = x
-        var x = norm(x.swappedAxes(1, 2))  // [B, T, C]
+        let x = norm(x.swappedAxes(1, 2))  // [B, T, C]
         let windows = T / windowSize
         
         let qkv = toQKV(x)

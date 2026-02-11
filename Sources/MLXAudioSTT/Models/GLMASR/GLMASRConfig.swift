@@ -285,8 +285,8 @@ public struct GLMASRModelConfig: Codable {
 
     enum CodingKeys: String, CodingKey {
         case modelType = "model_type"
-        case whisperConfig = "audio_config"
-        case lmConfig = "text_config"
+        case whisperConfig = "whisper_config"
+        case lmConfig = "lm_config"
         case adapterType = "adapter_type"
         case mergeFactor = "merge_factor"
         case mlpAdapterAct = "mlp_adapter_act"

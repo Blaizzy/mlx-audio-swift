@@ -9,6 +9,7 @@ import Foundation
 import AVFoundation
 import Combine
 
+@MainActor
 public class AudioPlayerManager: NSObject, ObservableObject {
     // Published properties for UI binding
     @Published public var isPlaying: Bool = false
@@ -30,7 +31,7 @@ public class AudioPlayerManager: NSObject, ObservableObject {
         super.init()
     }
 
-    deinit {
+    @MainActor deinit {
         stop()
     }
 
@@ -209,8 +210,10 @@ public class AudioPlayerManager: NSObject, ObservableObject {
     private func startTimer() {
         stopTimer()
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self = self, let player = self.player else { return }
-            self.currentTime = player.currentTime
+            Task { @MainActor in
+                guard let player = self?.player else { return }
+                self?.currentTime = player.currentTime
+            }
         }
         timer?.tolerance = 0.05
     }
@@ -218,11 +221,13 @@ public class AudioPlayerManager: NSObject, ObservableObject {
     private func startStreamingTimer() {
         stopTimer()
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self = self,
-                  let node = self.playerNode,
-                  let nodeTime = node.lastRenderTime,
-                  let playerTime = node.playerTime(forNodeTime: nodeTime) else { return }
-            self.currentTime = Double(playerTime.sampleTime) / playerTime.sampleRate
+            Task { @MainActor in
+                guard let node = self?.playerNode,
+                      let nodeTime = node.lastRenderTime,
+                      let playerTime = node.playerTime(forNodeTime: nodeTime) else { return }
+                let time = Double(playerTime.sampleTime) / playerTime.sampleRate
+                self?.currentTime = time
+            }
         }
         timer?.tolerance = 0.05
     }
@@ -235,7 +240,7 @@ public class AudioPlayerManager: NSObject, ObservableObject {
 
 // MARK: - AVAudioPlayerDelegate
 
-extension AudioPlayerManager: AVAudioPlayerDelegate {
+extension AudioPlayerManager: @MainActor AVAudioPlayerDelegate {
     public func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         isPlaying = false
         stopTimer()
@@ -248,3 +253,4 @@ extension AudioPlayerManager: AVAudioPlayerDelegate {
         stopTimer()
     }
 }
+

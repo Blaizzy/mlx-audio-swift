@@ -159,7 +159,6 @@ public struct SopranoConfiguration: Codable, Sendable {
 
         // Quantization
         let baseConfig = try? BaseConfiguration(from: decoder)
-        self.quantization = baseConfig?.quantization
         self.perLayerQuantization = baseConfig?.perLayerQuantization
     }
 

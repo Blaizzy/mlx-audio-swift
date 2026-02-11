@@ -1,4 +1,4 @@
-// swift-tools-version:5.9
+// swift-tools-version:6.2
 import PackageDescription
 
 // NOTE: TTS targets are temporarily disabled due to path issues.
@@ -25,6 +25,9 @@ let package = Package(
         // Speech-to-Text
         .library(name: "MLXAudioSTT", targets: ["MLXAudioSTT"]),
 
+        // Voice Activity Detection / Speaker Diarization
+        .library(name: "MLXAudioVAD", targets: ["MLXAudioVAD"]),
+
         // Speech-to-Speech
         .library(name: "MLXAudioSTS", targets: ["MLXAudioSTS"]),
 
@@ -34,17 +37,21 @@ let package = Package(
         // Legacy combined library (for backwards compatibility)
         .library(
             name: "MLXAudio",
-            targets: ["MLXAudioCore", "MLXAudioCodecs", "MLXAudioTTS", "MLXAudioSTT", "MLXAudioSTS", "MLXAudioUI"]
+            targets: ["MLXAudioCore", "MLXAudioCodecs", "MLXAudioTTS", "MLXAudioSTT", "MLXAudioVAD", "MLXAudioSTS", "MLXAudioUI"]
+        ),
+        .executable(
+            name: "mlx-audio-swift-tts",
+            targets: ["mlx-audio-swift-tts"],
         ),
 
         // STT Demo executable
         .executable(name: "stt-demo", targets: ["STTDemo"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/ml-explore/mlx-swift.git", branch: "main"),
-        .package(url: "https://github.com/Blaizzy/mlx-swift-lm.git", branch: "main"),
-        .package(url: "https://github.com/huggingface/swift-transformers", .upToNextMinor(from: "1.1.0")),
-        .package(url: "https://github.com/Blaizzy/swift-huggingface.git", branch: "main"),
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMajor(from: "0.30.3")),
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", .upToNextMajor(from: "2.30.3")),
+        .package(url: "https://github.com/huggingface/swift-transformers.git", .upToNextMajor(from: "1.1.6")),
+        .package(url: "https://github.com/huggingface/swift-huggingface.git", .upToNextMajor(from: "0.6.0")),
         .package(url: "https://github.com/vapor/console-kit.git", from: "4.15.0"),
     ],
     targets: [
@@ -54,6 +61,7 @@ let package = Package(
             dependencies: [
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "HuggingFace", package: "swift-huggingface"),
             ],
             path: "Sources/MLXAudioCore",
             swiftSettings: [
@@ -101,10 +109,7 @@ let package = Package(
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "Transformers", package: "swift-transformers"),
             ],
-            path: "Sources/MLXAudioTTS",
-            resources: [
-                .process("Models/Kokoro/Resources")
-            ]
+            path: "Sources/MLXAudioTTS"
         ),
 
         // MARK: - MLXAudioSTT
@@ -123,6 +128,19 @@ let package = Package(
                 .product(name: "Transformers", package: "swift-transformers"),
             ],
             path: "Sources/MLXAudioSTT"
+        ),
+
+        // MARK: - MLXAudioVAD
+        .target(
+            name: "MLXAudioVAD",
+            dependencies: [
+                "MLXAudioCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "HuggingFace", package: "swift-huggingface"),
+            ],
+            path: "Sources/MLXAudioVAD"
         ),
 
         // MARK: - MLXAudioSTS
@@ -144,9 +162,14 @@ let package = Package(
                 "MLXAudioCore",
                 "MLXAudioTTS",
                 "MLXAudioSTS",
-                .product(name: "MLX", package: "mlx-swift"),
             ],
             path: "Sources/MLXAudioUI"
+        ),
+        
+        .executableTarget(
+            name: "mlx-audio-swift-tts",
+            dependencies: ["MLXAudioCore", "MLXAudioTTS", "MLXAudioSTT"],
+            path: "Sources/mlx-audio-swift-tts"
         ),
 
         // MARK: - STT Demo
@@ -168,6 +191,7 @@ let package = Package(
                 "MLXAudioCodecs",
                 "MLXAudioTTS",
                 "MLXAudioSTT",
+                "MLXAudioVAD",
                 "MLXAudioSTS",
                 "SileroVAD",
             ],

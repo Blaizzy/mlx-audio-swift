@@ -226,6 +226,44 @@ struct LlamaTTSTests {
 
 }
 
+// Run PocketTTS tests with:  xcodebuild test \
+// -scheme MLXAudio-Package \
+// -destination 'platform=macOS' \
+// -only-testing:MLXAudioTests/PocketTTSTests \
+// 2>&1 | grep -E "(Suite.*started|Test test.*started|Loading|Loaded|Generating|Generated|Saved|passed after|failed after|TEST SUCCEEDED|TEST FAILED|Suite.*passed|Test run)"
+
+struct PocketTTSTests {
+
+    /// Test basic text-to-speech generation with PocketTTS model
+    @Test func testPocketTTSGenerate() async throws {
+        // 1. Load PocketTTS model from HuggingFace
+        print("\u{001B}[33mLoading PocketTTS model...\u{001B}[0m")
+        let model = try await PocketTTSModel.fromPretrained("mlx-community/pocket-tts")
+        print("\u{001B}[32mPocketTTS model loaded!\u{001B}[0m")
+
+        // 2. Generate audio from text
+        let text = "Hello, this is a test of the PocketTTS model."
+        print("\u{001B}[33mGenerating audio for: \"\(text)\"...\u{001B}[0m")
+
+        let audio = try await model.generate(
+            text: text,
+            voice: "alba",
+            generationParameters: GenerateParameters(temperature: 0.7)
+        )
+
+        print("\u{001B}[32mGenerated audio shape: \(audio.shape)\u{001B}[0m")
+
+        // 3. Basic checks
+        #expect(audio.shape[0] > 0, "Audio should have samples")
+
+        // 4. Save generated audio
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pocket_tts_test_output.wav")
+        try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+        print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
+    }
+}
+
 
 // Run Soprano tests with:  xcodebuild test \
 // -scheme MLXAudio-Package \

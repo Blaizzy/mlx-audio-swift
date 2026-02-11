@@ -7,7 +7,6 @@
 
 import Foundation
 import MLX
-import MLXRandom
 import MLXNN
 import Hub
 
@@ -440,7 +439,7 @@ public func preprocessEncodecAudio(
     chunkLength: Int? = nil,
     chunkStride: Int? = nil
 ) -> (MLXArray, MLXArray) {
-    var audio = rawAudio.map { x -> MLXArray in
+    let audio = rawAudio.map { x -> MLXArray in
         if x.ndim == 1 {
             return x.expandedDimensions(axis: -1)
         }
