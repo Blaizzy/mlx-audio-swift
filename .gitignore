@@ -13,11 +13,3 @@ xcuserdata/*
 *.xcuserdatad
 *.xcuserdatad/xcdebugger
 *.xcuserdatad/xcdebugger/Breakpoints_v2.xcbkptlist
-
-# Local agent/runtime artifacts
-.parity/
-.kaban/
-.serena/
-.sisyphus/
-claudedocs/
-checkpoints/
