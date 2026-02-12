@@ -1356,6 +1356,474 @@ struct Qwen3ASRHelperTests {
     }
 }
 
+
+// MARK: - Voxtral Realtime Module Setup Tests
+
+struct VoxtralRealtimeModuleSetupTests {
+
+    // MARK: - AudioEncodingConfig Tests
+
+    @Test func audioEncodingConfigDefaults() {
+        let config = AudioEncodingConfig()
+
+        #expect(config.samplingRate == 16000)
+        #expect(config.frameRate == 12.5)
+        #expect(config.numMelBins == 128)
+        #expect(config.hopLength == 160)
+        #expect(config.windowSize == 400)
+        #expect(config.globalLogMelMax == 1.5)
+    }
+
+    @Test func audioEncodingConfigCustom() {
+        let config = AudioEncodingConfig(
+            samplingRate: 22050,
+            numMelBins: 80,
+            hopLength: 256,
+            windowSize: 512
+        )
+
+        #expect(config.samplingRate == 22050)
+        #expect(config.numMelBins == 80)
+        #expect(config.hopLength == 256)
+        #expect(config.windowSize == 512)
+    }
+
+    // MARK: - VoxtralEncoderConfig Tests
+
+    @Test func voxtralEncoderConfigDefaults() {
+        let config = VoxtralEncoderConfig()
+
+        #expect(config.dim == 1280)
+        #expect(config.nLayers == 32)
+        #expect(config.nHeads == 32)
+        #expect(config.headDim == 64)
+        #expect(config.hiddenDim == 5120)
+        #expect(config.slidingWindow == 750)
+        #expect(config.ropeTheta == 1_000_000.0)
+        #expect(config.downsampleFactor == 4)
+        #expect(config.causal == true)
+        #expect(config.useBiases == true)
+    }
+
+    @Test func voxtralEncoderConfigCustom() {
+        let config = VoxtralEncoderConfig(
+            dim: 256,
+            nLayers: 2,
+            nHeads: 4,
+            headDim: 64,
+            hiddenDim: 512,
+            slidingWindow: 128
+        )
+
+        #expect(config.dim == 256)
+        #expect(config.nLayers == 2)
+        #expect(config.nHeads == 4)
+        #expect(config.hiddenDim == 512)
+        #expect(config.slidingWindow == 128)
+    }
+
+    // MARK: - VoxtralDecoderConfig Tests
+
+    @Test func voxtralDecoderConfigDefaults() {
+        let config = VoxtralDecoderConfig()
+
+        #expect(config.dim == 3072)
+        #expect(config.nLayers == 26)
+        #expect(config.nHeads == 32)
+        #expect(config.nKvHeads == 8)
+        #expect(config.headDim == 128)
+        #expect(config.hiddenDim == 9216)
+        #expect(config.vocabSize == 131072)
+        #expect(config.slidingWindow == 8192)
+        #expect(config.tiedEmbeddings == true)
+        #expect(config.adaRmsNormTCond == true)
+        #expect(config.adaRmsNormTCondDim == 32)
+    }
+
+    @Test func voxtralDecoderConfigCustom() {
+        let config = VoxtralDecoderConfig(
+            dim: 256,
+            nLayers: 2,
+            nHeads: 4,
+            nKvHeads: 2,
+            headDim: 64,
+            hiddenDim: 512,
+            vocabSize: 1000,
+            adaRmsNormTCond: false
+        )
+
+        #expect(config.dim == 256)
+        #expect(config.nLayers == 2)
+        #expect(config.nHeads == 4)
+        #expect(config.nKvHeads == 2)
+        #expect(config.vocabSize == 1000)
+        #expect(config.adaRmsNormTCond == false)
+    }
+
+    // MARK: - VoxtralRealtimeModelConfig Tests
+
+    @Test func voxtralModelConfigDefaults() {
+        let config = VoxtralRealtimeModelConfig()
+
+        #expect(config.modelType == "voxtral_realtime")
+        #expect(config.transcriptionDelayMs == 480)
+        #expect(config.bosTokenId == 1)
+        #expect(config.eosTokenId == 2)
+        #expect(config.streamingPadTokenId == 32)
+        #expect(config.nLeftPadTokens == 32)
+        #expect(config.vocabSize == 131072)
+        #expect(config.hiddenSize == 3072)
+    }
+
+    @Test func voxtralModelConfigDecoding() throws {
+        let json = """
+        {
+            "model_type": "voxtral_realtime",
+            "encoder_args": {
+                "dim": 1280,
+                "n_layers": 32,
+                "n_heads": 32,
+                "head_dim": 64,
+                "hidden_dim": 5120,
+                "sliding_window": 750,
+                "downsample_factor": 4
+            },
+            "decoder": {
+                "dim": 3072,
+                "n_layers": 26,
+                "n_heads": 32,
+                "n_kv_heads": 8,
+                "head_dim": 128,
+                "hidden_dim": 9216,
+                "vocab_size": 131072,
+                "ada_rms_norm_t_cond": true,
+                "ada_rms_norm_t_cond_dim": 32
+            },
+            "transcription_delay_ms": 480,
+            "bos_token_id": 1,
+            "eos_token_id": 2,
+            "streaming_pad_token_id": 32,
+            "n_left_pad_tokens": 32
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let config = try JSONDecoder().decode(VoxtralRealtimeModelConfig.self, from: data)
+
+        #expect(config.modelType == "voxtral_realtime")
+        #expect(config.encoderArgs.dim == 1280)
+        #expect(config.encoderArgs.nLayers == 32)
+        #expect(config.encoderArgs.slidingWindow == 750)
+        #expect(config.decoder.dim == 3072)
+        #expect(config.decoder.nKvHeads == 8)
+        #expect(config.decoder.adaRmsNormTCond == true)
+        #expect(config.transcriptionDelayMs == 480)
+    }
+
+    @Test func voxtralModelConfigNestedAudioEncoding() throws {
+        // Test nested audio_encoding_args inside encoder_args (as in real HF config)
+        let json = """
+        {
+            "model_type": "voxtral_realtime",
+            "encoder_args": {
+                "dim": 1280,
+                "n_layers": 32,
+                "n_heads": 32,
+                "head_dim": 64,
+                "audio_encoding_args": {
+                    "sampling_rate": 16000,
+                    "num_mel_bins": 128,
+                    "hop_length": 160,
+                    "window_size": 400,
+                    "global_log_mel_max": 1.5
+                }
+            },
+            "decoder": {
+                "dim": 3072,
+                "n_layers": 26
+            }
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let config = try JSONDecoder().decode(VoxtralRealtimeModelConfig.self, from: data)
+
+        #expect(config.encoderArgs.dim == 1280)
+        #expect(config.audioEncodingArgs.samplingRate == 16000)
+        #expect(config.audioEncodingArgs.numMelBins == 128)
+        #expect(config.audioEncodingArgs.hopLength == 160)
+        #expect(config.audioEncodingArgs.globalLogMelMax == 1.5)
+    }
+
+    @Test func voxtralModelConfigDecodingDefaults() throws {
+        let json = "{}"
+        let data = json.data(using: .utf8)!
+        let config = try JSONDecoder().decode(VoxtralRealtimeModelConfig.self, from: data)
+
+        #expect(config.modelType == "voxtral_realtime")
+        #expect(config.encoderArgs.dim == 1280)
+        #expect(config.decoder.dim == 3072)
+        #expect(config.audioEncodingArgs.samplingRate == 16000)
+    }
+
+    // MARK: - Encoder Layer Shape Tests
+
+    @Test func voxtralEncoderLayerShape() {
+        let config = VoxtralEncoderConfig(
+            dim: 128,
+            nLayers: 1,
+            nHeads: 4,
+            headDim: 32,
+            hiddenDim: 256,
+            slidingWindow: 64
+        )
+
+        let layer = VoxtralEncoderLayer(config)
+
+        let seqLen = 16
+        let x = MLXArray.ones([seqLen, config.dim])
+        let positions = MLX.arange(seqLen)
+        let (ropeCos, ropeSin) = computeRopeFreqs(
+            positions: positions, headDim: config.headDim, theta: config.ropeTheta)
+
+        let output = layer(x, ropeCos: ropeCos, ropeSin: ropeSin, mask: .causal)
+
+        #expect(output.shape == [seqLen, config.dim])
+    }
+
+    @Test func voxtralEncoderAttentionShape() {
+        let config = VoxtralEncoderConfig(
+            dim: 128,
+            nLayers: 1,
+            nHeads: 4,
+            headDim: 32,
+            hiddenDim: 256,
+            slidingWindow: 64
+        )
+
+        let attention = VoxtralEncoderAttention(config)
+
+        let seqLen = 16
+        let x = MLXArray.ones([seqLen, config.dim])
+        let positions = MLX.arange(seqLen)
+        let (ropeCos, ropeSin) = computeRopeFreqs(
+            positions: positions, headDim: config.headDim, theta: config.ropeTheta)
+
+        let output = attention(x, ropeCos: ropeCos, ropeSin: ropeSin, mask: .causal)
+
+        #expect(output.shape == [seqLen, config.dim])
+    }
+
+    // MARK: - Decoder Layer Shape Tests
+
+    @Test func voxtralDecoderLayerShape() {
+        let config = VoxtralDecoderConfig(
+            dim: 128,
+            nLayers: 1,
+            nHeads: 4,
+            nKvHeads: 2,
+            headDim: 32,
+            hiddenDim: 256,
+            vocabSize: 100,
+            slidingWindow: 64,
+            adaRmsNormTCond: true,
+            adaRmsNormTCondDim: 16
+        )
+
+        let layer = VoxtralDecoderLayer(config)
+
+        let seqLen = 8
+        let x = MLXArray.ones([seqLen, config.dim])
+        let positions = MLX.arange(seqLen)
+        let tCond = computeTimeEmbedding(tValue: 5.0, dim: config.dim)
+        let adaScale = layer.adaRmsNormTCond?.computeScale(tCond)
+
+        let (output, cache) = layer(x, positions: positions, adaScale: adaScale, cache: nil)
+
+        #expect(output.shape == [seqLen, config.dim])
+        #expect(!cache.isEmpty)
+    }
+
+    @Test func voxtralDecoderLayerWithCache() {
+        let config = VoxtralDecoderConfig(
+            dim: 128,
+            nLayers: 1,
+            nHeads: 4,
+            nKvHeads: 2,
+            headDim: 32,
+            hiddenDim: 256,
+            vocabSize: 100,
+            slidingWindow: 64,
+            adaRmsNormTCond: false
+        )
+
+        let layer = VoxtralDecoderLayer(config)
+
+        // First forward: sequence of 4
+        let x1 = MLXArray.ones([4, config.dim])
+        let pos1 = MLX.arange(4)
+        let (out1, cache1) = layer(x1, positions: pos1, adaScale: nil, cache: nil)
+        #expect(out1.shape == [4, config.dim])
+
+        // Second forward: single token with cache
+        let x2 = MLXArray.ones([1, config.dim])
+        let pos2 = MLX.arange(4, 5)
+        let (out2, _) = layer(x2, positions: pos2, adaScale: nil, cache: cache1)
+        #expect(out2.shape == [1, config.dim])
+    }
+
+    // MARK: - AdaRMSNorm Tests
+
+    @Test func adaRMSNormShape() {
+        let dim = 128
+        let bottleneck = 16
+        let norm = AdaRMSNorm(dim: dim, bottleneckDim: bottleneck)
+
+        let tCond = computeTimeEmbedding(tValue: 5.0, dim: dim)
+        let scale = norm.computeScale(tCond)
+        #expect(scale.shape == [dim])
+
+        let x = MLXArray.ones([8, dim])
+        let output = norm(x, adaScale: scale)
+        #expect(output.shape == [8, dim])
+    }
+
+    // MARK: - Weight Sanitization Tests
+
+    @Test func voxtralSanitizeEncoderConvWeights() {
+        let config = VoxtralRealtimeModelConfig()
+        let model = VoxtralRealtimeModel(config)
+
+        // Conv weight: [outCh, inCh, kSize] in PyTorch → [outCh, kSize, inCh] in MLX
+        let weights: [String: MLXArray] = [
+            "mm_streams_embeddings.embedding_module.whisper_encoder.conv_layers.0.conv.weight":
+                MLXArray.ones([128, 3, 64]),  // 3D triggers transpose
+            "mm_streams_embeddings.embedding_module.whisper_encoder.conv_layers.0.conv.bias":
+                MLXArray.ones([128]),
+        ]
+
+        let sanitized = model.sanitize(weights: weights)
+
+        #expect(sanitized["encoder.conv_layers_0_conv.conv.weight"] != nil)
+        #expect(sanitized["encoder.conv_layers_0_conv.conv.weight"]!.shape == [128, 64, 3])
+        #expect(sanitized["encoder.conv_layers_0_conv.conv.bias"] != nil)
+    }
+
+    @Test func voxtralSanitizeTransformerWeights() {
+        let config = VoxtralRealtimeModelConfig()
+        let model = VoxtralRealtimeModel(config)
+
+        let weights: [String: MLXArray] = [
+            "mm_streams_embeddings.embedding_module.whisper_encoder.transformer.layers.0.attention.wq.weight":
+                MLXArray.ones([64, 64]),
+            "mm_streams_embeddings.embedding_module.whisper_encoder.transformer.layers.0.feed_forward.w1.weight":
+                MLXArray.ones([256, 64]),
+            "mm_streams_embeddings.embedding_module.whisper_encoder.transformer.norm.weight":
+                MLXArray.ones([64]),
+        ]
+
+        let sanitized = model.sanitize(weights: weights)
+
+        #expect(sanitized["encoder.transformer_layers.0.attention.wq.weight"] != nil)
+        #expect(sanitized["encoder.transformer_layers.0.feed_forward_w1.weight"] != nil)
+        #expect(sanitized["encoder.transformer_norm.weight"] != nil)
+    }
+
+    @Test func voxtralSanitizeDecoderWeights() {
+        let config = VoxtralRealtimeModelConfig()
+        let model = VoxtralRealtimeModel(config)
+
+        let weights: [String: MLXArray] = [
+            "mm_streams_embeddings.embedding_module.tok_embeddings.weight":
+                MLXArray.ones([1000, 64]),
+            "norm.weight":
+                MLXArray.ones([64]),
+            "layers.0.attention.wq.weight":
+                MLXArray.ones([64, 64]),
+            "layers.0.feed_forward.w1.weight":
+                MLXArray.ones([256, 64]),
+            "layers.0.ada_rms_norm_t_cond.0.weight":
+                MLXArray.ones([16, 64]),
+            "layers.0.ada_rms_norm_t_cond.2.weight":
+                MLXArray.ones([64, 16]),
+        ]
+
+        let sanitized = model.sanitize(weights: weights)
+
+        #expect(sanitized["decoder.tok_embeddings.weight"] != nil)
+        #expect(sanitized["decoder.norm.weight"] != nil)
+        #expect(sanitized["decoder.layers.0.attention.wq.weight"] != nil)
+        #expect(sanitized["decoder.layers.0.feed_forward_w1.weight"] != nil)
+        #expect(sanitized["decoder.layers.0.ada_rms_norm_t_cond.ada_down.weight"] != nil)
+        #expect(sanitized["decoder.layers.0.ada_rms_norm_t_cond.ada_up.weight"] != nil)
+    }
+
+    @Test func voxtralSanitizeAdapterWeights() {
+        let config = VoxtralRealtimeModelConfig()
+        let model = VoxtralRealtimeModel(config)
+
+        let weights: [String: MLXArray] = [
+            "mm_streams_embeddings.embedding_module.audio_language_projection.0.weight":
+                MLXArray.ones([3072, 5120]),
+            "mm_streams_embeddings.embedding_module.audio_language_projection.2.weight":
+                MLXArray.ones([3072, 3072]),
+        ]
+
+        let sanitized = model.sanitize(weights: weights)
+
+        #expect(sanitized["encoder.audio_language_projection_0.weight"] != nil)
+        #expect(sanitized["encoder.audio_language_projection_2.weight"] != nil)
+    }
+
+    // MARK: - RoPE Tests
+
+    @Test func interleavedRopeOutputShape() {
+        let seqLen = 8
+        let nHeads = 4
+        let headDim = 32
+        let x = MLXArray.ones([seqLen, nHeads * headDim])
+        let positions = MLX.arange(seqLen)
+        let (cos, sin) = computeRopeFreqs(
+            positions: positions, headDim: headDim, theta: 10000.0)
+
+        let output = interleavedRope(x, cos: cos, sin: sin, nHeads: nHeads, headDim: headDim)
+
+        #expect(output.shape == [seqLen, nHeads * headDim])
+    }
+
+    @Test func computeRopeFreqsShape() {
+        let seqLen = 16
+        let headDim = 64
+        let positions = MLX.arange(seqLen)
+        let (cos, sin) = computeRopeFreqs(positions: positions, headDim: headDim, theta: 10000.0)
+
+        #expect(cos.shape == [seqLen, headDim / 2])
+        #expect(sin.shape == [seqLen, headDim / 2])
+    }
+
+    // MARK: - Time Embedding Tests
+
+    @Test func timeEmbeddingShape() {
+        let dim = 128
+        let emb = computeTimeEmbedding(tValue: 5.0, dim: dim)
+        #expect(emb.shape == [dim])
+    }
+
+    // MARK: - KV Cache Tests
+
+    @Test func voxtralKVCacheEmpty() {
+        let cache = VoxtralKVCache()
+        #expect(cache.isEmpty)
+        #expect(cache.posOffset == 0)
+    }
+
+    @Test func voxtralKVCacheWithValues() {
+        let k = MLXArray.ones([4, 128])
+        let v = MLXArray.ones([4, 128])
+        let cache = VoxtralKVCache(k: k, v: v, posOffset: 10)
+        #expect(!cache.isEmpty)
+        #expect(cache.posOffset == 10)
+    }
+}
+
 // MARK: - Audio Chunking Tests
 
 struct SplitAudioIntoChunksTests {
