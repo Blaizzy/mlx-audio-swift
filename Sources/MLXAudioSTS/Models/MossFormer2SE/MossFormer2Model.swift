@@ -233,6 +233,7 @@ public enum MossFormer2SEError: Error, LocalizedError {
     case invalidRepoID(String)
     case invalidAudioShape([Int])
     case missingMask
+    case duplicateWeightKey(String)
 
     public var errorDescription: String? {
         switch self {
@@ -242,6 +243,8 @@ public enum MossFormer2SEError: Error, LocalizedError {
             return "Expected a 1D waveform, got shape \(shape)"
         case .missingMask:
             return "Model did not return a mask"
+        case .duplicateWeightKey(let key):
+            return "Duplicate weight key found across .safetensors files: \(key)"
         }
     }
 }
@@ -318,7 +321,8 @@ public final class MossFormer2SEModel {
     public static func fromLocal(_ directory: URL) throws -> MossFormer2SEModel {
         let configURL = directory.appendingPathComponent("config.json")
         let config: MossFormer2SEConfig
-        if let configData = try? Data(contentsOf: configURL) {
+        if FileManager.default.fileExists(atPath: configURL.path) {
+            let configData = try Data(contentsOf: configURL)
             config = try JSONDecoder().decode(MossFormer2SEConfig.self, from: configData)
         } else {
             config = MossFormer2SEConfig()
@@ -328,9 +332,17 @@ public final class MossFormer2SEModel {
 
         var weights: [String: MLXArray] = [:]
         let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-        for file in files where file.pathExtension == "safetensors" {
+            .filter { $0.pathExtension.lowercased() == "safetensors" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+
+        for file in files {
             let fileWeights = try MLX.loadArrays(url: file)
-            weights.merge(fileWeights) { _, new in new }
+            for (key, value) in fileWeights {
+                if weights[key] != nil {
+                    throw MossFormer2SEError.duplicateWeightKey(key)
+                }
+                weights[key] = value
+            }
         }
 
         let sanitizedWeights = sanitize(weights: weights)
