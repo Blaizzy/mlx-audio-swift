@@ -909,23 +909,7 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
     /// - Parameter modelRepo: The model repository ID (e.g., "mlx-community/orpheus-3b-0.1-ft-bf16")
     /// - Returns: The loaded model
     public static func fromPretrained(_ modelRepo: String) async throws -> LlamaTTSModel {
-        let client = HubClient.default
-        let cache = client.cache ?? HubCache.default
-
-        guard let repoID = Repo.ID(rawValue: modelRepo) else {
-            throw NSError(
-                domain: "LlamaTTSModel",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Invalid repository ID: \(modelRepo)"]
-            )
-        }
-
-        let modelDir = try await llamaTTSResolveOrDownloadModel(
-            client: client,
-            cache: cache,
-            repoID: repoID,
-            requiredExtension: "safetensors"
-        )
+        let modelDir = try await ModelResolver.resolve(modelId: modelRepo)
 
         let configPath = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configPath)
@@ -976,51 +960,3 @@ private func llamaTTSLoadWeights(from directory: URL) throws -> [String: MLXArra
     return weights
 }
 
-private func llamaTTSResolveOrDownloadModel(
-    client: HubClient,
-    cache: HubCache,
-    repoID: Repo.ID,
-    requiredExtension: String
-) async throws -> URL {
-    let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
-    let modelDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        .appendingPathComponent("intrusive-memory/Models/Audio")
-        .appendingPathComponent(modelSubdir)
-
-    // Check if model already exists with required files (config.json + safetensors)
-    let configPath = modelDir.appendingPathComponent("config.json")
-    if FileManager.default.fileExists(atPath: configPath.path) {
-        let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
-        let hasRequiredFiles = files?.contains { $0.pathExtension == requiredExtension } ?? false
-
-        if hasRequiredFiles {
-            print("Using cached model at: \(modelDir.path)")
-            return modelDir
-        }
-    }
-
-    // Create directory if needed
-    try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
-
-    // Remove any partial downloads to avoid "file exists" errors
-    if FileManager.default.fileExists(atPath: modelDir.path) {
-        let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
-        for file in files ?? [] {
-            try? FileManager.default.removeItem(at: file)
-        }
-    }
-
-    print("Downloading model \(repoID)...")
-    _ = try await client.downloadSnapshot(
-        of: repoID,
-        kind: .model,
-        to: modelDir,
-        revision: "main",
-        progressHandler: { progress in
-            print("\(progress.completedUnitCount)/\(progress.totalUnitCount) files")
-        }
-    )
-
-    print("Model downloaded to: \(modelDir.path)")
-    return modelDir
-}

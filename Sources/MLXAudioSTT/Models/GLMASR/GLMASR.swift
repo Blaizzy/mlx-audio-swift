@@ -560,22 +560,7 @@ public class GLMASRModel: Module {
 
     /// Load model from pretrained weights.
     public static func fromPretrained(_ modelPath: String) async throws -> GLMASRModel {
-        let client = HubClient.default
-        let cache = client.cache ?? HubCache.default
-
-        guard let repoID = Repo.ID(rawValue: modelPath) else {
-            throw NSError(
-                domain: "GLMASRModel",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Invalid repository ID: \(modelPath)"]
-            )
-        }
-
-        let modelDir = try await resolveOrDownloadModel(
-            client: client,
-            cache: cache,
-            repoID: repoID
-        )
+        let modelDir = try await ModelResolver.resolve(modelId: modelPath)
 
         // Load config
         let configPath = modelDir.appendingPathComponent("config.json")
@@ -735,44 +720,4 @@ public class GLMASRModel: Module {
         )
     }
 
-    private static func resolveOrDownloadModel(
-        client: HubClient,
-        cache: HubCache,
-        repoID: Repo.ID
-    ) async throws -> URL {
-        let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
-        let modelDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("intrusive-memory/Models/Audio")
-            .appendingPathComponent(modelSubdir)
-
-        // Check if model already exists
-        let configPath = modelDir.appendingPathComponent("config.json")
-        if FileManager.default.fileExists(atPath: configPath.path) {
-            let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
-            let hasSafetensors = files?.contains { $0.pathExtension == "safetensors" } ?? false
-
-            if hasSafetensors {
-                print("Using cached model at: \(modelDir.path)")
-                return modelDir
-            }
-        }
-
-        // Create directory if needed
-        try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
-
-        // Download model
-        print("Downloading model \(repoID)...")
-        _ = try await client.downloadSnapshot(
-            of: repoID,
-            kind: .model,
-            to: modelDir,
-            revision: "main",
-            progressHandler: { progress in
-                print("\(progress.completedUnitCount)/\(progress.totalUnitCount) files")
-            }
-        )
-
-        print("Model downloaded to: \(modelDir.path)")
-        return modelDir
-    }
 }

@@ -7,8 +7,8 @@
 
 import Foundation
 import MLX
+import MLXAudioCore
 import MLXNN
-import Hub
 
 // MARK: - Encodec Encoder
 
@@ -399,11 +399,7 @@ public class Encodec: Module {
 
     /// Load a pretrained Encodec model from HuggingFace Hub.
     public static func fromPretrained(_ pathOrRepo: String) async throws -> Encodec {
-        let hub = HubApi()
-        let repo = Hub.Repo(id: pathOrRepo)
-
-        // Download model files
-        let modelURL = try await hub.snapshot(from: repo, matching: ["*.json", "*.safetensors"])
+        let modelURL = try await ModelResolver.resolve(modelId: pathOrRepo)
 
         // Load config
         let configURL = modelURL.appendingPathComponent("config.json")
