@@ -234,6 +234,7 @@ public enum MossFormer2SEError: Error, LocalizedError {
     case invalidAudioShape([Int])
     case missingMask
     case duplicateWeightKey(String)
+    case missingSafetensors(URL)
 
     public var errorDescription: String? {
         switch self {
@@ -245,6 +246,8 @@ public enum MossFormer2SEError: Error, LocalizedError {
             return "Model did not return a mask"
         case .duplicateWeightKey(let key):
             return "Duplicate weight key found across .safetensors files: \(key)"
+        case .missingSafetensors(let directory):
+            return "No .safetensors files found in directory: \(directory.path)"
         }
     }
 }
@@ -334,6 +337,9 @@ public final class MossFormer2SEModel {
         let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension.lowercased() == "safetensors" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        guard !files.isEmpty else {
+            throw MossFormer2SEError.missingSafetensors(directory)
+        }
 
         for file in files {
             let fileWeights = try MLX.loadArrays(url: file)
