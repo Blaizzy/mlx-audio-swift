@@ -570,6 +570,16 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
         return configuration.sampleRate
     }
 
+    public var defaultGenerationParameters: GenerateParameters {
+        GenerateParameters(
+            maxTokens: 1200,
+            temperature: 0.6,
+            topP: 0.8,
+            repetitionPenalty: 1.3,
+            repetitionContextSize: 20
+        )
+    }
+
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var weights = weights.filter {
             !$0.key.contains("self_attn.rotary_emb.inv_freq")

@@ -1,10 +1,11 @@
-import Foundation
-import SwiftUI
-import MLXAudioTTS
-import MLXAudioCore
-import MLX
 import AVFoundation
 import Combine
+import Foundation
+import MLX
+import MLXAudioCore
+import MLXAudioTTS
+import MLXLMCommon
+import SwiftUI
 #if os(macOS)
 import AppKit
 #endif
@@ -19,11 +20,40 @@ class TTSViewModel {
     var audioURL: URL?
     var tokensPerSecond: Double = 0
 
-    // Generation parameters
-    var maxTokens: Int = 1200
-    var temperature: Float = 0.6
-    var topP: Float = 0.8
-    var repetitionPenalty: Float = 1.3
+    // Generation parameters: model defaults + optional UI overrides
+    private var defaultGenerationParameters = GenerateParameters(
+        maxTokens: 1200,
+        temperature: 0.6,
+        topP: 0.8,
+        repetitionPenalty: 1.3,
+        repetitionContextSize: 20
+    )
+    private var maxTokensOverride: Int?
+    private var temperatureOverride: Float?
+    private var topPOverride: Float?
+
+    var maxTokens: Int {
+        get { maxTokensOverride ?? defaultMaxTokens }
+        set {
+            maxTokensOverride = (newValue == defaultMaxTokens) ? nil : newValue
+        }
+    }
+
+    var temperature: Float {
+        get { temperatureOverride ?? defaultGenerationParameters.temperature }
+        set {
+            let defaultValue = defaultGenerationParameters.temperature
+            temperatureOverride = abs(newValue - defaultValue) < 0.0001 ? nil : newValue
+        }
+    }
+
+    var topP: Float {
+        get { topPOverride ?? defaultGenerationParameters.topP }
+        set {
+            let defaultValue = defaultGenerationParameters.topP
+            topPOverride = abs(newValue - defaultValue) < 0.0001 ? nil : newValue
+        }
+    }
 
     // Voice Design (for Qwen3-TTS VoiceDesign models)
     var voiceDescription: String = ""
@@ -32,10 +62,10 @@ class TTSViewModel {
     // Text chunking
     var enableChunking: Bool = true
     var maxChunkLength: Int = 200
-    var splitPattern: String = "\n"  // Can be regex like "\\n" or "[.!?]\\s+"
+    var splitPattern: String = "\n" // Can be regex like "\\n" or "[.!?]\\s+"
 
     // Streaming playback
-    var streamingPlayback: Bool = true  // Play audio as chunks are generated
+    var streamingPlayback: Bool = true // Play audio as chunks are generated
 
     // Model configuration
     var modelId: String = "mlx-community/VyvoTTS-EN-Beta-4bit"
@@ -50,6 +80,10 @@ class TTSViewModel {
     private let audioPlayer = AudioPlayerManager()
     private var cancellables = Set<AnyCancellable>()
     private var generationTask: Task<Void, Never>?
+
+    private var defaultMaxTokens: Int {
+        defaultGenerationParameters.maxTokens ?? 1200
+    }
 
     var isModelLoaded: Bool {
         model != nil
@@ -91,9 +125,10 @@ class TTSViewModel {
         generationProgress = "Downloading model..."
 
         do {
+            defaultGenerationParameters = model?.defaultGenerationParameters ?? defaultGenerationParameters
             model = try await TTSModelUtils.loadModel(modelRepo: modelId)
             loadedModelId = modelId
-            generationProgress = ""  // Clear progress on success
+            generationProgress = "" // Clear progress on success
         } catch {
             errorMessage = "Failed to load model: \(error.localizedDescription)"
             generationProgress = ""
@@ -111,9 +146,29 @@ class TTSViewModel {
         await loadModel()
     }
 
+    func resetGenerationParameterOverrides() {
+        maxTokensOverride = nil
+        temperatureOverride = nil
+        topPOverride = nil
+    }
+
+    private func effectiveGenerationParameters() -> GenerateParameters {
+        var parameters = defaultGenerationParameters
+        if let maxTokensOverride {
+            parameters.maxTokens = maxTokensOverride
+        }
+        if let temperatureOverride {
+            parameters.temperature = temperatureOverride
+        }
+        if let topPOverride {
+            parameters.topP = topPOverride
+        }
+        return parameters
+    }
+
     /// Split text into chunks based on pattern and max length
     private func chunkText(_ text: String) -> [String] {
-        guard enableChunking && text.count > maxChunkLength else {
+        guard enableChunking, text.count > maxChunkLength else {
             return [text]
         }
 
@@ -197,7 +252,7 @@ class TTSViewModel {
     }
 
     func synthesize(text: String, voice: Voice? = nil) async {
-        guard let model = model else {
+        guard let model else {
             errorMessage = "Model not loaded"
             return
         }
@@ -214,10 +269,10 @@ class TTSViewModel {
 
         do {
             // Load reference audio if this is a cloned voice
-            var refAudio: MLXArray? = nil
-            var refText: String? = nil
+            var refAudio: MLXArray?
+            var refText: String?
 
-            if let voice = voice, voice.isClonedVoice,
+            if let voice, voice.isClonedVoice,
                let audioURL = voice.audioFileURL,
                let transcription = voice.transcription {
                 generationProgress = "Loading reference audio..."
@@ -256,7 +311,8 @@ class TTSViewModel {
                 var audio: MLXArray?
 
                 // Set cache limit for this chunk
-                Memory.cacheLimit = 512 * 1024 * 1024  // 512MB cache limit
+                Memory.cacheLimit = 512 * 1024 * 1024 // 512MB cache limit
+                let generationParameters = effectiveGenerationParameters()
 
                 // Determine voice parameter (VoiceDesign description or voice name)
                 let voiceParam: String? = useVoiceDesign && !voiceDescription.isEmpty
@@ -269,14 +325,8 @@ class TTSViewModel {
                     voice: voiceParam,
                     refAudio: refAudio,
                     refText: refText,
-                    language: nil,
-                    generationParameters: .init(
-                        maxTokens: maxTokens,
-                        temperature: temperature,
-                        topP: topP,
-                        repetitionPenalty: repetitionPenalty,
-                        repetitionContextSize: 20
-                    )
+                    cache: nil,
+                    parameters: generationParameters
                 ) {
                     // Throw if cancelled - this will exit the loop and be caught below
                     try Task.checkCancellation()
@@ -333,7 +383,7 @@ class TTSViewModel {
             Memory.clearCache()
 
             audioURL = finalURL
-            generationProgress = ""  // Clear progress
+            generationProgress = "" // Clear progress
 
             // For single chunk, load normally for playback
             if !useStreaming {

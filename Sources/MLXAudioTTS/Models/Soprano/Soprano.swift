@@ -228,6 +228,16 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
         return configuration.sampleRate
     }
 
+    public var defaultGenerationParameters: GenerateParameters {
+        GenerateParameters(
+            maxTokens: 1200,
+            temperature: 0.7,
+            topP: 0.95,
+            repetitionPenalty: 1.5,
+            repetitionContextSize: 30
+        )
+    }
+
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
         var out = model(inputs, cache: cache)
 

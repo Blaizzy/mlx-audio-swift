@@ -508,6 +508,16 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         return self.configuration.sampleRate
     }
 
+    public var defaultGenerationParameters: GenerateParameters {
+        GenerateParameters(
+            maxTokens: 1200,
+            temperature: 0.6,
+            topP: 0.8,
+            repetitionPenalty: 1.3,
+            repetitionContextSize: 20
+        )
+    }
+
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var weights = weights
         if configuration.tieWordEmbeddings {

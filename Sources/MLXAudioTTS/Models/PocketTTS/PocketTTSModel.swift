@@ -29,6 +29,9 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
     public var eos_threshold: Float = defaultEosThreshold
 
     public var sampleRate: Int { config.mimi.sampleRate }
+    public var defaultGenerationParameters: GenerateParameters {
+        GenerateParameters(temperature: defaultTemperature)
+    }
 
     private init(config: PocketTTSModelConfig, modelFolder: URL, flowLM: FlowLMModel, mimi: MimiAdapter) {
         self.config = config

@@ -547,6 +547,14 @@ private extension MarvisTTSModel {
 // MARK: - SpeechGenerationModel conformance
 
 extension MarvisTTSModel: SpeechGenerationModel, @unchecked Sendable {
+    public var defaultGenerationParameters: GenerateParameters {
+        GenerateParameters(
+            maxTokens: Int(60000 / 80.0),
+            temperature: 0.9,
+            topP: 0.8
+        )
+    }
+
     public func generate(
         text: String,
         voice: String?,

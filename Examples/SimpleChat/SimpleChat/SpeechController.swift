@@ -95,8 +95,7 @@ final class SpeechController {
             voice: "cosette",
             refAudio: nil,
             refText: nil,
-            language: "en",
-            generationParameters: .init(temperature: 0.7)
+            language: "en"
         )
         try await ensureEngineStarted()
 

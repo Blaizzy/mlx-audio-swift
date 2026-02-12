@@ -19,6 +19,15 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
     public var sampleRate: Int { config.sampleRate }
 
+    public var defaultGenerationParameters: GenerateParameters {
+        GenerateParameters(
+            maxTokens: 4096,
+            temperature: 0.6,
+            topP: 0.8,
+            repetitionPenalty: 1.05
+        )
+    }
+    
     init(config: Qwen3TTSModelConfig) {
         let talkerConfig = config.talkerConfig ?? {
             let json = "{}".data(using: .utf8)!
@@ -47,20 +56,15 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
         // VoiceDesign: voice parameter is the instruct (voice description)
         let instruct = voice
-        let lang = language ?? "auto"
-        let temp = generationParameters.temperature
-        let topP = generationParameters.topP
-        let repPenalty = generationParameters.repetitionPenalty ?? 1.05
-        let maxTokens = generationParameters.maxTokens ?? 4096
 
         let audio = generateVoiceDesign(
             text: text,
             instruct: instruct,
-            language: lang,
-            temperature: temp,
-            topP: topP,
-            repetitionPenalty: repPenalty,
-            maxTokens: maxTokens
+            language: language ?? "auto",
+            temperature: generationParameters.temperature,
+            topP: generationParameters.topP,
+            repetitionPenalty: generationParameters.repetitionPenalty ?? 1.05,
+            maxTokens: generationParameters.maxTokens ?? 4096
         )
         return audio
     }

@@ -59,9 +59,9 @@ enum App {
         outputPath: String?,
         refAudioPath: String?,
         refText: String?,
-        maxTokens: Int,
-        temperature: Float,
-        topP: Float,
+        maxTokens: Int?,
+        temperature: Float?,
+        topP: Float?,
         hfToken: String? = nil
     ) async throws {
         Memory.cacheLimit = 100 * 1024 * 1024
@@ -94,17 +94,24 @@ enum App {
             refAudio = nil
         }
 
+        var generationParameters = loadedModel.defaultGenerationParameters
+        if let maxTokens {
+            generationParameters.maxTokens = maxTokens
+        }
+        if let temperature {
+            generationParameters.temperature = temperature
+        }
+        if let topP {
+            generationParameters.topP = topP
+        }
+
         let audioData = try await loadedModel.generate(
             text: text,
             voice: voice,
             refAudio: refAudio,
             refText: refText,
             language: nil,
-            generationParameters: GenerateParameters(
-                maxTokens: maxTokens,
-                temperature: temperature,
-                topP: topP
-            )
+            generationParameters: generationParameters
         ).asArray(Float.self)
 
         let outputURL = makeOutputURL(outputPath: outputPath)
@@ -177,9 +184,9 @@ struct CLI {
     let outputPath: String?
     let refAudioPath: String?
     let refText: String?
-    let maxTokens: Int
-    let temperature: Float
-    let topP: Float
+    let maxTokens: Int?
+    let temperature: Float?
+    let topP: Float?
 
     static func parse() throws -> CLI {
         var text: String?
@@ -188,9 +195,9 @@ struct CLI {
         var model = "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit"
         var refAudioPath: String? = nil
         var refText: String? = nil
-        var maxTokens: Int = 1200
-        var temperature: Float = 0.7
-        var topP: Float = 0.9
+        var maxTokens: Int? = nil
+        var temperature: Float? = nil
+        var topP: Float? = nil
 
         var it = CommandLine.arguments.dropFirst().makeIterator()
         while let arg = it.next() {
@@ -267,9 +274,9 @@ struct CLI {
           -o, --output <path>           Output WAV path. Default: ./output.wav
               --ref_audio <path>       Path to reference audio
               --ref_text <string>      Caption for reference audio
-              --max_tokens <int>       Maximum number of tokens to generate. Default: 1200
-              --temperature <float>    Sampling temperature. Default: 0.7
-              --top_p <float>          Top-p sampling. Default: 0.9
+              --max_tokens <int>       Maximum number of tokens to generate (overrides model default)
+              --temperature <float>    Sampling temperature (overrides model default)
+              --top_p <float>          Top-p sampling (overrides model default)
           -h, --help                    Show this help
         """)
     }
