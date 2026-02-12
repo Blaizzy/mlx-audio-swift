@@ -233,6 +233,8 @@ public enum MossFormer2SEError: Error, LocalizedError {
     case invalidRepoID(String)
     case invalidAudioShape([Int])
     case missingMask
+    case missingSafetensors(URL)
+    case duplicateWeightKey(String)
 
     public var errorDescription: String? {
         switch self {
@@ -242,6 +244,10 @@ public enum MossFormer2SEError: Error, LocalizedError {
             return "Expected a 1D waveform, got shape \(shape)"
         case .missingMask:
             return "Model did not return a mask"
+        case .missingSafetensors(let directory):
+            return "No .safetensors files found in \(directory.path)"
+        case .duplicateWeightKey(let key):
+            return "Duplicate normalized weight key detected while loading local safetensors: \(key)"
         }
     }
 }
