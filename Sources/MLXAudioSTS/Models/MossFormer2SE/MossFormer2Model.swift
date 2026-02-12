@@ -315,7 +315,39 @@ public final class MossFormer2SEModel {
         return MossFormer2SEModel(model: model, config: config)
     }
 
-    public func enhance(_ audioInput: MLXArray) throws -> MLXArray {
+    public static func fromLocal(_ directory: URL) throws -> MossFormer2SEModel {
+        let configURL = directory.appendingPathComponent("config.json")
+        let config: MossFormer2SEConfig
+        if let configData = try? Data(contentsOf: configURL) {
+            config = try JSONDecoder().decode(MossFormer2SEConfig.self, from: configData)
+        } else {
+            config = MossFormer2SEConfig()
+        }
+
+        let model = MossFormer2SE(config: config)
+
+        var weights: [String: MLXArray] = [:]
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        for file in files where file.pathExtension == "safetensors" {
+            let fileWeights = try MLX.loadArrays(url: file)
+            weights.merge(fileWeights) { _, new in new }
+        }
+
+        let sanitizedWeights = sanitize(weights: weights)
+
+        if let quantization = config.quantizationConfig {
+            quantize(model: model, groupSize: quantization.groupSize, bits: quantization.bits) { path, _ in
+                sanitizedWeights["\(path).scales"] != nil
+            }
+        }
+
+        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
+        eval(model)
+
+        return MossFormer2SEModel(model: model, config: config)
+    }
+
+    public func enhance(_ audioInput: MLXArray, dither: Float = 0.0) throws -> MLXArray {
         guard audioInput.ndim == 1 else {
             throw MossFormer2SEError.invalidAudioShape(audioInput.shape)
         }
@@ -339,7 +371,7 @@ public final class MossFormer2SEModel {
             numMels: config.numMels,
             winType: config.winType,
             preemphasis: config.preemphasis,
-            dither: 1.0,
+            dither: dither,
             removeDCOffset: true,
             roundToPowerOfTwo: true,
             lowFreq: 20.0
