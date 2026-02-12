@@ -312,6 +312,7 @@ public final class MossFormer2SEModel {
 
     private static func loadWeights(from directory: URL, duplicateKeyPolicy: DuplicateKeyPolicy) throws -> [String: MLXArray] {
         var weights: [String: MLXArray] = [:]
+        var normalizedKeys = Set<String>()
         let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension.lowercased() == "safetensors" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
@@ -326,7 +327,6 @@ public final class MossFormer2SEModel {
             case .overwrite:
                 weights.merge(fileWeights) { _, new in new }
             case .fail:
-                var normalizedKeys = Set(weights.keys.map(normalizedWeightKey))
                 for (key, value) in fileWeights {
                     let normalized = normalizedWeightKey(key)
                     if normalizedKeys.contains(normalized) {
