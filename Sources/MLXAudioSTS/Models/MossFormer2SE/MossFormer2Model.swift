@@ -257,24 +257,103 @@ public final class MossFormer2SEModel {
         self.config = config
     }
 
+    private static func normalizedWeightKey(_ rawKey: String) -> String {
+        var key = rawKey
+
+        if key.hasPrefix("module.") {
+            key = String(key.dropFirst("module.".count))
+        }
+
+        if key.hasPrefix("mossformer.") {
+            key = "model." + key
+        }
+
+        return key
+    }
+
     static func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var sanitized: [String: MLXArray] = [:]
 
         for (rawKey, value) in weights {
-            var key = rawKey
-
-            if key.hasPrefix("module.") {
-                key = String(key.dropFirst("module.".count))
-            }
-
-            if key.hasPrefix("mossformer.") {
-                key = "model." + key
-            }
-
+            let key = normalizedWeightKey(rawKey)
             sanitized[key] = value
         }
 
         return sanitized
+    }
+
+    private enum ConfigFallbackPolicy {
+        case fallbackOnReadError
+        case fallbackOnlyWhenMissing
+    }
+
+    private enum DuplicateKeyPolicy {
+        case overwrite
+        case fail
+    }
+
+    private static func loadConfig(from directory: URL, fallbackPolicy: ConfigFallbackPolicy) throws -> MossFormer2SEConfig {
+        let configURL = directory.appendingPathComponent("config.json")
+
+        switch fallbackPolicy {
+        case .fallbackOnReadError:
+            guard let configData = try? Data(contentsOf: configURL) else {
+                return MossFormer2SEConfig()
+            }
+            return try JSONDecoder().decode(MossFormer2SEConfig.self, from: configData)
+        case .fallbackOnlyWhenMissing:
+            guard FileManager.default.fileExists(atPath: configURL.path) else {
+                return MossFormer2SEConfig()
+            }
+            let configData = try Data(contentsOf: configURL)
+            return try JSONDecoder().decode(MossFormer2SEConfig.self, from: configData)
+        }
+    }
+
+    private static func loadWeights(from directory: URL, duplicateKeyPolicy: DuplicateKeyPolicy) throws -> [String: MLXArray] {
+        var weights: [String: MLXArray] = [:]
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension.lowercased() == "safetensors" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+
+        guard !files.isEmpty else {
+            throw MossFormer2SEError.missingSafetensors(directory)
+        }
+
+        for file in files {
+            let fileWeights = try MLX.loadArrays(url: file)
+            switch duplicateKeyPolicy {
+            case .overwrite:
+                weights.merge(fileWeights) { _, new in new }
+            case .fail:
+                var normalizedKeys = Set(weights.keys.map(normalizedWeightKey))
+                for (key, value) in fileWeights {
+                    let normalized = normalizedWeightKey(key)
+                    if normalizedKeys.contains(normalized) {
+                        throw MossFormer2SEError.duplicateWeightKey(normalized)
+                    }
+                    normalizedKeys.insert(normalized)
+                    weights[key] = value
+                }
+            }
+        }
+
+        return weights
+    }
+
+    private static func buildModel(config: MossFormer2SEConfig, weights: [String: MLXArray]) throws -> MossFormer2SEModel {
+        let model = MossFormer2SE(config: config)
+        let sanitizedWeights = sanitize(weights: weights)
+
+        if let quantization = config.quantizationConfig {
+            quantize(model: model, groupSize: quantization.groupSize, bits: quantization.bits) { path, _ in
+                sanitizedWeights["\(path).scales"] != nil
+            }
+        }
+
+        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
+        eval(model)
+        return MossFormer2SEModel(model: model, config: config)
     }
 
     public static func fromPretrained(_ modelPath: String = defaultRepo) async throws -> MossFormer2SEModel {
@@ -283,68 +362,15 @@ public final class MossFormer2SEModel {
         }
 
         let modelDir = try await ModelUtils.resolveOrDownloadModel(repoID: repoID, requiredExtension: "safetensors")
-
-        let configURL = modelDir.appendingPathComponent("config.json")
-        let config: MossFormer2SEConfig
-        if let configData = try? Data(contentsOf: configURL) {
-            config = try JSONDecoder().decode(MossFormer2SEConfig.self, from: configData)
-        } else {
-            config = MossFormer2SEConfig()
-        }
-
-        let model = MossFormer2SE(config: config)
-
-        var weights: [String: MLXArray] = [:]
-        let files = try FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
-        for file in files where file.pathExtension == "safetensors" {
-            let fileWeights = try MLX.loadArrays(url: file)
-            weights.merge(fileWeights) { _, new in new }
-        }
-
-        let sanitizedWeights = sanitize(weights: weights)
-
-        if let quantization = config.quantizationConfig {
-            quantize(model: model, groupSize: quantization.groupSize, bits: quantization.bits) { path, _ in
-                sanitizedWeights["\(path).scales"] != nil
-            }
-        }
-
-        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
-        eval(model)
-
-        return MossFormer2SEModel(model: model, config: config)
+        let config = try loadConfig(from: modelDir, fallbackPolicy: .fallbackOnReadError)
+        let weights = try loadWeights(from: modelDir, duplicateKeyPolicy: .overwrite)
+        return try buildModel(config: config, weights: weights)
     }
 
     public static func fromLocal(_ directory: URL) throws -> MossFormer2SEModel {
-        let configURL = directory.appendingPathComponent("config.json")
-        let config: MossFormer2SEConfig
-        if let configData = try? Data(contentsOf: configURL) {
-            config = try JSONDecoder().decode(MossFormer2SEConfig.self, from: configData)
-        } else {
-            config = MossFormer2SEConfig()
-        }
-
-        let model = MossFormer2SE(config: config)
-
-        var weights: [String: MLXArray] = [:]
-        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-        for file in files where file.pathExtension == "safetensors" {
-            let fileWeights = try MLX.loadArrays(url: file)
-            weights.merge(fileWeights) { _, new in new }
-        }
-
-        let sanitizedWeights = sanitize(weights: weights)
-
-        if let quantization = config.quantizationConfig {
-            quantize(model: model, groupSize: quantization.groupSize, bits: quantization.bits) { path, _ in
-                sanitizedWeights["\(path).scales"] != nil
-            }
-        }
-
-        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
-        eval(model)
-
-        return MossFormer2SEModel(model: model, config: config)
+        let config = try loadConfig(from: directory, fallbackPolicy: .fallbackOnlyWhenMissing)
+        let weights = try loadWeights(from: directory, duplicateKeyPolicy: .fail)
+        return try buildModel(config: config, weights: weights)
     }
 
     public func enhance(_ audioInput: MLXArray, dither: Float = 0.0) throws -> MLXArray {

@@ -580,6 +580,60 @@ struct MossFormer2SESanitizeTests {
 
 struct MossFormer2SEIntegrationTests {
 
+    @Test func fromLocalRejectsMissingSafetensors() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mossformer2se-empty-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        do {
+            _ = try MossFormer2SEModel.fromLocal(tempDir)
+            Issue.record("Expected fromLocal to throw when no .safetensors files are present")
+        } catch let error as MossFormer2SEError {
+            switch error {
+            case .missingSafetensors(let directory):
+                #expect(directory.path == tempDir.path)
+            default:
+                Issue.record("Expected missingSafetensors, got \(error)")
+            }
+        } catch {
+            Issue.record("Expected MossFormer2SEError, got \(error)")
+        }
+    }
+
+    @Test func fromLocalRejectsNormalizedDuplicateWeightKeys() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mossformer2se-dup-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let first = tempDir.appendingPathComponent("a.safetensors")
+        let second = tempDir.appendingPathComponent("b.safetensors")
+
+        try MLX.save(
+            arrays: ["module.mossformer.norm.weight": MLXArray.ones([1])],
+            url: first
+        )
+        try MLX.save(
+            arrays: ["mossformer.norm.weight": MLXArray.ones([1])],
+            url: second
+        )
+
+        do {
+            _ = try MossFormer2SEModel.fromLocal(tempDir)
+            Issue.record("Expected fromLocal to throw on normalized duplicate weight keys")
+        } catch let error as MossFormer2SEError {
+            switch error {
+            case .duplicateWeightKey(let key):
+                #expect(key == "model.mossformer.norm.weight")
+            default:
+                Issue.record("Expected duplicateWeightKey, got \(error)")
+            }
+        } catch {
+            Issue.record("Expected MossFormer2SEError, got \(error)")
+        }
+    }
+
     @Test func mossFormer2SEEnhance() async throws {
         let audioURL = Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media")!
         let (_, audioData) = try loadAudioArray(from: audioURL)
