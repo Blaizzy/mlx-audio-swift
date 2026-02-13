@@ -150,7 +150,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         text: String,
         refAudio: MLXArray,
         refText: String,
-        language: String
+        language: String,
+        instruct: String? = nil
     ) throws -> (inputEmbeds: MLXArray, trailingTextHidden: MLXArray, ttsPadEmbed: MLXArray, refCodes: MLXArray) {
         guard let speechTokenizer else {
             throw AudioGenerationError.modelNotInitialized("Speech tokenizer not loaded")
@@ -181,7 +182,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             refCodes: refCodes,
             speakerEmbedding: speakerEmbed,
             refText: refText,
-            language: language
+            language: language,
+            instruct: instruct
         )
 
         return (inputEmbeds: result.inputEmbeds, trailingTextHidden: result.trailingTextHidden, ttsPadEmbed: result.ttsPadEmbed, refCodes: refCodes)
@@ -205,7 +207,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         refCodes: MLXArray,
         speakerEmbedding: MLXArray?,
         refText: String,
-        language: String
+        language: String,
+        instruct: String? = nil
     ) throws -> (inputEmbeds: MLXArray, trailingTextHidden: MLXArray, ttsPadEmbed: MLXArray) {
         guard let tokenizer, let talkerConfig = config.talkerConfig else {
             throw AudioGenerationError.modelNotInitialized("Tokenizer/config not loaded")
@@ -307,17 +310,30 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             codecPrefixEmbed = concatenated([codecPrefixEmbed, codecEmbedSuffix], axis: 1)
         }
 
-        // --- Step 9: Role embedding (first 3 tokens of target chat) ---
+        // --- Step 9: Instruct embedding (optional) ---
+        var instructEmbed: MLXArray? = nil
+        if let instruct, !instruct.isEmpty {
+            let instructText = "<|im_start|>user\n\(instruct)<|im_end|>\n"
+            let instructIds = MLXArray(tokenizer.encode(text: instructText).map { Int32($0) }).reshaped(1, -1)
+            instructEmbed = talker.textProjection(talker.getTextEmbeddings()(instructIds))
+        }
+
+        // --- Step 10: Role embedding (first 3 tokens of target chat) ---
         let roleEmbed = talker.textProjection(talker.getTextEmbeddings()(targetIds[0..., ..<3]))
 
-        // --- Step 10: Build pad/bos prefix ---
+        // --- Step 11: Build pad/bos prefix ---
         let padCount = codecPrefixEmbed.dim(1) - 2
         let padEmbeds = broadcast(ttsPadEmbed, to: [1, padCount, hiddenDim])
         var combinedPrefix = concatenated([padEmbeds, ttsBosEmbed], axis: 1)
         combinedPrefix = combinedPrefix + codecPrefixEmbed[0..., ..<(-1), 0...]
 
-        // --- Step 11: Assemble full input_embeds ---
-        let inputEmbeds = concatenated([roleEmbed, combinedPrefix, iclInputEmbed], axis: 1)
+        // --- Step 12: Assemble full input_embeds ---
+        var inputEmbeds: MLXArray
+        if let instructEmbed {
+            inputEmbeds = concatenated([instructEmbed, roleEmbed, combinedPrefix, iclInputEmbed], axis: 1)
+        } else {
+            inputEmbeds = concatenated([roleEmbed, combinedPrefix, iclInputEmbed], axis: 1)
+        }
 
         eval(inputEmbeds)
         return (inputEmbeds: inputEmbeds, trailingTextHidden: trailingTextHidden, ttsPadEmbed: ttsPadEmbed)
@@ -387,10 +403,10 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     public func generate(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
-        refText: String?,
-        language: String?,
-        instruct: String?,
+        refAudio: MLXArray? = nil,
+        refText: String? = nil,
+        language: String? = nil,
+        instruct: String? = nil,
         generationParameters: GenerateParameters
     ) async throws -> MLXArray {
         guard speechTokenizer != nil else {
@@ -1112,6 +1128,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     ///   - refAudio: Reference audio waveform for voice cloning.
     ///   - refText: Transcript of the reference audio.
     ///   - language: Resolved language name (e.g. "english", "chinese", "auto").
+    ///   - instruct: Optional voice delivery hints (e.g. "speak in a whisper").
     ///   - temperature: Sampling temperature.
     ///   - topP: Nucleus sampling threshold.
     ///   - repetitionPenalty: Penalty for repeated tokens (minimum 1.5 for ICL).
@@ -1122,6 +1139,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         refAudio: MLXArray,
         refText: String,
         language: String,
+        instruct: String? = nil,
         temperature: Float,
         topP: Float,
         repetitionPenalty: Float,
@@ -1136,7 +1154,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             text: text,
             refAudio: refAudio,
             refText: refText,
-            language: language
+            language: language,
+            instruct: instruct
         )
 
         // Step 2: Cap max tokens based on text length
