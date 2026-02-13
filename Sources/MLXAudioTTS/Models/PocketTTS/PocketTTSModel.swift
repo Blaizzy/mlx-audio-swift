@@ -278,6 +278,7 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         refAudio: MLXArray? = nil,
         refText: String? = nil,
         language: String? = nil,
+        instruct: String?,
         generationParameters: GenerateParameters
     ) async throws -> MLXArray {
         _ = refText
@@ -309,6 +310,7 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         refAudio: MLXArray?,
         refText: String?,
         language: String?,
+        instruct: String?,
         generationParameters: GenerateParameters
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
@@ -322,6 +324,7 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
                     refAudio: refAudio,
                     refText: refText,
                     language: language,
+                    instruct: instruct,
                     generationParameters: generationParameters
                 )
                 continuation.yield(.audio(audio))

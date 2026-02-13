@@ -603,6 +603,7 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
         refAudio: MLXArray?,
         refText: String?,
         language _: String?,
+        instruct _: String?,
         generationParameters: GenerateParameters
     ) async throws -> MLXArray {
         try await generate(
@@ -621,6 +622,7 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
         refAudio: MLXArray?,
         refText: String?,
         language _: String?,
+        instruct _: String?,
         generationParameters: GenerateParameters
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(

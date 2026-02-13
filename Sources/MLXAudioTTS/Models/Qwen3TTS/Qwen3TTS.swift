@@ -365,10 +365,13 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     ///
     /// The generation path is automatically selected based on the model type
     /// and the presence of reference audio:
-    /// - VoiceDesign: `voice` is interpreted as a voice description (instruct).
-    /// - CustomVoice: `voice` is a predefined speaker name.
-    /// - Base: `voice` is an optional speaker name; if `refAudio` and `refText`
-    ///   are provided and the speech encoder is available, ICL is used instead.
+    /// - VoiceDesign: `voice` is interpreted as a voice description; `instruct` is ignored
+    ///   (VoiceDesign uses `voice` as the instruct).
+    /// - CustomVoice: `voice` is a predefined speaker name; `instruct` provides delivery
+    ///   hints (e.g., "speak in a whisper").
+    /// - Base: `voice` is an optional speaker name; `instruct` provides delivery hints;
+    ///   if `refAudio` and `refText` are provided and the speech encoder is available,
+    ///   ICL is used instead.
     /// - ICL: In-context learning voice cloning from reference audio.
     ///
     /// - Parameters:
@@ -377,6 +380,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     ///   - refAudio: Reference audio waveform for ICL voice cloning (optional).
     ///   - refText: Transcript of the reference audio (optional).
     ///   - language: Language code (e.g. "en", "chinese", "auto"). Defaults to "auto".
+    ///   - instruct: Delivery instruction (e.g., "speak slowly", "speak in a whisper").
+    ///     For VoiceDesign models, this parameter is ignored; use `voice` instead.
     ///   - generationParameters: Sampling parameters (temperature, topP, etc.).
     /// - Returns: Generated audio waveform as a 1-D MLXArray.
     public func generate(
@@ -385,6 +390,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         refAudio: MLXArray?,
         refText: String?,
         language: String?,
+        instruct: String?,
         generationParameters: GenerateParameters
     ) async throws -> MLXArray {
         guard speechTokenizer != nil else {
@@ -405,6 +411,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         switch path {
         case .voiceDesign:
             // VoiceDesign: voice parameter is the instruct (voice description)
+            // Ignore the separate instruct parameter for VoiceDesign models
             return generateVoiceDesign(
                 text: text,
                 instruct: voice,
@@ -419,6 +426,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             return try generateCustomVoice(
                 text: text,
                 speaker: voice,
+                instruct: instruct,
                 language: lang,
                 temperature: temp,
                 topP: topP,
@@ -430,6 +438,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             return try generateBase(
                 text: text,
                 voice: voice,
+                instruct: instruct,
                 language: lang,
                 temperature: temp,
                 topP: topP,
@@ -455,7 +464,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     ///
     /// Yields `.token(id)` for each generated codec token, `.info(...)` with
     /// generation statistics, and `.audio(waveform)` as the final event.
-    /// See ``generate(text:voice:refAudio:refText:language:generationParameters:)``
+    /// See ``generate(text:voice:refAudio:refText:language:instruct:generationParameters:)``
     /// for details on path selection.
     ///
     /// - Parameters:
@@ -464,6 +473,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     ///   - refAudio: Reference audio waveform for ICL voice cloning (optional).
     ///   - refText: Transcript of the reference audio (optional).
     ///   - language: Language code (e.g. "en", "chinese", "auto"). Defaults to "auto".
+    ///   - instruct: Delivery instruction (e.g., "speak slowly", "speak in a whisper").
     ///   - generationParameters: Sampling parameters (temperature, topP, etc.).
     /// - Returns: An ``AsyncThrowingStream`` of ``AudioGeneration`` events.
     public func generateStream(
@@ -472,6 +482,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         refAudio: MLXArray?,
         refText: String?,
         language: String?,
+        instruct: String?,
         generationParameters: GenerateParameters
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
@@ -516,6 +527,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                     audio = try generateCustomVoice(
                         text: text,
                         speaker: voice,
+                        instruct: instruct,
                         language: lang,
                         temperature: temp,
                         topP: topP,
@@ -546,6 +558,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                     audio = try generateBase(
                         text: text,
                         voice: voice,
+                        instruct: instruct,
                         language: lang,
                         temperature: temp,
                         topP: topP,
@@ -919,6 +932,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     func generateBase(
         text: String,
         voice: String?,
+        instruct: String?,
         language: String,
         temperature: Float,
         topP: Float,
@@ -935,7 +949,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         let (inputEmbeds, trailingTextHidden, ttsPadEmbed) = try prepareBaseInputs(
             text: text,
             language: language,
-            speaker: voice  // 'voice' maps to speaker name for Base model
+            speaker: voice,  // 'voice' maps to speaker name for Base model
+            instruct: instruct
         )
 
         // Cap max tokens based on text length
@@ -995,10 +1010,11 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
     /// Generate audio using a predefined speaker from the CustomVoice model.
     /// Validates that the speaker exists in the model's `spkId` configuration,
-    /// then delegates to `prepareBaseInputs()` with the speaker name.
+    /// then delegates to `prepareBaseInputs()` with the speaker name and optional instruct.
     func generateCustomVoice(
         text: String,
         speaker: String?,
+        instruct: String? = nil,
         language: String,
         temperature: Float,
         topP: Float,
@@ -1025,11 +1041,12 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             )
         }
 
-        // CustomVoice delegates to prepareBaseInputs with speaker name
+        // CustomVoice delegates to prepareBaseInputs with speaker name and optional instruct
         let (inputEmbeds, trailingTextHidden, ttsPadEmbed) = try prepareBaseInputs(
             text: text,
             language: language,
-            speaker: speaker
+            speaker: speaker,
+            instruct: instruct
         )
 
         // Cap max tokens

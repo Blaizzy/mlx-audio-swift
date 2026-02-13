@@ -557,6 +557,7 @@ extension MarvisTTSModel: SpeechGenerationModel, @unchecked Sendable {
         refAudio: MLXArray?,
         refText: String?,
         language: String?,
+        instruct: String?,
         generationParameters: GenerateParameters
     ) async throws -> MLXArray {
         _ = generationParameters
@@ -580,6 +581,7 @@ extension MarvisTTSModel: SpeechGenerationModel, @unchecked Sendable {
         refAudio: MLXArray?,
         refText: String?,
         language: String?,
+        instruct: String?,
         generationParameters: GenerateParameters
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
