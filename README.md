@@ -2,9 +2,24 @@
 
 A modular Swift SDK for audio processing with MLX on Apple Silicon
 
-![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20%7C%20iOS%2017%2B-lightgrey)
-![Swift](https://img.shields.io/badge/Swift-5.9%2B-orange)
+![Platform](https://img.shields.io/badge/platform-macOS%2026%2B%20%7C%20iOS%2026%2B-lightgrey)
+![Swift](https://img.shields.io/badge/Swift-6.2%2B-orange)
 ![License](https://img.shields.io/badge/license-MIT-blue)
+
+## About This Fork
+
+This is an independent fork of [Blaizzy/mlx-audio-swift](https://github.com/Blaizzy/mlx-audio-swift), maintained by [intrusive-memory](https://github.com/intrusive-memory). While we deeply appreciate the foundational work of the upstream project, we've chosen to pursue an extended feature set with additional capabilities for advanced audio generation and voice cloning.
+
+Our fork includes:
+
+- **Extended Qwen3-TTS support**: Full implementation of Base, VoiceDesign, CustomVoice, and ICL (in-context learning) voice cloning modes
+- **ECAPA-TDNN speaker encoder**: Extract x-vector speaker embeddings for voice cloning
+- **Speech tokenizer encoder**: Encode reference audio for voice cloning workflows
+- **Voice clone prompt caching**: Reusable voice cloning prompts for efficient generation
+- **WiredMemoryManager**: Performance optimization for real-time audio generation on Apple Silicon
+- **Enhanced model resolution**: Unified model caching via [SwiftAcervo](https://github.com/tannerdsilva/SwiftAcervo)
+
+We maintain compatibility with upstream's core architecture while expanding capabilities for production audio applications. Both projects serve different use cases, and we encourage users to choose the implementation that best fits their needs.
 
 ## Architecture
 
@@ -23,7 +38,7 @@ Add MLXAudio to your project using Swift Package Manager:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Blaizzy/mlx-audio-swift.git", branch: "main")
+    .package(url: "https://github.com/intrusive-memory/mlx-audio-swift.git", branch: "main")
 ]
 
 // Import only what you need
@@ -109,11 +124,15 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 ## Features
 
 - **Modular architecture** for minimal app size - import only what you need
-- **Automatic model downloading** from HuggingFace Hub
+- **Automatic model downloading** from HuggingFace Hub with shared caching
 - **Native async/await support** for seamless Swift integration
 - **Streaming audio generation** for real-time TTS
 - **Type-safe Swift API** with comprehensive error handling
 - **Optimized for Apple Silicon** with MLX framework
+- **Advanced voice cloning** with ICL (in-context learning) support
+- **Speaker embedding extraction** via ECAPA-TDNN encoder
+- **Voice clone prompt caching** for production deployments
+- **WiredMemoryManager** for reduced latency in real-time applications
 
 ## Advanced Usage
 
@@ -159,10 +178,10 @@ let audio = try await model.generate(
 
 ## Requirements
 
-- **macOS 14+** or **iOS 17+**
-- **Apple Silicon** (M1 or later) recommended for optimal performance
-- **Xcode 15+**
-- **Swift 5.9+**
+- **macOS 26+** or **iOS 26+**
+- **Apple Silicon** (M1 or later) required
+- **Xcode 16+**
+- **Swift 6.2+**
 
 ## Examples
 
@@ -175,8 +194,10 @@ Additional usage examples can be found in the test files.
 
 ## Credits
 
+- Forked from [mlx-audio-swift](https://github.com/Blaizzy/mlx-audio-swift) by [Blaizzy](https://github.com/Blaizzy)
 - Built on [MLX Swift](https://github.com/ml-explore/mlx-swift)
 - Uses [swift-transformers](https://github.com/huggingface/swift-transformers)
+- Uses [SwiftAcervo](https://github.com/tannerdsilva/SwiftAcervo) for model caching
 - Inspired by [MLX Audio (Python)](https://github.com/Blaizzy/mlx-audio)
 
 ## License
