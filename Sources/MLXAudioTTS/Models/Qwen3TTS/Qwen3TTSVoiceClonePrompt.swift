@@ -1,4 +1,4 @@
-// VoiceClonePrompt — pre-computed ICL prompt data for reuse
+// Qwen3-TTS voice cloning prompt — pre-computed ICL prompt data for reuse
 
 @preconcurrency import MLX
 import MLXNN

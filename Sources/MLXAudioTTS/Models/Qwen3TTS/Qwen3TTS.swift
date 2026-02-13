@@ -1,5 +1,5 @@
 // Port of mlx_audio/tts/models/qwen3_tts/qwen3_tts.py
-// Main Qwen3-TTS conditional generation model (VoiceDesign path)
+// Main Qwen3-TTS conditional generation model supporting VoiceDesign, Base, CustomVoice, and ICL
 
 @preconcurrency import MLX
 import MLXNN
@@ -9,7 +9,7 @@ import HuggingFace
 import Tokenizers
 import Foundation
 
-// MARK: - Qwen3TTS Model
+// MARK: - Model Definition
 
 /// Qwen3-TTS conditional generation model supporting multiple generation paths:
 /// VoiceDesign, Base, CustomVoice, and ICL (in-context learning voice cloning).
@@ -28,6 +28,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     /// The output audio sample rate in Hz (typically 24000).
     public var sampleRate: Int { config.sampleRate }
 
+
+    // MARK: - Initialization
     init(config: Qwen3TTSModelConfig) {
         let talkerConfig = config.talkerConfig ?? {
             let json = "{}".data(using: .utf8)!
@@ -37,7 +39,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         self.talker = Qwen3TTSTalkerForConditionalGeneration(config: talkerConfig)
     }
 
-    // MARK: - Speaker embedding extraction
+    // MARK: - Speaker Encoder
 
     /// Extract x-vector speaker embedding from raw audio using the ECAPA-TDNN speaker encoder.
     ///
@@ -130,7 +132,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     }
 
 
-    // MARK: - ICL input preparation
+    // MARK: - ICL Input Preparation
 
     /// Prepares input embeddings for in-context learning (voice cloning) generation.
     ///
@@ -339,7 +341,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return (inputEmbeds: inputEmbeds, trailingTextHidden: trailingTextHidden, ttsPadEmbed: ttsPadEmbed)
     }
 
-    // MARK: - Generation path routing
+    // MARK: - Generation Path Routing
 
     /// The generation path that will be used based on model type and inputs.
     enum GenerationPath: Equatable, Sendable {
@@ -375,7 +377,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         }
     }
 
-    // MARK: - SpeechGenerationModel protocol
+    // MARK: - SpeechGenerationModel Protocol
 
     /// Generate audio from text using the appropriate generation path.
     ///
@@ -598,7 +600,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return stream
     }
 
-    // MARK: - Language resolution
+    // MARK: - Language Resolution
 
     /// ISO 639-1, ISO 639-2, and full language name mapping to Qwen3-TTS internal language names.
     /// Includes 30+ language codes as required by Task 4 (H2) of the execution plan.
@@ -743,7 +745,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return nil
     }
 
-    // MARK: - Shared autoregressive generation loop
+    // MARK: - Shared Autoregressive Generation Loop
 
     /// Run the autoregressive generation loop shared across all generation modes
     /// (VoiceDesign, Base, CustomVoice, ICL). Takes prepared input embeddings and
@@ -864,7 +866,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return generatedCodes
     }
 
-    // MARK: - VoiceDesign generation
+    // MARK: - VoiceDesign Generation
 
     func generateVoiceDesign(
         text: String,
@@ -940,7 +942,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return audio
     }
 
-    // MARK: - Base generation
+    // MARK: - Base Generation
 
     /// Generate audio using the Base model path (no reference audio / no ICL).
     /// Uses `prepareBaseInputs()` which handles speaker lookups, dialect override,
@@ -1022,7 +1024,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return audio
     }
 
-    // MARK: - CustomVoice generation
+    // MARK: - CustomVoice Generation
 
     /// Generate audio using a predefined speaker from the CustomVoice model.
     /// Validates that the speaker exists in the model's `spkId` configuration,
@@ -1114,7 +1116,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return audio
     }
 
-    // MARK: - ICL voice cloning generation
+    // MARK: - ICL Voice Cloning Generation
 
     /// Generate audio using in-context learning (voice cloning) with reference audio.
     ///
@@ -1210,7 +1212,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return audioOut
     }
 
-    // MARK: - Prepare Base/CustomVoice inputs
+    // MARK: - Base/CustomVoice Input Preparation
 
     /// Prepares input embeddings for Base and CustomVoice generation paths.
     ///
@@ -1377,8 +1379,19 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return (inputEmbeds, trailingTextHidden, ttsPadEmbed)
     }
 
-    // MARK: - Prepare VoiceDesign inputs
+    // MARK: - VoiceDesign Input Preparation
 
+    /// Prepare input embeddings for VoiceDesign generation mode.
+    ///
+    /// This method tokenizes the input text with ChatML templates, builds codec prefix
+    /// embeddings with language ID and optional instruct hints, and returns the assembled
+    /// input embeddings along with trailing text hidden states for the autoregressive loop.
+    ///
+    /// - Parameters:
+    ///   - text: Text to synthesise
+    ///   - language: Resolved language string (e.g. "english", "auto")
+    ///   - instruct: Optional voice description/delivery instruction
+    /// - Returns: Tuple of (inputEmbeds, trailingTextHidden, ttsPadEmbed)
     func prepareGenerationInputs(
         text: String,
         language: String,
@@ -1471,7 +1484,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return (inputEmbeds, trailingTextHidden, ttsPadEmbed)
     }
 
-    // MARK: - Token sampling
+    // MARK: - Token Sampling
 
     func sampleToken(
         _ logits: MLXArray,
@@ -1546,7 +1559,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return token.reshaped(1, 1)
     }
 
-    // MARK: - fromPretrained
+    // MARK: - Model Loading
 
     /// Load a Qwen3-TTS model from a HuggingFace repository.
     ///
@@ -1684,7 +1697,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         print("Loaded speech tokenizer decoder")
     }
 
-    // MARK: - Generate tokenizer.json from vocab.json + merges.txt
+    // MARK: - Tokenizer Generation
 
     /// Qwen3-TTS repos ship with a slow tokenizer (vocab.json + merges.txt) but
     /// swift-transformers requires tokenizer.json (fast tokenizer format). This
