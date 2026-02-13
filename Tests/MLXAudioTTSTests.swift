@@ -57,6 +57,55 @@ struct Qwen3TTSSpeechTokenizerTests {
         // Note: Setting hasEncoder to true requires loading a real encoder model,
         // which is tested in the integration tests with model downloads.
     }
+
+    /// Test that hasEncoder returns true when encoder config is present (Base model case)
+    @Test func testHasEncoderTrueWithEncoderConfig() throws {
+        // Create a minimal encoder config JSON (Base model has encoder_config)
+        let jsonString = """
+        {
+            "encoder_config": {
+                "frame_rate": 12.5,
+                "attention_bias": false,
+                "attention_dropout": 0.0,
+                "audio_channels": 1,
+                "codebook_dim": 256,
+                "codebook_size": 2048,
+                "compress": 2,
+                "dilation_growth_rate": 2,
+                "head_dim": 64,
+                "hidden_act": "gelu",
+                "hidden_size": 512,
+                "intermediate_size": 2048,
+                "kernel_size": 7,
+                "last_kernel_size": 7,
+                "layer_scale_initial_scale": 0.01,
+                "max_position_embeddings": 8000,
+                "norm_eps": 1e-5,
+                "num_attention_heads": 8,
+                "num_filters": 64,
+                "num_hidden_layers": 8,
+                "num_key_value_heads": 8,
+                "num_quantizers": 32,
+                "num_residual_layers": 1,
+                "num_semantic_quantizers": 1,
+                "residual_kernel_size": 3,
+                "rope_theta": 10000.0,
+                "sampling_rate": 24000,
+                "sliding_window": 250,
+                "upsampling_ratios": [8, 5, 4, 2],
+                "use_causal_conv": true,
+                "use_conv_shortcut": false
+            }
+        }
+        """
+        let json = jsonString.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSTokenizerConfig.self, from: json)
+        let tokenizer = Qwen3TTSSpeechTokenizer(config: config)
+
+        // With encoder config present, hasEncoder should be true
+        #expect(tokenizer.hasEncoder == true,
+                "hasEncoder should be true when encoderConfig is present (Base model)")
+    }
 }
 
 
@@ -120,8 +169,9 @@ struct Qwen3TTSLanguageTests {
         #expect(result == "korean", "ISO code 'ko' should resolve to 'korean'")
     }
 
-    /// Test all supported ISO 639-1 codes resolve correctly
+    /// Test all supported ISO 639-1 codes resolve correctly (Task 4 requirement: 30+ languages)
     @Test func testResolveLanguageAllISO() {
+        // Test 30+ ISO 639-1 codes as required by Task 4
         let expected: [String: String] = [
             "en": "english",
             "zh": "chinese",
@@ -133,10 +183,55 @@ struct Qwen3TTSLanguageTests {
             "pt": "portuguese",
             "es": "spanish",
             "it": "italian",
+            "ar": "arabic",
+            "hi": "hindi",
+            "tr": "turkish",
+            "pl": "polish",
+            "nl": "dutch",
+            "sv": "swedish",
+            "fi": "finnish",
+            "cs": "czech",
+            "ro": "romanian",
+            "hu": "hungarian",
+            "el": "greek",
+            "th": "thai",
+            "vi": "vietnamese",
+            "id": "indonesian",
+            "ms": "malay",
+            "uk": "ukrainian",
+            "da": "danish",
+            "no": "norwegian",
+            "he": "hebrew",
+            "fa": "persian",
         ]
         for (iso, name) in expected {
             let result = Qwen3TTSModel.resolveLanguage(iso)
             #expect(result == name, "ISO code '\(iso)' should resolve to '\(name)', got '\(result ?? "nil")'")
+        }
+    }
+
+    /// Test ISO 639-2/T three-letter codes resolve correctly
+    @Test func testResolveLanguageISO6392Codes() {
+        let expected: [String: String] = [
+            "eng": "english",
+            "zho": "chinese",
+            "jpn": "japanese",
+            "kor": "korean",
+            "deu": "german",
+            "fra": "french",
+            "rus": "russian",
+            "por": "portuguese",
+            "spa": "spanish",
+            "ita": "italian",
+            "ara": "arabic",
+            "hin": "hindi",
+            "tur": "turkish",
+            "pol": "polish",
+            "nld": "dutch",
+        ]
+        for (iso, name) in expected {
+            let result = Qwen3TTSModel.resolveLanguage(iso)
+            #expect(result == name, "ISO-639-2 code '\(iso)' should resolve to '\(name)', got '\(result ?? "nil")'")
         }
     }
 
