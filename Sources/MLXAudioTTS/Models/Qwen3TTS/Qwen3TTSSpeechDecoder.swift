@@ -933,7 +933,8 @@ final class Qwen3TTSSpeechTokenizer: Module {
                       let blockIdx = Int(parts[5]),
                       let convIdx = seanetBlockMap[blockIdx] else { return }
                 let basePath = "encoder_model.encoder.layers.\(layerIdx).residuals.0.block.\(convIdx)"
-                let suffix = parts[6...].joined(separator: ".")
+                // parts[6] is "conv", skip it since we add ".conv." explicitly below
+                let suffix = parts[7...].joined(separator: ".")
                 let newKey = "\(basePath).conv.\(suffix)"
                 if suffix.contains("weight") && v.ndim == 3 {
                     v = v.transposed(0, 2, 1)  // PyTorch [out, in, kernel] -> MLX [out, kernel, in]
@@ -942,7 +943,8 @@ final class Qwen3TTSSpeechTokenizer: Module {
             } else {
                 // Direct conv: encoder.encoder.layers.{N}.conv.{w/b}
                 guard let basePath = seanetConvMap[n] else { return }
-                let suffix = parts[4...].joined(separator: ".")
+                // parts[4] is "conv", skip it since we add ".conv." explicitly below
+                let suffix = parts[5...].joined(separator: ".")
                 let newKey = "\(basePath).conv.\(suffix)"
                 if suffix.contains("weight") && v.ndim == 3 {
                     v = v.transposed(0, 2, 1)

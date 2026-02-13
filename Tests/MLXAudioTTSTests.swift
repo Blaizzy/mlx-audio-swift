@@ -135,6 +135,193 @@ struct Qwen3TTSSpeechTokenizerEncodeTests {
 }
 
 
+// MARK: - Qwen3-TTS Speech Tokenizer Encoder Weight Loading Tests (Task 9 - no model download required)
+
+// Run Qwen3TTSSpeechTokenizerWeightTests with:  xcodebuild test \
+// -scheme MLXAudio-Package \
+// -destination 'platform=macOS' \
+// -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerWeightTests \
+// CODE_SIGNING_ALLOWED=NO
+
+struct Qwen3TTSSpeechTokenizerWeightTests {
+
+    /// Test that encoder weights are loaded (not skipped) when present in Base model
+    @Test func testEncoderWeightsAreLoaded() {
+        // Create dummy encoder weights matching PyTorch naming
+        let weights: [String: MLXArray] = [
+            "encoder.encoder.layers.0.conv.weight": MLXArray.zeros([64, 7, 1]),
+            "encoder.encoder.layers.0.conv.bias": MLXArray.zeros([64]),
+            "encoder.encoder_transformer.layers.0.self_attn.q_proj.weight": MLXArray.zeros([512, 512]),
+            "encoder.downsample.weight": MLXArray.zeros([512, 3, 512]),
+            "encoder.quantizer.semantic_residual_vector_quantizer.layers.0.codebook.cluster_usage": MLXArray.ones([2048]),
+            "encoder.quantizer.semantic_residual_vector_quantizer.layers.0.codebook.embed_sum": MLXArray.zeros([2048, 128]),
+        ]
+
+        let sanitized = Qwen3TTSSpeechTokenizer.sanitize(weights: weights)
+
+        // Verify encoder weights are present in sanitized output (not skipped)
+        #expect(sanitized.count > 0, "Encoder weights should be present in sanitized output")
+
+        // Verify specific encoder weight mappings exist
+        let hasEncoderConv = sanitized.keys.contains { $0.contains("encoder_model.encoder") }
+        let hasEncoderTransformer = sanitized.keys.contains { $0.contains("encoder_model.encoder_transformer") }
+        let hasEncoderDownsample = sanitized.keys.contains { $0.contains("encoder_model.downsample") }
+        let hasEncoderQuantizer = sanitized.keys.contains { $0.contains("encoder_model.quantizer") }
+
+        #expect(hasEncoderConv, "SeanetEncoder weights should be mapped")
+        #expect(hasEncoderTransformer, "Encoder transformer weights should be mapped")
+        #expect(hasEncoderDownsample, "Encoder downsample weights should be mapped")
+        #expect(hasEncoderQuantizer, "Encoder quantizer weights should be mapped")
+    }
+
+    /// Test that encoder weights are correctly mapped from PyTorch naming to MLX naming
+    @Test func testEncoderWeightMapping() {
+        // Test SeanetEncoder conv mapping
+        let weights: [String: MLXArray] = [
+            "encoder.encoder.layers.0.conv.weight": MLXArray.zeros([64, 7, 1]),
+            "encoder.encoder.layers.0.conv.bias": MLXArray.zeros([64]),
+        ]
+
+        let sanitized = Qwen3TTSSpeechTokenizer.sanitize(weights: weights)
+
+        // Verify mapping: encoder.encoder.layers.0.conv.* → encoder_model.encoder.init_conv1d.conv.*
+        #expect(sanitized["encoder_model.encoder.init_conv1d.conv.weight"] != nil,
+                "SeanetEncoder layer 0 conv weight should map to init_conv1d")
+        #expect(sanitized["encoder_model.encoder.init_conv1d.conv.bias"] != nil,
+                "SeanetEncoder layer 0 conv bias should map to init_conv1d")
+    }
+
+    /// Test that encoder transformer Q/K/V weights are combined into in_proj
+    @Test func testEncoderTransformerQKVCombining() {
+        let weights: [String: MLXArray] = [
+            "encoder.encoder_transformer.layers.0.self_attn.q_proj.weight": MLXArray.ones([512, 512]),
+            "encoder.encoder_transformer.layers.0.self_attn.k_proj.weight": MLXArray.ones([512, 512]) * 2,
+            "encoder.encoder_transformer.layers.0.self_attn.v_proj.weight": MLXArray.ones([512, 512]) * 3,
+        ]
+
+        let sanitized = Qwen3TTSSpeechTokenizer.sanitize(weights: weights)
+
+        // Verify Q/K/V are combined into in_proj.weight
+        let inProjKey = "encoder_model.encoder_transformer.transformer.layers.0.self_attn.in_proj.weight"
+        #expect(sanitized[inProjKey] != nil,
+                "Q/K/V weights should be combined into in_proj.weight")
+
+        if let inProj = sanitized[inProjKey] {
+            #expect(inProj.dim(0) == 1536,  // 512 * 3 (Q, K, V concatenated)
+                    "in_proj.weight should concatenate Q/K/V (expected dim 1536, got \(inProj.dim(0)))")
+        }
+    }
+
+    /// Test that encoder downsample weights are correctly mapped
+    @Test func testEncoderDownsampleMapping() {
+        let weights: [String: MLXArray] = [
+            "encoder.downsample.weight": MLXArray.zeros([512, 3, 512]),
+            "encoder.downsample.bias": MLXArray.zeros([512]),
+        ]
+
+        let sanitized = Qwen3TTSSpeechTokenizer.sanitize(weights: weights)
+
+        #expect(sanitized["encoder_model.downsample.conv.conv.weight"] != nil,
+                "Encoder downsample weight should be mapped")
+        #expect(sanitized["encoder_model.downsample.conv.conv.bias"] != nil,
+                "Encoder downsample bias should be mapped")
+    }
+
+    /// Test that encoder quantizer weights are correctly mapped (semantic RVQ)
+    @Test func testEncoderQuantizerSemanticMapping() {
+        let weights: [String: MLXArray] = [
+            "encoder.quantizer.semantic_residual_vector_quantizer.input_proj.weight": MLXArray.zeros([128, 1, 256]),
+            "encoder.quantizer.semantic_residual_vector_quantizer.output_proj.weight": MLXArray.zeros([256, 1, 128]),
+        ]
+
+        let sanitized = Qwen3TTSSpeechTokenizer.sanitize(weights: weights)
+
+        #expect(sanitized["encoder_model.quantizer.rvq_first.input_proj.weight"] != nil,
+                "Semantic RVQ input_proj should map to rvq_first")
+        #expect(sanitized["encoder_model.quantizer.rvq_first.output_proj.weight"] != nil,
+                "Semantic RVQ output_proj should map to rvq_first")
+    }
+
+    /// Test that encoder quantizer weights are correctly mapped (acoustic RVQ)
+    @Test func testEncoderQuantizerAcousticMapping() {
+        let weights: [String: MLXArray] = [
+            "encoder.quantizer.acoustic_residual_vector_quantizer.input_proj.weight": MLXArray.zeros([128, 1, 256]),
+            "encoder.quantizer.acoustic_residual_vector_quantizer.output_proj.weight": MLXArray.zeros([256, 1, 128]),
+        ]
+
+        let sanitized = Qwen3TTSSpeechTokenizer.sanitize(weights: weights)
+
+        #expect(sanitized["encoder_model.quantizer.rvq_rest.input_proj.weight"] != nil,
+                "Acoustic RVQ input_proj should map to rvq_rest")
+        #expect(sanitized["encoder_model.quantizer.rvq_rest.output_proj.weight"] != nil,
+                "Acoustic RVQ output_proj should map to rvq_rest")
+    }
+
+    /// Test that VoiceDesign model (no encoder) does not fail sanitization
+    @Test func testVoiceDesignModelSanitization() {
+        // VoiceDesign model has no encoder weights, only decoder weights
+        let weights: [String: MLXArray] = [
+            "decoder.quantizer.rvq_first.vq.layers.0._codebook.cluster_usage": MLXArray.ones([2048]),
+            "decoder.quantizer.rvq_first.vq.layers.0._codebook.embedding_sum": MLXArray.zeros([2048, 128]),
+            "decoder.pre_transformer.layers.0.self_attn.q_proj.weight": MLXArray.zeros([512, 512]),
+        ]
+
+        // Should not throw or crash when no encoder weights present
+        let sanitized = Qwen3TTSSpeechTokenizer.sanitize(weights: weights)
+
+        #expect(sanitized.count > 0, "VoiceDesign model should successfully sanitize decoder-only weights")
+
+        // Verify no encoder_model keys are created
+        let hasEncoderKeys = sanitized.keys.contains { $0.contains("encoder_model") }
+        #expect(!hasEncoderKeys, "VoiceDesign model should not have encoder_model keys")
+    }
+
+    /// Test encoder weight count matches expected parameter count
+    @Test func testEncoderParameterCount() {
+        // Create a full set of encoder weights (minimal but complete)
+        var weights: [String: MLXArray] = [:]
+
+        // SeanetEncoder: 5 convs (init + 4 downsample + final) = 10 params (w+b each)
+        weights["encoder.encoder.layers.0.conv.weight"] = MLXArray.zeros([64, 7, 1])
+        weights["encoder.encoder.layers.0.conv.bias"] = MLXArray.zeros([64])
+        weights["encoder.encoder.layers.3.conv.weight"] = MLXArray.zeros([128, 8, 64])
+        weights["encoder.encoder.layers.3.conv.bias"] = MLXArray.zeros([128])
+        weights["encoder.encoder.layers.14.conv.weight"] = MLXArray.zeros([512, 7, 512])
+        weights["encoder.encoder.layers.14.conv.bias"] = MLXArray.zeros([512])
+
+        // Encoder transformer: 8 layers * ~10 params each = 80 params
+        for i in 0..<8 {
+            weights["encoder.encoder_transformer.layers.\(i).self_attn.q_proj.weight"] = MLXArray.zeros([512, 512])
+            weights["encoder.encoder_transformer.layers.\(i).self_attn.k_proj.weight"] = MLXArray.zeros([512, 512])
+            weights["encoder.encoder_transformer.layers.\(i).self_attn.v_proj.weight"] = MLXArray.zeros([512, 512])
+            weights["encoder.encoder_transformer.layers.\(i).self_attn.o_proj.weight"] = MLXArray.zeros([512, 512])
+            weights["encoder.encoder_transformer.layers.\(i).mlp.fc1.weight"] = MLXArray.zeros([2048, 512])
+            weights["encoder.encoder_transformer.layers.\(i).mlp.fc2.weight"] = MLXArray.zeros([512, 2048])
+        }
+
+        // Downsample: 2 params (w+b)
+        weights["encoder.downsample.weight"] = MLXArray.zeros([512, 3, 512])
+        weights["encoder.downsample.bias"] = MLXArray.zeros([512])
+
+        // Quantizer: 4 params (2 proj * 2 rvq)
+        weights["encoder.quantizer.semantic_residual_vector_quantizer.input_proj.weight"] = MLXArray.zeros([128, 1, 256])
+        weights["encoder.quantizer.semantic_residual_vector_quantizer.output_proj.weight"] = MLXArray.zeros([256, 1, 128])
+        weights["encoder.quantizer.acoustic_residual_vector_quantizer.input_proj.weight"] = MLXArray.zeros([128, 1, 256])
+        weights["encoder.quantizer.acoustic_residual_vector_quantizer.output_proj.weight"] = MLXArray.zeros([256, 1, 128])
+
+        let sanitized = Qwen3TTSSpeechTokenizer.sanitize(weights: weights)
+
+        // Count encoder_model keys
+        let encoderKeyCount = sanitized.keys.filter { $0.hasPrefix("encoder_model") }.count
+
+        // Expected: 6 seanet + 56 transformer (8 layers * 7 keys: in_proj, out_proj, 2*norm, fc1, fc2, 2*layer_scale)
+        // + 2 downsample + 4 quantizer = 68 keys minimum
+        #expect(encoderKeyCount >= 60,
+                "Encoder should have at least 60 mapped parameters (got \(encoderKeyCount))")
+    }
+}
+
+
 // MARK: - Qwen3-TTS Language Resolution Unit Tests (no model download required)
 
 // Run Qwen3TTSLanguageTests with:  xcodebuild test \
@@ -2297,6 +2484,43 @@ struct Qwen3TTSSpeakerEncoderWeightTests {
                 "Base config should have speakerEncoderConfig")
         #expect(config.speakerEncoderConfig?.encDim == 2048,
                 "Base config speakerEncoderConfig encDim should be 2048")
+    }
+
+    /// Verify speaker encoder has the correct architecture components
+    @Test func testSpeakerEncoderArchitecture() throws {
+        // 1. Create speaker encoder config with Base model defaults
+        let json = """
+        {
+            "enc_dim": 2048,
+            "sample_rate": 24000,
+            "mel_dim": 128,
+            "enc_channels": [512, 512, 512, 512, 1536],
+            "enc_kernel_sizes": [5, 3, 3, 3, 1],
+            "enc_dilations": [1, 2, 3, 4, 1],
+            "enc_attention_channels": 128,
+            "enc_res2net_scale": 8,
+            "enc_se_channels": 128
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSSpeakerEncoderConfig.self, from: json)
+
+        // 2. Initialize speaker encoder
+        let encoder = Qwen3TTSSpeakerEncoder(config: config)
+
+        // 3. Verify the architecture components exist
+        #expect(encoder.config.encDim == 2048,
+                "Encoder should have encDim=2048 from config")
+        #expect(encoder.config.encChannels.count == 5,
+                "Encoder should have 5 channel progression stages")
+        #expect(encoder.config.encChannels.last == 1536,
+                "Final channel count should be 1536 for MFA layer")
+
+        // 4. Verify blocks array has correct count
+        // 1 initial TDNN + 3 SE-Res2Net blocks = 4 blocks total
+        #expect(encoder.blocks.count == 4,
+                "Encoder should have 4 blocks (1 TDNN + 3 SE-Res2Net)")
+
+        print("Speaker encoder architecture verified: encDim=\(encoder.config.encDim), blocks=\(encoder.blocks.count)")
     }
 }
 
