@@ -6,6 +6,23 @@ This document verifies that Mimi codec components in `MLXAudioCodecs` are API-co
 
 **Status**: ✅ **FULLY COMPATIBLE** — No breaking incompatibilities found. All 4 required components are ready for use.
 
+**Verification Date**: 2026-02-13 (Task 7a complete)
+**Task 0 Findings**: ✅ Confirmed accurate
+**Task 7b Status**: ✅ Already complete (encoder config fully parsed in Qwen3TTSConfig.swift)
+
+---
+
+## Quick Reference: Component API Summary
+
+| Component | Status | Key API | Adaptation Required |
+|-----------|--------|---------|---------------------|
+| `SeanetEncoder` | ✅ Ready | `init(cfg:)`, `callAsFunction(_:)`, `resetState()` | None |
+| `ProjectedTransformer` | ✅ Ready | `init(cfg:inputDim:outputDims:)`, `callAsFunction(_:cache:)`, `makeCache()` | Extract first output: `outputs[0]` |
+| `ConvDownsample1d` | ✅ Ready | `init(stride:dim:causal:)`, `callAsFunction(_:)`, `resetState()` | None |
+| `SplitResidualVectorQuantizer` | ✅ Ready | `init(dim:inputDim:outputDim:nq:bins:)`, `encode(_:)`, `decode(_:)` | Slice to valid quantizers |
+
+**All components are public. No Mimi module changes required.**
+
 ---
 
 ## Package Dependencies
@@ -293,11 +310,31 @@ return codes
 
 **All 4 Mimi components are API-compatible with the speech tokenizer encoder requirements.** No breaking incompatibilities found. The cross-module import is already configured in Package.swift. Task 7c can proceed with implementation using these components without any modifications to the Mimi codec module.
 
-### Exit Criteria Met
+### Exit Criteria Met (Task 7a Complete)
 
 - [x] All 4 Mimi components verified as public and API-compatible
+- [x] No blocking incompatibilities found (2 minor adaptations documented, both trivial)
+- [x] Documentation confirms findings from Task 0 are accurate and complete
 - [x] Package.swift cross-module import verified (MLXAudioCodecs dependency present in MLXAudioTTS)
-- [x] Build succeeds without errors
-- [x] Documentation created listing required adaptations (2 minor adaptations, both trivial)
+- [x] **BONUS**: Task 7b already complete — `Qwen3TTSTokenizerEncoderConfig` fully implemented with all required fields
 
-**Next steps**: Proceed to Task 7b (encoder config parsing) and Task 7c (encoder implementation).
+### API Verification Checklist (from EXECUTION_PLAN.md lines 488-494)
+
+- [x] `SeanetEncoder` can be instantiated with config from Qwen3TTSSpeechTokenizer
+  - ✅ `public init(cfg: SeanetConfig)` accepts all required parameters
+  - ✅ Config fields map from `Qwen3TTSTokenizerEncoderConfig` (ratios, dimension, etc.)
+- [x] `ProjectedTransformer` accepts causal attention mask + RoPE cache
+  - ✅ `cfg.causal` enables causal attention via mask generation
+  - ✅ `cfg.positionalEmbedding = "rope"` enables RoPE positional embeddings
+  - ✅ `cache: [KVCache]` parameter accepts cache from `makeCache()`
+- [x] `ConvDownsample1d` stride parameter matches encoder requirements
+  - ✅ `stride` parameter configurable: `encoderFrameRate / frameRate` (e.g., 1920 / 75 ≈ 25)
+  - ✅ `causal: Bool` parameter matches encoder causal mode
+- [x] `SplitResidualVectorQuantizer.encode()` returns codes tensor `[batch, num_quantizers, time]`
+  - ✅ `public func encode(_ xs: MLXArray) -> MLXArray` exists
+  - ✅ Returns shape `[batch, nq, time]` (lines 194-200 of Quantization.swift)
+  - ✅ Slicing to `validNumQuantizers` (16) works with standard MLX array indexing
+- [x] All 4 components are public (or mark as public if needed)
+  - ✅ All components already public (no changes needed)
+
+**Next steps**: Proceed directly to Task 7c (encoder implementation) — Task 7b is already complete.
