@@ -1,5 +1,4 @@
 import Foundation
-import Hub
 import MLX
 import MLXAudioCore
 import MLXNN
@@ -233,7 +232,7 @@ public final class MimiStreamingDecoder {
 }
 
 public extension Mimi {
-    static func fromPretrained(repoId: String = "kyutai/moshiko-pytorch-bf16", filename: String = "tokenizer-e351c8d8-checkpoint125.safetensors", progressHandler: @escaping (Progress) -> Void) async throws -> Mimi {
+    static func fromPretrained(repoId: String = "kyutai/moshiko-pytorch-bf16", filename: String = "tokenizer-e351c8d8-checkpoint125.safetensors", progressHandler: @escaping (Progress) -> Void = { _ in }) async throws -> Mimi {
         print("[Mimi] Starting Mimi model loading from \(repoId)")
 
         print("[Mimi] Creating configuration...")
@@ -245,11 +244,11 @@ public extension Mimi {
         let modelInitTime = CFAbsoluteTimeGetCurrent() - modelInitStart
         print(String(format: "[Mimi] Model initialization completed in %.2f seconds", modelInitTime))
 
-        print("[Mimi] Downloading/snapshotting weights file...")
+        print("[Mimi] Downloading/resolving weights file...")
         let snapshotStart = CFAbsoluteTimeGetCurrent()
-        let weightFileURL = try await Hub.snapshot(from: repoId, matching: filename, progressHandler: progressHandler).appending(path: filename)
+        let weightFileURL = try await ModelResolver.resolveFile(modelId: repoId, fileName: filename)
         let snapshotTime = CFAbsoluteTimeGetCurrent() - snapshotStart
-        print(String(format: "[Mimi] Weights file snapshot completed in %.2f seconds", snapshotTime))
+        print(String(format: "[Mimi] Weights file resolved in %.2f seconds", snapshotTime))
 
         print("[Mimi] Loading weight arrays from safetensors file...")
         let loadStart = CFAbsoluteTimeGetCurrent()

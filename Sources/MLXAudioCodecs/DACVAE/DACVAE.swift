@@ -7,8 +7,8 @@
 
 import Foundation
 import MLX
+import MLXAudioCore
 import MLXNN
-import Hub
 
 // MARK: - Quantizer Projections
 
@@ -388,11 +388,7 @@ public class DACVAE: Module {
 
     /// Load a pretrained DACVAE model from HuggingFace Hub.
     public static func fromPretrained(_ repoId: String) async throws -> DACVAE {
-        let hub = HubApi()
-        let repo = Hub.Repo(id: repoId)
-
-        // Download model files
-        let modelURL = try await hub.snapshot(from: repo, matching: ["*.json", "*.safetensors"])
+        let modelURL = try await ModelResolver.resolve(modelId: repoId)
 
         // Load config
         let configURL = modelURL.appendingPathComponent("config.json")

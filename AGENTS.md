@@ -29,18 +29,23 @@ xcodebuild test -scheme MLXAudio-Package -destination 'platform=macOS' \
   -only-testing:MLXAudioTests/SplitAudioIntoChunksTests \
   -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerTests \
   -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerEncodeTests \
+  -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerWeightTests \
   -only-testing:MLXAudioTests/Qwen3TTSLanguageTests \
   -only-testing:MLXAudioTests/Qwen3TTSConfigTests \
   -only-testing:MLXAudioTests/Qwen3TTSRoutingTests \
   -only-testing:MLXAudioTests/Qwen3TTSPrepareBaseInputsTests \
+  -only-testing:MLXAudioTests/Qwen3TTSGenerateCustomVoiceTests \
   -only-testing:MLXAudioTests/Qwen3TTSSpeakerEncoderTests \
   -only-testing:MLXAudioTests/Qwen3TTSSpeakerEncoderWeightTests \
   -only-testing:MLXAudioTests/Qwen3TTSSpeakerEmbeddingTests \
+  -only-testing:MLXAudioTests/Qwen3TTSPrepareICLInputsTests \
+  -only-testing:MLXAudioTests/Qwen3TTSGenerateICLTests \
+  -only-testing:MLXAudioTests/Qwen3TTSSpeakerEncoderSmokeTests \
   CODE_SIGNING_ALLOWED=NO
 ```
 
 - **Swift version**: 6.2+
-- **Platforms**: macOS 14+, iOS 17+
+- **Platforms**: macOS 26+, iOS 26+
 - **CI runner**: `macos-26`
 
 ## Repository Structure
@@ -106,6 +111,7 @@ mlx-audio-swift/
 | mlx-swift-lm | v2.30.3+ | MLXLMCommon, MLXLLM |
 | swift-transformers | v1.1.6+ | Transformers |
 | swift-huggingface | v0.6.0+ | HuggingFace |
+| SwiftAcervo | v0.1.0+ | SwiftAcervo |
 
 ## Architecture Patterns
 
@@ -147,23 +153,23 @@ public struct AudioGenerateParameters {
 }
 ```
 
-### Model cache — shared `intrusive-memory` path
+### Model cache — SwiftAcervo shared directory
 
-All `intrusive-memory` projects share a common model cache hierarchy under `~/Library/Caches/intrusive-memory/Models/`. Each project stores its models in a type-specific subdirectory:
+All `intrusive-memory` projects share models via **SwiftAcervo** at `~/Library/SharedModels/`. Models downloaded by any app are available to all others.
 
-| Project | Cache path |
-|---------|-----------|
-| **mlx-audio-swift** (Audio) | `~/Library/Caches/intrusive-memory/Models/Audio/<namespace>_<repo>/` |
-| **SwiftBruja** (LLM) | `~/Library/Caches/intrusive-memory/Models/LLM/<namespace>_<repo>/` |
-| **Marvis prompt cache** | `~/Library/Caches/intrusive-memory/Models/Audio/MarvisTTSModel/prompt_cache/` |
+| Component | Path |
+|-----------|------|
+| **Shared models** | `~/Library/SharedModels/<namespace>_<repo>/` |
+| **Legacy path** (auto-migrated) | `~/Library/Caches/intrusive-memory/Models/Audio/<namespace>_<repo>/` |
+| **Marvis prompt cache** | `~/Library/SharedModels/Marvis-AI_marvis-tts-250m-v0.2-MLX-8bit/prompt_cache/` |
 
 The `<namespace>_<repo>` directory name is the HuggingFace repo ID with `/` replaced by `_` (e.g., `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16` → `mlx-community_Qwen3-TTS-12Hz-1.7B-Base-bf16`).
 
-If you add a new model or cache path, always use the `intrusive-memory/Models/` hierarchy.
+Model resolution uses `ModelResolver.resolve(modelId:)` which delegates to SwiftAcervo. Legacy cache paths are auto-migrated on first use via `Acervo.migrateFromLegacyPaths()`.
 
 ### Model loading
 
-Models are loaded from HuggingFace via `fromPretrained()`. Internally this calls `ModelUtils.resolveOrDownloadModel()` which caches to the shared path above.
+Models are loaded from HuggingFace via `fromPretrained()`. Internally this calls `ModelResolver.resolve()` (SwiftAcervo) which caches to `~/Library/SharedModels/`.
 
 ### TTSModelUtils — model type dispatch
 
@@ -344,13 +350,18 @@ Tests use **Swift Testing** framework (`@Test`, `#expect`, `@Suite`), not XCTest
 |-------|------|-------|---------------|
 | `Qwen3TTSSpeechTokenizerTests` | MLXAudioTTSTests.swift | 2 | hasEncoder default and setter |
 | `Qwen3TTSSpeechTokenizerEncodeTests` | MLXAudioTTSTests.swift | 1 | encode() throws without encoder |
+| `Qwen3TTSSpeechTokenizerWeightTests` | MLXAudioTTSTests.swift | — | Weight loading, encoder weight mapping, Q/K/V combining |
 | `Qwen3TTSLanguageTests` | MLXAudioTTSTests.swift | 18 | Language code resolution (ISO, full name, auto, config) |
 | `Qwen3TTSConfigTests` | MLXAudioTTSTests.swift | 10 | Config parsing for Base, VoiceDesign, CustomVoice |
 | `Qwen3TTSRoutingTests` | MLXAudioTTSTests.swift | 10 | Generation path routing logic |
 | `Qwen3TTSPrepareBaseInputsTests` | MLXAudioTTSTests.swift | 14 | Input preparation, speaker lookup, dialect override |
+| `Qwen3TTSGenerateCustomVoiceTests` | MLXAudioTTSTests.swift | — | CustomVoice validation (nil speaker, invalid speaker, speaker lookup) |
 | `Qwen3TTSSpeakerEncoderTests` | MLXAudioTTSTests.swift | 13 | ECAPA-TDNN shapes, reflect padding, blocks |
 | `Qwen3TTSSpeakerEncoderWeightTests` | MLXAudioTTSTests.swift | 13 | Weight sanitization, prefix stripping, transposition |
 | `Qwen3TTSSpeakerEmbeddingTests` | MLXAudioTTSTests.swift | 8 | extractSpeakerEmbedding output shapes, errors, determinism |
+| `Qwen3TTSPrepareICLInputsTests` | MLXAudioTTSTests.swift | — | ICL input preparation, ref code handling, embedding composition |
+| `Qwen3TTSGenerateICLTests` | MLXAudioTTSTests.swift | — | ICL generation validation (missing encoder, tokenizer, ref audio/text) |
+| `Qwen3TTSSpeakerEncoderSmokeTests` | MLXAudioTTSTests.swift | — | Smoke tests for speaker encoder integration with Base model |
 
 ### Test suites that require model downloads (local only)
 
@@ -401,10 +412,11 @@ Tests use **Swift Testing** framework (`@Test`, `#expect`, `@Suite`), not XCTest
 ## Git Workflow
 
 - **Branches**: `main` (protected), `development` (working branch)
-- **PRs**: Always `development` -> `main`
+- **PRs**: Always `development` -> `main` within the fork
 - **Branch protection on main**: Required status checks (`Code Quality`, `macOS Tests`), enforce admins, no force push, no deletions
 - **Commit style**: Imperative mood, concise subject line (e.g., "Add Qwen3 ASR", "Fix weight loading in Vocos")
 - **Remotes**: `origin` (intrusive-memory fork), `upstream` (Blaizzy/mlx-audio-swift), `inqtr` (INQTR fork)
+- **Upstream contributions**: **Do NOT create upstream pull requests.** This fork is independent and does not contribute back to `Blaizzy/mlx-audio-swift`. All work stays within the `intrusive-memory` fork.
 
 ## CI/CD
 
@@ -419,14 +431,14 @@ Tests use **Swift Testing** framework (`@Test`, `#expect`, `@Suite`), not XCTest
 
 **Triggers**: `workflow_dispatch` + PRs to `main` (opened, synchronize, reopened)
 
-**Model cache**: `~/Library/Caches/intrusive-memory/Models/Audio` cached with key `mlx-models-v1`. Prime via `workflow_dispatch`. Model tests skip when cache is cold.
+**Model cache**: `~/Library/SharedModels` cached with key `mlx-models-v2`. Prime via `workflow_dispatch`. Model tests skip when cache is cold.
 
 ## Adding a New TTS Model
 
 1. Create a new directory under `Sources/MLXAudioTTS/Models/<ModelName>/`
 2. Implement the model class conforming to `SpeechGenerationModel`
 3. Add a `<ModelName>Config.swift` with `Codable` config struct
-4. Implement `fromPretrained()` using `ModelUtils.resolveOrDownloadModel()`
+4. Implement `fromPretrained()` using `ModelResolver.resolve(modelId:)`
 5. Implement `sanitize(weights:)` for PyTorch-to-MLX weight conversion
 6. Add the model type to `TTSModelUtils.swift` for routing
 7. Add tests to `Tests/MLXAudioTTSTests.swift`
@@ -442,7 +454,7 @@ Tests use **Swift Testing** framework (`@Test`, `#expect`, `@Suite`), not XCTest
 
 - **Never use `swift build`/`swift test`** — always `xcodebuild`
 - **PyTorch weight conversion**: Conv1d weights need transposition from `(O,I,K)` to `(O,K,I)`, Conv2d from `(O,I,H,W)` to `(O,H,W,I)` in `sanitize()`
-- **Model cache path**: `~/Library/Caches/intrusive-memory/Models/Audio/<namespace>_<repo>` — replace `/` with `_` in repo ID. All `intrusive-memory` projects share the `~/Library/Caches/intrusive-memory/Models/` hierarchy
+- **Model cache path**: `~/Library/SharedModels/<namespace>_<repo>` — replace `/` with `_` in repo ID. All `intrusive-memory` projects share models via SwiftAcervo
 - **Bundle resources in tests**: Use `.copy("media")` in Package.swift, access via `Bundle.module`
 - **Concurrency warnings**: Use `@preconcurrency import MLX` and `@unchecked Sendable` on Module subclasses
 - **CI test selection**: Only add tests to CI that work without model downloads. Model-dependent tests go in the `model-tests` job

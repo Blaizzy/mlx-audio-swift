@@ -2,9 +2,24 @@
 
 A modular Swift SDK for audio processing with MLX on Apple Silicon
 
-![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20%7C%20iOS%2017%2B-lightgrey)
-![Swift](https://img.shields.io/badge/Swift-5.9%2B-orange)
+![Platform](https://img.shields.io/badge/platform-macOS%2026%2B%20%7C%20iOS%2026%2B-lightgrey)
+![Swift](https://img.shields.io/badge/Swift-6.2%2B-orange)
 ![License](https://img.shields.io/badge/license-MIT-blue)
+
+## About This Fork
+
+This is an independent fork of [Blaizzy/mlx-audio-swift](https://github.com/Blaizzy/mlx-audio-swift), maintained by [intrusive-memory](https://github.com/intrusive-memory). While we deeply appreciate the foundational work of the upstream project, we've chosen to pursue an extended feature set with additional capabilities for advanced audio generation and voice cloning.
+
+Our fork includes:
+
+- **Extended Qwen3-TTS support**: Full implementation of Base, VoiceDesign, CustomVoice, and ICL (in-context learning) voice cloning modes
+- **ECAPA-TDNN speaker encoder**: Extract x-vector speaker embeddings for voice cloning
+- **Speech tokenizer encoder**: Encode reference audio for voice cloning workflows
+- **Voice clone prompt caching**: Reusable voice cloning prompts for efficient generation
+- **WiredMemoryManager**: Performance optimization for real-time audio generation on Apple Silicon
+- **Enhanced model resolution**: Unified model caching via [SwiftAcervo](https://github.com/tannerdsilva/SwiftAcervo)
+
+We maintain compatibility with upstream's core architecture while expanding capabilities for production audio applications. Both projects serve different use cases, and we encourage users to choose the implementation that best fits their needs.
 
 ## Architecture
 
@@ -23,7 +38,7 @@ Add MLXAudio to your project using Swift Package Manager:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Blaizzy/mlx-audio-swift.git", branch: "main")
+    .package(url: "https://github.com/intrusive-memory/mlx-audio-swift.git", branch: "main")
 ]
 
 // Import only what you need
@@ -94,6 +109,9 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 
 | Model | Model README | HuggingFace Repo |
 |-------|--------------|------------------|
+| Qwen3-TTS Base | [Qwen3TTS README](Sources/MLXAudioTTS/Models/Qwen3TTS/README.md) | [mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16) |
+| Qwen3-TTS VoiceDesign | [Qwen3TTS README](Sources/MLXAudioTTS/Models/Qwen3TTS/README.md) | [mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16) |
+| Qwen3-TTS CustomVoice | [Qwen3TTS README](Sources/MLXAudioTTS/Models/Qwen3TTS/README.md) | [mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16) |
 | Soprano | [Soprano README](Sources/MLXAudioTTS/Models/Soprano/README.md) | [mlx-community/Soprano-80M-bf16](https://huggingface.co/mlx-community/Soprano-80M-bf16) |
 | VyvoTTS | [VyvoTTS README](Sources/MLXAudioTTS/Models/Qwen3/README.md) | [mlx-community/VyvoTTS-EN-Beta-4bit](https://huggingface.co/mlx-community/VyvoTTS-EN-Beta-4bit) |
 | Orpheus | [Orpheus README](Sources/MLXAudioTTS/Models/Llama/README.md) | [mlx-community/orpheus-3b-0.1-ft-bf16](https://huggingface.co/mlx-community/orpheus-3b-0.1-ft-bf16) |
@@ -109,11 +127,15 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 ## Features
 
 - **Modular architecture** for minimal app size - import only what you need
-- **Automatic model downloading** from HuggingFace Hub
+- **Automatic model downloading** from HuggingFace Hub with shared caching
 - **Native async/await support** for seamless Swift integration
 - **Streaming audio generation** for real-time TTS
 - **Type-safe Swift API** with comprehensive error handling
 - **Optimized for Apple Silicon** with MLX framework
+- **Advanced voice cloning** with ICL (in-context learning) support
+- **Speaker embedding extraction** via ECAPA-TDNN encoder
+- **Voice clone prompt caching** for production deployments
+- **WiredMemoryManager** for reduced latency in real-time applications
 
 ## Advanced Usage
 
@@ -157,12 +179,45 @@ let audio = try await model.generate(
 )
 ```
 
+### Voice Cloning (ICL)
+
+```swift
+import MLXAudioTTS
+import MLXAudioCore
+
+// Load Qwen3-TTS Base model (supports voice cloning)
+let model = try await Qwen3TTSModel.fromPretrained("mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16")
+
+// Load reference audio
+let (refSampleRate, refAudio) = try loadAudioArray(from: referenceAudioURL)
+
+// Clone voice from reference
+let clonedAudio = try await model.generate(
+    text: "This will sound like the reference speaker",
+    refAudio: refAudio,
+    refText: "Transcript of the reference audio",
+    language: "en",
+    parameters: parameters
+)
+
+// Optional: Cache voice clone prompt for reuse
+let clonePrompt = try model.createVoiceClonePrompt(
+    refAudio: refAudio,
+    refText: "Transcript of the reference audio",
+    language: "en"
+)
+
+// Reuse cached prompt for efficient multi-generation
+let audio1 = try model.generateWithClonePrompt(text: "First sentence", clonePrompt: clonePrompt)
+let audio2 = try model.generateWithClonePrompt(text: "Second sentence", clonePrompt: clonePrompt)
+```
+
 ## Requirements
 
-- **macOS 14+** or **iOS 17+**
-- **Apple Silicon** (M1 or later) recommended for optimal performance
-- **Xcode 15+**
-- **Swift 5.9+**
+- **macOS 26+** or **iOS 26+**
+- **Apple Silicon** (M1 or later) required
+- **Xcode 16+**
+- **Swift 6.2+**
 
 ## Examples
 
@@ -175,8 +230,10 @@ Additional usage examples can be found in the test files.
 
 ## Credits
 
+- Forked from [mlx-audio-swift](https://github.com/Blaizzy/mlx-audio-swift) by [Blaizzy](https://github.com/Blaizzy)
 - Built on [MLX Swift](https://github.com/ml-explore/mlx-swift)
 - Uses [swift-transformers](https://github.com/huggingface/swift-transformers)
+- Uses [SwiftAcervo](https://github.com/tannerdsilva/SwiftAcervo) for model caching
 - Inspired by [MLX Audio (Python)](https://github.com/Blaizzy/mlx-audio)
 
 ## License

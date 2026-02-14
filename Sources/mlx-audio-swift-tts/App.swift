@@ -100,6 +100,7 @@ enum App {
             refAudio: refAudio,
             refText: refText,
             language: nil,
+            instruct: nil,
             generationParameters: GenerateParameters(
                 maxTokens: maxTokens,
                 temperature: temperature,

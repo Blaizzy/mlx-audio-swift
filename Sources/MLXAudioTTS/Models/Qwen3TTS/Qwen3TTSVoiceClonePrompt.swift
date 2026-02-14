@@ -1,4 +1,4 @@
-// VoiceClonePrompt — pre-computed ICL prompt data for reuse
+// Qwen3-TTS voice cloning prompt — pre-computed ICL prompt data for reuse
 
 @preconcurrency import MLX
 import MLXNN
@@ -231,6 +231,7 @@ extension Qwen3TTSModel {
         text: String,
         clonePrompt: VoiceClonePrompt,
         language: String? = nil,
+        instruct: String? = nil,
         temperature: Float = 0.9,
         topP: Float = 1.0,
         repetitionPenalty: Float = 1.5,
@@ -249,7 +250,8 @@ extension Qwen3TTSModel {
             refCodes: refCodes,
             speakerEmbedding: clonePrompt.speakerEmbedding,
             refText: clonePrompt.refText,
-            language: effectiveLanguage
+            language: effectiveLanguage,
+            instruct: instruct
         )
 
         // Step 2: Cap max tokens based on text length

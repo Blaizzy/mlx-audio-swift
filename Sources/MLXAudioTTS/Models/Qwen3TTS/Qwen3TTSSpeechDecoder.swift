@@ -933,8 +933,10 @@ final class Qwen3TTSSpeechTokenizer: Module {
                       let blockIdx = Int(parts[5]),
                       let convIdx = seanetBlockMap[blockIdx] else { return }
                 let basePath = "encoder_model.encoder.layers.\(layerIdx).residuals.0.block.\(convIdx)"
-                let suffix = parts[6...].joined(separator: ".")
-                let newKey = "\(basePath).conv.\(suffix)"
+                // parts[6] is "conv", skip it.
+                // StreamableConv1d.conv -> NormConv1d.conv -> Conv1d (two .conv levels)
+                let suffix = parts[7...].joined(separator: ".")
+                let newKey = "\(basePath).conv.conv.\(suffix)"
                 if suffix.contains("weight") && v.ndim == 3 {
                     v = v.transposed(0, 2, 1)  // PyTorch [out, in, kernel] -> MLX [out, kernel, in]
                 }
@@ -942,8 +944,10 @@ final class Qwen3TTSSpeechTokenizer: Module {
             } else {
                 // Direct conv: encoder.encoder.layers.{N}.conv.{w/b}
                 guard let basePath = seanetConvMap[n] else { return }
-                let suffix = parts[4...].joined(separator: ".")
-                let newKey = "\(basePath).conv.\(suffix)"
+                // parts[4] is "conv", skip it.
+                // StreamableConv1d.conv -> NormConv1d.conv -> Conv1d (two .conv levels)
+                let suffix = parts[5...].joined(separator: ".")
+                let newKey = "\(basePath).conv.conv.\(suffix)"
                 if suffix.contains("weight") && v.ndim == 3 {
                     v = v.transposed(0, 2, 1)
                 }
@@ -996,6 +1000,8 @@ final class Qwen3TTSSpeechTokenizer: Module {
         // Encoder downsample conv: encoder.downsample.*
         else if k.hasPrefix("encoder.downsample.") {
             let suffix = k.replacingOccurrences(of: "encoder.downsample.", with: "")
+            // suffix includes "conv." prefix from PyTorch key, e.g. "conv.weight"
+            // ConvDownsample1d.conv -> StreamableConv1d.conv -> NormConv1d.conv -> Conv1d
             let newKey = "encoder_model.downsample.conv.conv.\(suffix)"
             if suffix.contains("weight") && v.ndim == 3 {
                 v = v.transposed(0, 2, 1)

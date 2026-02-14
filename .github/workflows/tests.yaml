@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  MLX_AUDIO_CACHE: ~/Library/Caches/mlx-audio
+  MLX_AUDIO_CACHE: ~/Library/SharedModels
 
   # Models to download for CI testing (keep total under 10GB for GH Actions cache limit)
   # Format: "huggingface-repo-id|local-dir-name" per line
@@ -111,6 +111,23 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee test-stt-output.log
 
+      - name: Test Qwen3-TTS (unit tests)
+        run: |
+          xcodebuild test-without-building \
+            -scheme MLXAudio-Package \
+            -destination 'platform=macOS' \
+            -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerTests \
+            -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerEncodeTests \
+            -only-testing:MLXAudioTests/Qwen3TTSLanguageTests \
+            -only-testing:MLXAudioTests/Qwen3TTSConfigTests \
+            -only-testing:MLXAudioTests/Qwen3TTSRoutingTests \
+            -only-testing:MLXAudioTests/Qwen3TTSPrepareBaseInputsTests \
+            -only-testing:MLXAudioTests/Qwen3TTSSpeakerEncoderTests \
+            -only-testing:MLXAudioTests/Qwen3TTSSpeakerEncoderWeightTests \
+            -only-testing:MLXAudioTests/Qwen3TTSSpeakerEmbeddingTests \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee test-qwen3tts-output.log
+
       - name: Upload test output
         if: always()
         uses: actions/upload-artifact@v4
@@ -120,6 +137,7 @@ jobs:
             build-output.log
             test-codecs-output.log
             test-stt-output.log
+            test-qwen3tts-output.log
           retention-days: 7
 
   download-models:
@@ -133,8 +151,8 @@ jobs:
         id: model-cache
         uses: actions/cache@v4
         with:
-          path: ~/Library/Caches/mlx-audio
-          key: mlx-models-v1
+          path: ~/Library/SharedModels
+          key: mlx-models-v2
           lookup-only: ${{ github.event_name == 'pull_request' }}
 
       - name: Download models (cache miss - priming for next run)
@@ -142,21 +160,21 @@ jobs:
         run: |
           python3 -m venv /tmp/hf-venv
           /tmp/hf-venv/bin/pip install --quiet huggingface_hub
-          mkdir -p ~/Library/Caches/mlx-audio
+          mkdir -p ~/Library/SharedModels
 
           echo "$CI_MODELS" | while IFS='|' read -r repo local_dir; do
             [ -z "$repo" ] && continue
             repo=$(echo "$repo" | xargs)
             local_dir=$(echo "$local_dir" | xargs)
-            echo "Downloading $repo → ~/Library/Caches/mlx-audio/$local_dir"
+            echo "Downloading $repo → ~/Library/SharedModels/$local_dir"
             /tmp/hf-venv/bin/huggingface-cli download "$repo" \
-              --local-dir ~/Library/Caches/mlx-audio/"$local_dir" \
+              --local-dir ~/Library/SharedModels/"$local_dir" \
               --include "*.safetensors" "*.json" "*.txt" "*.model" \
               --quiet || echo "::warning::Failed to download $repo"
           done
 
           echo "Cache contents:"
-          du -sh ~/Library/Caches/mlx-audio/*/ 2>/dev/null || echo "No models downloaded"
+          du -sh ~/Library/SharedModels/*/ 2>/dev/null || echo "No models downloaded"
 
   model-tests:
     name: Model Tests
@@ -171,14 +189,14 @@ jobs:
       - name: Restore model cache
         uses: actions/cache/restore@v4
         with:
-          path: ~/Library/Caches/mlx-audio
-          key: mlx-models-v1
+          path: ~/Library/SharedModels
+          key: mlx-models-v2
 
       - name: Show cached models
         run: |
           echo "Cached models:"
-          ls -la ~/Library/Caches/mlx-audio/ 2>/dev/null || echo "No cache directory"
-          du -sh ~/Library/Caches/mlx-audio/*/ 2>/dev/null || echo "No models cached"
+          ls -la ~/Library/SharedModels/ 2>/dev/null || echo "No cache directory"
+          du -sh ~/Library/SharedModels/*/ 2>/dev/null || echo "No models cached"
 
       - name: Build
         run: |
