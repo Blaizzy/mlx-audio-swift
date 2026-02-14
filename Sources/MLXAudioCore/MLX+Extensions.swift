@@ -86,23 +86,8 @@ extension MLXArray {
         
         // Create a result array with the new shape
         let dtype = arrays.first?.dtype ?? .float32
-        let result: MLXArray
-        switch dtype {
-        case .float32: result = MLXArray.zeros(newShape, type: Float.self)
-        case .float16: result = MLXArray.zeros(newShape, type: Float16.self)
-        case .int32: result = MLXArray.zeros(newShape, type: Int32.self)
-        case .int64: result = MLXArray.zeros(newShape, type: Int64.self)
-        case .bool: result = MLXArray.zeros(newShape, type: Bool.self)
-        case .uint8: result = MLXArray.zeros(newShape, type: UInt8.self)
-        case .uint16: result = MLXArray.zeros(newShape, type: UInt16.self)
-        case .uint32: result = MLXArray.zeros(newShape, type: UInt32.self)
-        case .uint64: result = MLXArray.zeros(newShape, type: UInt64.self)
-        case .int8: result = MLXArray.zeros(newShape, type: Int8.self)
-        case .int16: result = MLXArray.zeros(newShape, type: Int16.self)
-        case .bfloat16: result = MLXArray.zeros(newShape, type: Float16.self)
-        case .complex64: result = MLXArray.zeros(newShape, type: Float64.self)
-        case .float64: result = MLXArray.zeros(newShape, type: Float64.self)
-        }
+        // Use dtype parameter instead of type parameter to avoid Float16 conformance issues on x86_64
+        let result = MLXArray.zeros(newShape, dtype: dtype)
         
         // Copy each array into the result
         for (i, array) in arrays.enumerated() {
@@ -159,26 +144,17 @@ extension MLXArray {
         guard step != 0.0 else { fatalError("Step cannot be zero.") }
         guard (step > 0 && start < stop) || (step < 0 && start > stop) else {
             // Return empty array if range is invalid or empty
-            switch dtype {
-            case .float32: return MLXArray.zeros([0], type: Float.self)
-            case .float16: return MLXArray.zeros([0], type: Float16.self)
-            default: fatalError("Unsupported float dtype for empty arange: \(dtype)")
-            }
+            // Use dtype parameter to avoid Float16 conformance issues on x86_64
+            return MLXArray.zeros([0], dtype: dtype)
         }
-        
+
         let _ = Int((stop - start) / step)  // count - unused calculation
         let sequence = Swift.stride(from: start, to: stop, by: step)
-        
-        // Create the array based on the dtype
-        switch dtype {
-        case .float32:
-            let data = sequence.map { Float($0) }
-            return MLXArray(data)
-        case .float16:
-            let data = sequence.map { Float16($0) }
-            return MLXArray(data)
-        default:
-            fatalError("Unsupported float dtype for arange: \(dtype)")
-        }
+
+        // Create the array as Float32 then convert to desired dtype
+        // This avoids Float16 conformance issues on x86_64
+        let data = sequence.map { Float($0) }
+        let array = MLXArray(data)
+        return dtype == .float32 ? array : array.asType(dtype)
     }
 } 
