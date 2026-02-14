@@ -111,6 +111,23 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee test-stt-output.log
 
+      - name: Test Qwen3-TTS (unit tests)
+        run: |
+          xcodebuild test-without-building \
+            -scheme MLXAudio-Package \
+            -destination 'platform=macOS' \
+            -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerTests \
+            -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerEncodeTests \
+            -only-testing:MLXAudioTests/Qwen3TTSLanguageTests \
+            -only-testing:MLXAudioTests/Qwen3TTSConfigTests \
+            -only-testing:MLXAudioTests/Qwen3TTSRoutingTests \
+            -only-testing:MLXAudioTests/Qwen3TTSPrepareBaseInputsTests \
+            -only-testing:MLXAudioTests/Qwen3TTSSpeakerEncoderTests \
+            -only-testing:MLXAudioTests/Qwen3TTSSpeakerEncoderWeightTests \
+            -only-testing:MLXAudioTests/Qwen3TTSSpeakerEmbeddingTests \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee test-qwen3tts-output.log
+
       - name: Upload test output
         if: always()
         uses: actions/upload-artifact@v4
@@ -120,6 +137,7 @@ jobs:
             build-output.log
             test-codecs-output.log
             test-stt-output.log
+            test-qwen3tts-output.log
           retention-days: 7
 
   download-models:

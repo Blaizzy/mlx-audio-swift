@@ -109,6 +109,9 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 
 | Model | Model README | HuggingFace Repo |
 |-------|--------------|------------------|
+| Qwen3-TTS Base | [Qwen3TTS README](Sources/MLXAudioTTS/Models/Qwen3TTS/README.md) | [mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16) |
+| Qwen3-TTS VoiceDesign | [Qwen3TTS README](Sources/MLXAudioTTS/Models/Qwen3TTS/README.md) | [mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16) |
+| Qwen3-TTS CustomVoice | [Qwen3TTS README](Sources/MLXAudioTTS/Models/Qwen3TTS/README.md) | [mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16) |
 | Soprano | [Soprano README](Sources/MLXAudioTTS/Models/Soprano/README.md) | [mlx-community/Soprano-80M-bf16](https://huggingface.co/mlx-community/Soprano-80M-bf16) |
 | VyvoTTS | [VyvoTTS README](Sources/MLXAudioTTS/Models/Qwen3/README.md) | [mlx-community/VyvoTTS-EN-Beta-4bit](https://huggingface.co/mlx-community/VyvoTTS-EN-Beta-4bit) |
 | Orpheus | [Orpheus README](Sources/MLXAudioTTS/Models/Llama/README.md) | [mlx-community/orpheus-3b-0.1-ft-bf16](https://huggingface.co/mlx-community/orpheus-3b-0.1-ft-bf16) |
@@ -174,6 +177,39 @@ let audio = try await model.generate(
     voice: "tara",  // Options: tara, leah, jess, leo, dan, mia, zac, zoe
     parameters: parameters
 )
+```
+
+### Voice Cloning (ICL)
+
+```swift
+import MLXAudioTTS
+import MLXAudioCore
+
+// Load Qwen3-TTS Base model (supports voice cloning)
+let model = try await Qwen3TTSModel.fromPretrained("mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16")
+
+// Load reference audio
+let (refSampleRate, refAudio) = try loadAudioArray(from: referenceAudioURL)
+
+// Clone voice from reference
+let clonedAudio = try await model.generate(
+    text: "This will sound like the reference speaker",
+    refAudio: refAudio,
+    refText: "Transcript of the reference audio",
+    language: "en",
+    parameters: parameters
+)
+
+// Optional: Cache voice clone prompt for reuse
+let clonePrompt = try model.createVoiceClonePrompt(
+    refAudio: refAudio,
+    refText: "Transcript of the reference audio",
+    language: "en"
+)
+
+// Reuse cached prompt for efficient multi-generation
+let audio1 = try model.generateWithClonePrompt(text: "First sentence", clonePrompt: clonePrompt)
+let audio2 = try model.generateWithClonePrompt(text: "Second sentence", clonePrompt: clonePrompt)
 ```
 
 ## Requirements

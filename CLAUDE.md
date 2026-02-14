@@ -21,5 +21,14 @@ Read and follow all instructions in [AGENTS.md](AGENTS.md) before starting any t
     -only-testing:MLXAudioTests/ForcedAlignResultTests \
     -only-testing:MLXAudioTests/Qwen3ASRHelperTests \
     -only-testing:MLXAudioTests/SplitAudioIntoChunksTests \
+    -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerTests \
+    -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerEncodeTests \
+    -only-testing:MLXAudioTests/Qwen3TTSLanguageTests \
+    -only-testing:MLXAudioTests/Qwen3TTSConfigTests \
+    -only-testing:MLXAudioTests/Qwen3TTSRoutingTests \
+    -only-testing:MLXAudioTests/Qwen3TTSPrepareBaseInputsTests \
+    -only-testing:MLXAudioTests/Qwen3TTSSpeakerEncoderTests \
+    -only-testing:MLXAudioTests/Qwen3TTSSpeakerEncoderWeightTests \
+    -only-testing:MLXAudioTests/Qwen3TTSSpeakerEmbeddingTests \
     CODE_SIGNING_ALLOWED=NO
   ```
