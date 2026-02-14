@@ -402,10 +402,11 @@ Tests use **Swift Testing** framework (`@Test`, `#expect`, `@Suite`), not XCTest
 ## Git Workflow
 
 - **Branches**: `main` (protected), `development` (working branch)
-- **PRs**: Always `development` -> `main`
+- **PRs**: Always `development` -> `main` within the fork
 - **Branch protection on main**: Required status checks (`Code Quality`, `macOS Tests`), enforce admins, no force push, no deletions
 - **Commit style**: Imperative mood, concise subject line (e.g., "Add Qwen3 ASR", "Fix weight loading in Vocos")
 - **Remotes**: `origin` (intrusive-memory fork), `upstream` (Blaizzy/mlx-audio-swift), `inqtr` (INQTR fork)
+- **Upstream contributions**: **Do NOT create upstream pull requests.** This fork is independent and does not contribute back to `Blaizzy/mlx-audio-swift`. All work stays within the `intrusive-memory` fork.
 
 ## CI/CD
 
