@@ -29,13 +29,18 @@ xcodebuild test -scheme MLXAudio-Package -destination 'platform=macOS' \
   -only-testing:MLXAudioTests/SplitAudioIntoChunksTests \
   -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerTests \
   -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerEncodeTests \
+  -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerWeightTests \
   -only-testing:MLXAudioTests/Qwen3TTSLanguageTests \
   -only-testing:MLXAudioTests/Qwen3TTSConfigTests \
   -only-testing:MLXAudioTests/Qwen3TTSRoutingTests \
   -only-testing:MLXAudioTests/Qwen3TTSPrepareBaseInputsTests \
+  -only-testing:MLXAudioTests/Qwen3TTSGenerateCustomVoiceTests \
   -only-testing:MLXAudioTests/Qwen3TTSSpeakerEncoderTests \
   -only-testing:MLXAudioTests/Qwen3TTSSpeakerEncoderWeightTests \
   -only-testing:MLXAudioTests/Qwen3TTSSpeakerEmbeddingTests \
+  -only-testing:MLXAudioTests/Qwen3TTSPrepareICLInputsTests \
+  -only-testing:MLXAudioTests/Qwen3TTSGenerateICLTests \
+  -only-testing:MLXAudioTests/Qwen3TTSSpeakerEncoderSmokeTests \
   CODE_SIGNING_ALLOWED=NO
 ```
 
@@ -345,13 +350,18 @@ Tests use **Swift Testing** framework (`@Test`, `#expect`, `@Suite`), not XCTest
 |-------|------|-------|---------------|
 | `Qwen3TTSSpeechTokenizerTests` | MLXAudioTTSTests.swift | 2 | hasEncoder default and setter |
 | `Qwen3TTSSpeechTokenizerEncodeTests` | MLXAudioTTSTests.swift | 1 | encode() throws without encoder |
+| `Qwen3TTSSpeechTokenizerWeightTests` | MLXAudioTTSTests.swift | — | Weight loading, encoder weight mapping, Q/K/V combining |
 | `Qwen3TTSLanguageTests` | MLXAudioTTSTests.swift | 18 | Language code resolution (ISO, full name, auto, config) |
 | `Qwen3TTSConfigTests` | MLXAudioTTSTests.swift | 10 | Config parsing for Base, VoiceDesign, CustomVoice |
 | `Qwen3TTSRoutingTests` | MLXAudioTTSTests.swift | 10 | Generation path routing logic |
 | `Qwen3TTSPrepareBaseInputsTests` | MLXAudioTTSTests.swift | 14 | Input preparation, speaker lookup, dialect override |
+| `Qwen3TTSGenerateCustomVoiceTests` | MLXAudioTTSTests.swift | — | CustomVoice validation (nil speaker, invalid speaker, speaker lookup) |
 | `Qwen3TTSSpeakerEncoderTests` | MLXAudioTTSTests.swift | 13 | ECAPA-TDNN shapes, reflect padding, blocks |
 | `Qwen3TTSSpeakerEncoderWeightTests` | MLXAudioTTSTests.swift | 13 | Weight sanitization, prefix stripping, transposition |
 | `Qwen3TTSSpeakerEmbeddingTests` | MLXAudioTTSTests.swift | 8 | extractSpeakerEmbedding output shapes, errors, determinism |
+| `Qwen3TTSPrepareICLInputsTests` | MLXAudioTTSTests.swift | — | ICL input preparation, ref code handling, embedding composition |
+| `Qwen3TTSGenerateICLTests` | MLXAudioTTSTests.swift | — | ICL generation validation (missing encoder, tokenizer, ref audio/text) |
+| `Qwen3TTSSpeakerEncoderSmokeTests` | MLXAudioTTSTests.swift | — | Smoke tests for speaker encoder integration with Base model |
 
 ### Test suites that require model downloads (local only)
 

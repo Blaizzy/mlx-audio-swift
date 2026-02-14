@@ -23,12 +23,17 @@ Read and follow all instructions in [AGENTS.md](AGENTS.md) before starting any t
     -only-testing:MLXAudioTests/SplitAudioIntoChunksTests \
     -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerTests \
     -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerEncodeTests \
+    -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerWeightTests \
     -only-testing:MLXAudioTests/Qwen3TTSLanguageTests \
     -only-testing:MLXAudioTests/Qwen3TTSConfigTests \
     -only-testing:MLXAudioTests/Qwen3TTSRoutingTests \
     -only-testing:MLXAudioTests/Qwen3TTSPrepareBaseInputsTests \
+    -only-testing:MLXAudioTests/Qwen3TTSGenerateCustomVoiceTests \
     -only-testing:MLXAudioTests/Qwen3TTSSpeakerEncoderTests \
     -only-testing:MLXAudioTests/Qwen3TTSSpeakerEncoderWeightTests \
     -only-testing:MLXAudioTests/Qwen3TTSSpeakerEmbeddingTests \
+    -only-testing:MLXAudioTests/Qwen3TTSPrepareICLInputsTests \
+    -only-testing:MLXAudioTests/Qwen3TTSGenerateICLTests \
+    -only-testing:MLXAudioTests/Qwen3TTSSpeakerEncoderSmokeTests \
     CODE_SIGNING_ALLOWED=NO
   ```
