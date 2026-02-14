@@ -233,6 +233,8 @@ public enum MossFormer2SEError: Error, LocalizedError {
     case invalidRepoID(String)
     case invalidAudioShape([Int])
     case missingMask
+    case duplicateWeightKey(String)
+    case missingSafetensors(URL)
 
     public var errorDescription: String? {
         switch self {
@@ -242,6 +244,10 @@ public enum MossFormer2SEError: Error, LocalizedError {
             return "Expected a 1D waveform, got shape \(shape)"
         case .missingMask:
             return "Model did not return a mask"
+        case .duplicateWeightKey(let key):
+            return "Duplicate weight key found across .safetensors files: \(key)"
+        case .missingSafetensors(let directory):
+            return "No .safetensors files found in directory: \(directory.path)"
         }
     }
 }
@@ -315,7 +321,51 @@ public final class MossFormer2SEModel {
         return MossFormer2SEModel(model: model, config: config)
     }
 
-    public func enhance(_ audioInput: MLXArray) throws -> MLXArray {
+    public static func fromLocal(_ directory: URL) throws -> MossFormer2SEModel {
+        let configURL = directory.appendingPathComponent("config.json")
+        let config: MossFormer2SEConfig
+        if FileManager.default.fileExists(atPath: configURL.path) {
+            let configData = try Data(contentsOf: configURL)
+            config = try JSONDecoder().decode(MossFormer2SEConfig.self, from: configData)
+        } else {
+            config = MossFormer2SEConfig()
+        }
+
+        let model = MossFormer2SE(config: config)
+
+        var weights: [String: MLXArray] = [:]
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension.lowercased() == "safetensors" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        guard !files.isEmpty else {
+            throw MossFormer2SEError.missingSafetensors(directory)
+        }
+
+        for file in files {
+            let fileWeights = try MLX.loadArrays(url: file)
+            for (key, value) in fileWeights {
+                if weights[key] != nil {
+                    throw MossFormer2SEError.duplicateWeightKey(key)
+                }
+                weights[key] = value
+            }
+        }
+
+        let sanitizedWeights = sanitize(weights: weights)
+
+        if let quantization = config.quantizationConfig {
+            quantize(model: model, groupSize: quantization.groupSize, bits: quantization.bits) { path, _ in
+                sanitizedWeights["\(path).scales"] != nil
+            }
+        }
+
+        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
+        eval(model)
+
+        return MossFormer2SEModel(model: model, config: config)
+    }
+
+    public func enhance(_ audioInput: MLXArray, dither: Float = 0.0) throws -> MLXArray {
         guard audioInput.ndim == 1 else {
             throw MossFormer2SEError.invalidAudioShape(audioInput.shape)
         }
@@ -339,7 +389,7 @@ public final class MossFormer2SEModel {
             numMels: config.numMels,
             winType: config.winType,
             preemphasis: config.preemphasis,
-            dither: 1.0,
+            dither: dither,
             removeDCOffset: true,
             roundToPowerOfTwo: true,
             lowFreq: 20.0
