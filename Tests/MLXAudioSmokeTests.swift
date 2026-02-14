@@ -538,6 +538,69 @@ struct STTSmokeTests {
         #expect(output.generationTokens > 0, "Generation tokens should be greater than 0")
     }
 
+    @Test func voxtralRealtimeTranscribe() async throws {
+        testHeader("voxtralRealtimeTranscribe")
+        defer { testCleanup("voxtralRealtimeTranscribe") }
+        let audioURL = Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media")!
+        let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
+        print("\u{001B}[33mLoaded audio: \(audioData.shape), sample rate: \(sampleRate)\u{001B}[0m")
+
+        print("\u{001B}[33mLoading Voxtral Realtime model...\u{001B}[0m")
+        let model = try await VoxtralRealtimeModel.fromPretrained("mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit")
+        print("\u{001B}[32mVoxtral Realtime model loaded!\u{001B}[0m")
+
+        let output = model.generate(audio: audioData)
+        print("\u{001B}[32m Voxtral Realtime Transcription: \(output.text)\u{001B}[0m")
+        print("\u{001B}[32m Voxtral Realtime Generation Stats: \(output)\u{001B}[0m")
+
+        #expect(!output.text.isEmpty, "Transcription text should not be empty")
+        #expect(output.generationTokens > 0, "Generation tokens should be greater than 0")
+    }
+
+    @Test func voxtralRealtimeTranscribeStream() async throws {
+        testHeader("voxtralRealtimeTranscribeStream")
+        defer { testCleanup("voxtralRealtimeTranscribeStream") }
+        let audioURL = Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media")!
+        let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
+        print("\u{001B}[33mLoaded audio: \(audioData.shape), sample rate: \(sampleRate)\u{001B}[0m")
+
+        print("\u{001B}[33mLoading Voxtral Realtime model...\u{001B}[0m")
+        let model = try await VoxtralRealtimeModel.fromPretrained("mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit")
+        print("\u{001B}[32mVoxtral Realtime model loaded!\u{001B}[0m")
+
+        print("\u{001B}[33mStreaming transcription ...\u{001B}[0m")
+
+        var tokenCount = 0
+        var transcribedText = ""
+        var finalOutput: STTOutput?
+        var generationInfo: STTGenerationInfo?
+
+        for try await event in model.generateStream(audio: audioData) {
+            switch event {
+            case .token(let token):
+                tokenCount += 1
+                transcribedText += token
+            case .info(let info):
+                generationInfo = info
+                print("\n\u{001B}[36m\(info.summary)\u{001B}[0m")
+            case .result(let output):
+                finalOutput = output
+                print("\u{001B}[32m Voxtral Realtime Streaming Transcription: \(output.text)\u{001B}[0m")
+                print("\u{001B}[32m Voxtral Realtime Streaming Stats: \(output)\u{001B}[0m")
+            }
+        }
+
+        #expect(tokenCount > 0, "Should have generated tokens")
+        #expect(finalOutput != nil, "Should have received final output")
+        #expect(generationInfo != nil, "Should have received generation info")
+
+        if let output = finalOutput {
+            #expect(!output.text.isEmpty, "Transcription text should not be empty")
+            #expect(output.generationTokens > 0, "Generation tokens should be greater than 0")
+            print("\u{001B}[32m\(output)\u{001B}[0m")
+        }
+    }
+
     @Test func glmASRTranscribeStream() async throws {
         testHeader("glmASRTranscribeStream")
         defer { testCleanup("glmASRTranscribeStream") }
