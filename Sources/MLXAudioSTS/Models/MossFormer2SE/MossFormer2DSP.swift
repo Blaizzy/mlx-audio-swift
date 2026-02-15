@@ -228,7 +228,7 @@ public enum MossFormer2DSP {
             frameTensor = frameTensor[0..<numFrames, 0..<nFft]
         }
         let powerSpectrum = MLX.abs(MLXFFT.rfft(frameTensor, axis: 1)).square()
-        let melBank = melFilterbank(sampleRate: sampleRate, nFft: nFft, numMels: numMels, fMin: lowFreq)
+        let melBank = melFilterbank(sampleRate: sampleRate, nFft: nFft, numMels: numMels, fMin: lowFreq, norm: nil)
         let fbanks = MLX.matmul(powerSpectrum, melBank)
         return MLX.log(MLX.maximum(fbanks, MLXArray(Float(1e-10))))
     }
@@ -244,11 +244,11 @@ public enum MossFormer2DSP {
         return computeDeltasKaldi2D(features, winLength: winLength)
     }
 
-    public static func melFilterbank(sampleRate: Int, nFft: Int, numMels: Int, fMin: Float = 0) -> MLXArray {
+    public static func melFilterbank(sampleRate: Int, nFft: Int, numMels: Int, fMin: Float = 0, norm: String? = "slaney") -> MLXArray {
         guard sampleRate > 0, nFft > 0, numMels > 0 else {
             return MLXArray.zeros([0, 0], type: Float.self)
         }
-        return melFilters(sampleRate: sampleRate, nFft: nFft, nMels: numMels, fMin: fMin)
+        return melFilters(sampleRate: sampleRate, nFft: nFft, nMels: numMels, fMin: fMin, norm: norm)
     }
 
     private static func adjustedWindow(_ window: MLXArray, targetLength: Int) -> MLXArray {
