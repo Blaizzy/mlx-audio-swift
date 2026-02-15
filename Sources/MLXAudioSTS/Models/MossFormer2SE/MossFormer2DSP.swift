@@ -202,7 +202,7 @@ public enum MossFormer2DSP {
             }
 
             if preemphasis > 0, winLen > 1 {
-                let first = frame[0..<1]
+                let first = frame[0..<1] - preemphCoeff * frame[0..<1]
                 let rest = frame[1..<winLen] - preemphCoeff * frame[0..<(winLen - 1)]
                 frame = MLX.concatenated([first, rest], axis: 0)
             }
