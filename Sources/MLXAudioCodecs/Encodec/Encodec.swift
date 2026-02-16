@@ -422,6 +422,32 @@ public class Encodec: Module {
     }
 }
 
+/// Encoded payload for Encodec where decode requires both codes and per-frame scales.
+public struct EncodecEncodedAudio {
+    public let codes: MLXArray
+    public let scales: [MLXArray?]
+
+    public init(codes: MLXArray, scales: [MLXArray?]) {
+        self.codes = codes
+        self.scales = scales
+    }
+}
+
+extension Encodec: AudioCodecModel {
+    public typealias EncodedAudio = EncodecEncodedAudio
+
+    public var codecSampleRate: Double? { Double(samplingRate) }
+
+    public func encodeAudio(_ waveform: MLXArray) -> EncodecEncodedAudio {
+        let (codes, scales) = encode(waveform, paddingMask: nil, bandwidth: nil)
+        return EncodecEncodedAudio(codes: codes, scales: scales)
+    }
+
+    public func decodeAudio(_ input: EncodecEncodedAudio) -> MLXArray {
+        decode(input.codes, input.scales, paddingMask: nil)
+    }
+}
+
 // MARK: - Audio Preprocessing
 
 /// Preprocess audio for EnCodec model.

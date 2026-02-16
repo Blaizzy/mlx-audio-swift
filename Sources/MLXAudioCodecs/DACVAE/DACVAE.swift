@@ -596,3 +596,17 @@ public class DACVAE: Module {
         return model
     }
 }
+
+extension DACVAE: AudioCodecModel {
+    public typealias EncodedAudio = MLXArray
+
+    public var codecSampleRate: Double? { Double(sampleRate) }
+
+    public func encodeAudio(_ waveform: MLXArray) -> MLXArray {
+        encode(waveform)
+    }
+
+    public func decodeAudio(_ input: MLXArray) -> MLXArray {
+        decode(input)
+    }
+}

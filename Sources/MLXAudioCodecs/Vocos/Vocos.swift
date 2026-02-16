@@ -310,3 +310,13 @@ public class Vocos: Module {
         return decode(features, bandwidthId: bandwidthId)
     }
 }
+
+extension Vocos: AudioDecoderModel {
+    public typealias DecoderInput = MLXArray
+
+    public var codecSampleRate: Double? { nil }
+
+    public func decodeAudio(_ input: MLXArray) -> MLXArray {
+        decode(input)
+    }
+}

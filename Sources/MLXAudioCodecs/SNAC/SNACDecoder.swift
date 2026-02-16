@@ -185,6 +185,20 @@ public class SNAC: Module {
     }
 }
 
+extension SNAC: AudioCodecModel {
+    public typealias EncodedAudio = [MLXArray]
+
+    public var codecSampleRate: Double? { Double(samplingRate) }
+
+    public func encodeAudio(_ waveform: MLXArray) -> [MLXArray] {
+        encode(waveform)
+    }
+
+    public func decodeAudio(_ input: [MLXArray]) -> MLXArray {
+        decode(input)
+    }
+}
+
 // MARK: - Helper Functions
 
 func lcm(_ a: Int, _ b: Int) -> Int {
