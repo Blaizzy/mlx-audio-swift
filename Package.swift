@@ -35,6 +35,10 @@ let package = Package(
             name: "mlx-audio-swift-tts",
             targets: ["mlx-audio-swift-tts"],
         ),
+        .executable(
+            name: "mlx-audio-swift-codec",
+            targets: ["mlx-audio-swift-codec"],
+        ),
 
     ],
     dependencies: [
@@ -147,6 +151,11 @@ let package = Package(
             name: "mlx-audio-swift-tts",
             dependencies: ["MLXAudioCore", "MLXAudioTTS", "MLXAudioSTT"],
             path: "Sources/mlx-audio-swift-tts"
+        ),
+        .executableTarget(
+            name: "mlx-audio-swift-codec",
+            dependencies: ["MLXAudioCore", "MLXAudioCodecs"],
+            path: "Sources/mlx-audio-swift-codec"
         ),
 
         // MARK: - Tests
