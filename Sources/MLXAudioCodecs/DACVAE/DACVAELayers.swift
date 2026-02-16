@@ -255,57 +255,17 @@ public class DACVAEWNConvTranspose1d: Module {
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
         let w = getWeight()
-        // Perform transposed convolution manually since MLX doesn't have conv_transpose1d
-        var h = convTranspose1d(x, weight: w, stride: strideVal, padding: paddingVal)
+        var h = MLX.convTransposed1d(
+            x,
+            w,
+            stride: strideVal,
+            padding: paddingVal,
+            dilation: dilation
+        )
         if let b = biasParam {
-            h = h + b.reshaped([1, 1, -1])
+            h = h + b
         }
         return unpad(h)
-    }
-
-    /// Manual transposed 1D convolution implementation.
-    private func convTranspose1d(_ x: MLXArray, weight: MLXArray, stride: Int, padding: Int) -> MLXArray {
-        // x shape: (batch, length, inChannels) - NLC format
-        // weight shape: (outChannels, kernelSize, inChannels)
-        let batch = x.shape[0]
-        let length = x.shape[1]
-        let inChannels = x.shape[2]
-        let outChannels = weight.shape[0]
-        let kSize = weight.shape[1]
-
-        // Calculate output length
-        let outputLength = (length - 1) * stride - 2 * padding + kSize
-
-        // Transpose input to NCL for easier computation
-        let xT = x.transposed(0, 2, 1)  // (batch, inChannels, length)
-
-        // Use scatter-based transpose convolution
-        let xData = xT.asArray(Float.self)
-        let wData = weight.asArray(Float.self)
-        var outData = [Float](repeating: 0, count: batch * outChannels * outputLength)
-
-        for b in 0..<batch {
-            for t in 0..<length {
-                for oc in 0..<outChannels {
-                    for k in 0..<kSize {
-                        let outT = t * stride + k - padding
-                        if outT >= 0 && outT < outputLength {
-                            for ic in 0..<inChannels {
-                                let xIdx = b * inChannels * length + ic * length + t
-                                let wIdx = oc * kSize * inChannels + k * inChannels + ic
-                                let oIdx = b * outChannels * outputLength + oc * outputLength + outT
-                                outData[oIdx] += xData[xIdx] * wData[wIdx]
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let output = MLXArray(outData).reshaped([batch, outChannels, outputLength])
-
-        // Transpose back to NLC
-        return output.transposed(0, 2, 1)
     }
 }
 

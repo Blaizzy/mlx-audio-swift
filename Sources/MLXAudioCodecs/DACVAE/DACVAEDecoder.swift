@@ -31,13 +31,39 @@ public class DACVAEStackedLSTM: Module {
         self._layers.wrappedValue = lstmLayers
     }
 
-    public func callAsFunction(_ x: MLXArray, hidden: MLXArray? = nil) -> (MLXArray, (MLXArray?, MLXArray?)) {
+    public func callAsFunction(
+        _ x: MLXArray,
+        hidden: MLXArray? = nil,
+        cell: MLXArray? = nil
+    ) -> (MLXArray, (MLXArray?, MLXArray?)) {
         var output = x
         var newH: [MLXArray] = []
         var newC: [MLXArray] = []
+        var hiddenByLayer: [MLXArray?] = Array(repeating: nil, count: numLayers)
+        var cellByLayer: [MLXArray?] = Array(repeating: nil, count: numLayers)
 
-        for layer in layers {
-            let (allH, allC) = layer(output)
+        if let hidden {
+            guard hidden.ndim >= 1, hidden.shape[0] == numLayers else {
+                fatalError("Expected hidden state shape [numLayers, batch, hiddenSize]")
+            }
+            let splitHidden = hidden.split(parts: numLayers, axis: 0)
+            for i in 0..<numLayers {
+                hiddenByLayer[i] = splitHidden[i].squeezed(axis: 0)
+            }
+        }
+
+        if let cell {
+            guard cell.ndim >= 1, cell.shape[0] == numLayers else {
+                fatalError("Expected cell state shape [numLayers, batch, hiddenSize]")
+            }
+            let splitCell = cell.split(parts: numLayers, axis: 0)
+            for i in 0..<numLayers {
+                cellByLayer[i] = splitCell[i].squeezed(axis: 0)
+            }
+        }
+
+        for (i, layer) in layers.enumerated() {
+            let (allH, allC) = layer(output, hidden: hiddenByLayer[i], cell: cellByLayer[i])
             output = allH
             // Keep final timestep for hidden state
             if allH.ndim == 3 {
@@ -56,6 +82,13 @@ public class DACVAEStackedLSTM: Module {
         let cN = newC.isEmpty ? nil : MLX.stacked(newC, axis: 0)
 
         return (output, (hN, cN))
+    }
+
+    public func callAsFunction(
+        _ x: MLXArray,
+        hiddenState: (MLXArray?, MLXArray?)
+    ) -> (MLXArray, (MLXArray?, MLXArray?)) {
+        return callAsFunction(x, hidden: hiddenState.0, cell: hiddenState.1)
     }
 }
 
