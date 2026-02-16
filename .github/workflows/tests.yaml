@@ -82,7 +82,7 @@ jobs:
         run: |
           xcodebuild build-for-testing \
             -scheme MLXAudio-Package \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee build-output.log
 
@@ -90,7 +90,7 @@ jobs:
         run: |
           xcodebuild test-without-building \
             -scheme MLXAudio-Package \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
             -only-testing:MLXAudioTests/VocosTests \
             -only-testing:MLXAudioTests/EncodecTests \
             -only-testing:MLXAudioTests/DACVAETests \
@@ -101,7 +101,7 @@ jobs:
         run: |
           xcodebuild test-without-building \
             -scheme MLXAudio-Package \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
             -only-testing:MLXAudioTests/GLMASRModuleSetupTests \
             -only-testing:MLXAudioTests/Qwen3ASRModuleSetupTests \
             -only-testing:MLXAudioTests/ForceAlignProcessorTests \
@@ -115,7 +115,7 @@ jobs:
         run: |
           xcodebuild test-without-building \
             -scheme MLXAudio-Package \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
             -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerTests \
             -only-testing:MLXAudioTests/Qwen3TTSSpeechTokenizerEncodeTests \
             -only-testing:MLXAudioTests/Qwen3TTSLanguageTests \
@@ -202,14 +202,14 @@ jobs:
         run: |
           xcodebuild build-for-testing \
             -scheme MLXAudio-Package \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
             CODE_SIGNING_ALLOWED=NO
 
       - name: Test SNAC (codec)
         run: |
           xcodebuild test-without-building \
             -scheme MLXAudio-Package \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
             -only-testing:MLXAudioTests/SNACTests \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee test-snac-output.log
@@ -218,7 +218,7 @@ jobs:
         run: |
           xcodebuild test-without-building \
             -scheme MLXAudio-Package \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
             -only-testing:MLXAudioTests/SopranoTTSTests \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee test-soprano-output.log
@@ -227,7 +227,7 @@ jobs:
         run: |
           xcodebuild test-without-building \
             -scheme MLXAudio-Package \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
             -only-testing:MLXAudioTests/Qwen3ASRTests \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee test-qwen3asr-output.log
@@ -236,7 +236,7 @@ jobs:
         run: |
           xcodebuild test-without-building \
             -scheme MLXAudio-Package \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
             -only-testing:MLXAudioTests/GLMASRTests \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee test-glmasr-output.log
