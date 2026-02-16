@@ -5,10 +5,19 @@ import SwiftUI
 struct VoicesApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            TabView {
+                ContentView()
+                    .tabItem {
+                        Label("TTS", systemImage: "waveform")
+                    }
+
+                STTView()
+                    .tabItem {
+                        Label("STT", systemImage: "mic")
+                    }
+            }
         }
         #if os(macOS)
-        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 500, height: 800)
         #endif
     }

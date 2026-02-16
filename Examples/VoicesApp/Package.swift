@@ -19,6 +19,7 @@ let package = Package(
             name: "VoicesApp",
             dependencies: [
                 .product(name: "MLXAudioTTS", package: "mlx-audio-swift"),
+                .product(name: "MLXAudioSTT", package: "mlx-audio-swift"),
                 .product(name: "MLXAudioCore", package: "mlx-audio-swift")
             ],
             path: "VoicesApp"

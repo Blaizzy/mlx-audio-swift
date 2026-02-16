@@ -18,6 +18,11 @@
 		APP007 /* VoiceRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC007 /* VoiceRow.swift */; };
 		APP008 /* VoiceCollectionCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC008 /* VoiceCollectionCard.swift */; };
 		APP009 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC009 /* SettingsView.swift */; };
+		APP010 /* STTView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC0A0 /* STTView.swift */; };
+		APP011 /* STTViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC011 /* STTViewModel.swift */; };
+		APP012 /* STTSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC012 /* STTSettingsView.swift */; };
+		APP013 /* AudioRecorderManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC013 /* AudioRecorderManager.swift */; };
+		3322ACB62F2FC458008246F3 /* MLXAudioSTT in Frameworks */ = {isa = PBXBuildFile; productRef = 33B121602F2EA41E006A1A8A /* MLXAudioSTT */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -35,6 +40,10 @@
 		SRC007 /* VoiceRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceRow.swift; sourceTree = "<group>"; };
 		SRC008 /* VoiceCollectionCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCollectionCard.swift; sourceTree = "<group>"; };
 		SRC009 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		SRC0A0 /* STTView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = STTView.swift; sourceTree = "<group>"; };
+		SRC011 /* STTViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = STTViewModel.swift; sourceTree = "<group>"; };
+		SRC012 /* STTSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = STTSettingsView.swift; sourceTree = "<group>"; };
+		SRC013 /* AudioRecorderManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorderManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -44,6 +53,7 @@
 			files = (
 				3322ACB52F2FC458008246F3 /* MLXAudioTTS in Frameworks */,
 				3322ACB42F2FC458008246F3 /* MLXAudioCore in Frameworks */,
+				3322ACB62F2FC458008246F3 /* MLXAudioSTT in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -63,9 +73,11 @@
 			isa = PBXGroup;
 			children = (
 				SRC001 /* VoicesApp.swift */,
+				SRC0A0 /* STTView.swift */,
 				GRP003 /* Models */,
 				GRP004 /* ViewModels */,
 				GRP005 /* Views */,
+				GRP009 /* Helpers */,
 			);
 			path = VoicesApp;
 			sourceTree = "<group>";
@@ -82,6 +94,7 @@
 			isa = PBXGroup;
 			children = (
 				SRC004 /* TTSViewModel.swift */,
+				SRC011 /* STTViewModel.swift */,
 			);
 			path = ViewModels;
 			sourceTree = "<group>";
@@ -93,6 +106,7 @@
 				SRC005 /* VoicesView.swift */,
 				SRC006 /* AddVoiceView.swift */,
 				SRC009 /* SettingsView.swift */,
+				SRC012 /* STTSettingsView.swift */,
 				GRP007 /* Components */,
 			);
 			path = Views;
@@ -126,6 +140,14 @@
 			path = Config;
 			sourceTree = "<group>";
 		};
+		GRP009 /* Helpers */ = {
+			isa = PBXGroup;
+			children = (
+				SRC013 /* AudioRecorderManager.swift */,
+			);
+			path = Helpers;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -145,6 +167,7 @@
 			packageProductDependencies = (
 				33B1215C2F2EA41E006A1A8A /* MLXAudioCore */,
 				33B1215E2F2EA41E006A1A8A /* MLXAudioTTS */,
+				33B121602F2EA41E006A1A8A /* MLXAudioSTT */,
 			);
 			productName = VoicesApp;
 			productReference = PROD001 /* VoicesApp.app */;
@@ -210,6 +233,10 @@
 				APP007 /* VoiceRow.swift in Sources */,
 				APP008 /* VoiceCollectionCard.swift in Sources */,
 				APP009 /* SettingsView.swift in Sources */,
+				APP010 /* STTView.swift in Sources */,
+				APP011 /* STTViewModel.swift in Sources */,
+				APP012 /* STTSettingsView.swift in Sources */,
+				APP013 /* AudioRecorderManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -337,6 +364,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMainStoryboardFile = "";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "VoicesApp needs microphone access to record audio for transcription.";
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
@@ -370,6 +398,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMainStoryboardFile = "";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "VoicesApp needs microphone access to record audio for transcription.";
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
@@ -428,6 +457,10 @@
 		33B1215E2F2EA41E006A1A8A /* MLXAudioTTS */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MLXAudioTTS;
+		};
+		33B121602F2EA41E006A1A8A /* MLXAudioSTT */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MLXAudioSTT;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
