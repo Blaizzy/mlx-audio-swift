@@ -319,13 +319,24 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
 
             // Remove "model." prefix if present (e.g. "model.language_model.*" → "language_model.*")
             if newKey.hasPrefix("model.") {
-                newKey = String(newKey.dropFirst(6))
+                newKey = String(newKey.dropFirst("model.".count))
             }
 
-            // Decoder weights should be float32
+            // Keep packed quantized weights in their stored dtype.
+            let isPackedQuantizedWeight: Bool = {
+                guard key.hasSuffix(".weight") else { return false }
+                let base = String(key.dropLast(".weight".count))
+                return weights["\(base).scales"] != nil
+            }()
+
+            // Decoder weights should be float32 in non-quantized checkpoints.
             var newValue = value
             if newKey.hasPrefix("decoder.") {
-                newValue = value.asType(.float32)
+                if !newKey.hasSuffix(".scales"),
+                   !newKey.hasSuffix(".biases"),
+                   !isPackedQuantizedWeight {
+                    newValue = value.asType(.float32)
+                }
             } else if newKey.hasPrefix("language_model.lm_head") {
                 // lm_head is directly on SopranoModel, not inside model
                 newKey = newKey.replacingOccurrences(of: "language_model.", with: "")
@@ -925,12 +936,18 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
         let sanitizedWeights = model.sanitize(weights: weights)
 
         // Apply quantization if needed
-        if let perLayerQuant = config.perLayerQuantization {
+        if config.quantization != nil || config.perLayerQuantization != nil {
             quantize(model: model) { path, _ in
-                if weights["\(path).scales"] != nil {
-                    return perLayerQuant.quantization(layer: path)?.asTuple
+                guard sanitizedWeights["\(path).scales"] != nil else {
+                    return nil
                 }
-                return nil
+
+                if let perLayerQuant = config.perLayerQuantization,
+                    let layerQuant = perLayerQuant.quantization(layer: path) {
+                    return layerQuant.asTuple
+                }
+
+                return config.quantization?.asTuple
             }
         }
 
