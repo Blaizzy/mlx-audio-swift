@@ -1,10 +1,7 @@
-// Port of code predictor classes from mlx_audio/tts/models/qwen3_tts/talker.py
-// Multi-codebook token prediction sub-model
-
-@preconcurrency import MLX
-import MLXNN
-@preconcurrency import MLXLMCommon
 import Foundation
+@preconcurrency import MLX
+@preconcurrency import MLXLMCommon
+import MLXNN
 
 // MARK: - Code Predictor Attention
 
@@ -27,12 +24,12 @@ final class CodePredictorAttention: Module {
         self.headDim = config.headDim
         self.scale = 1.0 / Foundation.sqrt(Float(headDim))
 
-        self._qProj.wrappedValue = Linear(config.hiddenSize, numHeads * headDim, bias: config.attentionBias)
-        self._kProj.wrappedValue = Linear(config.hiddenSize, numKvHeads * headDim, bias: config.attentionBias)
-        self._vProj.wrappedValue = Linear(config.hiddenSize, numKvHeads * headDim, bias: config.attentionBias)
-        self._oProj.wrappedValue = Linear(numHeads * headDim, config.hiddenSize, bias: config.attentionBias)
-        self._qNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: config.rmsNormEps)
-        self._kNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: config.rmsNormEps)
+        _qProj.wrappedValue = Linear(config.hiddenSize, numHeads * headDim, bias: config.attentionBias)
+        _kProj.wrappedValue = Linear(config.hiddenSize, numKvHeads * headDim, bias: config.attentionBias)
+        _vProj.wrappedValue = Linear(config.hiddenSize, numKvHeads * headDim, bias: config.attentionBias)
+        _oProj.wrappedValue = Linear(numHeads * headDim, config.hiddenSize, bias: config.attentionBias)
+        _qNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: config.rmsNormEps)
+        _kNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: config.rmsNormEps)
     }
 
     func callAsFunction(
@@ -86,9 +83,9 @@ final class CodePredictorMLP: Module {
     @ModuleInfo(key: "down_proj") var downProj: Linear
 
     init(config: Qwen3TTSTalkerCodePredictorConfig) {
-        self._gateProj.wrappedValue = Linear(config.hiddenSize, config.intermediateSize, bias: false)
-        self._upProj.wrappedValue = Linear(config.hiddenSize, config.intermediateSize, bias: false)
-        self._downProj.wrappedValue = Linear(config.intermediateSize, config.hiddenSize, bias: false)
+        _gateProj.wrappedValue = Linear(config.hiddenSize, config.intermediateSize, bias: false)
+        _upProj.wrappedValue = Linear(config.hiddenSize, config.intermediateSize, bias: false)
+        _downProj.wrappedValue = Linear(config.intermediateSize, config.hiddenSize, bias: false)
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -105,10 +102,10 @@ final class CodePredictorDecoderLayer: Module {
     @ModuleInfo(key: "post_attention_layernorm") var postAttentionLayernorm: RMSNorm
 
     init(config: Qwen3TTSTalkerCodePredictorConfig, layerIdx: Int) {
-        self._selfAttn.wrappedValue = CodePredictorAttention(config: config, layerIdx: layerIdx)
-        self._mlp.wrappedValue = CodePredictorMLP(config: config)
-        self._inputLayernorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
-        self._postAttentionLayernorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        _selfAttn.wrappedValue = CodePredictorAttention(config: config, layerIdx: layerIdx)
+        _mlp.wrappedValue = CodePredictorMLP(config: config)
+        _inputLayernorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        _postAttentionLayernorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
     }
 
     func callAsFunction(
@@ -134,11 +131,11 @@ final class CodePredictorModel: Module {
 
     init(config: Qwen3TTSTalkerCodePredictorConfig, talkerHiddenSize: Int) {
         self.config = config
-        self._codecEmbedding.wrappedValue = (0 ..< config.numCodeGroups - 1).map { _ in
+        _codecEmbedding.wrappedValue = (0 ..< config.numCodeGroups - 1).map { _ in
             Embedding(embeddingCount: config.vocabSize, dimensions: talkerHiddenSize)
         }
         self.layers = (0 ..< config.numHiddenLayers).map { CodePredictorDecoderLayer(config: config, layerIdx: $0) }
-        self._norm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        _norm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
         self.rotaryEmb = Qwen3TTSRotaryEmbedding(
             dim: config.headDim,
             maxPositionEmbeddings: config.maxPositionEmbeddings,
@@ -154,11 +151,10 @@ final class CodePredictorModel: Module {
     ) -> MLXArray {
         let (batch, seqLen, _) = (inputsEmbeds.dim(0), inputsEmbeds.dim(1), inputsEmbeds.dim(2))
 
-        let offset: Int
-        if let firstCache = cache?.first {
-            offset = firstCache.offset
+        let offset: Int = if let firstCache = cache?.first {
+            firstCache.offset
         } else {
-            offset = 0
+            0
         }
 
         let posIds: MLXArray
@@ -172,7 +168,7 @@ final class CodePredictorModel: Module {
         let posEmbeddings = rotaryEmb(inputsEmbeds, positionIds: posIds)
 
         var causalMask = mask
-        if causalMask == nil && seqLen > 1 {
+        if causalMask == nil, seqLen > 1 {
             causalMask = MultiHeadAttention.createAdditiveCausalMask(seqLen).asType(inputsEmbeds.dtype)
         }
 
@@ -207,13 +203,13 @@ final class Qwen3TTSCodePredictor: Module {
         self.talkerHiddenSize = talkerHiddenSize
 
         if config.hiddenSize != talkerHiddenSize {
-            self._projection.wrappedValue = Linear(talkerHiddenSize, config.hiddenSize, bias: true)
+            _projection.wrappedValue = Linear(talkerHiddenSize, config.hiddenSize, bias: true)
         } else {
-            self._projection.wrappedValue = nil
+            _projection.wrappedValue = nil
         }
 
-        self._model.wrappedValue = CodePredictorModel(config: config, talkerHiddenSize: talkerHiddenSize)
-        self._lmHead.wrappedValue = (0 ..< config.numCodeGroups - 1).map { _ in
+        _model.wrappedValue = CodePredictorModel(config: config, talkerHiddenSize: talkerHiddenSize)
+        _lmHead.wrappedValue = (0 ..< config.numCodeGroups - 1).map { _ in
             Linear(config.hiddenSize, config.vocabSize, bias: false)
         }
     }

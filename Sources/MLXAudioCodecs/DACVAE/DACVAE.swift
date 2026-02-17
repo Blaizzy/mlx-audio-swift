@@ -306,46 +306,230 @@ public class DACVAE: Module {
         return out
     }
 
+    private func decodeChunkFeatures(_ encodedChunk: MLXArray) -> MLXArray {
+        let emb = quantizerOutProj(encodedChunk)
+        var out = decoder(emb)
+        out = decoder.snakeOut(out)
+        out = MLX.tanh(decoder.convOut(out))
+        eval(out)
+        return out
+    }
+
+    private func linearRamp(start: Float, end: Float, count: Int) -> MLXArray {
+        if count <= 0 {
+            return MLXArray([] as [Float])
+        }
+        if count == 1 {
+            return MLXArray([start])
+        }
+
+        let denom = Float(count - 1)
+        var values: [Float] = []
+        values.reserveCapacity(count)
+        for i in 0..<count {
+            let t = Float(i) / denom
+            values.append(start + (end - start) * t)
+        }
+        return MLXArray(values)
+    }
+
     /// Decode in chunks to reduce peak memory usage.
     private func decodeChunked(_ encodedFrames: MLXArray, chunkSize: Int, overlap: Int = 4) -> MLXArray {
         let totalFrames = encodedFrames.shape[2]
-
-        // Transpose to (batch, frames, codebook_dim)
-        let encodedT = encodedFrames.transposed(0, 2, 1)
+        let encodedT = encodedFrames.transposed(0, 2, 1)  // (B, T, C)
+        let samplesPerFrame = hopLength
+        let overlapSamples = overlap * samplesPerFrame
 
         var chunks: [MLXArray] = []
         var start = 0
 
         while start < totalFrames {
             let end = min(start + chunkSize, totalFrames)
-
-            // Extract chunk
             let chunk = encodedT[0..., start..<end, 0...]
-
-            // Project from codebook_dim to latent_dim
-            let emb = quantizerOutProj(chunk)
-
-            // Decode
-            var out = decoder(emb)
-            out = decoder.snakeOut(out)
-            out = MLX.tanh(decoder.convOut(out))
-            eval(out)
-
+            let out = decodeChunkFeatures(chunk)
             chunks.append(out)
 
-            // Move to next chunk (with overlap for blending)
             if end >= totalFrames {
                 break
             }
             start = end - overlap
+            Memory.clearCache()
         }
 
-        // Simple concatenation (without complex crossfade for now)
         if chunks.count == 1 {
             return chunks[0]
         }
 
-        return MLX.concatenated(chunks, axis: 1)
+        // Crossfade blend chunk overlaps to match python reference behavior.
+        var resultParts: [MLXArray] = []
+        for (i, chunk) in chunks.enumerated() {
+            let chunkSamples = chunk.shape[1]
+
+            if i == 0 {
+                if chunks.count > 1 && overlapSamples > 0 && chunkSamples > overlapSamples {
+                    let fadeOutStart = chunkSamples - overlapSamples
+                    let fade = linearRamp(start: 1.0, end: 0.0, count: overlapSamples).reshaped([1, overlapSamples, 1])
+                    let chunkMain = chunk[0..., 0..<fadeOutStart, 0...]
+                    let chunkFade = chunk[0..., fadeOutStart..<chunkSamples, 0...] * fade
+                    resultParts.append(chunkMain)
+                    resultParts.append(chunkFade)
+                } else {
+                    resultParts.append(chunk)
+                }
+                continue
+            }
+
+            if i == chunks.count - 1 {
+                if overlapSamples > 0 && chunkSamples >= overlapSamples && !resultParts.isEmpty {
+                    let fadeIn = linearRamp(start: 0.0, end: 1.0, count: overlapSamples).reshaped([1, overlapSamples, 1])
+                    let chunkFade = chunk[0..., 0..<overlapSamples, 0...] * fadeIn
+                    let chunkRest = chunk[0..., overlapSamples..<chunkSamples, 0...]
+                    resultParts[resultParts.count - 1] = resultParts[resultParts.count - 1] + chunkFade
+                    resultParts.append(chunkRest)
+                } else {
+                    resultParts.append(chunk)
+                }
+                continue
+            }
+
+            if overlapSamples > 0 && chunkSamples > 2 * overlapSamples && !resultParts.isEmpty {
+                let fadeIn = linearRamp(start: 0.0, end: 1.0, count: overlapSamples).reshaped([1, overlapSamples, 1])
+                let fadeOut = linearRamp(start: 1.0, end: 0.0, count: overlapSamples).reshaped([1, overlapSamples, 1])
+                let fadeOutStart = chunkSamples - overlapSamples
+
+                let chunkFadeIn = chunk[0..., 0..<overlapSamples, 0...] * fadeIn
+                let chunkMiddle = chunk[0..., overlapSamples..<fadeOutStart, 0...]
+                let chunkFadeOut = chunk[0..., fadeOutStart..<chunkSamples, 0...] * fadeOut
+
+                resultParts[resultParts.count - 1] = resultParts[resultParts.count - 1] + chunkFadeIn
+                resultParts.append(chunkMiddle)
+                resultParts.append(chunkFadeOut)
+            } else {
+                resultParts.append(chunk)
+            }
+        }
+
+        return MLX.concatenated(resultParts, axis: 1)
+    }
+
+    /// Streaming decode that yields chunked audio with overlap blending.
+    public func decodeStreaming(
+        _ encodedFrames: MLXArray,
+        chunkSize: Int = 50,
+        overlap: Int = 4
+    ) -> AnyIterator<(MLXArray, Bool)> {
+        let totalFrames = encodedFrames.shape[2]
+        if totalFrames == 0 {
+            return AnyIterator { nil }
+        }
+
+        let encodedT = encodedFrames.transposed(0, 2, 1)  // (B, T, C)
+        eval(encodedT)
+
+        let overlapSamples = overlap * hopLength
+        var prevFadeOut: MLXArray? = nil
+        var start = 0
+        var chunkIdx = 0
+        var finished = false
+
+        return AnyIterator {
+            if finished || start >= totalFrames {
+                return nil
+            }
+
+            let end = min(start + chunkSize, totalFrames)
+            let isLast = end >= totalFrames
+
+            let chunk = encodedT[0..., start..<end, 0...]
+            let out = self.decodeChunkFeatures(chunk)
+            let outSamples = out.shape[1]
+
+            if chunkIdx == 0 {
+                if !isLast && overlapSamples > 0 && outSamples > overlapSamples {
+                    let fadeOutStart = outSamples - overlapSamples
+                    let fadeOut = self.linearRamp(start: 1.0, end: 0.0, count: overlapSamples).reshaped([1, overlapSamples, 1])
+                    prevFadeOut = out[0..., fadeOutStart..<outSamples, 0...] * fadeOut
+                    if let prev = prevFadeOut { eval(prev) }
+
+                    let result = out[0..., 0..<fadeOutStart, 0...]
+                    eval(result)
+
+                    start = end - overlap
+                    chunkIdx += 1
+                    Memory.clearCache()
+                    return (result, false)
+                }
+
+                finished = true
+                return (out, true)
+            }
+
+            if isLast {
+                finished = true
+                if overlapSamples > 0, let prev = prevFadeOut, outSamples >= overlapSamples {
+                    let fadeIn = self.linearRamp(start: 0.0, end: 1.0, count: overlapSamples).reshaped([1, overlapSamples, 1])
+                    let blended = prev + out[0..., 0..<overlapSamples, 0...] * fadeIn
+                    eval(blended)
+
+                    let finalChunk = MLX.concatenated(
+                        [blended, out[0..., overlapSamples..<outSamples, 0...]],
+                        axis: 1
+                    )
+                    eval(finalChunk)
+                    return (finalChunk, true)
+                }
+                return (out, true)
+            }
+
+            if overlapSamples > 0, let prev = prevFadeOut, outSamples > 2 * overlapSamples {
+                let fadeIn = self.linearRamp(start: 0.0, end: 1.0, count: overlapSamples).reshaped([1, overlapSamples, 1])
+                let fadeOut = self.linearRamp(start: 1.0, end: 0.0, count: overlapSamples).reshaped([1, overlapSamples, 1])
+                let fadeOutStart = outSamples - overlapSamples
+
+                let blended = prev + out[0..., 0..<overlapSamples, 0...] * fadeIn
+                eval(blended)
+
+                prevFadeOut = out[0..., fadeOutStart..<outSamples, 0...] * fadeOut
+                if let newPrev = prevFadeOut { eval(newPrev) }
+
+                let middleChunk = MLX.concatenated(
+                    [blended, out[0..., overlapSamples..<fadeOutStart, 0...]],
+                    axis: 1
+                )
+                eval(middleChunk)
+
+                start = end - overlap
+                chunkIdx += 1
+                Memory.clearCache()
+                return (middleChunk, false)
+            }
+
+            start = end - overlap
+            chunkIdx += 1
+            Memory.clearCache()
+            return (out, false)
+        }
+    }
+
+    /// Stream decode with callback for each emitted audio chunk.
+    @discardableResult
+    public func decodeStream(
+        _ encodedFrames: MLXArray,
+        callback: (_ audioChunk: MLXArray, _ chunkIndex: Int, _ isLast: Bool) -> Void,
+        chunkSize: Int = 50,
+        overlap: Int = 4
+    ) -> Int {
+        var totalSamples = 0
+        var chunkIndex = 0
+        let stream = decodeStreaming(encodedFrames, chunkSize: chunkSize, overlap: overlap)
+
+        while let (audioChunk, isLast) = stream.next() {
+            callback(audioChunk, chunkIndex, isLast)
+            totalSamples += audioChunk.shape[1]
+            chunkIndex += 1
+        }
+
+        return totalSamples
     }
 
     /// Encode waveform to codebook space (for SAM-Audio).
@@ -410,5 +594,19 @@ public class DACVAE: Module {
         eval(model.parameters())
 
         return model
+    }
+}
+
+extension DACVAE: AudioCodecModel {
+    public typealias EncodedAudio = MLXArray
+
+    public var codecSampleRate: Double? { Double(sampleRate) }
+
+    public func encodeAudio(_ waveform: MLXArray) -> MLXArray {
+        encode(waveform)
+    }
+
+    public func decodeAudio(_ input: MLXArray) -> MLXArray {
+        decode(input)
     }
 }

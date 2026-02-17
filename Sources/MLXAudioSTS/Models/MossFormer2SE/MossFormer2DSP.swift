@@ -180,16 +180,6 @@ public enum MossFormer2DSP {
             signal = signal + MLXRandom.normal([audioLen], scale: dither)
         }
 
-        if removeDCOffset {
-            signal = signal - MLX.mean(signal)
-        }
-
-        if preemphasis > 0, audioLen > 1 {
-            let first = signal[0..<1]
-            let rest = signal[1..<audioLen] - MLXArray(preemphasis) * signal[0..<(audioLen - 1)]
-            signal = MLX.concatenated([first, rest], axis: 0)
-        }
-
         let signalLen = signal.shape[0]
         guard signalLen >= winLen else {
             return MLXArray.zeros([0, numMels], type: Float.self)
@@ -200,11 +190,24 @@ public enum MossFormer2DSP {
             return MLXArray.zeros([0, numMels], type: Float.self)
         }
 
+        let preemphCoeff = MLXArray(preemphasis)
         var frames: [MLXArray] = []
         frames.reserveCapacity(numFrames)
         for i in 0..<numFrames {
             let start = i * winInc
-            frames.append(signal[start..<(start + winLen)])
+            var frame = signal[start..<(start + winLen)]
+
+            if removeDCOffset {
+                frame = frame - MLX.mean(frame)
+            }
+
+            if preemphasis > 0, winLen > 1 {
+                let first = frame[0..<1] - preemphCoeff * frame[0..<1]
+                let rest = frame[1..<winLen] - preemphCoeff * frame[0..<(winLen - 1)]
+                frame = MLX.concatenated([first, rest], axis: 0)
+            }
+
+            frames.append(frame)
         }
 
         var frameTensor = MLX.stacked(frames, axis: 0)
@@ -225,7 +228,7 @@ public enum MossFormer2DSP {
             frameTensor = frameTensor[0..<numFrames, 0..<nFft]
         }
         let powerSpectrum = MLX.abs(MLXFFT.rfft(frameTensor, axis: 1)).square()
-        let melBank = melFilterbank(sampleRate: sampleRate, nFft: nFft, numMels: numMels, fMin: lowFreq)
+        let melBank = melFilterbank(sampleRate: sampleRate, nFft: nFft, numMels: numMels, fMin: lowFreq, norm: nil)
         let fbanks = MLX.matmul(powerSpectrum, melBank)
         return MLX.log(MLX.maximum(fbanks, MLXArray(Float(1e-10))))
     }
@@ -241,11 +244,11 @@ public enum MossFormer2DSP {
         return computeDeltasKaldi2D(features, winLength: winLength)
     }
 
-    public static func melFilterbank(sampleRate: Int, nFft: Int, numMels: Int, fMin: Float = 0) -> MLXArray {
+    public static func melFilterbank(sampleRate: Int, nFft: Int, numMels: Int, fMin: Float = 0, norm: String? = "slaney") -> MLXArray {
         guard sampleRate > 0, nFft > 0, numMels > 0 else {
             return MLXArray.zeros([0, 0], type: Float.self)
         }
-        return melFilters(sampleRate: sampleRate, nFft: nFft, nMels: numMels, fMin: fMin)
+        return melFilters(sampleRate: sampleRate, nFft: nFft, nMels: numMels, fMin: fMin, norm: norm)
     }
 
     private static func adjustedWindow(_ window: MLXArray, targetLength: Int) -> MLXArray {

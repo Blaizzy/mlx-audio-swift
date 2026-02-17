@@ -384,3 +384,17 @@ public final class MimiTokenizer {
         self.codec = codec
     }
 }
+
+extension Mimi: AudioCodecModel {
+    public typealias EncodedAudio = MLXArray
+
+    public var codecSampleRate: Double? { sampleRate }
+
+    public func encodeAudio(_ waveform: MLXArray) -> MLXArray {
+        encode(waveform)
+    }
+
+    public func decodeAudio(_ input: MLXArray) -> MLXArray {
+        decode(input)
+    }
+}
