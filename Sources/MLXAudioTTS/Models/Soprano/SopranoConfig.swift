@@ -126,6 +126,8 @@ public struct SopranoConfiguration: Codable, Sendable {
         case dwKernel = "dw_kernel"
         case tokenSize = "token_size"
         case receptiveField = "receptive_field"
+        case quantization
+        case quantizationConfig = "quantization_config"
     }
 
     public init(from decoder: Swift.Decoder) throws {
@@ -166,6 +168,9 @@ public struct SopranoConfiguration: Codable, Sendable {
 
         // Quantization
         let baseConfig = try? BaseConfiguration(from: decoder)
+        let globalQuant = try container.decodeIfPresent(BaseConfiguration.Quantization.self, forKey: .quantization)
+        let altGlobalQuant = try container.decodeIfPresent(BaseConfiguration.Quantization.self, forKey: .quantizationConfig)
+        self.quantization = globalQuant ?? altGlobalQuant ?? baseConfig?.quantization
         self.perLayerQuantization = baseConfig?.perLayerQuantization
     }
 
