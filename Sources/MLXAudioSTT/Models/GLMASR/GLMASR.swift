@@ -21,12 +21,40 @@ enum AudioConstants {
     static let hopLength = 160
 }
 
-
 // MARK: - Prompt Templates
 
 private enum PromptTemplate {
     static let userPrefix = "<|user|>\n<|begin_of_audio|>"
     static let userSuffix = "<|end_of_audio|>\nPlease transcribe this audio into text<|assistant|>\n"
+}
+
+extension GLMASRModel: STTGenerationModel {
+    public var defaultGenerationParameters: STTGenerateParameters {
+        STTGenerateParameters(maxTokens: 128, temperature: 0.0, topP: 0.95, topK: 0, verbose: false)
+    }
+
+    public func generate(audio: MLXArray, generationParameters: STTGenerateParameters) -> STTOutput {
+        generate(
+            audio: audio,
+            maxTokens: generationParameters.maxTokens,
+            temperature: generationParameters.temperature,
+            topP: generationParameters.topP,
+            topK: generationParameters.topK,
+            verbose: generationParameters.verbose
+        )
+    }
+
+    public func generateStream(
+        audio: MLXArray,
+        generationParameters: STTGenerateParameters
+    ) -> AsyncThrowingStream<STTGeneration, Error> {
+        generateStream(
+            audio: audio,
+            maxTokens: generationParameters.maxTokens,
+            temperature: generationParameters.temperature,
+            topP: generationParameters.topP
+        )
+    }
 }
 
 // MARK: - LLaMA Components for STT

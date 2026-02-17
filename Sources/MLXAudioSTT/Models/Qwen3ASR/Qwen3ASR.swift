@@ -25,6 +25,46 @@ private func floorDiv(_ a: MLXArray, _ b: Int) -> MLXArray {
     return floor(a.asType(.float32) / Float(b)).asType(.int32)
 }
 
+extension Qwen3ASRModel: STTGenerationModel {
+    public var defaultGenerationParameters: STTGenerateParameters {
+        STTGenerateParameters(
+            maxTokens: 8192,
+            temperature: 0.0,
+            topP: 0.95,
+            topK: 0,
+            verbose: false,
+            language: "English",
+            chunkDuration: 1200.0,
+            minChunkDuration: 1.0
+        )
+    }
+
+    public func generate(audio: MLXArray, generationParameters: STTGenerateParameters) -> STTOutput {
+        generate(
+            audio: audio,
+            maxTokens: generationParameters.maxTokens,
+            temperature: generationParameters.temperature,
+            language: generationParameters.language,
+            chunkDuration: generationParameters.chunkDuration,
+            minChunkDuration: generationParameters.minChunkDuration
+        )
+    }
+
+    public func generateStream(
+        audio: MLXArray,
+        generationParameters: STTGenerateParameters
+    ) -> AsyncThrowingStream<STTGeneration, Error> {
+        generateStream(
+            audio: audio,
+            maxTokens: generationParameters.maxTokens,
+            temperature: generationParameters.temperature,
+            language: generationParameters.language,
+            chunkDuration: generationParameters.chunkDuration,
+            minChunkDuration: generationParameters.minChunkDuration
+        )
+    }
+}
+
 func getFeatExtractOutputLengths(_ inputLengths: MLXArray) -> MLXArray {
     let inputLengthsLeave = inputLengths % 100
     let featLengths = floorDiv(inputLengthsLeave - 1, 2) + 1
