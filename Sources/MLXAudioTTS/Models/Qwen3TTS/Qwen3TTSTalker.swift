@@ -1,10 +1,7 @@
-// Port of mlx_audio/tts/models/qwen3_tts/talker.py
-// Talker transformer with multimodal 3D RoPE for Qwen3-TTS
-
-@preconcurrency import MLX
-import MLXNN
-@preconcurrency import MLXLMCommon
 import Foundation
+@preconcurrency import MLX
+@preconcurrency import MLXLMCommon
+import MLXNN
 
 // MARK: - RoPE helpers
 
@@ -40,14 +37,14 @@ final class TalkerRotaryEmbedding: Module {
     let maxPositionEmbeddings: Int
     let base: Float
     let mropeSection: [Int]
-    let invFreq: MLXArray
+    let _invFreq: MLXArray
 
     init(dim: Int, maxPositionEmbeddings: Int = 32768, base: Float = 10000.0, mropeSection: [Int]? = nil) {
         self.dim = dim
         self.maxPositionEmbeddings = maxPositionEmbeddings
         self.base = base
         self.mropeSection = mropeSection ?? [24, 20, 20]
-        self.invFreq = computeInvFreq(dim: dim, base: base)
+        self._invFreq = computeInvFreq(dim: dim, base: base)
     }
 
     func applyInterleavedMrope(_ freqs: MLXArray, mropeSection sec: [Int]) -> MLXArray {
@@ -83,8 +80,8 @@ final class TalkerRotaryEmbedding: Module {
         }
 
         let invFreqExpanded = broadcast(
-            invFreq.reshaped(1, 1, invFreq.dim(0), 1).asType(.float32),
-            to: [3, posIds.dim(1), invFreq.dim(0), 1]
+            _invFreq.reshaped(1, 1, _invFreq.dim(0), 1).asType(.float32),
+            to: [3, posIds.dim(1), _invFreq.dim(0), 1]
         )
         let pos = expandedDimensions(posIds.asType(.float32), axis: 2)
 
@@ -103,15 +100,15 @@ final class TalkerRotaryEmbedding: Module {
 
 final class Qwen3TTSRotaryEmbedding: Module {
     let dim: Int
-    let invFreq: MLXArray
+    let _invFreq: MLXArray
 
     init(dim: Int, maxPositionEmbeddings: Int = 32768, base: Float = 10000.0) {
         self.dim = dim
-        self.invFreq = computeInvFreq(dim: dim, base: base)
+        self._invFreq = computeInvFreq(dim: dim, base: base)
     }
 
     func callAsFunction(_ x: MLXArray, positionIds: MLXArray) -> (MLXArray, MLXArray) {
-        let inv = expandedDimensions(invFreq, axes: [0, 2])
+        let inv = expandedDimensions(_invFreq, axes: [0, 2])
         let pos = expandedDimensions(positionIds.asType(.float32), axis: 1)
         let freqs = swappedAxes(matmul(inv, pos), 1, 2)
         let emb = concatenated([freqs, freqs], axis: -1)
@@ -140,12 +137,12 @@ final class TalkerAttention: Module {
         self.headDim = config.headDim
         self.scale = 1.0 / Foundation.sqrt(Float(headDim))
 
-        self._qProj.wrappedValue = Linear(config.hiddenSize, numHeads * headDim, bias: config.attentionBias)
-        self._kProj.wrappedValue = Linear(config.hiddenSize, numKvHeads * headDim, bias: config.attentionBias)
-        self._vProj.wrappedValue = Linear(config.hiddenSize, numKvHeads * headDim, bias: config.attentionBias)
-        self._oProj.wrappedValue = Linear(numHeads * headDim, config.hiddenSize, bias: config.attentionBias)
-        self._qNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: config.rmsNormEps)
-        self._kNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: config.rmsNormEps)
+        _qProj.wrappedValue = Linear(config.hiddenSize, numHeads * headDim, bias: config.attentionBias)
+        _kProj.wrappedValue = Linear(config.hiddenSize, numKvHeads * headDim, bias: config.attentionBias)
+        _vProj.wrappedValue = Linear(config.hiddenSize, numKvHeads * headDim, bias: config.attentionBias)
+        _oProj.wrappedValue = Linear(numHeads * headDim, config.hiddenSize, bias: config.attentionBias)
+        _qNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: config.rmsNormEps)
+        _kNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: config.rmsNormEps)
     }
 
     func callAsFunction(
@@ -190,9 +187,9 @@ final class TalkerMLP: Module {
     @ModuleInfo(key: "down_proj") var downProj: Linear
 
     init(config: Qwen3TTSTalkerConfig) {
-        self._gateProj.wrappedValue = Linear(config.hiddenSize, config.intermediateSize, bias: false)
-        self._upProj.wrappedValue = Linear(config.hiddenSize, config.intermediateSize, bias: false)
-        self._downProj.wrappedValue = Linear(config.intermediateSize, config.hiddenSize, bias: false)
+        _gateProj.wrappedValue = Linear(config.hiddenSize, config.intermediateSize, bias: false)
+        _upProj.wrappedValue = Linear(config.hiddenSize, config.intermediateSize, bias: false)
+        _downProj.wrappedValue = Linear(config.intermediateSize, config.hiddenSize, bias: false)
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -207,8 +204,8 @@ final class ResizeMLP: Module {
     @ModuleInfo(key: "linear_fc2") var fc2: Linear
 
     init(inputSize: Int, intermediateSize: Int, outputSize: Int, bias: Bool = false) {
-        self._fc1.wrappedValue = Linear(inputSize, intermediateSize, bias: bias)
-        self._fc2.wrappedValue = Linear(intermediateSize, outputSize, bias: bias)
+        _fc1.wrappedValue = Linear(inputSize, intermediateSize, bias: bias)
+        _fc2.wrappedValue = Linear(intermediateSize, outputSize, bias: bias)
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -225,10 +222,10 @@ final class TalkerDecoderLayer: Module {
     @ModuleInfo(key: "post_attention_layernorm") var postAttentionLayernorm: RMSNorm
 
     init(config: Qwen3TTSTalkerConfig, layerIdx: Int) {
-        self._selfAttn.wrappedValue = TalkerAttention(config: config, layerIdx: layerIdx)
-        self._mlp.wrappedValue = TalkerMLP(config: config)
-        self._inputLayernorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
-        self._postAttentionLayernorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        _selfAttn.wrappedValue = TalkerAttention(config: config, layerIdx: layerIdx)
+        _mlp.wrappedValue = TalkerMLP(config: config)
+        _inputLayernorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        _postAttentionLayernorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
     }
 
     func callAsFunction(
@@ -256,10 +253,10 @@ final class Qwen3TTSTalkerModel: Module {
 
     init(config: Qwen3TTSTalkerConfig) {
         self.config = config
-        self._codecEmbedding.wrappedValue = Embedding(embeddingCount: config.vocabSize, dimensions: config.hiddenSize)
-        self._textEmbedding.wrappedValue = Embedding(embeddingCount: config.textVocabSize, dimensions: config.textHiddenSize)
+        _codecEmbedding.wrappedValue = Embedding(embeddingCount: config.vocabSize, dimensions: config.hiddenSize)
+        _textEmbedding.wrappedValue = Embedding(embeddingCount: config.textVocabSize, dimensions: config.textHiddenSize)
         self.layers = (0 ..< config.numHiddenLayers).map { TalkerDecoderLayer(config: config, layerIdx: $0) }
-        self._norm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        _norm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
         self.rotaryEmb = TalkerRotaryEmbedding(
             dim: config.headDim,
             maxPositionEmbeddings: config.maxPositionEmbeddings,
@@ -290,7 +287,7 @@ final class Qwen3TTSTalkerModel: Module {
         let posEmbeddings = rotaryEmb(inputsEmbeds, positionIds: posIds)
 
         var causalMask = mask
-        if causalMask == nil && seqLen > 1 {
+        if causalMask == nil, seqLen > 1 {
             causalMask = MultiHeadAttention.createAdditiveCausalMask(seqLen).asType(inputsEmbeds.dtype)
         }
 
@@ -317,20 +314,20 @@ final class Qwen3TTSTalkerForConditionalGeneration: Module {
 
     init(config: Qwen3TTSTalkerConfig) {
         self.config = config
-        self._model.wrappedValue = Qwen3TTSTalkerModel(config: config)
-        self._textProjection.wrappedValue = ResizeMLP(
+        _model.wrappedValue = Qwen3TTSTalkerModel(config: config)
+        _textProjection.wrappedValue = ResizeMLP(
             inputSize: config.textHiddenSize,
             intermediateSize: config.textHiddenSize,
             outputSize: config.hiddenSize,
             bias: true
         )
-        self._codecHead.wrappedValue = Linear(config.hiddenSize, config.vocabSize, bias: false)
+        _codecHead.wrappedValue = Linear(config.hiddenSize, config.vocabSize, bias: false)
 
         let cpConfig = config.codePredictorConfig ?? {
             let json = "{}".data(using: .utf8)!
             return try! JSONDecoder().decode(Qwen3TTSTalkerCodePredictorConfig.self, from: json)
         }()
-        self._codePredictor.wrappedValue = Qwen3TTSCodePredictor(config: cpConfig, talkerHiddenSize: config.hiddenSize)
+        _codePredictor.wrappedValue = Qwen3TTSCodePredictor(config: cpConfig, talkerHiddenSize: config.hiddenSize)
     }
 
     func getInputEmbeddings() -> Embedding { model.codecEmbedding }

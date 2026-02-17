@@ -490,7 +490,7 @@ public class MossFormerBlock_GFSMN: Module {
     ) {
         self.depth = depth
 
-        let rope = RoPE(dimensions: min(32, queryKeyDim), traditional: false, base: 10000.0)
+        let rope = RoPE(dimensions: min(32, queryKeyDim), traditional: true, base: 10000.0)
 
         self._fsmn.wrappedValue = (0..<depth).map { _ in
             GatedFSMNBlock(dim: dim, innerChannels: 256, groupSize: groupSize, normType: normType)
