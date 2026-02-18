@@ -57,10 +57,6 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
         audio: MLXArray,
         generationParameters: STTGenerateParameters
     ) -> STTOutput {
-        guard tokenizer != nil else {
-            return STTOutput(text: "", language: generationParameters.language)
-        }
-
         let audio1D = audio.ndim > 1 ? audio.mean(axis: -1) : audio
         var context = encodeAndPrefill(
             audio: audio1D,
@@ -87,7 +83,7 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
                 inputEmbed = tokenEmbed
             }
 
-            let next = decoder.forward(
+            let next = decoder(
                 inputEmbed.expandedDimensions(axis: 0),
                 startPos: pos,
                 cache: context.cache
@@ -131,11 +127,6 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
         generationParameters: STTGenerateParameters
     ) -> AsyncThrowingStream<STTGeneration, Error> {
         AsyncThrowingStream { continuation in
-            guard let tokenizer else {
-                continuation.finish(throwing: STTError.modelNotInitialized("Tokenizer not loaded"))
-                return
-            }
-
             let audio1D = audio.ndim > 1 ? audio.mean(axis: -1) : audio
             var context = encodeAndPrefill(
                 audio: audio1D,
@@ -152,7 +143,7 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
                 generated.append(token)
 
                 let filtered = generated.filter { $0 != config.eosTokenId }
-                let textSoFar = tokenizer.decode(tokenIds: filtered)
+                let textSoFar = tokenizer?.decode(tokenIds: filtered) ?? ""
                 if textSoFar != previousText {
                     let delta: String
                     if textSoFar.hasPrefix(previousText) {
@@ -178,7 +169,7 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
                     inputEmbed = tokenEmbed
                 }
 
-                let next = decoder.forward(
+                let next = decoder(
                     inputEmbed.expandedDimensions(axis: 0),
                     startPos: pos,
                     cache: context.cache
@@ -196,7 +187,7 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
                 _ = generated.popLast()
             }
 
-            let finalText = tokenizer.decode(tokenIds: generated).trimmingCharacters(in: .whitespacesAndNewlines)
+            let finalText = tokenizer?.decode(tokenIds: generated).trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let end = Date()
             let totalTime = end.timeIntervalSince(context.startTime)
             let decodeTime = end.timeIntervalSince(decodeStart)
@@ -333,7 +324,7 @@ private extension VoxtralRealtimeModel {
 
         let prefixEmbeds = adapterOut[0..<promptLength, 0...] + promptTextEmbeds
 
-        let prefill = decoder.forward(prefixEmbeds, startPos: 0, cache: nil)
+        let prefill = decoder(prefixEmbeds, startPos: 0, cache: nil)
         let h = prefill.0
         let cache = prefill.1
 
@@ -392,6 +383,15 @@ public extension VoxtralRealtimeModel {
 
         let model = VoxtralRealtimeModel(config)
         model.tokenizer = try VoxtralRealtimeTokenizer.fromModelDirectory(modelDir)
+        guard model.tokenizer != nil else {
+            throw NSError(
+                domain: "VoxtralRealtimeModel",
+                code: 2,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Failed to load tokenizer from \(modelDir.path)"
+                ]
+            )
+        }
         _ = model.ensureMelFilters()
 
         let files = try FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)

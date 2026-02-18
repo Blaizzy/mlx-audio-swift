@@ -246,7 +246,7 @@ final class VoxtralRealtimeDecoder: Module {
         tokEmbeddings(tokenIds)
     }
 
-    func forward(
+    func callAsFunction(
         _ embeds: MLXArray,
         startPos: Int,
         cache: [VoxtralRealtimeDecoderKVCache?]? = nil
