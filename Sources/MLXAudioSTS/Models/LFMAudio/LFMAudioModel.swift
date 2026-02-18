@@ -342,7 +342,7 @@ public class LFM2AudioModel: Module {
             let sortedIndices = MLX.argSort(-l, axis: -1)
             let kthPos = sortedIndices[0, topK - 1].item(Int.self)
             let kthValue = l[0, kthPos]
-            l = MLX.which(l .>= kthValue, l, MLXArray(Float(-1e9)))
+            l = MLX.which(l .>= kthValue, l, MLXArray(-Float.infinity))
         }
 
         return MLXRandom.categorical(l)
@@ -380,7 +380,7 @@ public class LFM2AudioModel: Module {
                     let sortedIndices = MLX.argSort(-l, axis: -1)
                     let kthPos = sortedIndices[0, topK - 1].item(Int.self)
                     let kthValue = l[0, kthPos]
-                    l = MLX.which(l .>= kthValue, l, MLXArray(Float(-1e9)))
+                    l = MLX.which(l .>= kthValue, l, MLXArray(-Float.infinity))
                 }
                 code = MLXRandom.categorical(l).expandedDimensions(axis: -1)
             }
