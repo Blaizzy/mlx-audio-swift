@@ -100,13 +100,12 @@ public class AudioPreprocessor {
 
         let framesStacked = asStrided(padded, [numFrames, nFft], strides: [hopLength, 1], offset: 0)
 
-        // Hann window
+        // Hann window 
         let window = hanningWindow(size: winLength)
         let effectiveWindow: MLXArray
         if winLength < nFft {
-            let padLeft = (nFft - winLength) / 2
-            let padRight = nFft - winLength - padLeft
-            effectiveWindow = concatenated([MLXArray.zeros([padLeft]), window, MLXArray.zeros([padRight])])
+            let padSize = nFft - winLength
+            effectiveWindow = concatenated([window, MLXArray.zeros([padSize])])
         } else {
             effectiveWindow = window
         }
