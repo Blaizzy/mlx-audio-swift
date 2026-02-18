@@ -45,9 +45,32 @@ public func melFilters(
     fMin: Float = 0,
     fMax: Float? = nil,
     norm: String? = "slaney",
-    melScale: MelScale = .htk
+    melScale: String = "htk"
 ) -> MLXArray {
     let fMaxVal = fMax ?? Float(sampleRate) / 2.0
+
+    func hzToMel(_ freq: Float) -> Float {
+        if melScale == "slaney" {
+            if freq < 1000.0 {
+                return 3.0 * freq / 200.0
+            } else {
+                return 15.0 + 27.0 * log(freq / 1000.0) / log(6.4)
+            }
+        }
+        return 2595.0 * log10(1.0 + freq / 700.0)
+    }
+
+    func melToHz(_ mel: Float) -> Float {
+        if melScale == "slaney" {
+            if mel < 15.0 {
+                return 200.0 * mel / 3.0
+            } else {
+                return 1000.0 * exp((mel - 15.0) * log(6.4) / 27.0)
+            }
+        }
+        return 700.0 * (pow(10.0, mel / 2595.0) - 1.0)
+    }
+
     let nFreqs = nFft / 2 + 1
 
     // Generate frequency points
