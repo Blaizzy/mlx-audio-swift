@@ -17,11 +17,7 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
         case .inputFileNotFound(let path):
             "Input audio file not found: \(path)"
         case .unsupportedModelRepo(let repo):
-<<<<<<< Updated upstream
-            "Unsupported STT model repo: \(repo). Expected GLMASR, Qwen3ASR, or Qwen3ForcedAligner."
-=======
             "Unsupported STT model repo: \(repo). Expected GLMASR, Qwen3ASR, VoxtralRealtime, Parakeet, or Qwen3ForcedAligner."
->>>>>>> Stashed changes
         case .missingTextForForcedAlignment:
             "--text is required when using a forced aligner model."
         case .streamUnsupportedForForcedAligner:
@@ -386,15 +382,12 @@ enum App {
         if lower.contains("qwen3-asr") || lower.contains("qwen3_asr") {
             return .stt(try await Qwen3ASRModel.fromPretrained(repo))
         }
-<<<<<<< Updated upstream
-=======
         if lower.contains("voxtral") {
             return .stt(try await VoxtralRealtimeModel.fromPretrained(repo))
         }
         if lower.contains("parakeet") {
             return .stt(try await ParakeetModel.fromPretrained(repo))
         }
->>>>>>> Stashed changes
 
         throw AppError.unsupportedModelRepo(repo)
     }

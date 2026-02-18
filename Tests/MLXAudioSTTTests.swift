@@ -1500,8 +1500,6 @@ struct SplitAudioIntoChunksTests {
         #expect(totalChunkSamples >= totalSamples, "Chunks should cover all audio samples")
     }
 }
-<<<<<<< Updated upstream
-=======
 struct ParakeetSTTTests {
 
     @Test func variantResolutionAndTypedParsing() throws {
@@ -2007,4 +2005,3 @@ struct VoxtralRealtimeSTTTests {
         #expect(output.text == "")
     }
 }
->>>>>>> Stashed changes
