@@ -75,7 +75,7 @@ public enum ModelUtils {
         // Create directory if needed
         try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
 
-        let allowedExtensions: Set<String> = ["*.\(requiredExtension)", "*.safetensors", "*.json", "*.txt"]
+        let allowedExtensions: Set<String> = ["*.\(requiredExtension)", "*.safetensors", "*.json", "*.txt", "*.wav"]
 
         print("Downloading model \(repoID)...")
         _ = try await client.downloadSnapshot(

@@ -1,4 +1,5 @@
 import Foundation
+@preconcurrency import AVFoundation
 @preconcurrency import MLX
 import MLXAudioCore
 import MLXAudioSTT
@@ -9,6 +10,7 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
     case missingTextForForcedAlignment
     case streamUnsupportedForForcedAligner
     case invalidGenKwargs(String)
+    case audioResampleFailed(String)
 
     var errorDescription: String? { description }
 
@@ -17,13 +19,15 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
         case .inputFileNotFound(let path):
             "Input audio file not found: \(path)"
         case .unsupportedModelRepo(let repo):
-            "Unsupported STT model repo: \(repo). Expected GLMASR, Qwen3ASR, or Qwen3ForcedAligner."
+            "Unsupported STT model repo: \(repo). Expected GLMASR, Qwen3ASR, Parakeet, or Qwen3ForcedAligner."
         case .missingTextForForcedAlignment:
             "--text is required when using a forced aligner model."
         case .streamUnsupportedForForcedAligner:
             "--stream is not supported for forced aligner models."
         case .invalidGenKwargs(let value):
             "Invalid --gen-kwargs JSON: \(value)"
+        case .audioResampleFailed(let message):
+            "Failed to resample audio: \(message)"
         }
     }
 }
@@ -255,7 +259,8 @@ enum App {
         }
 
         let model = try await loadModel(repo: options.model)
-        let (_, audio) = try loadAudioArray(from: inputURL)
+        let (inputSampleRate, inputAudio) = try loadAudioArray(from: inputURL)
+        let audio = try prepareAudioForSTT(inputAudio, inputSampleRate: inputSampleRate, targetSampleRate: 16000)
 
         let startTime = CFAbsoluteTimeGetCurrent()
 
@@ -264,6 +269,9 @@ enum App {
             print("Audio path: \(inputURL.path)")
             print("Output path: \(options.outputPath!).\(options.format.rawValue)")
             print("Format: \(options.format.rawValue)")
+            if inputSampleRate != 16000 {
+                print("Resampled audio: \(inputSampleRate) Hz -> 16000 Hz")
+            }
             if options.frameThreshold != 25 {
                 print("Warning: --frame-threshold is currently ignored by this CLI.")
             }
@@ -380,6 +388,9 @@ enum App {
         }
         if lower.contains("qwen3-asr") || lower.contains("qwen3_asr") {
             return .stt(try await Qwen3ASRModel.fromPretrained(repo))
+        }
+        if lower.contains("parakeet") {
+            return .stt(try await ParakeetModel.fromPretrained(repo))
         }
 
         throw AppError.unsupportedModelRepo(repo)
@@ -526,6 +537,107 @@ enum App {
             return URL(fileURLWithPath: path)
         }
         return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(path)
+    }
+
+    private static func prepareAudioForSTT(
+        _ audio: MLXArray,
+        inputSampleRate: Int,
+        targetSampleRate: Int
+    ) throws -> MLXArray {
+        let mono = audio.ndim > 1 ? audio.mean(axis: -1) : audio
+        guard inputSampleRate != targetSampleRate else {
+            return mono
+        }
+
+        let resampled = try resampleAudio(
+            mono.asArray(Float.self),
+            from: Double(inputSampleRate),
+            to: Double(targetSampleRate)
+        )
+        return MLXArray(resampled)
+    }
+
+    private static func resampleAudio(
+        _ samples: [Float],
+        from sourceRate: Double,
+        to targetRate: Double
+    ) throws -> [Float] {
+        guard !samples.isEmpty else { return samples }
+        guard sourceRate != targetRate else { return samples }
+
+        guard let inputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sourceRate,
+            channels: 1,
+            interleaved: false
+        ) else {
+            throw AppError.audioResampleFailed("unable to create input format")
+        }
+
+        guard let outputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: targetRate,
+            channels: 1,
+            interleaved: false
+        ) else {
+            throw AppError.audioResampleFailed("unable to create output format")
+        }
+
+        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+            throw AppError.audioResampleFailed("unable to create AVAudioConverter")
+        }
+
+        let inputFrameCount = AVAudioFrameCount(samples.count)
+        guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: inputFrameCount) else {
+            throw AppError.audioResampleFailed("unable to allocate input buffer")
+        }
+        inputBuffer.frameLength = inputFrameCount
+        if let channelData = inputBuffer.floatChannelData {
+            for (i, sample) in samples.enumerated() {
+                channelData[0][i] = sample
+            }
+        }
+
+        let ratio = targetRate / sourceRate
+        let outputCapacity = AVAudioFrameCount(ceil(Double(samples.count) * ratio)) + 32
+        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: outputCapacity) else {
+            throw AppError.audioResampleFailed("unable to allocate output buffer")
+        }
+
+        final class AudioInputFeed: @unchecked Sendable {
+            let buffer: AVAudioPCMBuffer
+            var consumed = false
+            init(buffer: AVAudioPCMBuffer) {
+                self.buffer = buffer
+            }
+        }
+        let inputFeed = AudioInputFeed(buffer: inputBuffer)
+
+        var conversionError: NSError?
+        let status = converter.convert(to: outputBuffer, error: &conversionError) { _, outStatus in
+            if inputFeed.consumed {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            inputFeed.consumed = true
+            outStatus.pointee = .haveData
+            return inputFeed.buffer
+        }
+
+        if let conversionError {
+            throw AppError.audioResampleFailed(conversionError.localizedDescription)
+        }
+
+        guard status == .haveData || status == .inputRanDry || status == .endOfStream else {
+            throw AppError.audioResampleFailed("unexpected converter status: \(status.rawValue)")
+        }
+
+        let frameLength = Int(outputBuffer.frameLength)
+        guard frameLength > 0, let outputChannel = outputBuffer.floatChannelData?[0] else {
+            throw AppError.audioResampleFailed("converter produced empty output")
+        }
+
+        return Array(UnsafeBufferPointer(start: outputChannel, count: frameLength))
     }
 }
 
