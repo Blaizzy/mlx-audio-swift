@@ -128,7 +128,6 @@ enum App {
             chat.addText(args.text!)
             chat.endTurn()
             chat.newTurn(role: "assistant")
-            chat.addAudioStartToken()
 
         case .stt:
             let inputURL = resolveURL(path: args.audioPath!)
