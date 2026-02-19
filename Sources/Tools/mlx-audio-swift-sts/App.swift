@@ -62,7 +62,7 @@ enum App {
                 ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
 
             print("Loading model (\(args.model))")
-            let loaded = try await STSModelUtils.loadModel(
+            let loaded = try await STS.loadModel(
                 modelRepo: args.model,
                 hfToken: hfToken,
                 strict: args.strict
