@@ -188,11 +188,18 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
         }
 
         let encoded = tokenizer.encode(text: text)
-        var ids = [Int32(sotToken)]
-        ids.append(contentsOf: encoded.map { Int32($0) })
-        ids.append(Int32(eotToken))
 
-        return MLXArray(ids)
+        if config.meanflow {
+            // Turbo: GPT-2 tokenizer — use raw token IDs, no SOT/EOT wrapping
+            let ids = encoded.map { Int32($0) }
+            return MLXArray(ids).reshaped([1, -1])
+        } else {
+            // Regular (LLaMA): custom EnTokenizer — wrap with SOT/EOT
+            var ids = [Int32(sotToken)]
+            ids.append(contentsOf: encoded.map { Int32($0) })
+            ids.append(Int32(eotToken))
+            return MLXArray(ids)
+        }
     }
 
     // MARK: - Reference Audio Processing
@@ -419,11 +426,6 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
             let restPart = waveform[0..., fadeLen...]
             waveform = MLX.concatenated([fadePart, restPart], axis: -1)
         }
-
-        // Append small silence pad at end to prevent abrupt cutoff (50ms)
-        let padSamples = sampleRate / 20  // 1200 samples = 50ms at 24kHz
-        let silencePad = MLXArray.zeros(like: waveform[0..., ..<padSamples])
-        waveform = MLX.concatenated([waveform, silencePad], axis: -1)
 
         return waveform
     }
