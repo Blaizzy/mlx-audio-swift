@@ -151,7 +151,7 @@ class AudioHead: Module {
 
 // MARK: - LFM2 Audio Model
 
-public class LFM2AudioModel: Module {
+public class LFM2AudioModel: Module, STSModel, @unchecked Sendable {
     public let config: LFM2AudioConfig
     public var processor: LFM2AudioProcessor?
     public var modelDirectory: URL?
@@ -225,6 +225,7 @@ public class LFM2AudioModel: Module {
         modalities: MLXArray? = nil,
         cache: [KVCache]? = nil
     ) -> (MLXArray, [KVCache]) {
+    
         let inputEmbeddings: MLXArray
 
         if let modalities = modalities {

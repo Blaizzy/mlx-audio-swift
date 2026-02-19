@@ -252,11 +252,12 @@ public enum MossFormer2SEError: Error, LocalizedError {
     }
 }
 
-public final class MossFormer2SEModel {
+public final class MossFormer2SEModel: STSModel {
     public static let defaultRepo = "starkdmi/MossFormer2-SE-fp16"
 
     public let model: MossFormer2SE
     public let config: MossFormer2SEConfig
+    public var sampleRate: Int { config.sampleRate }
 
     public init(model: MossFormer2SE, config: MossFormer2SEConfig) {
         self.model = model

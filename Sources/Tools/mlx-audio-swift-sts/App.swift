@@ -9,9 +9,9 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
     case anchorsUnsupportedForMode(SeparationMode)
     case failedToCreateAudioBuffer
     case failedToAccessAudioBufferData
-    case unsupportedModelRepo(String)
     case lfmRequiresText
     case lfmRequiresAudioForMode(LFMMode)
+    case enhanceRequiresAudio
 
     var errorDescription: String? { description }
 
@@ -25,12 +25,12 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
             "Failed to create audio buffer"
         case .failedToAccessAudioBufferData:
             "Failed to access audio buffer data"
-        case .unsupportedModelRepo(let repo):
-            "Unsupported STS model repo: \(repo). Expected SAMAudio or LFM model."
         case .lfmRequiresText:
             "--text is required for LFM text-to-text and text-to-speech modes."
         case .lfmRequiresAudioForMode(let mode):
             "--audio is required for LFM \(mode.rawValue) mode."
+        case .enhanceRequiresAudio:
+            "--audio is required for speech enhancement."
         }
     }
 }
@@ -54,10 +54,24 @@ enum App {
         do {
             let args = try CLI.parse()
 
-            if isLFMModel(args.model) {
-                try await runLFM(args: args)
-            } else {
-                try await runSAMAudio(args: args)
+            let hfToken = args.hfToken
+                ?? ProcessInfo.processInfo.environment["HF_TOKEN"]
+                ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
+
+            print("Loading model (\(args.model))")
+            let loaded = try await STSModelUtils.loadModel(
+                modelRepo: args.model,
+                hfToken: hfToken,
+                strict: args.strict
+            )
+
+            switch loaded {
+            case .lfmAudio(let model):
+                try await runLFM(model: model, args: args)
+            case .samAudio(let model):
+                try await runSAMAudio(model: model, args: args)
+            case .mossFormer2SE(let model):
+                try await runMossFormer2SE(model: model, args: args)
             }
         } catch {
             fputs("Error: \(error)\n", stderr)
@@ -66,14 +80,9 @@ enum App {
         }
     }
 
-    private static func isLFMModel(_ model: String) -> Bool {
-        let lower = model.lowercased()
-        return lower.contains("lfm") || lower.contains("lfm2")
-    }
-
     // MARK: - LFM2.5-Audio
 
-    private static func runLFM(args: CLI) async throws {
+    private static func runLFM(model: LFM2AudioModel, args: CLI) async throws {
         let lfmMode = args.lfmMode ?? .sts
 
         switch lfmMode {
@@ -87,10 +96,7 @@ enum App {
             }
         }
 
-        print("Loading LFM2.5-Audio model (\(args.model))")
-        let model = try await LFM2AudioModel.fromPretrained(args.model)
         let processor = model.processor!
-
         let chat = ChatState(processor: processor)
 
         let defaultSystemPrompts: [LFMMode: String] = [
@@ -259,7 +265,7 @@ enum App {
 
     // MARK: - SAM Audio
 
-    private static func runSAMAudio(args: CLI) async throws {
+    private static func runSAMAudio(model: SAMAudio, args: CLI) async throws {
         let mode = args.mode
 
         guard let audioPath = args.audioPath else {
@@ -274,17 +280,6 @@ enum App {
         if !args.anchors.isEmpty, mode != .short {
             throw AppError.anchorsUnsupportedForMode(mode)
         }
-
-        let resolvedHFToken = args.hfToken
-            ?? ProcessInfo.processInfo.environment["HF_TOKEN"]
-            ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
-
-        print("Loading SAM Audio model (\(args.model))")
-        let model = try await SAMAudio.fromPretrained(
-            args.model,
-            hfToken: resolvedHFToken,
-            strict: args.strict
-        )
 
         let targetOutputURL = makeOutputURL(
             outputPath: args.outputTargetPath,
@@ -419,6 +414,46 @@ enum App {
             print("Wrote residual WAV to \(residualOutputURL.path)")
         }
         print("Streamed \(chunks) chunk(s)")
+    }
+
+    // MARK: - MossFormer2 Speech Enhancement
+
+    private static func runMossFormer2SE(model: MossFormer2SEModel, args: CLI) async throws {
+        guard let audioPath = args.audioPath else {
+            throw AppError.enhanceRequiresAudio
+        }
+
+        let inputURL = resolveURL(path: audioPath)
+        guard FileManager.default.fileExists(atPath: inputURL.path) else {
+            throw AppError.inputFileNotFound(inputURL.path)
+        }
+
+        let (_, audioData) = try loadAudioArray(from: inputURL)
+
+        print("Enhancing audio")
+        let started = CFAbsoluteTimeGetCurrent()
+
+        let enhanced = try model.enhance(audioData)
+        eval(enhanced)
+        let samples = enhanced.asArray(Float.self)
+
+        let duration = Double(samples.count) / Double(model.sampleRate)
+        print(String(format: "Enhanced %d samples (%.1fs at %dHz)", samples.count, duration, model.sampleRate))
+
+        let outputURL: URL
+        if let path = args.outputTargetPath {
+            outputURL = resolveURL(path: path)
+        } else {
+            let stem = inputURL.deletingPathExtension().lastPathComponent
+            outputURL = inputURL.deletingLastPathComponent()
+                .appendingPathComponent("\(stem).enhanced.wav")
+        }
+
+        try AudioUtils.writeWavFile(samples: samples, sampleRate: Double(model.sampleRate), fileURL: outputURL)
+        print("Wrote WAV to \(outputURL.path)")
+
+        let elapsed = CFAbsoluteTimeGetCurrent() - started
+        print(String(format: "Done. Elapsed: %.2fs", elapsed))
     }
 
     // MARK: - Helpers
@@ -700,14 +735,17 @@ struct CLI {
               \(executable) [--model <repo>] [--mode <mode>] [options]
 
             Description:
-              Runs STS (Speech-to-Speech) models. Supports SAM Audio source separation
-              and LFM2.5-Audio multimodal generation (text-to-text, text-to-speech,
-              speech-to-text, speech-to-speech).
+              Runs STS (Speech-to-Speech) models. Model type is auto-detected from
+              config.json or repo name. Supports:
+                - LFM2.5-Audio: multimodal generation (t2t, tts, stt, sts)
+                - SAM Audio: source separation
+                - MossFormer2-SE: speech enhancement
 
             Model Selection:
-              --model <repo>               Model repo or local path.
+              --model <repo>               Model repo or local path (auto-detected).
                                            SAM Audio default: \(SAMAudio.defaultRepo)
                                            LFM example: mlx-community/LFM2.5-Audio-1.5B-6bit
+                                           MossFormer2 example: starkdmi/MossFormer2-SE-fp16
 
             LFM2.5-Audio Options:
               --mode <t2t|tts|stt|sts>     LFM generation mode.
@@ -741,6 +779,10 @@ struct CLI {
               --decode-chunk-size <n>      Optional decoder chunk size
               --anchor <tok:start:end>     Anchor (short mode only, repeatable)
               --strict                     Strict weight loading
+
+            MossFormer2-SE Options:
+              -i, --audio <path>           Input audio file (required)
+              -o, --output-target <path>   Enhanced WAV output. Default: <input>.enhanced.wav
 
             Common:
               --hf-token <token>           Hugging Face token (or set HF_TOKEN env var)
