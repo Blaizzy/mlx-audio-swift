@@ -94,14 +94,21 @@ enum App {
 
         let chat = ChatState(processor: processor)
 
+        // Default system prompts per mode (user can override with --system)
+        let defaultSystemPrompts: [LFMMode: String] = [
+            .t2t: "You are a helpful assistant.",
+            .tts: "Perform TTS. Use a UK male voice.",
+            .stt: "You are a helpful assistant that transcribes audio.",
+            .sts: "Respond to the user with interleaved text and speech audio.",
+        ]
+        let systemPrompt = args.systemPrompt ?? defaultSystemPrompts[lfmMode]!
+
         // Build prompt based on mode
         switch lfmMode {
         case .t2t:
-            if let systemPrompt = args.systemPrompt {
-                chat.newTurn(role: "system")
-                chat.addText(systemPrompt)
-                chat.endTurn()
-            }
+            chat.newTurn(role: "system")
+            chat.addText(systemPrompt)
+            chat.endTurn()
             chat.newTurn(role: "user")
             chat.addText(args.text!)
             chat.endTurn()
@@ -109,7 +116,7 @@ enum App {
 
         case .tts:
             chat.newTurn(role: "system")
-            chat.addText(args.systemPrompt ?? "Perform TTS.")
+            chat.addText(systemPrompt)
             chat.endTurn()
             chat.newTurn(role: "user")
             chat.addText(args.text!)
@@ -123,6 +130,9 @@ enum App {
                 throw AppError.inputFileNotFound(inputURL.path)
             }
             let (sampleRate, audioData) = try loadAudioArray(from: inputURL)
+            chat.newTurn(role: "system")
+            chat.addText(systemPrompt)
+            chat.endTurn()
             chat.newTurn(role: "user")
             chat.addAudio(audioData, sampleRate: sampleRate)
             chat.addText(args.text ?? "Transcribe the audio.")
@@ -135,11 +145,9 @@ enum App {
                 throw AppError.inputFileNotFound(inputURL.path)
             }
             let (sampleRate, audioData) = try loadAudioArray(from: inputURL)
-            if let systemPrompt = args.systemPrompt {
-                chat.newTurn(role: "system")
-                chat.addText(systemPrompt)
-                chat.endTurn()
-            }
+            chat.newTurn(role: "system")
+            chat.addText(systemPrompt)
+            chat.endTurn()
             chat.newTurn(role: "user")
             chat.addAudio(audioData, sampleRate: sampleRate)
             if let text = args.text {
@@ -195,8 +203,14 @@ enum App {
                     fflush(stdout)
                 }
             } else if modality == .audioOut && collectAudio {
-                if token[0].item(Int.self) == lfmAudioEOSToken { break }
-                audioCodes.append(token)
+                if useSequential {
+                    // TTS: break on EOS, don't append it (matches smoke test)
+                    if token[0].item(Int.self) == lfmAudioEOSToken { break }
+                    audioCodes.append(token)
+                } else {
+                    // STS: collect all audio frames (matches smoke test)
+                    audioCodes.append(token)
+                }
             }
         }
 
@@ -239,7 +253,7 @@ enum App {
                 outputURL = resolveURL(path: "lfm_output.wav")
             }
 
-            try writeWavFile(samples: samples, sampleRate: 24000, outputURL: outputURL)
+            try AudioUtils.writeWavFile(samples: samples, sampleRate: 24000, fileURL: outputURL)
             print("Wrote WAV to \(outputURL.path)")
         }
 
@@ -711,7 +725,7 @@ struct CLI {
                                              sts: speech-to-speech (default)
               -t, --text <string>          Input text (required for t2t/tts, optional prompt for stt)
               -i, --audio <path>           Input audio file (required for stt/sts)
-              --system <string>            System prompt
+              --system <string>            System prompt (overrides per-mode default)
               --max-new-tokens <int>       Max tokens to generate. Default: 512
               --temperature <float>        Text sampling temperature. Default: 0.8
               --top-k <int>                Text top-K. Default: 50

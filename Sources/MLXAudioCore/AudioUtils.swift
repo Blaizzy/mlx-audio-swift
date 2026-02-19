@@ -10,7 +10,7 @@ public class AudioUtils {
   private init() {}
 
   // Debug method to write output to .wav file for checking the speech generation
-  static func writeWavFile(samples: [Float], sampleRate: Double, fileURL: URL) throws {
+  public static func writeWavFile(samples: [Float], sampleRate: Double, fileURL: URL) throws {
     let frameCount = AVAudioFrameCount(samples.count)
 
     guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false),

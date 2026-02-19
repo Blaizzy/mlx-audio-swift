@@ -79,7 +79,7 @@ swift run mlx-audio-swift-sts \
 - `--mode`: `t2t | tts | stt | sts`
 - `--text`, `-t`: Input text
 - `--audio`, `-i`: Input audio path
-- `--system`: System prompt
+- `--system`: System prompt (overrides per-mode defaults: t2t="You are a helpful assistant.", tts="Perform TTS.", stt="You are a helpful assistant that transcribes audio.", sts="Respond to the user with interleaved text and speech audio.")
 - `--max-new-tokens`: Max generation tokens (default: 512)
 - `--temperature`: Text temperature (default: 0.8)
 - `--top-k`: Text top-K (default: 50)

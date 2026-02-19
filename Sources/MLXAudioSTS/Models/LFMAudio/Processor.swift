@@ -100,12 +100,13 @@ public class AudioPreprocessor {
 
         let framesStacked = asStrided(padded, [numFrames, nFft], strides: [hopLength, 1], offset: 0)
 
-        // Hann window 
+        // Center-pad window when winLength < nFft (matching torch.stft behavior)
         let window = hanningWindow(size: winLength)
         let effectiveWindow: MLXArray
         if winLength < nFft {
-            let padSize = nFft - winLength
-            effectiveWindow = concatenated([window, MLXArray.zeros([padSize])])
+            let padLeft = (nFft - winLength) / 2
+            let padRight = nFft - winLength - padLeft
+            effectiveWindow = concatenated([MLXArray.zeros([padLeft]), window, MLXArray.zeros([padRight])])
         } else {
             effectiveWindow = window
         }
