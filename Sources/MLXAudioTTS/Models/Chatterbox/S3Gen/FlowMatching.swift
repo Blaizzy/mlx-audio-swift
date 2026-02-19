@@ -489,8 +489,9 @@ class CausalMaskedDiffWithXvec: Module {
     @ModuleInfo(key: "input_embedding") var inputEmbedding: Linear
     @ModuleInfo(key: "spk_embed_affine_layer") var spkEmbedAffineLayer: Linear
     @ModuleInfo(key: "encoder") var encoder: UpsampleConformerEncoder
+    @ModuleInfo(key: "encoder_proj") var encoderProj: Linear
     @ModuleInfo(key: "decoder") var decoder: CausalConditionalCFM
-    @ModuleInfo(key: "vocoder") var vocoderModule: HiFTGenerator
+    @ModuleInfo(key: "mel2wav") var vocoderModule: HiFTGenerator
 
     init(
         inputSize: Int = 512, outputSize: Int = 80,
@@ -508,12 +509,15 @@ class CausalMaskedDiffWithXvec: Module {
         self._encoder.wrappedValue = UpsampleConformerEncoder(
             inputSize: inputSize, outputSize: inputSize)
 
+        // Encoder projection (encoder output → decoder input)
+        self._encoderProj.wrappedValue = Linear(inputSize, inputSize)
+
         // Flow matching decoder
         self._decoder.wrappedValue = CausalConditionalCFM(
             inChannels: inputSize * 2 + outputSize,
             outChannels: outputSize)
 
-        // HiFi-GAN vocoder
+        // HiFi-GAN vocoder (weight key: mel2wav)
         self._vocoderModule.wrappedValue = HiFTGenerator()
     }
 

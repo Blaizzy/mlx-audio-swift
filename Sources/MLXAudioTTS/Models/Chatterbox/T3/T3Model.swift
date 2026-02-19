@@ -463,7 +463,8 @@ public class T3Model: Module {
 // MARK: - Sampling Utilities
 
 /// Apply repetition penalty to logits.
-private func applyRepetitionPenalty(logits: MLXArray, tokens: MLXArray, penalty: Float) -> MLXArray {
+/// Shared by both T3Model (LLaMA) and T3GPT2Model (Turbo).
+func applyRepetitionPenalty(logits: MLXArray, tokens: MLXArray, penalty: Float) -> MLXArray {
     guard penalty != 1.0 else { return logits }
 
     var result = logits
@@ -487,7 +488,8 @@ private func applyRepetitionPenalty(logits: MLXArray, tokens: MLXArray, penalty:
 }
 
 /// Sample a token from logits using temperature and top-p.
-private func sampleToken(logits: MLXArray, temperature: Float, topP: Float) -> MLXArray {
+/// Shared by both T3Model (LLaMA) and T3GPT2Model (Turbo).
+func sampleToken(logits: MLXArray, temperature: Float, topP: Float) -> MLXArray {
     var scaled = logits
     if temperature > 0 {
         scaled = logits / MLXArray(temperature)

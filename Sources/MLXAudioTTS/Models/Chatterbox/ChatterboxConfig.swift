@@ -90,6 +90,47 @@ public struct LlamaBackboneConfig: Codable, Sendable {
     )
 }
 
+// MARK: - GPT-2 Medium Configuration (T3 Turbo backbone)
+
+/// GPT-2 configuration used by Chatterbox Turbo T3.
+/// Maps to Python's GPT2_MEDIUM_CONFIG dict.
+public struct GPT2BackboneConfig: Codable, Sendable {
+    public var activationFunction: String
+    public var nCtx: Int
+    public var hiddenSize: Int
+    public var nHead: Int
+    public var nLayer: Int
+    public var vocabSize: Int
+    public var layerNormEpsilon: Float
+
+    enum CodingKeys: String, CodingKey {
+        case activationFunction = "activation_function"
+        case nCtx = "n_ctx"
+        case hiddenSize = "hidden_size"
+        case nHead = "n_head"
+        case nLayer = "n_layer"
+        case vocabSize = "vocab_size"
+        case layerNormEpsilon = "layer_norm_epsilon"
+    }
+
+    /// Default GPT-2 Medium config matching Python's GPT2_MEDIUM_CONFIG.
+    public static let medium = GPT2BackboneConfig(
+        activationFunction: "gelu_new",
+        nCtx: 8196,
+        hiddenSize: 1024,
+        nHead: 16,
+        nLayer: 24,
+        vocabSize: 50276,
+        layerNormEpsilon: 1e-05
+    )
+
+    /// Head dimension (hiddenSize / nHead).
+    public var headDim: Int { hiddenSize / nHead }
+
+    /// Intermediate (feed-forward) size — GPT-2 uses 4x hidden size.
+    public var intermediateSize: Int { hiddenSize * 4 }
+}
+
 // MARK: - T3 Configuration
 
 /// Configuration for the T3 (Token-To-Token) model.
@@ -104,7 +145,7 @@ public struct T3Configuration: Codable, Sendable {
     public var stopSpeechToken: Int
     public var maxSpeechTokens: Int
     public var llamaConfigName: String
-    public var inputPosEmb: String
+    public var inputPosEmb: String?
     public var speechCondPromptLen: Int
     public var encoderType: String
     public var speakerEmbedSize: Int
@@ -129,9 +170,19 @@ public struct T3Configuration: Codable, Sendable {
         case emotionAdv = "emotion_adv"
     }
 
-    /// Number of channels (hidden size) from the LLaMA config.
+    /// Whether this config uses a GPT-2 backbone (Turbo) vs LLaMA.
+    public var isGPT: Bool {
+        llamaConfigName.contains("GPT2")
+    }
+
+    /// Number of channels (hidden size) — 1024 for both LLaMA 520M and GPT-2 Medium.
     public var nChannels: Int {
-        LlamaBackboneConfig.llama520M.hiddenSize
+        isGPT ? GPT2BackboneConfig.medium.hiddenSize : LlamaBackboneConfig.llama520M.hiddenSize
+    }
+
+    /// Number of transformer layers.
+    public var numLayers: Int {
+        isGPT ? GPT2BackboneConfig.medium.nLayer : LlamaBackboneConfig.llama520M.numHiddenLayers
     }
 
     /// Whether this is a multilingual model.
@@ -139,7 +190,7 @@ public struct T3Configuration: Codable, Sendable {
         textTokensDictSize == 2454
     }
 
-    /// Default English-only configuration.
+    /// Default English-only configuration (LLaMA backbone).
     public static let englishOnly = T3Configuration(
         textTokensDictSize: 704,
         startTextToken: 255,
@@ -158,7 +209,7 @@ public struct T3Configuration: Codable, Sendable {
         emotionAdv: true
     )
 
-    /// Default multilingual configuration.
+    /// Default multilingual configuration (LLaMA backbone).
     public static let multilingual = T3Configuration(
         textTokensDictSize: 2454,
         startTextToken: 255,
@@ -175,6 +226,25 @@ public struct T3Configuration: Codable, Sendable {
         speakerEmbedSize: 256,
         usePerceiverResampler: true,
         emotionAdv: true
+    )
+
+    /// Turbo configuration (GPT-2 backbone).
+    public static let turbo = T3Configuration(
+        textTokensDictSize: 50276,
+        startTextToken: 255,
+        stopTextToken: 0,
+        maxTextTokens: 2048,
+        speechTokensDictSize: 6563,
+        startSpeechToken: 6561,
+        stopSpeechToken: 6562,
+        maxSpeechTokens: 4096,
+        llamaConfigName: "GPT2_medium",
+        inputPosEmb: nil,
+        speechCondPromptLen: 375,
+        encoderType: "voice_encoder",
+        speakerEmbedSize: 256,
+        usePerceiverResampler: false,
+        emotionAdv: false
     )
 }
 
@@ -243,9 +313,14 @@ public struct VoiceEncoderConfiguration: Codable, Sendable {
 
 /// Top-level Chatterbox model configuration.
 /// Maps to Python's ModelConfig dataclass.
+///
+/// Supports two config formats:
+/// - Regular: minimal `{"model_type": "chatterbox"}` with defaults
+/// - Turbo: full config with `t3`, `gpt2`, `voice_encoder`, `s3gen` sections
 public struct ChatterboxConfiguration: Codable, Sendable {
     public var modelType: String
     public var t3Config: T3Configuration
+    public var gpt2Config: GPT2BackboneConfig?
     public var s3Sr: Int
     public var s3genSr: Int
     public var sampleRate: Int
@@ -257,29 +332,94 @@ public struct ChatterboxConfiguration: Codable, Sendable {
     public var quantization: BaseConfiguration.Quantization?
     public var perLayerQuantization: BaseConfiguration.PerLayerQuantization?
 
+    /// Whether this is a Turbo (GPT-2) model.
+    public var isTurbo: Bool {
+        modelType == "chatterbox_turbo" || t3Config.isGPT
+    }
+
     enum CodingKeys: String, CodingKey {
         case modelType = "model_type"
         case t3Config = "t3_config"
+        case t3 = "t3"
+        case gpt2 = "gpt2"
         case s3Sr = "s3_sr"
         case s3genSr = "s3gen_sr"
         case sampleRate = "sample_rate"
         case encCondLen = "enc_cond_len"
+        case encCondLenSeconds = "enc_cond_len_seconds"
         case decCondLen = "dec_cond_len"
+        case decCondLenSeconds = "dec_cond_len_seconds"
         case modelPath = "model_path"
         case quantization
         case quantizationConfig = "quantization_config"
+    }
+
+    public init(
+        modelType: String,
+        t3Config: T3Configuration,
+        gpt2Config: GPT2BackboneConfig? = nil,
+        s3Sr: Int = 16000,
+        s3genSr: Int = 24000,
+        sampleRate: Int = 24000,
+        encCondLen: Int = 6 * 16000,
+        decCondLen: Int = 10 * 24000,
+        modelPath: String? = nil,
+        quantization: BaseConfiguration.Quantization? = nil,
+        perLayerQuantization: BaseConfiguration.PerLayerQuantization? = nil
+    ) {
+        self.modelType = modelType
+        self.t3Config = t3Config
+        self.gpt2Config = gpt2Config
+        self.s3Sr = s3Sr
+        self.s3genSr = s3genSr
+        self.sampleRate = sampleRate
+        self.encCondLen = encCondLen
+        self.decCondLen = decCondLen
+        self.modelPath = modelPath
+        self.quantization = quantization
+        self.perLayerQuantization = perLayerQuantization
     }
 
     public init(from decoder: Swift.Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
         self.modelType = try container.decodeIfPresent(String.self, forKey: .modelType) ?? "chatterbox"
-        self.t3Config = try container.decodeIfPresent(T3Configuration.self, forKey: .t3Config) ?? .englishOnly
+
+        // T3 config: try "t3_config" first (our format), then "t3" (HF Turbo format)
+        if let t3 = try container.decodeIfPresent(T3Configuration.self, forKey: .t3Config) {
+            self.t3Config = t3
+        } else if let t3 = try container.decodeIfPresent(T3Configuration.self, forKey: .t3) {
+            self.t3Config = t3
+        } else if modelType == "chatterbox_turbo" {
+            self.t3Config = .turbo
+        } else {
+            self.t3Config = .englishOnly
+        }
+
+        // GPT-2 config (Turbo only)
+        self.gpt2Config = try container.decodeIfPresent(GPT2BackboneConfig.self, forKey: .gpt2)
+
         self.s3Sr = try container.decodeIfPresent(Int.self, forKey: .s3Sr) ?? 16000
         self.s3genSr = try container.decodeIfPresent(Int.self, forKey: .s3genSr) ?? 24000
         self.sampleRate = try container.decodeIfPresent(Int.self, forKey: .sampleRate) ?? 24000
-        self.encCondLen = try container.decodeIfPresent(Int.self, forKey: .encCondLen) ?? (6 * 16000)
-        self.decCondLen = try container.decodeIfPresent(Int.self, forKey: .decCondLen) ?? (10 * 24000)
+
+        // Support both absolute lengths and seconds-based lengths
+        if let encLen = try container.decodeIfPresent(Int.self, forKey: .encCondLen) {
+            self.encCondLen = encLen
+        } else if let encSec = try container.decodeIfPresent(Int.self, forKey: .encCondLenSeconds) {
+            self.encCondLen = encSec * self.s3Sr
+        } else {
+            self.encCondLen = 6 * self.s3Sr
+        }
+
+        if let decLen = try container.decodeIfPresent(Int.self, forKey: .decCondLen) {
+            self.decCondLen = decLen
+        } else if let decSec = try container.decodeIfPresent(Int.self, forKey: .decCondLenSeconds) {
+            self.decCondLen = decSec * self.s3genSr
+        } else {
+            self.decCondLen = 10 * self.s3genSr
+        }
+
         self.modelPath = try container.decodeIfPresent(String.self, forKey: .modelPath)
 
         // Quantization
@@ -298,6 +438,7 @@ public struct ChatterboxConfiguration: Codable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(modelType, forKey: .modelType)
         try container.encode(t3Config, forKey: .t3Config)
+        try container.encodeIfPresent(gpt2Config, forKey: .gpt2)
         try container.encode(s3Sr, forKey: .s3Sr)
         try container.encode(s3genSr, forKey: .s3genSr)
         try container.encode(sampleRate, forKey: .sampleRate)
@@ -306,12 +447,19 @@ public struct ChatterboxConfiguration: Codable, Sendable {
         try container.encodeIfPresent(modelPath, forKey: .modelPath)
     }
 
-    /// Default configuration.
-    public static let `default` = try! JSONDecoder().decode(
-        ChatterboxConfiguration.self,
-        from: """
-        {"model_type": "chatterbox"}
-        """.data(using: .utf8)!
+    /// Default configuration (regular Chatterbox).
+    public static let `default` = ChatterboxConfiguration(
+        modelType: "chatterbox",
+        t3Config: .englishOnly
+    )
+
+    /// Turbo configuration.
+    public static let turbo = ChatterboxConfiguration(
+        modelType: "chatterbox_turbo",
+        t3Config: .turbo,
+        gpt2Config: .medium,
+        encCondLen: 15 * 16000,
+        decCondLen: 10 * 24000
     )
 }
 

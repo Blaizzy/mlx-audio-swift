@@ -56,13 +56,21 @@ public class VoiceEncoder: Module {
             return weights
         }
 
-        // Convert from PyTorch format: lstm.weight_ih_l0 → lstm1.Wx
         var newWeights = [String: MLXArray]()
         var biasIH = [Int: MLXArray]()
         var biasHH = [Int: MLXArray]()
 
         for (key, value) in weights {
-            if key.contains("lstm.") {
+            // Regular Chatterbox MLX format: "lstm.layers.0.Wx" → "lstm1.Wx"
+            if key.hasPrefix("lstm.layers.") {
+                let remapped = key
+                    .replacingOccurrences(of: "lstm.layers.0", with: "lstm1")
+                    .replacingOccurrences(of: "lstm.layers.1", with: "lstm2")
+                    .replacingOccurrences(of: "lstm.layers.2", with: "lstm3")
+                newWeights[remapped] = value
+            }
+            // PyTorch format: "lstm.weight_ih_l0" → "lstm1.Wx"
+            else if key.contains("lstm.") {
                 if let _ = key.range(of: #"lstm\.(weight_ih|weight_hh|bias_ih|bias_hh)_l(\d+)"#, options: .regularExpression) {
                     let component = String(key.split(separator: ".").last ?? "")
                     let parts = component.split(separator: "_")
@@ -72,7 +80,6 @@ public class VoiceEncoder: Module {
                         continue
                     }
 
-                    // Map to 1-based naming: layer 0 → lstm1, layer 1 → lstm2, etc.
                     let lstmKey = "lstm\(layerIdx + 1)"
 
                     if component.contains("weight_ih") {
