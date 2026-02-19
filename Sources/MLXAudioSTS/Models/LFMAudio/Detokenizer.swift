@@ -314,30 +314,33 @@ public class LFM2AudioDetokenizer: Module {
     public func callAsFunction(_ codes: MLXArray) -> MLXArray {
         let (B, K, T) = (codes.dim(0), codes.dim(1), codes.dim(2))
 
-        // 1. Embed codes
-        var x = emb(codes) // (B, T, dim)
+        // 1. Clamp codes to valid range [0, vocabSize-1] to prevent out-of-bounds embedding lookup
+        let clampedCodes = MLX.clip(codes, min: 0, max: config.vocabSize - 1)
 
-        // 2. Upsample 6x using nearest neighbor (repeat each frame along time axis)
+        // 2. Embed codes
+        var x = emb(clampedCodes) // (B, T, dim)
+
+        // 3. Upsample 6x using nearest neighbor (repeat each frame along time axis)
         x = MLX.repeated(x, count: config.upsampleFactor, axis: 1) // (B, T*6, dim)
 
-        // 3. Sliding window mask
+        // 4. Sliding window mask
         let mask = createSlidingWindowMask(x.dim(1))
 
-        // 4. LFM backbone
+        // 5. LFM backbone
         x = lfm(x, mask: mask)
 
-        // 5. Project to spectrogram
+        // 6. Project to spectrogram
         x = lin(x) // (B, T', 1282)
 
-        // 6. Split into log-magnitude and phase
+        // 7. Split into log-magnitude and phase
         let nBins = nFft / 2 + 1 // 641
         let logMag = x[0..., 0..., ..<nBins]
         let phase = x[0..., 0..., nBins...]
 
-        // 7. Reconstruct magnitude
+        // 8. Reconstruct magnitude
         let mag = MLX.exp(logMag)
 
-        // 8. ISTFT
+        // 9. ISTFT
         return performISTFT(mag: mag, phase: phase)
     }
 

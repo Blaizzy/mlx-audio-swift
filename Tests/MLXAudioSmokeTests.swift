@@ -953,7 +953,10 @@ struct STSSmokeTests {
             if modality == .text {
                 textTokens.append(token.item(Int.self))
             } else if modality == .audioOut {
-                audioCodes.append(token)
+                // Filter EOS frames (code 2048) — they're out-of-range for the detokenizer
+                if token[0].item(Int.self) != lfmAudioEOSToken {
+                    audioCodes.append(token)
+                }
             }
         }
 

@@ -452,9 +452,6 @@ public class LFM2AudioModel: Module {
                         let eosFrame = MLX.full(audioFrame.shape, values: MLXArray(Int32(lfmAudioEOSToken)), type: Int32.self)
                         continuation.yield((eosFrame.squeezed(axis: 0), .audioOut))
 
-                        let eosEmb = embedAudioOut(eosFrame).expandedDimensions(axis: 1)
-                        lastHidden = lfm(inputEmbeddings: eosEmb, cache: cache)
-
                         generated += 1
                         currentModality = .text
                         if textDone { break }

@@ -99,7 +99,7 @@ enum App {
             .t2t: "You are a helpful assistant.",
             .tts: "Perform TTS. Use a UK male voice.",
             .stt: "You are a helpful assistant that transcribes audio.",
-            .sts: "Respond to the user with interleaved text and speech audio.",
+            .sts: "Respond to the user with interleaved text and speech audio. Use a UK male voice.",
         ]
         let systemPrompt = args.systemPrompt ?? defaultSystemPrompts[lfmMode]!
 
@@ -208,8 +208,10 @@ enum App {
                     if token[0].item(Int.self) == lfmAudioEOSToken { break }
                     audioCodes.append(token)
                 } else {
-                    // STS: collect all audio frames (matches smoke test)
-                    audioCodes.append(token)
+                    // STS: collect audio frames, skip EOS frames (all 2048) to avoid decode artifacts
+                    if token[0].item(Int.self) != lfmAudioEOSToken {
+                        audioCodes.append(token)
+                    }
                 }
             }
         }
