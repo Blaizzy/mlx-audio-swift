@@ -328,6 +328,16 @@ public struct ChatterboxConfiguration: Codable, Sendable {
     public var decCondLen: Int
     public var modelPath: String?
 
+    // S3Gen decoder config
+    public var meanflow: Bool
+    public var decoderInChannels: Int
+    public var decoderOutChannels: Int
+    public var decoderChannels: [Int]
+    public var decoderNBlocks: Int
+    public var decoderNumMidBlocks: Int
+    public var decoderNumHeads: Int
+    public var decoderAttentionHeadDim: Int
+
     // Quantization
     public var quantization: BaseConfiguration.Quantization?
     public var perLayerQuantization: BaseConfiguration.PerLayerQuantization?
@@ -350,6 +360,14 @@ public struct ChatterboxConfiguration: Codable, Sendable {
         case decCondLen = "dec_cond_len"
         case decCondLenSeconds = "dec_cond_len_seconds"
         case modelPath = "model_path"
+        case meanflow
+        case decoderInChannels = "decoder_in_channels"
+        case decoderOutChannels = "decoder_out_channels"
+        case decoderChannels = "decoder_channels"
+        case decoderNBlocks = "decoder_n_blocks"
+        case decoderNumMidBlocks = "decoder_num_mid_blocks"
+        case decoderNumHeads = "decoder_num_heads"
+        case decoderAttentionHeadDim = "decoder_attention_head_dim"
         case quantization
         case quantizationConfig = "quantization_config"
     }
@@ -364,6 +382,14 @@ public struct ChatterboxConfiguration: Codable, Sendable {
         encCondLen: Int = 6 * 16000,
         decCondLen: Int = 10 * 24000,
         modelPath: String? = nil,
+        meanflow: Bool = true,
+        decoderInChannels: Int = 320,
+        decoderOutChannels: Int = 80,
+        decoderChannels: [Int] = [256],
+        decoderNBlocks: Int = 4,
+        decoderNumMidBlocks: Int = 12,
+        decoderNumHeads: Int = 8,
+        decoderAttentionHeadDim: Int = 64,
         quantization: BaseConfiguration.Quantization? = nil,
         perLayerQuantization: BaseConfiguration.PerLayerQuantization? = nil
     ) {
@@ -376,6 +402,14 @@ public struct ChatterboxConfiguration: Codable, Sendable {
         self.encCondLen = encCondLen
         self.decCondLen = decCondLen
         self.modelPath = modelPath
+        self.meanflow = meanflow
+        self.decoderInChannels = decoderInChannels
+        self.decoderOutChannels = decoderOutChannels
+        self.decoderChannels = decoderChannels
+        self.decoderNBlocks = decoderNBlocks
+        self.decoderNumMidBlocks = decoderNumMidBlocks
+        self.decoderNumHeads = decoderNumHeads
+        self.decoderAttentionHeadDim = decoderAttentionHeadDim
         self.quantization = quantization
         self.perLayerQuantization = perLayerQuantization
     }
@@ -422,6 +456,16 @@ public struct ChatterboxConfiguration: Codable, Sendable {
 
         self.modelPath = try container.decodeIfPresent(String.self, forKey: .modelPath)
 
+        // S3Gen decoder config
+        self.meanflow = try container.decodeIfPresent(Bool.self, forKey: .meanflow) ?? true
+        self.decoderInChannels = try container.decodeIfPresent(Int.self, forKey: .decoderInChannels) ?? 320
+        self.decoderOutChannels = try container.decodeIfPresent(Int.self, forKey: .decoderOutChannels) ?? 80
+        self.decoderChannels = try container.decodeIfPresent([Int].self, forKey: .decoderChannels) ?? [256]
+        self.decoderNBlocks = try container.decodeIfPresent(Int.self, forKey: .decoderNBlocks) ?? 4
+        self.decoderNumMidBlocks = try container.decodeIfPresent(Int.self, forKey: .decoderNumMidBlocks) ?? 12
+        self.decoderNumHeads = try container.decodeIfPresent(Int.self, forKey: .decoderNumHeads) ?? 8
+        self.decoderAttentionHeadDim = try container.decodeIfPresent(Int.self, forKey: .decoderAttentionHeadDim) ?? 64
+
         // Quantization
         let baseConfig = try? BaseConfiguration(from: decoder)
         let globalQuant = try container.decodeIfPresent(
@@ -445,6 +489,14 @@ public struct ChatterboxConfiguration: Codable, Sendable {
         try container.encode(encCondLen, forKey: .encCondLen)
         try container.encode(decCondLen, forKey: .decCondLen)
         try container.encodeIfPresent(modelPath, forKey: .modelPath)
+        try container.encode(meanflow, forKey: .meanflow)
+        try container.encode(decoderInChannels, forKey: .decoderInChannels)
+        try container.encode(decoderOutChannels, forKey: .decoderOutChannels)
+        try container.encode(decoderChannels, forKey: .decoderChannels)
+        try container.encode(decoderNBlocks, forKey: .decoderNBlocks)
+        try container.encode(decoderNumMidBlocks, forKey: .decoderNumMidBlocks)
+        try container.encode(decoderNumHeads, forKey: .decoderNumHeads)
+        try container.encode(decoderAttentionHeadDim, forKey: .decoderAttentionHeadDim)
     }
 
     /// Default configuration (regular Chatterbox).

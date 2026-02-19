@@ -107,7 +107,10 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
             self._t3.wrappedValue = T3Model(config.t3Config)
         }
 
-        self._s3gen.wrappedValue = CausalMaskedDiffWithXvec()
+        self._s3gen.wrappedValue = CausalMaskedDiffWithXvec(
+            decoderInChannels: config.decoderInChannels,
+            meanflow: config.meanflow
+        )
     }
 
     // MARK: - Weight Sanitization
@@ -297,15 +300,13 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
         let xVector: MLXArray
         let promptTokens: MLXArray
         let promptFeat: MLXArray
-        let promptFeatLen: MLXArray
 
         if let refAudio = refAudio {
-            let (cond, xv, pt, pf, pfl) = try prepareConditionals(refAudio: refAudio)
+            let (cond, xv, pt, pf, _) = try prepareConditionals(refAudio: refAudio)
             t3Cond = cond
             xVector = xv
             promptTokens = pt
             promptFeat = pf
-            promptFeatLen = pfl
         } else if let defaults = defaultConditioning {
             // Use pre-computed default voice
             t3Cond = T3Cond(
@@ -317,7 +318,6 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
             xVector = defaults.xVector
             promptTokens = defaults.promptToken
             promptFeat = defaults.promptFeat
-            promptFeatLen = MLXArray([Int32(defaults.promptFeat.dim(1))])
         } else {
             throw AudioGenerationError.invalidInput(
                 "Chatterbox requires reference audio for voice cloning. Pass refAudio parameter."
@@ -368,30 +368,28 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
         let tokenLen = MLXArray([Int32(tokenArr.dim(1))])
         let promptTokenLen = MLXArray([Int32(promptTokens.dim(1))])
 
-        // Embed prompt tokens through S3Gen encoder for conditioning
-        let promptTokenEmb: MLXArray
-        let promptEmbLen: MLXArray
-        if promptTokens.dim(1) > 0 {
-            let (emb, embLen) = s3gen.embedRef(
-                speechTokens: promptTokens.asType(.float32),
-                speechTokenLens: promptTokenLen)
-            promptTokenEmb = emb
-            promptEmbLen = embLen
+        // Prepare prompt mel features for S3Gen conditioning
+        // s3genMelSpectrogram returns (B, 80, T') — transpose to (B, T', 80) for inference
+        let promptFeatTransposed: MLXArray
+        if promptFeat.dim(1) == 80 && promptFeat.ndim == 3 {
+            // Shape is (B, 80, T') — transpose to (B, T', 80)
+            promptFeatTransposed = promptFeat.transposed(0, 2, 1)
         } else {
-            promptTokenEmb = MLXArray.zeros([1, 0, 512])
-            promptEmbLen = MLXArray([Int32(0)])
+            // Already (B, T', 80) or some other shape
+            promptFeatTransposed = promptFeat
         }
 
-        // Run flow matching inference
+        // Run flow matching inference with raw int32 token IDs
+        // Meanflow (turbo distilled): 2 steps. Non-meanflow (regular): 10 steps.
+        let nTimesteps = config.meanflow ? 2 : 10
         let mel = s3gen.inference(
-            token: tokenArr.asType(.float32),
+            token: tokenArr,
             tokenLen: tokenLen,
-            prompt: promptTokenEmb.dim(1) > 0
-                ? promptTokenEmb
-                : MLXArray.zeros([1, 0, 512]),
-            promptLen: promptEmbLen,
-            xVector: xVector,
-            nTimesteps: 10
+            promptToken: promptTokens,
+            promptTokenLen: promptTokenLen,
+            promptFeat: promptFeatTransposed,
+            embedding: xVector,
+            nTimesteps: nTimesteps
         )
         eval(mel)
 
