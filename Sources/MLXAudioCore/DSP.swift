@@ -48,6 +48,7 @@ public func melFilters(
     melScale: MelScale = .htk
 ) -> MLXArray {
     let fMaxVal = fMax ?? Float(sampleRate) / 2.0
+
     let nFreqs = nFft / 2 + 1
 
     // Generate frequency points
