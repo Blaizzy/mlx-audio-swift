@@ -404,11 +404,11 @@ class CAMLayer: Module {
         )
         self._linear1.wrappedValue = Conv1d(
             inputChannels: inChannels, outputChannels: innerChannels,
-            kernelSize: 1, stride: 1, padding: 0, bias: false
+            kernelSize: 1, stride: 1, padding: 0, bias: true
         )
         self._linear2.wrappedValue = Conv1d(
             inputChannels: innerChannels, outputChannels: outChannels,
-            kernelSize: 1, stride: 1, padding: 0, bias: false
+            kernelSize: 1, stride: 1, padding: 0, bias: true
         )
         self._bn1.wrappedValue = BatchNorm(featureCount: innerChannels)
         self._bn2.wrappedValue = BatchNorm(featureCount: outChannels)
