@@ -274,14 +274,19 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
     // MARK: - Speech Token Post-processing
 
     /// Drop invalid speech tokens (out of vocab range).
+    /// Matches Python: `mask = np.where(np.array(speech_tokens) < 6561)[0]`
+    /// Only keeps actual speech tokens (< startSpeechToken), not control tokens.
     func dropInvalidTokens(_ tokens: MLXArray) -> MLXArray {
         let flat = tokens.reshaped([-1])
         let count = flat.dim(0)
+        // Python filters with `< 6561` (SPEECH_VOCAB_SIZE), which excludes control tokens
+        // (start=6561, stop=6562). Use the startSpeechToken as the threshold.
+        let threshold = config.t3Config.startSpeechToken
         var validIds = [Int32]()
 
         for i in 0 ..< count {
             let id = flat[i].item(Int.self)
-            if id >= 0 && id < speechVocabSize {
+            if id >= 0 && id < threshold {
                 validIds.append(Int32(id))
             }
         }

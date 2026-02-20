@@ -125,10 +125,14 @@ private class T3GPT2Block: Module {
 
 /// Inner GPT-2 model for T3 Turbo — takes **embeddings** (not token IDs).
 ///
-/// Weight keys: `wte.weight` (placeholder), `h.{N}.*`, `ln_f.weight/bias`
+/// Weight keys: `wte.weight` (placeholder), `wpe.weight`, `h.{N}.*`, `ln_f.weight/bias`
 class T3GPT2Inner: Module {
     /// Placeholder token embedding — T3 doesn't use it but the weight key exists.
     @ModuleInfo(key: "wte") var wte: Embedding
+
+    /// Learned positional embeddings (GPT-2 style).
+    /// Added to hidden states on every forward pass — matches Python `self.wpe(position_ids)`.
+    @ModuleInfo(key: "wpe") var wpe: Embedding
 
     fileprivate let h: [T3GPT2Block]
     @ModuleInfo(key: "ln_f") var lnF: LayerNorm
@@ -137,13 +141,32 @@ class T3GPT2Inner: Module {
         self._wte.wrappedValue = Embedding(
             embeddingCount: config.vocabSize, dimensions: config.hiddenSize
         )
+        self._wpe.wrappedValue = Embedding(
+            embeddingCount: config.nCtx, dimensions: config.hiddenSize
+        )
         self.h = (0 ..< config.nLayer).map { _ in T3GPT2Block(config) }
         self._lnF.wrappedValue = LayerNorm(dimensions: config.hiddenSize, eps: config.layerNormEpsilon)
     }
 
     /// Forward pass with pre-computed embeddings.
+    /// Adds learned positional embeddings (wpe) matching Python GPT2Model.
     func callAsFunction(_ embeddings: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
         var hidden = embeddings
+        let seqLen = hidden.dim(1)
+
+        // Compute past sequence length from KV cache offset (matches Python: cache[0].offset)
+        let pastLength: Int
+        if let firstCache = cache?.first {
+            pastLength = firstCache.offset
+        } else {
+            pastLength = 0
+        }
+
+        // Add learned positional embeddings (GPT-2 wpe)
+        let positionIds = MLXArray(Int32(pastLength) ..< Int32(pastLength + seqLen))
+        let positionEmbeds = wpe(positionIds)
+        hidden = hidden + positionEmbeds
+
         let mask = createAttentionMask(h: hidden, cache: cache?.first)
 
         for (i, layer) in h.enumerated() {
@@ -326,6 +349,8 @@ public class T3GPT2Model: Module {
 // MARK: - GELU Approximate
 
 /// GPT-2 uses GELU with tanh approximation ("gelu_new").
+/// Must use geluApproximate (tanh version), NOT gelu (erf version).
+/// Python: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
 private func geluApproximate(_ x: MLXArray) -> MLXArray {
-    return MLXNN.gelu(x)
+    return MLXNN.geluApproximate(x)
 }
