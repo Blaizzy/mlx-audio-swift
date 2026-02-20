@@ -474,32 +474,46 @@ public class T3Model: Module {
 
 // MARK: - Sampling Utilities
 
-/// Apply repetition penalty to logits.
+/// Apply repetition penalty to logits using vectorized MLX operations.
+///
+/// Matches Python mlx-lm: positive logits are divided by penalty, negative logits
+/// are multiplied by penalty. Only the last `contextSize` unique tokens are penalized.
 /// Shared by both T3Model (LLaMA) and T3GPT2Model (Turbo).
-func applyRepetitionPenalty(logits: MLXArray, tokens: MLXArray, penalty: Float) -> MLXArray {
+func applyRepetitionPenalty(logits: MLXArray, tokens: MLXArray, penalty: Float, contextSize: Int = 20) -> MLXArray {
     guard penalty != 1.0 else { return logits }
 
-    var result = logits
     let flatTokens = tokens.reshaped([-1])
     let tokenCount = flatTokens.dim(0)
+    guard tokenCount > 0 else { return logits }
 
-    for i in 0 ..< tokenCount {
-        let tokenId = flatTokens[i].item(Int.self)
-        if tokenId >= 0 && tokenId < result.dim(1) {
-            let score = result[0, tokenId]
-            let scoreVal = score.item(Float.self)
-            if scoreVal > 0 {
-                result[0, tokenId] = MLXArray(scoreVal / penalty)
-            } else {
-                result[0, tokenId] = MLXArray(scoreVal * penalty)
-            }
-        }
+    // Only look at the last contextSize tokens (matches mlx-lm default of 20)
+    let contextTokens: MLXArray
+    if tokenCount > contextSize {
+        contextTokens = flatTokens[(tokenCount - contextSize)...]
+    } else {
+        contextTokens = flatTokens
     }
 
-    return result
+    // Use vectorized gather → penalize → scatter via takeAlong/putAlong
+    let tokenIds = contextTokens.reshaped([1, -1]).asType(.int32)
+
+    // Gather logits at token positions
+    let selected = takeAlong(logits, tokenIds, axis: -1)
+
+    // Apply penalty: positive logits divided, negative logits multiplied
+    let penalized = which(
+        selected .< 0,
+        selected * MLXArray(penalty),
+        selected / MLXArray(penalty)
+    )
+
+    // Scatter penalized values back
+    return putAlong(logits, tokenIds, values: penalized, axis: -1)
 }
 
 /// Sample a token from logits using temperature, top-k, and top-p.
+///
+/// Uses fully vectorized MLX operations (no element-by-element loops).
 /// Matches the Python implementation: operates on logits throughout,
 /// then uses categorical (which applies softmax internally) to sample.
 /// Shared by both T3Model (LLaMA) and T3GPT2Model (Turbo).
@@ -511,51 +525,46 @@ func sampleToken(logits: MLXArray, temperature: Float, topK: Int = 0, topP: Floa
         filtered = filtered / MLXArray(temperature)
     }
 
-    // 2. Top-k filtering (on logits)
+    // 2. Top-k filtering using argPartition (vectorized, no loops)
+    let vocabSize = filtered.dim(filtered.ndim - 1)
     if topK > 0 {
-        let k = min(topK, filtered.dim(filtered.ndim - 1))
-        // Sort ascending, find the k-th largest value as threshold
-        let sorted = MLX.sorted(filtered, axis: -1)
-        let vocabSize = filtered.dim(filtered.ndim - 1)
-        let threshold = sorted[0..., (vocabSize - k)]
-        let mask = filtered .>= threshold.expandedDimensions(axis: -1)
-        filtered = MLX.where(mask, filtered, MLXArray(-Float.infinity))
+        let k = min(topK, vocabSize)
+        if k < vocabSize {
+            // argPartition: indices beyond position k are the ones NOT in top-k
+            let kth = min(k - 1, max(vocabSize - 1, 0))
+            let maskIdx = argPartition(-filtered, kth: kth, axis: -1)[0..., k...]
+            let negInf = MLXArray.full(maskIdx.shape, values: MLXArray(-Float.infinity), dtype: filtered.dtype)
+            filtered = putAlong(filtered, maskIdx, values: negInf, axis: -1)
+        }
     }
 
-    // 3. Top-p (nucleus) filtering (on logits)
+    // 3. Top-p (nucleus) filtering using vectorized takeAlong/putAlong
     if topP < 1.0 {
-        // Sort descending by logit value
-        let sortedIndices = MLX.argSort(MLX.negative(filtered), axis: -1)
-
-        // Gather logits in descending sorted order
-        let vocabSize = filtered.dim(filtered.ndim - 1)
-        var sortedLogitsVals = [Float](repeating: 0, count: vocabSize)
-        for v in 0..<vocabSize {
-            let idx = sortedIndices[0, v].item(Int.self)
-            sortedLogitsVals[v] = filtered[0, idx].item(Float.self)
-        }
-        let sortedLogits = MLXArray(sortedLogitsVals).reshaped([1, -1])
+        // Sort in descending order
+        let sortedIndices = argSort(-filtered, axis: -1)
+        let sortedLogits = takeAlong(filtered, sortedIndices, axis: -1)
 
         // Compute cumulative probabilities from sorted logits
         let sortedProbs = softmax(sortedLogits, axis: -1)
         let cumProbs = MLX.cumsum(sortedProbs, axis: -1)
 
-        // Mark tokens to remove: cumulative prob > topP
+        // Mark tokens to remove: cumulative prob > topP (shift right to keep first token)
         let toRemoveRaw = cumProbs .> MLXArray(topP)
-        // Shift right to keep at least the first token above threshold
         let keepFirst = MLXArray.zeros([1, 1]).asType(.bool)
         let toRemove = MLX.concatenated([keepFirst, toRemoveRaw[0..., ..<(vocabSize - 1)]], axis: -1)
 
         // Set removed tokens to -inf in sorted space
         let maskedSorted = MLX.where(toRemove, MLXArray(-Float.infinity), sortedLogits)
 
-        // Scatter back to original order
-        var result = [Float](repeating: -Float.infinity, count: vocabSize)
-        for v in 0..<vocabSize {
-            let origIdx = sortedIndices[0, v].item(Int.self)
-            result[origIdx] = maskedSorted[0, v].item(Float.self)
-        }
-        filtered = MLXArray(result).reshaped([1, -1])
+        // Scatter back to original order using inverse indices
+        let arangeIndices = MLXArray(0 ..< vocabSize).reshaped([1, -1]).asType(.int32)
+        let inverseIndices = putAlong(
+            MLXArray.zeros(sortedIndices.shape, type: Int32.self),
+            sortedIndices.asType(.int32),
+            values: arangeIndices,
+            axis: -1
+        )
+        filtered = takeAlong(maskedSorted, inverseIndices, axis: -1)
     }
 
     // 4. Sample using categorical (applies softmax internally on logits)

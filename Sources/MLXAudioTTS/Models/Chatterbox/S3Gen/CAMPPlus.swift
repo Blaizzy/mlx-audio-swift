@@ -394,8 +394,9 @@ class CAMLayer: Module {
         self.segLen = segLen
         self.outChannels = outChannels
 
-        // Reduction factor for bottleneck: 2
-        let innerChannels = outChannels / 2
+        // Reduction factor for bottleneck: inChannels / 2
+        // Python: linear1 = Conv1d(bn_channels, bn_channels // reduction, 1) where reduction=2
+        let innerChannels = inChannels / 2
 
         self._linearLocal.wrappedValue = Conv1d(
             inputChannels: inChannels, outputChannels: outChannels,
@@ -784,11 +785,14 @@ class CAMPPlus: Module {
 
             // head.* stays as head.*
 
-            // nonlinear.batchnorm.* → nonlinear.0.* (raw PyTorch format)
-            newKey = newKey.replacingOccurrences(of: ".nonlinear.batchnorm.", with: ".nonlinear.0.")
-            if newKey.hasPrefix("out_nonlinear.batchnorm.") {
-                newKey = newKey.replacingOccurrences(of: "out_nonlinear.batchnorm.", with: "out_nonlinear.0.")
-            }
+            // Remap PyTorch batchnorm keys to array index 0.
+            // In Python, nonlinear = nn.Sequential(BatchNorm1d(...), ReLU()),
+            // so batchnorm is at index 0. This handles all patterns:
+            //   nonlinear.batchnorm.*  → nonlinear.0.*
+            //   nonlinear1.batchnorm.* → nonlinear1.0.*
+            //   nonlinear2.batchnorm.* → nonlinear2.0.*
+            //   out_nonlinear.batchnorm.* → out_nonlinear.0.*
+            newKey = newKey.replacingOccurrences(of: ".batchnorm.", with: ".0.")
 
             // Conv weight transposition — ONLY when model reference shape exists and differs.
             // MLX-community models ship with weights already in MLX format.
