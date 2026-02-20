@@ -280,37 +280,28 @@ class S3GenGELU: Module {
 
 // MARK: - FeedForward
 
-/// Container module matching Python's `nn.ModuleList([GELU(...), nn.Linear(...)])`.
-/// Maps weight keys `net.0.proj.{weight,bias}` → S3GenGELU and `net.1.{weight,bias}` → Linear.
-/// Uses explicit named submodules (keyed as "0" and "1") instead of `[Module]` array
-/// to avoid `mismatchedContainers` errors when loading quantized weights.
-class S3GenFeedForwardNet: Module {
-    @ModuleInfo(key: "0") var geluLayer: S3GenGELU
-    @ModuleInfo(key: "1") var outProj: Linear
-
-    init(dimIn: Int, dimOut: Int) {
-        self._geluLayer.wrappedValue = S3GenGELU(dimIn: dimIn, dimOut: dimOut)
-        self._outProj.wrappedValue = Linear(dimOut, dimIn)
-    }
-
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        return outProj(geluLayer(x))
-    }
-}
-
 /// Feed-forward network with GELU activation.
-/// Python: `FeedForward` with `net` list: `net.0` = GELU, `net.1` = Linear.
-/// Weight keys: `net.0.proj.{weight,bias}`, `net.1.{weight,bias}`
+///
+/// Python: `FeedForward` with `net = nn.ModuleList([GEGLU(...), nn.Linear(...)])`.
+/// Original weight keys: `net.0.proj.{weight,bias}`, `net.1.{weight,bias}`
+///
+/// We avoid using `[Module]` arrays because MLX Swift's quantization update can't handle
+/// heterogeneous arrays where some elements need recursive updates (S3GenGELU containing
+/// a Linear→QuantizedLinear) and others are direct module replacements (Linear→QuantizedLinear).
+/// Instead, we use non-numeric keys (`gelu_gate` and `out_proj`) and remap the weight keys
+/// from `net.0.*` → `gelu_gate.*` and `net.1.*` → `out_proj.*` during sanitization.
 class S3GenFeedForward: Module {
-    @ModuleInfo(key: "net") var net: S3GenFeedForwardNet
+    @ModuleInfo(key: "gelu_gate") var geluGate: S3GenGELU
+    @ModuleInfo(key: "out_proj") var outProj: Linear
 
     init(dim: Int, mult: Int = 4) {
         let innerDim = dim * mult
-        self._net.wrappedValue = S3GenFeedForwardNet(dimIn: dim, dimOut: innerDim)
+        self._geluGate.wrappedValue = S3GenGELU(dimIn: dim, dimOut: innerDim)
+        self._outProj.wrappedValue = Linear(innerDim, dim)
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        return net(x)
+        return outProj(geluGate(x))
     }
 }
 

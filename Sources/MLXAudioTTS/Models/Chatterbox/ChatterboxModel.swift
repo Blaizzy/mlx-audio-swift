@@ -174,7 +174,14 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
                 let subKey = String(key.dropFirst("speaker_encoder.".count))
                 speakerEncoderWeights[subKey] = value
             } else {
-                otherS3GenWeights[key] = value
+                // Remap FeedForward net.0/net.1 keys to non-numeric names.
+                // Python uses nn.ModuleList([GEGLU, Linear]) stored as net.0, net.1.
+                // We use named submodules (gelu_gate, out_proj) to avoid [Module] array
+                // issues with quantization (heterogeneous arrays cause mismatchedContainers).
+                var remapped = key
+                remapped = remapped.replacingOccurrences(of: ".net.0.", with: ".gelu_gate.")
+                remapped = remapped.replacingOccurrences(of: ".net.1.", with: ".out_proj.")
+                otherS3GenWeights[remapped] = value
             }
         }
 
