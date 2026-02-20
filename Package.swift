@@ -124,6 +124,7 @@ let package = Package(
                 "Models/Qwen3ASR/README.md",
                 "Models/Parakeet/README.md",
                 "Models/GLMASR/README.md",
+                "Models/VoxtralRealtime/README.md",
             ]
         ),
 
@@ -137,7 +138,8 @@ let package = Package(
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
             ],
-            path: "Sources/MLXAudioVAD"
+            path: "Sources/MLXAudioVAD",
+            exclude: ["Models/Sortformer/README.md"]
         ),
 
         // MARK: - MLXAudioSTS
@@ -156,7 +158,8 @@ let package = Package(
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "Transformers", package: "swift-transformers"),
             ],
-            path: "Sources/MLXAudioSTS"
+            path: "Sources/MLXAudioSTS",
+            exclude: ["Models/SAMAudio/README.md"]
         ),
 
         // MARK: - MLXAudioUI
@@ -173,22 +176,26 @@ let package = Package(
         .executableTarget(
             name: "mlx-audio-swift-tts",
             dependencies: ["MLXAudioCore", "MLXAudioTTS", "MLXAudioSTT"],
-            path: "Sources/Tools/mlx-audio-swift-tts"
+            path: "Sources/Tools/mlx-audio-swift-tts",
+            exclude: ["README.md"]
         ),
         .executableTarget(
             name: "mlx-audio-swift-codec",
             dependencies: ["MLXAudioCore", "MLXAudioCodecs"],
-            path: "Sources/Tools/mlx-audio-swift-codec"
+            path: "Sources/Tools/mlx-audio-swift-codec",
+            exclude: ["README.md"]
         ),
         .executableTarget(
             name: "mlx-audio-swift-sts",
             dependencies: ["MLXAudioCore", "MLXAudioSTS"],
-            path: "Sources/Tools/mlx-audio-swift-sts"
+            path: "Sources/Tools/mlx-audio-swift-sts",
+            exclude: ["README.md"]
         ),
         .executableTarget(
             name: "mlx-audio-swift-stt",
             dependencies: ["MLXAudioCore", "MLXAudioSTT"],
-            path: "Sources/Tools/mlx-audio-swift-stt"
+            path: "Sources/Tools/mlx-audio-swift-stt",
+            exclude: ["README.md"]
         ),
 
         // MARK: - Tests
