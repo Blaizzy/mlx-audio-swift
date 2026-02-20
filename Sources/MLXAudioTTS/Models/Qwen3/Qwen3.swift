@@ -527,12 +527,12 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         return weights
     }
 
-    public func post_load_hook(model: Qwen3Model, modelDir: URL) async throws {
+    public func post_load_hook(model: Qwen3Model, modelDir: URL, cache: HubCache = .default) async throws {
         if model.tokenizer == nil {
             model.tokenizer = try await AutoTokenizer.from(modelFolder: modelDir)
         }
         if model._snacModel == nil {
-            model._snacModel = try await SNAC.fromPretrained("mlx-community/snac_24khz")
+            model._snacModel = try await SNAC.fromPretrained("mlx-community/snac_24khz", cache: cache)
         }
     }
 
@@ -864,30 +864,24 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         return stream
     }
 
-    public static func fromPretrained(_ modelRepo: String) async throws -> Qwen3Model {
+    public static func fromPretrained(
+        _ modelRepo: String,
+        cache: HubCache = .default
+    ) async throws -> Qwen3Model {
         // Check for HF token in environment (macOS) or Info.plist (iOS)
         let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
             ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
-
-        let client: HubClient
-        if let token = hfToken, !token.isEmpty {
-            print("Using HuggingFace token from configuration")
-            client = HubClient(host: HubClient.defaultHost, bearerToken: token)
-        } else {
-            client = HubClient.default
-        }
-        let cache = client.cache ?? HubCache.default
 
         guard let repoID = Repo.ID(rawValue: modelRepo) else {
             throw NSError(domain: "Qwen3Model", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid repository ID: \(modelRepo)"])
         }
 
         // Check if model is already fully cached (has weight files)
-        let modelDir = try await resolveOrDownloadModel(
-            client: client,
-            cache: cache,
+        let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
-            requiredExtension: "safetensors"
+            requiredExtension: ".safetensors",
+            hfToken: hfToken,
+            cache: cache
         )
 
 
@@ -929,7 +923,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
         eval(model)
 
-        try await model.post_load_hook(model: model, modelDir: modelDir)
+        try await model.post_load_hook(model: model, modelDir: modelDir, cache: cache)
 
         return model
     }
@@ -946,62 +940,4 @@ func loadWeights(from directory: URL) throws -> [String: MLXArray] {
         weights.merge(fileWeights) { _, new in new }
     }
     return weights
-}
-
-/// Resolves a model from cache or downloads it if not cached.
-/// - Parameters:
-///   - client: The HuggingFace Hub client
-///   - cache: The HuggingFace cache
-///   - repoID: The repository ID
-///   - requiredExtension: File extension that must exist for cache to be considered complete (e.g., "safetensors")
-/// - Returns: The model directory URL
-func resolveOrDownloadModel(
-    client: HubClient,
-    cache: HubCache,
-    repoID: Repo.ID,
-    requiredExtension: String
-) async throws -> URL {
-    // Use a persistent cache directory based on repo ID
-    let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
-    let modelDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        .appendingPathComponent("mlx-audio")
-        .appendingPathComponent(modelSubdir)
-
-    // Check if model already exists with required files
-    if FileManager.default.fileExists(atPath: modelDir.path) {
-        let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
-        let hasRequiredFiles = files?.contains { $0.pathExtension == requiredExtension } ?? false
-
-        if hasRequiredFiles {
-            // Validate that config.json is valid JSON
-            let configPath = modelDir.appendingPathComponent("config.json")
-            if FileManager.default.fileExists(atPath: configPath.path) {
-                if let configData = try? Data(contentsOf: configPath),
-                   let _ = try? JSONSerialization.jsonObject(with: configData) {
-                    print("Using cached model at: \(modelDir.path)")
-                    return modelDir
-                } else {
-                    print("Cached config.json is invalid, clearing cache...")
-                    try? FileManager.default.removeItem(at: modelDir)
-                }
-            }
-        }
-    }
-
-    // Create directory if needed
-    try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
-
-    print("Downloading model \(repoID)...")
-    _ = try await client.downloadSnapshot(
-        of: repoID,
-        kind: .model,
-        to: modelDir,
-        revision: "main",
-        progressHandler: { progress in
-            print("\(progress.completedUnitCount)/\(progress.totalUnitCount) files")
-        }
-    )
-
-    print("Model downloaded to: \(modelDir.path)")
-    return modelDir
 }

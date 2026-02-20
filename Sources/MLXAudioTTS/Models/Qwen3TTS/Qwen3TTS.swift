@@ -719,10 +719,15 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
     // MARK: - fromPretrained
 
-    public static func fromPretrained(_ modelRepo: String) async throws -> Qwen3TTSModel {
+    public static func fromPretrained(
+        _ modelRepo: String,
+        cache: HubCache = .default
+    ) async throws -> Qwen3TTSModel {
         let repoID = Repo.ID(rawValue: modelRepo)!
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
-            repoID: repoID, requiredExtension: "safetensors"
+            repoID: repoID,
+            requiredExtension: "safetensors",
+            cache: cache
         )
 
         // Load main config

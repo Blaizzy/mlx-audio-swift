@@ -891,17 +891,12 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
 
     // MARK: - Loading
 
-    public static func fromPretrained(_ modelRepo: String) async throws -> SopranoModel {
+    public static func fromPretrained(
+        _ modelRepo: String,
+        cache: HubCache = .default
+    ) async throws -> SopranoModel {
         let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
             ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
-
-        let client: HubClient
-        if let token = hfToken, !token.isEmpty {
-            client = HubClient(host: HubClient.defaultHost, bearerToken: token)
-        } else {
-            client = HubClient.default
-        }
-        let cache = client.cache ?? HubCache.default
 
         guard let repoID = Repo.ID(rawValue: modelRepo) else {
             throw NSError(domain: "SopranoModel", code: 1, userInfo: [
@@ -909,10 +904,11 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
             ])
         }
 
-        let modelDir = try await resolveOrDownloadSopranoModel(
-            client: client,
-            cache: cache,
-            repoID: repoID
+        let modelDir = try await ModelUtils.resolveOrDownloadModel(
+            repoID: repoID,
+            requiredExtension: ".safetensors",
+            hfToken: hfToken,
+            cache: cache
         )
 
         // Load config
@@ -978,45 +974,6 @@ private func loadSopranoWeights(from directory: URL) throws -> [String: MLXArray
         weights.merge(fileWeights) { _, new in new }
     }
     return weights
-}
-
-private func resolveOrDownloadSopranoModel(
-    client: HubClient,
-    cache: HubCache,
-    repoID: Repo.ID
-) async throws -> URL {
-    let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
-    let modelDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        .appendingPathComponent("mlx-audio")
-        .appendingPathComponent(modelSubdir)
-
-    if FileManager.default.fileExists(atPath: modelDir.path) {
-        let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
-        let hasWeights = files?.contains { $0.pathExtension == "safetensors" } ?? false
-
-        if hasWeights {
-            let configPath = modelDir.appendingPathComponent("config.json")
-            if FileManager.default.fileExists(atPath: configPath.path),
-               let configData = try? Data(contentsOf: configPath),
-               (try? JSONSerialization.jsonObject(with: configData)) != nil {
-                return modelDir
-            }
-        }
-    }
-
-    try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
-
-    _ = try await client.downloadSnapshot(
-        of: repoID,
-        kind: .model,
-        to: modelDir,
-        revision: "main",
-        progressHandler: { progress in
-            print("\(progress.completedUnitCount)/\(progress.totalUnitCount) files")
-        }
-    )
-
-    return modelDir
 }
 
 // MARK: - TopP Sampler (matching Python's mlx_lm implementation)

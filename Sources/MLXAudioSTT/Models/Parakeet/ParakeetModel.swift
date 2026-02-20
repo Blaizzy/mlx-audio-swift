@@ -556,7 +556,10 @@ public extension ParakeetModel {
         return model
     }
 
-    static func fromPretrained(_ modelPath: String) async throws -> ParakeetModel {
+    static func fromPretrained(
+        _ modelPath: String,
+        cache: HubCache = .default
+    ) async throws -> ParakeetModel {
         let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
             ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
 
@@ -571,7 +574,8 @@ public extension ParakeetModel {
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
             requiredExtension: "safetensors",
-            hfToken: hfToken
+            hfToken: hfToken,
+            cache: cache
         )
         return try fromDirectory(modelDir)
     }

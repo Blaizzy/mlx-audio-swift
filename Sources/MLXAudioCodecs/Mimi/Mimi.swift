@@ -1,5 +1,5 @@
 import Foundation
-import Hub
+import HuggingFace
 import MLX
 import MLXAudioCore
 import MLXNN
@@ -233,7 +233,12 @@ public final class MimiStreamingDecoder {
 }
 
 public extension Mimi {
-    static func fromPretrained(repoId: String = "kyutai/moshiko-pytorch-bf16", filename: String = "tokenizer-e351c8d8-checkpoint125.safetensors", progressHandler: @escaping (Progress) -> Void) async throws -> Mimi {
+    static func fromPretrained(
+        repoId: String = "kyutai/moshiko-pytorch-bf16",
+        filename: String = "tokenizer-e351c8d8-checkpoint125.safetensors",
+        cache: HubCache = .default,
+        progressHandler: @escaping (Progress) -> Void
+    ) async throws -> Mimi {
         print("[Mimi] Starting Mimi model loading from \(repoId)")
 
         print("[Mimi] Creating configuration...")
@@ -247,7 +252,40 @@ public extension Mimi {
 
         print("[Mimi] Downloading/snapshotting weights file...")
         let snapshotStart = CFAbsoluteTimeGetCurrent()
-        let weightFileURL = try await Hub.snapshot(from: repoId, matching: filename, progressHandler: progressHandler).appending(path: filename)
+        guard let repoID = Repo.ID(rawValue: repoId) else {
+            throw NSError(
+                domain: "Mimi",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid repository ID: \(repoId)"]
+            )
+        }
+        let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
+        let modelDir = cache.cacheDirectory
+            .appendingPathComponent("mlx-audio")
+            .appendingPathComponent(modelSubdir)
+        let weightFileURL = modelDir.appendingPathComponent(filename)
+
+        if !FileManager.default.fileExists(atPath: weightFileURL.path) {
+            try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
+
+            let client = HubClient(cache: cache)
+            _ = try await client.downloadSnapshot(
+                of: repoID,
+                kind: .model,
+                to: modelDir,
+                revision: "main",
+                matching: [filename],
+                progressHandler: progressHandler
+            )
+        }
+
+        guard FileManager.default.fileExists(atPath: weightFileURL.path) else {
+            throw NSError(
+                domain: "Mimi",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Expected weights file not found at \(weightFileURL.path)"]
+            )
+        }
         let snapshotTime = CFAbsoluteTimeGetCurrent() - snapshotStart
         print(String(format: "[Mimi] Weights file snapshot completed in %.2f seconds", snapshotTime))
 

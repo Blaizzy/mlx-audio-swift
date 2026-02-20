@@ -341,7 +341,8 @@ extension SAMAudio {
     public static func fromPretrained(
         _ modelPath: String = defaultRepo,
         hfToken: String? = nil,
-        strict: Bool = false
+        strict: Bool = false,
+        cache: HubCache = .default
     ) async throws -> SAMAudio {
         let fm = FileManager.default
         let modelDir: URL
@@ -355,7 +356,8 @@ extension SAMAudio {
             modelDir = try await ModelUtils.resolveOrDownloadModel(
                 repoID: repoID,
                 requiredExtension: "safetensors",
-                hfToken: hfToken
+                hfToken: hfToken,
+                cache: cache
             )
         }
 

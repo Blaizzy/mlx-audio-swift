@@ -528,7 +528,10 @@ public class Qwen3ForcedAlignerModel: Module {
 
     // MARK: - Model Loading
 
-    public static func fromPretrained(_ modelPath: String) async throws -> Qwen3ForcedAlignerModel {
+    public static func fromPretrained(
+        _ modelPath: String,
+        cache: HubCache = .default
+    ) async throws -> Qwen3ForcedAlignerModel {
         let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
             ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
 
@@ -543,7 +546,8 @@ public class Qwen3ForcedAlignerModel: Module {
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
             requiredExtension: "safetensors",
-            hfToken: hfToken
+            hfToken: hfToken,
+            cache: cache
         )
 
         // Load config

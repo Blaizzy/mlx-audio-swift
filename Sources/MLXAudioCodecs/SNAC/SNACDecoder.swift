@@ -2,6 +2,7 @@ import Foundation
 import MLX
 import MLXNN
 import HuggingFace
+import MLXAudioCore
 
 
 
@@ -152,19 +153,19 @@ public class SNAC: Module {
         )
     }
 
-    public static func fromPretrained(_ modelRepo: String) async throws -> SNAC {
-        let client = HubClient.default
-        let cache = client.cache ?? HubCache.default
-
+    public static func fromPretrained(
+        _ modelRepo: String,
+        cache: HubCache = .default
+    ) async throws -> SNAC {
         guard let repoID = Repo.ID(rawValue: modelRepo) else {
             throw NSError(domain: "SNAC", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid repository ID: \(modelRepo)"])
         }
 
         // Check if model is already fully cached (has weight files)
-        let modelDir = try await resolveOrDownloadSNACModel(
-            client: client,
-            cache: cache,
-            repoID: repoID
+        let modelDir = try await ModelUtils.resolveOrDownloadModel(
+            repoID: repoID,
+            requiredExtension: ".safetensors",
+            cache: cache
         )
 
 
@@ -231,48 +232,4 @@ extension MLXArray {
         let paddingArray = padWidths.map { IntOrPair($0) }
         return MLX.padded(self, widths: paddingArray)
     }
-}
-
-// MARK: - Cache Helper
-
-/// Resolves a SNAC model from cache or downloads it if not cached.
-private func resolveOrDownloadSNACModel(
-    client: HubClient,
-    cache: HubCache,
-    repoID: Repo.ID
-) async throws -> URL {
-    // Use a persistent cache directory based on repo ID
-    let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
-    let modelDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        .appendingPathComponent("mlx-audio")
-        .appendingPathComponent(modelSubdir)
-
-    // Check if model already exists with weight files
-    if FileManager.default.fileExists(atPath: modelDir.path) {
-        let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
-        let hasWeights = files?.contains { $0.pathExtension == "safetensors" } ?? false
-
-        if hasWeights {
-            print("Using cached SNAC model at: \(modelDir.path)")
-            return modelDir
-        }
-    }
-
-    // Create directory if needed
-    try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
-
-    print("Downloading SNAC model \(repoID)...")
-    _ = try await client.downloadSnapshot(
-        of: repoID,
-        kind: .model,
-        to: modelDir,
-        revision: "main",
-        matching: ["*.safetensors", "*.json"],
-        progressHandler: { progress in
-            print("\(progress.completedUnitCount)/\(progress.totalUnitCount) files")
-        }
-    )
-
-    print("SNAC model downloaded to: \(modelDir.path)")
-    return modelDir
 }

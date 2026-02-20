@@ -101,7 +101,10 @@ public final class MarvisTTSModel: Module {
     
     private func cacheURL(for audioURL: URL) -> URL {
         let cacheFilename = audioURL.deletingPathExtension().appendingPathExtension("npy").lastPathComponent
-        let cacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appending(component: "MarvisTTSModel/prompt_cache")
+        let cacheDirectory = HubCache.default.cacheDirectory
+            .appendingPathComponent("mlx-audio")
+            .appendingPathComponent("MarvisTTSModel")
+            .appendingPathComponent("prompt_cache")
         try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
         return cacheDirectory.appending(component: cacheFilename)
     }
@@ -150,6 +153,7 @@ public final class MarvisTTSModel: Module {
 public extension MarvisTTSModel {
     static func fromPretrained(
         _ modelRepo: String = "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit",
+        cache: HubCache = .default,
         progressHandler: @escaping (Progress) -> Void = { _ in }
     ) async throws -> MarvisTTSModel {
         Memory.cacheLimit = 100 * 1024 * 1024
@@ -168,7 +172,8 @@ public extension MarvisTTSModel {
         let modelDirectoryURL = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
             requiredExtension: "safetensors",
-            hfToken: hfToken
+            hfToken: hfToken,
+            cache: cache
         )
 
         let promptFileURLs = modelDirectoryURL.appendingPathComponent("prompts", isDirectory: true)
@@ -185,7 +190,7 @@ public extension MarvisTTSModel {
         let args = try JSONDecoder().decode(CSMModelArgs.self, from: Data(contentsOf: configFileURL))
 
         let textTokenizer = try await AutoTokenizer.from(modelFolder: modelDirectoryURL)
-        let codec = try await Mimi.fromPretrained(progressHandler: progressHandler)
+        let codec = try await Mimi.fromPretrained(cache: cache, progressHandler: progressHandler)
         let audioTokenizer = MimiTokenizer(codec)
         let model = MarvisTTSModel(
             config: args,
@@ -220,10 +225,11 @@ public extension MarvisTTSModel {
     static func fromPretrained(
         hub: HubApi = .shared,
         repoId: String = "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit",
+        cache: HubCache = .default,
         progressHandler: @escaping (Progress) -> Void
     ) async throws -> MarvisTTSModel {
         _ = hub
-        return try await fromPretrained(repoId, progressHandler: progressHandler)
+        return try await fromPretrained(repoId, cache: cache, progressHandler: progressHandler)
     }
     
     private static func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {

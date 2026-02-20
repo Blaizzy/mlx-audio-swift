@@ -1448,7 +1448,10 @@ public class Qwen3ASRModel: Module {
 
     // MARK: - Model Loading
 
-    public static func fromPretrained(_ modelPath: String) async throws -> Qwen3ASRModel {
+    public static func fromPretrained(
+        _ modelPath: String,
+        cache: HubCache = .default
+    ) async throws -> Qwen3ASRModel {
         let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
             ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
 
@@ -1463,7 +1466,8 @@ public class Qwen3ASRModel: Module {
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
             requiredExtension: "safetensors",
-            hfToken: hfToken
+            hfToken: hfToken,
+            cache: cache
         )
 
         // Load config

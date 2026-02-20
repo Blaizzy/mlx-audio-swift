@@ -2,9 +2,18 @@ import Foundation
 import HuggingFace
 
 public enum ModelUtils {
-    public static func resolveModelType(repoID: Repo.ID, hfToken: String? = nil) async throws -> String? {
+    public static func resolveModelType(
+        repoID: Repo.ID,
+        hfToken: String? = nil,
+        cache: HubCache = .default
+    ) async throws -> String? {
         let modelNameComponents = repoID.name.split(separator: "/").last?.split(separator: "-")
-        let modelURL = try await resolveOrDownloadModel(repoID: repoID, requiredExtension: "safetensors", hfToken: hfToken)
+        let modelURL = try await resolveOrDownloadModel(
+            repoID: repoID,
+            requiredExtension: "safetensors",
+            hfToken: hfToken,
+            cache: cache
+        )
         let configJSON = try JSONSerialization.jsonObject(with: Data(contentsOf: modelURL.appendingPathComponent("config.json")))
         if let config = configJSON as? [String: Any] {
             return (config["model_type"] as? String) ?? (config["architecture"] as? String) ?? modelNameComponents?.first?.lowercased()
@@ -21,17 +30,23 @@ public enum ModelUtils {
     public static func resolveOrDownloadModel(
         repoID: Repo.ID,
         requiredExtension: String,
-        hfToken: String? = nil
+        hfToken: String? = nil,
+        cache: HubCache = .default
     ) async throws -> URL {
         let client: HubClient
         if let token = hfToken, !token.isEmpty {
             print("Using HuggingFace token from configuration")
-            client = HubClient(host: HubClient.defaultHost, bearerToken: token)
+            client = HubClient(host: HubClient.defaultHost, bearerToken: token, cache: cache)
         } else {
-            client = HubClient.default
+            client = HubClient(cache: cache)
         }
-        let cache = client.cache ?? HubCache.default
-        return try await resolveOrDownloadModel(client: client, cache: cache, repoID: repoID, requiredExtension: requiredExtension)
+        let resolvedCache = client.cache ?? cache
+        return try await resolveOrDownloadModel(
+            client: client,
+            cache: resolvedCache,
+            repoID: repoID,
+            requiredExtension: requiredExtension
+        )
     }
 
     /// Resolves a model from cache or downloads it if not cached.
@@ -43,18 +58,24 @@ public enum ModelUtils {
     /// - Returns: The model directory URL
     public static func resolveOrDownloadModel(
         client: HubClient,
-        cache: HubCache,
+        cache: HubCache = .default,
         repoID: Repo.ID,
         requiredExtension: String
     ) async throws -> URL {
-        // Use a persistent cache directory based on repo ID
+        let normalizedRequiredExtension = requiredExtension.hasPrefix(".")
+            ? String(requiredExtension.dropFirst())
+            : requiredExtension
+
+        // Store downloaded model snapshots under the configured Hugging Face cache root.
         let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
-        let modelDir = URL.cachesDirectory.appendingPathComponent("mlx-audio").appendingPathComponent(modelSubdir)
+        let modelDir = cache.cacheDirectory
+            .appendingPathComponent("mlx-audio")
+            .appendingPathComponent(modelSubdir)
 
         // Check if model already exists with required files
         if FileManager.default.fileExists(atPath: modelDir.path) {
             let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
-            let hasRequiredFiles = files?.contains { $0.pathExtension == requiredExtension } ?? false
+            let hasRequiredFiles = files?.contains { $0.pathExtension == normalizedRequiredExtension } ?? false
 
             if hasRequiredFiles {
                 // Validate that config.json is valid JSON
@@ -75,7 +96,7 @@ public enum ModelUtils {
         // Create directory if needed
         try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
 
-        let allowedExtensions: Set<String> = ["*.\(requiredExtension)", "*.safetensors", "*.json", "*.txt", "*.wav"]
+        let allowedExtensions: Set<String> = ["*.\(normalizedRequiredExtension)", "*.safetensors", "*.json", "*.txt", "*.wav"]
 
         print("Downloading model \(repoID)...")
         _ = try await client.downloadSnapshot(

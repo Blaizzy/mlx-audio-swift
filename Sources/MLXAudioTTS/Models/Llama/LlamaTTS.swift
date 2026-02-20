@@ -592,12 +592,12 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
         return weights
     }
 
-    public func post_load_hook(model: LlamaTTSModel, modelDir: URL) async throws {
+    public func post_load_hook(model: LlamaTTSModel, modelDir: URL, cache: HubCache = .default) async throws {
         if model.tokenizer == nil {
             model.tokenizer = try await AutoTokenizer.from(modelFolder: modelDir)
         }
         if model._snacModel == nil {
-            model._snacModel = try await SNAC.fromPretrained("mlx-community/snac_24khz")
+            model._snacModel = try await SNAC.fromPretrained("mlx-community/snac_24khz", cache: cache)
         }
     }
 
@@ -914,10 +914,10 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
     ///
     /// - Parameter modelRepo: The model repository ID (e.g., "mlx-community/orpheus-3b-0.1-ft-bf16")
     /// - Returns: The loaded model
-    public static func fromPretrained(_ modelRepo: String) async throws -> LlamaTTSModel {
-        let client = HubClient.default
-        let cache = client.cache ?? HubCache.default
-
+    public static func fromPretrained(
+        _ modelRepo: String,
+        cache: HubCache = .default
+    ) async throws -> LlamaTTSModel {
         guard let repoID = Repo.ID(rawValue: modelRepo) else {
             throw NSError(
                 domain: "LlamaTTSModel",
@@ -926,11 +926,10 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
             )
         }
 
-        let modelDir = try await llamaTTSResolveOrDownloadModel(
-            client: client,
-            cache: cache,
+        let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
-            requiredExtension: "safetensors"
+            requiredExtension: ".safetensors",
+            cache: cache
         )
 
         let configPath = modelDir.appendingPathComponent("config.json")
@@ -961,7 +960,7 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
         try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
         eval(model)
 
-        try await model.post_load_hook(model: model, modelDir: modelDir)
+        try await model.post_load_hook(model: model, modelDir: modelDir, cache: cache)
 
         return model
     }
@@ -980,53 +979,4 @@ private func llamaTTSLoadWeights(from directory: URL) throws -> [String: MLXArra
         weights.merge(fileWeights) { _, new in new }
     }
     return weights
-}
-
-private func llamaTTSResolveOrDownloadModel(
-    client: HubClient,
-    cache: HubCache,
-    repoID: Repo.ID,
-    requiredExtension: String
-) async throws -> URL {
-    let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
-    let modelDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        .appendingPathComponent("mlx-audio")
-        .appendingPathComponent(modelSubdir)
-
-    // Check if model already exists with required files (config.json + safetensors)
-    let configPath = modelDir.appendingPathComponent("config.json")
-    if FileManager.default.fileExists(atPath: configPath.path) {
-        let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
-        let hasRequiredFiles = files?.contains { $0.pathExtension == requiredExtension } ?? false
-
-        if hasRequiredFiles {
-            print("Using cached model at: \(modelDir.path)")
-            return modelDir
-        }
-    }
-
-    // Create directory if needed
-    try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
-
-    // Remove any partial downloads to avoid "file exists" errors
-    if FileManager.default.fileExists(atPath: modelDir.path) {
-        let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
-        for file in files ?? [] {
-            try? FileManager.default.removeItem(at: file)
-        }
-    }
-
-    print("Downloading model \(repoID)...")
-    _ = try await client.downloadSnapshot(
-        of: repoID,
-        kind: .model,
-        to: modelDir,
-        revision: "main",
-        progressHandler: { progress in
-            print("\(progress.completedUnitCount)/\(progress.totalUnitCount) files")
-        }
-    )
-
-    print("Model downloaded to: \(modelDir.path)")
-    return modelDir
 }
