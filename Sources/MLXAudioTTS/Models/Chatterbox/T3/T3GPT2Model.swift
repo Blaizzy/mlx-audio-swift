@@ -321,8 +321,7 @@ public class T3GPT2Model: Module {
 
             // Apply repetition penalty
             if repetitionPenalty != 1.0 && !generatedIds.isEmpty {
-                let tokenArray = MLXArray(generatedIds.map { Int32($0) }).reshaped([1, -1])
-                logits = applyRepetitionPenalty(logits: logits, tokens: tokenArray, penalty: repetitionPenalty)
+                logits = applyRepetitionPenalty(logits: logits, generatedIds: generatedIds, penalty: repetitionPenalty, vocabSize: hp.speechTokensDictSize)
             }
 
             // Sample

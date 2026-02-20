@@ -430,8 +430,7 @@ public class T3Model: Module {
 
             // Apply repetition penalty
             if repetitionPenalty != 1.0 {
-                let tokenArray = MLXArray(generatedIds.map { Int32($0) }).reshaped([1, -1])
-                logits = applyRepetitionPenalty(logits: logits, tokens: tokenArray, penalty: repetitionPenalty)
+                logits = applyRepetitionPenalty(logits: logits, generatedIds: generatedIds, penalty: repetitionPenalty, vocabSize: hp.speechTokensDictSize)
             }
 
             // Sample (temperature + top-p)
@@ -467,7 +466,12 @@ public class T3Model: Module {
         }
 
         let totalElapsed = CFAbsoluteTimeGetCurrent() - genStart
-        print("[T3-LLaMA] Generation complete: \(generatedIds.count) tokens in \(String(format: "%.2f", totalElapsed))s")
+        let uniqueCount = Set(generatedIds).count
+        let first10 = Array(generatedIds.prefix(10))
+        let last10 = Array(generatedIds.suffix(10))
+        print("[T3-LLaMA] Generation complete: \(generatedIds.count) tokens (\(uniqueCount) unique) in \(String(format: "%.2f", totalElapsed))s")
+        print("[T3-LLaMA]   first10=\(first10), last10=\(last10)")
+        print("[T3-LLaMA]   stopToken=\(hp.stopSpeechToken), startToken=\(hp.startSpeechToken)")
         return MLXArray(generatedIds.map { Int32($0) }).reshaped([1, -1])
     }
 }
@@ -476,38 +480,33 @@ public class T3Model: Module {
 
 /// Apply repetition penalty to logits using vectorized MLX operations.
 ///
-/// Matches Python mlx-lm: positive logits are divided by penalty, negative logits
-/// are multiplied by penalty. Only the last `contextSize` unique tokens are penalized.
+/// Matches Python Chatterbox Turbo's `_apply_repetition_penalty`: extracts unique tokens
+/// from the generated history, then applies penalty once per unique token ID.
+/// Positive logits are divided by penalty, negative logits are multiplied.
+///
+/// Uses unique token IDs (from a Swift `[Int]` array) to avoid undefined behavior
+/// with duplicate indices in `putAlong`. The caller provides the generated IDs as
+/// a Swift array so we avoid GPU→CPU sync for each token.
+///
 /// Shared by both T3Model (LLaMA) and T3GPT2Model (Turbo).
-func applyRepetitionPenalty(logits: MLXArray, tokens: MLXArray, penalty: Float, contextSize: Int = 20) -> MLXArray {
+func applyRepetitionPenalty(logits: MLXArray, generatedIds: [Int], penalty: Float, vocabSize: Int) -> MLXArray {
     guard penalty != 1.0 else { return logits }
+    guard !generatedIds.isEmpty else { return logits }
 
-    let flatTokens = tokens.reshaped([-1])
-    let tokenCount = flatTokens.dim(0)
-    guard tokenCount > 0 else { return logits }
+    // Extract unique token IDs on CPU (matches Python's np.unique approach).
+    // This avoids undefined behavior from duplicate indices in putAlong.
+    let unique = Array(Set(generatedIds)).filter { $0 >= 0 && $0 < vocabSize }
+    guard !unique.isEmpty else { return logits }
 
-    // Only look at the last contextSize tokens (matches mlx-lm default of 20)
-    let contextTokens: MLXArray
-    if tokenCount > contextSize {
-        contextTokens = flatTokens[(tokenCount - contextSize)...]
-    } else {
-        contextTokens = flatTokens
-    }
+    let tokenIds = MLXArray(unique.map { Int32($0) }).reshaped([1, -1])
 
-    // Use vectorized gather → penalize → scatter via takeAlong/putAlong
-    let tokenIds = contextTokens.reshaped([1, -1]).asType(.int32)
-
-    // Gather logits at token positions
+    // Vectorized gather → penalize → scatter (all on GPU)
     let selected = takeAlong(logits, tokenIds, axis: -1)
-
-    // Apply penalty: positive logits divided, negative logits multiplied
     let penalized = which(
         selected .< 0,
         selected * MLXArray(penalty),
         selected / MLXArray(penalty)
     )
-
-    // Scatter penalized values back
     return putAlong(logits, tokenIds, values: penalized, axis: -1)
 }
 
