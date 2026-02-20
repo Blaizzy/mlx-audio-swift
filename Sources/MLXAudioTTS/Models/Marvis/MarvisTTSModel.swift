@@ -99,16 +99,6 @@ public final class MarvisTTSModel: Module {
         return (frame, mask)
     }
     
-    private func cacheURL(for audioURL: URL) -> URL {
-        let cacheFilename = audioURL.deletingPathExtension().appendingPathExtension("npy").lastPathComponent
-        let cacheDirectory = HubCache.default.cacheDirectory
-            .appendingPathComponent("mlx-audio")
-            .appendingPathComponent("MarvisTTSModel")
-            .appendingPathComponent("prompt_cache")
-        try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
-        return cacheDirectory.appending(component: cacheFilename)
-    }
-    
     private func tokenizeAudio(_ audio: MLXArray, addEOS: Bool = true) throws -> (MLXArray, MLXArray) {
         let K = model.args.audioNumCodebooks
         
