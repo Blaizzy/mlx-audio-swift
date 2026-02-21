@@ -79,6 +79,14 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
     /// Model directory (for loading auxiliary files).
     private var modelDir: URL?
 
+    /// Configurable CFG weight for T3 inference (0.0-1.0). Only used by Regular model.
+    /// Set from the host app to override the default 0.5.
+    public var cfgWeightOverride: Float?
+
+    /// Configurable emotion exaggeration (0.0-1.0). Only used by Regular model.
+    /// Set from the host app to override the default 0.5.
+    public var emotionAdvOverride: Float?
+
     // MARK: - Protocol conformance
 
     public var sampleRate: Int { config.s3genSr }
@@ -628,7 +636,7 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
             speakerEmb: speakerEmb,
             condPromptSpeechTokens: t3PromptSpeechTokens.dim(1) > 0 ? t3PromptSpeechTokens : nil,
             condPromptSpeechEmb: nil,
-            emotionAdv: MLXArray(Float(0.5))
+            emotionAdv: MLXArray(Float(emotionAdvOverride ?? 0.5))
         )
 
         return RefAudioConditioning(
@@ -756,7 +764,7 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
                 temperature: temperature,
                 topP: topP,
                 repetitionPenalty: 1.2,
-                cfgWeight: 0.5
+                cfgWeight: cfgWeightOverride ?? 0.5
             )
         } else {
             throw AudioGenerationError.modelNotInitialized("Unknown T3 model type")
