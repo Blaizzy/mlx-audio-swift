@@ -721,9 +721,23 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
     public static func fromPretrained(_ modelRepo: String) async throws -> Qwen3TTSModel {
         let repoID = Repo.ID(rawValue: modelRepo)!
-        let modelDir = try await ModelUtils.resolveOrDownloadModel(
+        var modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID, requiredExtension: "safetensors"
         )
+
+        // Validate essential tokenizer files exist — incomplete caches can have
+        // safetensors + config.json but be missing vocab.json/merges.txt from
+        // interrupted downloads. Need either vocab.json (to generate) or tokenizer.json.
+        let fm = FileManager.default
+        let hasVocab = fm.fileExists(atPath: modelDir.appendingPathComponent("vocab.json").path)
+        let hasTokenizerJson = fm.fileExists(atPath: modelDir.appendingPathComponent("tokenizer.json").path)
+        if !hasVocab && !hasTokenizerJson {
+            print("Cache missing tokenizer files (vocab.json/tokenizer.json), clearing and re-downloading...")
+            try? fm.removeItem(at: modelDir)
+            modelDir = try await ModelUtils.resolveOrDownloadModel(
+                repoID: repoID, requiredExtension: "safetensors"
+            )
+        }
 
         // Load main config
         let configData = try Data(contentsOf: modelDir.appendingPathComponent("config.json"))
@@ -733,7 +747,6 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
         // Load talker weights
         var allWeights = [String: MLXArray]()
-        let fm = FileManager.default
         let modelFiles = try fm.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
         for file in modelFiles where file.pathExtension == "safetensors" {
             let weights = try MLX.loadArrays(url: file)
@@ -779,11 +792,14 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             }
         }
 
-        // Load tokenizer
+        // Load tokenizer — fail immediately if tokenizer can't load, rather than
+        // deferring to a confusing "Text tokenizer not loaded" error during synthesis
         do {
             model.tokenizer = try await AutoTokenizer.from(modelFolder: modelDir)
         } catch {
-            print("Warning: Could not load tokenizer: \(error)")
+            throw AudioGenerationError.modelNotInitialized(
+                "Failed to load text tokenizer: \(error). Try clearing model cache and re-downloading."
+            )
         }
 
         // Load speech tokenizer — check that it's a directory, not a stale file
