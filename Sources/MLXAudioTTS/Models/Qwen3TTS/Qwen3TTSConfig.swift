@@ -464,6 +464,9 @@ public struct Qwen3TTSModelConfig: Decodable, Sendable {
     var ttsEosTokenId: Int
     var sampleRate: Int
 
+    // Quantization (present in quantized model config.json files)
+    var quantization: BaseConfiguration.Quantization?
+
     enum CodingKeys: String, CodingKey {
         case modelType = "model_type"
         case talkerConfig = "talker_config"
@@ -480,6 +483,7 @@ public struct Qwen3TTSModelConfig: Decodable, Sendable {
         case ttsBosTokenId = "tts_bos_token_id"
         case ttsEosTokenId = "tts_eos_token_id"
         case sampleRate = "sample_rate"
+        case quantization
     }
 
     public init(from decoder: Swift.Decoder) throws {
@@ -503,6 +507,7 @@ public struct Qwen3TTSModelConfig: Decodable, Sendable {
         ttsBosTokenId = try c.decodeIfPresent(Int.self, forKey: .ttsBosTokenId) ?? 151672
         ttsEosTokenId = try c.decodeIfPresent(Int.self, forKey: .ttsEosTokenId) ?? 151673
         sampleRate = try c.decodeIfPresent(Int.self, forKey: .sampleRate) ?? 24000
+        quantization = try c.decodeIfPresent(BaseConfiguration.Quantization.self, forKey: .quantization)
     }
 }
 

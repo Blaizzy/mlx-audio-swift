@@ -748,7 +748,6 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         // Sanitize and load talker weights
         let talkerWeights = Qwen3TTSTalkerForConditionalGeneration.sanitize(weights: allWeights)
         let talkerPairs = talkerWeights.map { ($0.key, $0.value) }
-<<<<<<< HEAD
 
         // Quantized checkpoints store packed weights and companion .scales tensors.
         // Convert talker Linear layers before loading those tensors.
@@ -768,9 +767,6 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         }
 
         try model.talker.update(parameters: ModuleParameters.unflattened(talkerPairs), verify: .all)
-=======
-        try model.talker.update(parameters: ModuleParameters.unflattened(talkerPairs), verify: .noUnusedKeys)
->>>>>>> ae8a237 (fix Qwen3-TTS quantized model loading — use noUnusedKeys verification)
         eval(model.talker.parameters())
 
         // Generate tokenizer.json if missing (Qwen3-TTS ships without it)
