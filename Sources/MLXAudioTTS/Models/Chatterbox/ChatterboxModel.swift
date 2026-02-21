@@ -356,7 +356,96 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
         // Swift has: @ModuleInfo(key: "mlp") var mlp: [Linear] → .mlp.0.weight
         k = k.replacingOccurrences(of: ".mlp_linear.", with: ".mlp.0.")
 
+        // --- 10. mel2wav (HiFi-GAN vocoder): bare Conv1d → HiFiConv1d/HiFiConvTranspose1d ---
+        //
+        // The Regular model's Python HiFi-GAN uses bare nn.Conv1d/nn.ConvTranspose1d everywhere,
+        // so safetensors keys have no `.conv` wrapping level:
+        //   mel2wav.conv_pre.weight, mel2wav.resblocks.0.convs1.0.weight, etc.
+        //
+        // Swift's HiFiConv1d/HiFiConvTranspose1d wrap Conv1d with @ModuleInfo(key: "conv"),
+        // adding a `.conv` level in the key path:
+        //   mel2wav.conv_pre.conv.weight, mel2wav.resblocks.0.convs1.0.conv.weight, etc.
+        //
+        // Insert `.conv` before terminal `.weight`/`.bias` for all mel2wav Conv1d parameters.
+        // Skip non-Conv1d parameters (Snake .alpha, Linear .weight/.bias in classifier/l_linear).
+        if k.hasPrefix("mel2wav.") {
+            k = Self.remapRegularMel2WavKey(k)
+        }
+
         return k
+    }
+
+    /// Remap a single mel2wav (HiFi-GAN vocoder) weight key for the Regular model.
+    ///
+    /// The Regular model's Python HiFi-GAN uses bare nn.Conv1d / nn.ConvTranspose1d,
+    /// producing flat keys like `mel2wav.conv_pre.weight`. Swift wraps these in
+    /// HiFiConv1d / HiFiConvTranspose1d which add a `.conv` level via @ModuleInfo(key: "conv").
+    ///
+    /// This function inserts `.conv` before the terminal `.weight`/`.bias` for Conv1d parameters,
+    /// while leaving non-Conv1d parameters unchanged (Snake alpha, Linear classifier, etc.).
+    ///
+    /// Affected paths:
+    ///   - mel2wav.conv_pre.{w,b}           → mel2wav.conv_pre.conv.{w,b}
+    ///   - mel2wav.conv_post.{w,b}          → mel2wav.conv_post.conv.{w,b}
+    ///   - mel2wav.ups.N.{w,b}              → mel2wav.ups.N.conv.{w,b}
+    ///   - mel2wav.source_downs.N.{w,b}     → mel2wav.source_downs.N.conv.{w,b}
+    ///   - mel2wav.resblocks.N.convsK.M.{w,b}        → ...convsK.M.conv.{w,b}
+    ///   - mel2wav.source_resblocks.N.convsK.M.{w,b} → ...convsK.M.conv.{w,b}
+    ///   - mel2wav.f0_predictor.condnet.N.{w,b}      → ...condnet.N.conv.{w,b}
+    ///
+    /// Unchanged paths:
+    ///   - mel2wav.resblocks.N.activationsK.M.alpha   (Snake, not Conv1d)
+    ///   - mel2wav.f0_predictor.classifier.{w,b}      (Linear, not Conv1d)
+    ///   - mel2wav.m_source.l_linear.{w,b}            (Linear, not Conv1d)
+    ///   - mel2wav.m_source.l_sin_gen.*                (no parameters)
+    static func remapRegularMel2WavKey(_ key: String) -> String {
+        var k = key
+
+        // Strip mel2wav. prefix, process, then re-add
+        guard k.hasPrefix("mel2wav.") else { return k }
+        let subKey = String(k.dropFirst("mel2wav.".count))
+
+        // Match all Conv1d/ConvTranspose1d terminal patterns:
+        //   conv_pre.{weight,bias}
+        //   conv_post.{weight,bias}
+        //   ups.N.{weight,bias}
+        //   source_downs.N.{weight,bias}
+        //   resblocks.N.convs1.M.{weight,bias}
+        //   resblocks.N.convs2.M.{weight,bias}
+        //   source_resblocks.N.convs1.M.{weight,bias}
+        //   source_resblocks.N.convs2.M.{weight,bias}
+        //   f0_predictor.condnet.N.{weight,bias}
+        //
+        // Pattern: these all end with either:
+        //   (named_module).{weight,bias}  where named_module is conv_pre, conv_post
+        //   (array_module).N.{weight,bias} where array_module is ups, source_downs, condnet, convs1, convs2
+        //
+        // We insert `.conv` before the terminal `.weight`/`.bias`.
+        // Regex approach: match known Conv1d parent patterns and insert .conv
+
+        // conv_pre / conv_post
+        let remapped = subKey
+            .replacingOccurrences(
+                of: #"^(conv_pre|conv_post)\.(weight|bias)$"#,
+                with: "$1.conv.$2",
+                options: .regularExpression)
+            // ups.N / source_downs.N
+            .replacingOccurrences(
+                of: #"^(ups|source_downs)\.(\d+)\.(weight|bias)$"#,
+                with: "$1.$2.conv.$3",
+                options: .regularExpression)
+            // resblocks.N.convs{1,2}.M / source_resblocks.N.convs{1,2}.M
+            .replacingOccurrences(
+                of: #"^((?:source_)?resblocks\.\d+\.convs[12]\.\d+)\.(weight|bias)$"#,
+                with: "$1.conv.$2",
+                options: .regularExpression)
+            // f0_predictor.condnet.N
+            .replacingOccurrences(
+                of: #"^(f0_predictor\.condnet\.\d+)\.(weight|bias)$"#,
+                with: "$1.conv.$2",
+                options: .regularExpression)
+
+        return "mel2wav.\(remapped)"
     }
 
     // MARK: - Text Tokenization

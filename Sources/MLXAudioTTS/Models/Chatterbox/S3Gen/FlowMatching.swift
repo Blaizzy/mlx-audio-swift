@@ -759,9 +759,22 @@ class CausalConditionalCFM: Module {
             // CFG formula: (1 + cfg_rate) * cond - cfg_rate * uncond
             let pred = (1 + cfgRate) * dxdtCond - cfgRate * dxdtUncond
 
+            // Debug: log first and last Euler step
+            if step == 1 || step == nSteps {
+                eval(dxdt, pred, x)
+                debugStats("step \(step) dxdt", dxdt)
+                debugStats("step \(step) pred", pred)
+                debugStats("step \(step) x_before", x)
+            }
+
             // Euler step
             x = x + dt * pred
             t = t + dt
+
+            if step == 1 || step == nSteps {
+                eval(x)
+                debugStats("step \(step) x_after", x)
+            }
 
             // Update dt for next step (Python: `dt = t_span[step+1] - t`)
             if step < nSteps {
@@ -769,6 +782,15 @@ class CausalConditionalCFM: Module {
             }
         }
         return x
+    }
+
+    /// Helper to print summary statistics for an MLXArray (for debugging).
+    private func debugStats(_ label: String, _ arr: MLXArray) {
+        let mn = arr.min().item(Float.self)
+        let mx = arr.max().item(Float.self)
+        let mean = arr.mean().item(Float.self)
+        let std = arr.variance().sqrt().item(Float.self)
+        print("[S3Gen-Debug] \(label): shape=\(arr.shape), min=\(mn), max=\(mx), mean=\(mean), std=\(std)")
     }
 
     func callAsFunction(
@@ -805,6 +827,20 @@ class CausalConditionalCFM: Module {
             tSpan = 1.0 - MLX.cos(linear * Float32(Float.pi / 2))
         } else {
             tSpan = linear
+        }
+
+        // Debug: print initial state for Regular model
+        if !meanflow {
+            eval(z, tSpan)
+            print("[S3Gen-Debug] === Flow Matching Debug (Regular) ===")
+            debugStats("z (noise)", z)
+            print("[S3Gen-Debug] z[0,0,:5] = \(z[0, 0, 0..<5].asArray(Float.self))")
+            debugStats("mu", mu)
+            debugStats("mask", mask)
+            if let spks = spks { debugStats("spks", spks) }
+            if let cond = cond { debugStats("cond", cond) }
+            print("[S3Gen-Debug] tSpan = \(tSpan.asArray(Float.self))")
+            print("[S3Gen-Debug] meanflow=\(meanflow), cfgRate=\(cfgRate), tScheduler=\(tScheduler)")
         }
 
         // Meanflow (Turbo): basic Euler without CFG, passes r to estimator
@@ -891,6 +927,15 @@ class CausalMaskedDiffWithXvec: Module {
     ///   - nTimesteps: Number of Euler ODE steps for flow matching
     ///   - streaming: Whether to use streaming/causal mode
     /// - Returns: Generated mel spectrogram, shape `(B, 80, T_gen_mel)`
+    /// Helper to print summary statistics for an MLXArray (for debugging).
+    private func debugInfStats(_ label: String, _ arr: MLXArray) {
+        eval(arr)
+        let mn = arr.min().item(Float.self)
+        let mx = arr.max().item(Float.self)
+        let mean = arr.mean().item(Float.self)
+        print("[S3Gen-Inf] \(label): shape=\(arr.shape), min=\(mn), max=\(mx), mean=\(mean)")
+    }
+
     func inference(
         token: MLXArray, tokenLen: MLXArray,
         promptToken: MLXArray, promptTokenLen: MLXArray,
@@ -899,14 +944,19 @@ class CausalMaskedDiffWithXvec: Module {
         nTimesteps: Int = 10,
         streaming: Bool = false
     ) -> MLXArray {
+        let isRegular = !meanflow
+        if isRegular { print("[S3Gen-Inf] === Inference Debug (Regular) ===") }
+
         // 1. L2-normalize speaker embedding before projection
         let norm = MLX.sqrt((embedding * embedding).sum(axis: 1, keepDims: true))
         let normalizedEmb = embedding / (norm + 1e-8)
         let spkEmb = spkEmbedAffineLayer(normalizedEmb) // (B, 80)
+        if isRegular { debugInfStats("spkEmb (after affine)", spkEmb) }
 
         // 2. Concatenate prompt + generated tokens
         let combinedToken = MLX.concatenated([promptToken, token], axis: 1) // (B, T_prompt + T_gen)
         let combinedLen = promptTokenLen + tokenLen
+        if isRegular { print("[S3Gen-Inf] combinedToken: \(combinedToken.shape), combinedLen: \(combinedLen.asArray(Int32.self))") }
 
         // Create embedding mask: (B, T, 1) — masks padding positions before embedding.
         // Python: `mask = (seq_range < seq_length).unsqueeze(-1).astype(dtype)`
@@ -918,9 +968,11 @@ class CausalMaskedDiffWithXvec: Module {
         // Clip token IDs to valid range, embed, and apply mask
         let clipped = MLX.clip(combinedToken, min: 0, max: vocabSize - 1)
         let embedded = inputEmbedding(clipped) * embMask // (B, T_combined, 512) — masked
+        if isRegular { debugInfStats("embedded (after mask)", embedded) }
 
         // 3. Conformer encoder (includes 2x upsample internally)
         let (encoderOut, _) = encoder(xs: embedded, xsLens: combinedLen, streaming: streaming)
+        if isRegular { debugInfStats("encoderOut", encoderOut) }
         // encoderOut: (B, T_up, 512) where T_up ≈ T_combined * 2
 
         // 4. Compute mel lengths from prompt feat
@@ -952,6 +1004,13 @@ class CausalMaskedDiffWithXvec: Module {
         // 8. Flow matching decode
         let mu = h.transposed(0, 2, 1) // (B, 80, T_up)
 
+        if isRegular {
+            debugInfStats("mu (encoder proj transposed)", mu)
+            debugInfStats("conds", conds)
+            print("[S3Gen-Inf] promptMelLen=\(promptMelLen), totalMelLen=\(totalMelLen)")
+            print("[S3Gen-Inf] promptFeat: \(promptFeat.shape), h: \(h.shape)")
+        }
+
         // For meanflow, generate noised mels for the generated portion only
         let noisedMels: MLXArray?
         if meanflow {
@@ -965,9 +1024,15 @@ class CausalMaskedDiffWithXvec: Module {
             mu: mu, mask: decoderMask, nTimesteps: nTimesteps,
             spks: spkEmb, cond: conds, noisedMels: noisedMels)
 
+        if isRegular {
+            debugInfStats("mel (full, before extract)", mel)
+        }
+
         // 8. Extract only the generated portion (skip prompt mel region)
         if promptMelLen > 0 && promptMelLen < totalMelLen {
-            return mel[0..., 0..., promptMelLen...]
+            let genMel = mel[0..., 0..., promptMelLen...]
+            if isRegular { debugInfStats("mel (generated portion)", genMel) }
+            return genMel
         }
         return mel
     }
