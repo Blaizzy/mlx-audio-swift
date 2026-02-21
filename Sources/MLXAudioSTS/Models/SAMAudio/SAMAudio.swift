@@ -47,7 +47,7 @@ public enum SAMAudioError: Error, LocalizedError {
     }
 }
 
-public final class SAMAudio: Module, @unchecked Sendable {
+public final class SAMAudio: Module, STSModel, @unchecked Sendable {
     public let config: SAMAudioConfig
     public let textEncoder: T5TextEncoder
     public let processor: SAMAudioProcessor

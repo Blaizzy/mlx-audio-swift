@@ -447,11 +447,13 @@ public struct Qwen3TTSTokenizerConfig: Codable, Sendable {
 
 // MARK: - Top-level Model Config
 
-public struct Qwen3TTSModelConfig: Codable, Sendable {
+public struct Qwen3TTSModelConfig: Decodable, Sendable {
     var modelType: String
     var talkerConfig: Qwen3TTSTalkerConfig?
     var speakerEncoderConfig: Qwen3TTSSpeakerEncoderConfig
     var tokenizerConfig: Qwen3TTSTokenizerConfig?
+    var quantization: BaseConfiguration.Quantization?
+    var perLayerQuantization: BaseConfiguration.PerLayerQuantization?
     var tokenizerType: String
     var ttsModelSize: String
     var ttsModelType: String
@@ -467,6 +469,8 @@ public struct Qwen3TTSModelConfig: Codable, Sendable {
         case talkerConfig = "talker_config"
         case speakerEncoderConfig = "speaker_encoder_config"
         case tokenizerConfig = "tokenizer_config"
+        case quantization
+        case quantizationConfig = "quantization_config"
         case tokenizerType = "tokenizer_type"
         case ttsModelSize = "tts_model_size"
         case ttsModelType = "tts_model_type"
@@ -480,11 +484,16 @@ public struct Qwen3TTSModelConfig: Codable, Sendable {
 
     public init(from decoder: Swift.Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        let baseConfig = try? BaseConfiguration(from: decoder)
         modelType = try c.decodeIfPresent(String.self, forKey: .modelType) ?? "qwen3_tts"
         talkerConfig = try c.decodeIfPresent(Qwen3TTSTalkerConfig.self, forKey: .talkerConfig)
         speakerEncoderConfig = try c.decodeIfPresent(Qwen3TTSSpeakerEncoderConfig.self, forKey: .speakerEncoderConfig)
             ?? Qwen3TTSSpeakerEncoderConfig()
         tokenizerConfig = try c.decodeIfPresent(Qwen3TTSTokenizerConfig.self, forKey: .tokenizerConfig)
+        let globalQuant = try c.decodeIfPresent(BaseConfiguration.Quantization.self, forKey: .quantization)
+        let altGlobalQuant = try c.decodeIfPresent(BaseConfiguration.Quantization.self, forKey: .quantizationConfig)
+        quantization = globalQuant ?? altGlobalQuant
+        perLayerQuantization = baseConfig?.perLayerQuantization
         tokenizerType = try c.decodeIfPresent(String.self, forKey: .tokenizerType) ?? "qwen3_tts_tokenizer_12hz"
         ttsModelSize = try c.decodeIfPresent(String.self, forKey: .ttsModelSize) ?? "0b6"
         ttsModelType = try c.decodeIfPresent(String.self, forKey: .ttsModelType) ?? "base"

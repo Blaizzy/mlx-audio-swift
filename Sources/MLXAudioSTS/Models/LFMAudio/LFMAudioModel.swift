@@ -151,7 +151,7 @@ class AudioHead: Module {
 
 // MARK: - LFM2 Audio Model
 
-public class LFM2AudioModel: Module {
+public class LFM2AudioModel: Module, STSModel, @unchecked Sendable {
     public let config: LFM2AudioConfig
     public var processor: LFM2AudioProcessor?
     public var modelDirectory: URL?
@@ -225,6 +225,7 @@ public class LFM2AudioModel: Module {
         modalities: MLXArray? = nil,
         cache: [KVCache]? = nil
     ) -> (MLXArray, [KVCache]) {
+
         let inputEmbeddings: MLXArray
 
         if let modalities = modalities {
@@ -448,10 +449,13 @@ public class LFM2AudioModel: Module {
                         let eosFrame = MLX.full(audioFrame.shape, values: MLXArray(Int32(lfmAudioEOSToken)), type: Int32.self)
                         continuation.yield((eosFrame.squeezed(axis: 0), .audioOut))
 
+                        // Embed EOS back into the model
+                        let nextEmb = embedAudioOut(eosFrame).expandedDimensions(axis: 1)
+                        lastHidden = lfm(inputEmbeddings: nextEmb, cache: cache)
+
                         generated += 1
                         currentModality = .text
                         if textDone { break }
-                        modalityLeft = nText
                         continue
                     }
 

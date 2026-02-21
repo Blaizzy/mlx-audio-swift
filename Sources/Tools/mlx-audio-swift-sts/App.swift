@@ -9,9 +9,10 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
     case anchorsUnsupportedForMode(SeparationMode)
     case failedToCreateAudioBuffer
     case failedToAccessAudioBufferData
-    case unsupportedModelRepo(String)
     case lfmRequiresText
     case lfmRequiresAudioForMode(LFMMode)
+    case enhanceRequiresAudio
+    case audioResampleFailed(String)
 
     var errorDescription: String? { description }
 
@@ -25,12 +26,14 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
             "Failed to create audio buffer"
         case .failedToAccessAudioBufferData:
             "Failed to access audio buffer data"
-        case .unsupportedModelRepo(let repo):
-            "Unsupported STS model repo: \(repo). Expected SAMAudio or LFM model."
         case .lfmRequiresText:
             "--text is required for LFM text-to-text and text-to-speech modes."
         case .lfmRequiresAudioForMode(let mode):
             "--audio is required for LFM \(mode.rawValue) mode."
+        case .enhanceRequiresAudio:
+            "--audio is required for speech enhancement."
+        case .audioResampleFailed(let message):
+            "Failed to resample audio: \(message)"
         }
     }
 }
@@ -54,10 +57,24 @@ enum App {
         do {
             let args = try CLI.parse()
 
-            if isLFMModel(args.model) {
-                try await runLFM(args: args)
-            } else {
-                try await runSAMAudio(args: args)
+            let hfToken = args.hfToken
+                ?? ProcessInfo.processInfo.environment["HF_TOKEN"]
+                ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
+
+            print("Loading model (\(args.model))")
+            let loaded = try await STS.loadModel(
+                modelRepo: args.model,
+                hfToken: hfToken,
+                strict: args.strict
+            )
+
+            switch loaded {
+            case .lfmAudio(let model):
+                try await runLFM(model: model, args: args)
+            case .samAudio(let model):
+                try await runSAMAudio(model: model, args: args)
+            case .mossFormer2SE(let model):
+                try await runMossFormer2SE(model: model, args: args)
             }
         } catch {
             fputs("Error: \(error)\n", stderr)
@@ -66,14 +83,9 @@ enum App {
         }
     }
 
-    private static func isLFMModel(_ model: String) -> Bool {
-        let lower = model.lowercased()
-        return lower.contains("lfm") || lower.contains("lfm2")
-    }
-
     // MARK: - LFM2.5-Audio
 
-    private static func runLFM(args: CLI) async throws {
+    private static func runLFM(model: LFM2AudioModel, args: CLI) async throws {
         let lfmMode = args.lfmMode ?? .sts
 
         switch lfmMode {
@@ -87,10 +99,7 @@ enum App {
             }
         }
 
-        print("Loading LFM2.5-Audio model (\(args.model))")
-        let model = try await LFM2AudioModel.fromPretrained(args.model)
         let processor = model.processor!
-
         let chat = ChatState(processor: processor)
 
         let defaultSystemPrompts: [LFMMode: String] = [
@@ -119,7 +128,6 @@ enum App {
             chat.addText(args.text!)
             chat.endTurn()
             chat.newTurn(role: "assistant")
-            chat.addAudioStartToken()
 
         case .stt:
             let inputURL = resolveURL(path: args.audioPath!)
@@ -259,7 +267,7 @@ enum App {
 
     // MARK: - SAM Audio
 
-    private static func runSAMAudio(args: CLI) async throws {
+    private static func runSAMAudio(model: SAMAudio, args: CLI) async throws {
         let mode = args.mode
 
         guard let audioPath = args.audioPath else {
@@ -274,17 +282,6 @@ enum App {
         if !args.anchors.isEmpty, mode != .short {
             throw AppError.anchorsUnsupportedForMode(mode)
         }
-
-        let resolvedHFToken = args.hfToken
-            ?? ProcessInfo.processInfo.environment["HF_TOKEN"]
-            ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
-
-        print("Loading SAM Audio model (\(args.model))")
-        let model = try await SAMAudio.fromPretrained(
-            args.model,
-            hfToken: resolvedHFToken,
-            strict: args.strict
-        )
 
         let targetOutputURL = makeOutputURL(
             outputPath: args.outputTargetPath,
@@ -421,6 +418,47 @@ enum App {
         print("Streamed \(chunks) chunk(s)")
     }
 
+    // MARK: - MossFormer2 Speech Enhancement
+
+    private static func runMossFormer2SE(model: MossFormer2SEModel, args: CLI) async throws {
+        guard let audioPath = args.audioPath else {
+            throw AppError.enhanceRequiresAudio
+        }
+
+        let inputURL = resolveURL(path: audioPath)
+        guard FileManager.default.fileExists(atPath: inputURL.path) else {
+            throw AppError.inputFileNotFound(inputURL.path)
+        }
+        // TODO: Handle loading and resamping inside enhance()
+        let (inputSampleRate, rawAudio) = try loadAudioArray(from: inputURL)
+        let audioData = try resampleIfNeeded(rawAudio, from: inputSampleRate, to: model.sampleRate)
+
+        print("Enhancing audio")
+        let started = CFAbsoluteTimeGetCurrent()
+
+        let enhanced = try model.enhance(audioData)
+        eval(enhanced)
+        let samples = enhanced.asArray(Float.self)
+
+        let duration = Double(samples.count) / Double(model.sampleRate)
+        print(String(format: "Enhanced %d samples (%.1fs at %dHz)", samples.count, duration, model.sampleRate))
+
+        let outputURL: URL
+        if let path = args.outputTargetPath {
+            outputURL = resolveURL(path: path)
+        } else {
+            let stem = inputURL.deletingPathExtension().lastPathComponent
+            outputURL = inputURL.deletingLastPathComponent()
+                .appendingPathComponent("\(stem).enhanced.wav")
+        }
+
+        try AudioUtils.writeWavFile(samples: samples, sampleRate: Double(model.sampleRate), fileURL: outputURL)
+        print("Wrote WAV to \(outputURL.path)")
+
+        let elapsed = CFAbsoluteTimeGetCurrent() - started
+        print(String(format: "Done. Elapsed: %.2fs", elapsed))
+    }
+
     // MARK: - Helpers
 
     private static func resolveURL(path: String) -> URL {
@@ -464,6 +502,86 @@ enum App {
         }
         let audioFile = try AVAudioFile(forWriting: outputURL, settings: format.settings)
         try audioFile.write(from: buffer)
+    }
+
+    private static func resampleIfNeeded(_ audio: MLXArray, from inputSampleRate: Int, to targetSampleRate: Int) throws -> MLXArray {
+        let mono = audio.ndim > 1 ? audio.mean(axis: -1) : audio
+        guard inputSampleRate != targetSampleRate else { return mono }
+
+        print("Resampling \(inputSampleRate)Hz → \(targetSampleRate)Hz")
+        let samples = mono.asArray(Float.self)
+        let resampled = try resampleAudio(samples, from: Double(inputSampleRate), to: Double(targetSampleRate))
+        return MLXArray(resampled)
+    }
+
+    private static func resampleAudio(_ samples: [Float], from sourceRate: Double, to targetRate: Double) throws -> [Float] {
+        guard !samples.isEmpty else { return samples }
+
+        guard let inputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: sourceRate, channels: 1, interleaved: false
+        ) else {
+            throw AppError.audioResampleFailed("unable to create input format")
+        }
+
+        guard let outputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: targetRate, channels: 1, interleaved: false
+        ) else {
+            throw AppError.audioResampleFailed("unable to create output format")
+        }
+
+        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+            throw AppError.audioResampleFailed("unable to create AVAudioConverter")
+        }
+
+        let inputFrameCount = AVAudioFrameCount(samples.count)
+        guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: inputFrameCount) else {
+            throw AppError.audioResampleFailed("unable to allocate input buffer")
+        }
+        inputBuffer.frameLength = inputFrameCount
+        if let channelData = inputBuffer.floatChannelData {
+            for (i, sample) in samples.enumerated() {
+                channelData[0][i] = sample
+            }
+        }
+
+        let ratio = targetRate / sourceRate
+        let outputCapacity = AVAudioFrameCount(ceil(Double(samples.count) * ratio)) + 32
+        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: outputCapacity) else {
+            throw AppError.audioResampleFailed("unable to allocate output buffer")
+        }
+
+        final class AudioInputFeed: @unchecked Sendable {
+            let buffer: AVAudioPCMBuffer
+            var consumed = false
+            init(buffer: AVAudioPCMBuffer) { self.buffer = buffer }
+        }
+        let inputFeed = AudioInputFeed(buffer: inputBuffer)
+
+        var conversionError: NSError?
+        let status = converter.convert(to: outputBuffer, error: &conversionError) { _, outStatus in
+            if inputFeed.consumed {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            inputFeed.consumed = true
+            outStatus.pointee = .haveData
+            return inputFeed.buffer
+        }
+
+        if let conversionError {
+            throw AppError.audioResampleFailed(conversionError.localizedDescription)
+        }
+
+        guard status == .haveData || status == .inputRanDry || status == .endOfStream else {
+            throw AppError.audioResampleFailed("unexpected converter status: \(status.rawValue)")
+        }
+
+        let frameLength = Int(outputBuffer.frameLength)
+        guard frameLength > 0, let outputChannel = outputBuffer.floatChannelData?[0] else {
+            throw AppError.audioResampleFailed("converter produced empty output")
+        }
+
+        return Array(UnsafeBufferPointer(start: outputChannel, count: frameLength))
     }
 }
 
@@ -538,10 +656,10 @@ struct CLI {
         var lfmMode: LFMMode?
         var systemPrompt: String?
         var maxNewTokens = 512
-        var temperature: Float = 0.8
+        var temperature: Float = 0.7
         var topK = 50
-        var audioTemperature: Float = 0.7
-        var audioTopK = 30
+        var audioTemperature: Float = 0.8
+        var audioTopK = 4
 
         var iterator = CommandLine.arguments.dropFirst().makeIterator()
         while let arg = iterator.next() {
@@ -700,14 +818,17 @@ struct CLI {
               \(executable) [--model <repo>] [--mode <mode>] [options]
 
             Description:
-              Runs STS (Speech-to-Speech) models. Supports SAM Audio source separation
-              and LFM2.5-Audio multimodal generation (text-to-text, text-to-speech,
-              speech-to-text, speech-to-speech).
+              Runs STS (Speech-to-Speech) models. Model type is auto-detected from
+              config.json or repo name. Supports:
+                - LFM2.5-Audio: multimodal generation (t2t, tts, stt, sts)
+                - SAM Audio: source separation
+                - MossFormer2-SE: speech enhancement
 
             Model Selection:
-              --model <repo>               Model repo or local path.
+              --model <repo>               Model repo or local path (auto-detected).
                                            SAM Audio default: \(SAMAudio.defaultRepo)
                                            LFM example: mlx-community/LFM2.5-Audio-1.5B-6bit
+                                           MossFormer2 example: starkdmi/MossFormer2-SE-fp16
 
             LFM2.5-Audio Options:
               --mode <t2t|tts|stt|sts>     LFM generation mode.
@@ -719,10 +840,10 @@ struct CLI {
               -i, --audio <path>           Input audio file (required for stt/sts)
               --system <string>            System prompt (overrides per-mode default)
               --max-new-tokens <int>       Max tokens to generate. Default: 512
-              --temperature <float>        Text sampling temperature. Default: 0.8
+              --temperature <float>        Text sampling temperature. Default: 0.7
               --top-k <int>                Text top-K. Default: 50
-              --audio-temperature <float>  Audio sampling temperature. Default: 0.7
-              --audio-top-k <int>          Audio top-K. Default: 30
+              --audio-temperature <float>  Audio sampling temperature. Default: 0.8
+              --audio-top-k <int>          Audio top-K. Default: 4
               --stream                     Stream text output to stdout
               -o, --output-target <path>   Audio WAV output path. Default: lfm_output.wav
               --output-text <path>         Text output path (optional)
@@ -741,6 +862,10 @@ struct CLI {
               --decode-chunk-size <n>      Optional decoder chunk size
               --anchor <tok:start:end>     Anchor (short mode only, repeatable)
               --strict                     Strict weight loading
+
+            MossFormer2-SE Options:
+              -i, --audio <path>           Input audio file (required)
+              -o, --output-target <path>   Enhanced WAV output. Default: <input>.enhanced.wav
 
             Common:
               --hf-token <token>           Hugging Face token (or set HF_TOKEN env var)
