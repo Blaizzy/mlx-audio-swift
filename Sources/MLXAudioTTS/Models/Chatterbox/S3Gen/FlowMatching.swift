@@ -655,10 +655,15 @@ class CausalConditionalCFM: Module {
         // This matches Python's CausalConditionalCFM.__init__ which does:
         //   mx.random.seed(0)
         //   self.rand_noise = mx.random.normal((1, MEL_CHANNELS, 50 * 300))
+        //
+        // IMPORTANT: We must use seed-based (global state) generation, NOT key-based.
+        // mx.random.seed(0) followed by mx.random.normal() (no explicit key) internally
+        // splits the global key before generating, producing different values than
+        // mx.random.normal(key=mx.random.key(0)). Using the wrong method gives
+        // completely different starting noise for the ODE solver.
         if !meanflow {
-            // Use key-based generation to match Python's mx.random.seed(0) behavior
-            let key = MLXRandom.key(0)
-            self.randNoise = MLXRandom.normal([1, Self.melChannels, 50 * 300], key: key)
+            MLXRandom.seed(0)
+            self.randNoise = MLXRandom.normal([1, Self.melChannels, 50 * 300])
             eval(self.randNoise!)
         } else {
             self.randNoise = nil

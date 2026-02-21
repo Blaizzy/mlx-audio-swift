@@ -852,6 +852,30 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
             }
         }
 
+        // Debug: compare sanitized weight keys against model parameter keys
+        if !config.isTurbo {
+            let modelParams = model.parameters().flattened().map { $0.0 }
+            let expectedS3Gen = Set(modelParams.filter { $0.hasPrefix("s3gen.") })
+            let actualS3Gen = Set(sanitizedWeights.keys.filter { $0.hasPrefix("s3gen.") })
+
+            let matched = actualS3Gen.intersection(expectedS3Gen)
+            let dropped = actualS3Gen.subtracting(expectedS3Gen)
+            let missing = expectedS3Gen.subtracting(actualS3Gen)
+
+            print("[Chatterbox] === S3Gen Weight Loading Debug ===")
+            print("[Chatterbox] S3Gen keys from weights: \(actualS3Gen.count)")
+            print("[Chatterbox] S3Gen keys in model: \(expectedS3Gen.count)")
+            print("[Chatterbox] Matched: \(matched.count)")
+            print("[Chatterbox] Dropped (in weights, not in model): \(dropped.count)")
+            if !dropped.isEmpty {
+                for k in dropped.sorted().prefix(20) { print("[Chatterbox]   DROP: \(k)") }
+            }
+            print("[Chatterbox] Missing (in model, not in weights): \(missing.count)")
+            if !missing.isEmpty {
+                for k in missing.sorted().prefix(20) { print("[Chatterbox]   MISS: \(k)") }
+            }
+        }
+
         // Update model parameters — allow unused keys since we drop tokenizer weights
         try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [])
 
