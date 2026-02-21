@@ -627,6 +627,12 @@ class CausalConditionalCFM: Module {
     let cfgRate: Float
     let meanflow: Bool
     let tScheduler: String
+    let nFeats: Int
+
+    /// Pre-generated deterministic noise for Regular (non-meanflow) models.
+    /// Python: `mx.random.seed(0); self.rand_noise = mx.random.normal((1, 80, 50*300))`
+    /// Using fixed seed ensures reproducible inference. Turbo uses fresh random noise instead.
+    let randNoise: MLXArray?
 
     @ModuleInfo(key: "estimator") var estimator: S3GenConditionalDecoder
 
@@ -643,6 +649,20 @@ class CausalConditionalCFM: Module {
         self.cfgRate = cfgRate
         self.tScheduler = tScheduler
         self.meanflow = meanflow
+        self.nFeats = outChannels
+
+        // Regular (non-meanflow) model uses deterministic noise from a fixed seed.
+        // This matches Python's CausalConditionalCFM.__init__ which does:
+        //   mx.random.seed(0)
+        //   self.rand_noise = mx.random.normal((1, MEL_CHANNELS, 50 * 300))
+        if !meanflow {
+            // Use key-based generation to match Python's mx.random.seed(0) behavior
+            let key = MLXRandom.key(0)
+            self.randNoise = MLXRandom.normal([1, Self.melChannels, 50 * 300], key: key)
+            eval(self.randNoise!)
+        } else {
+            self.randNoise = nil
+        }
 
         self._estimator.wrappedValue = S3GenConditionalDecoder(
             inChannels: inChannels, outChannels: outChannels,
@@ -683,38 +703,49 @@ class CausalConditionalCFM: Module {
     ///
     /// Used for Regular (non-meanflow) models. Duplicates the batch for conditional
     /// and unconditional predictions, then combines with CFG formula.
-    /// Python: `ConditionalCFM._solve_euler_cfg`
+    ///
+    /// Matches Python's `ConditionalCFM.solve_euler` exactly: initializes default
+    /// zero-filled spks/cond tensors, uses variable dt between steps, and applies
+    /// CFG formula `(1 + cfg_rate) * cond - cfg_rate * uncond`.
     private func solveEulerCFG(
         z: MLXArray, tSpan: MLXArray, mu: MLXArray, mask: MLXArray,
         spks: MLXArray?, cond: MLXArray?
     ) -> MLXArray {
         var x = z
-        let batchSize = mu.dim(0)
+        let batchSize = x.dim(0)
+        let T_len = x.dim(2)
+
+        // Python: initializes default zero-filled tensors even when spks/cond are None.
+        // `spks_in = mx.zeros((2, self.spk_emb_dim))`
+        // `cond_in = mx.zeros((2, self.n_feats, T_len))`
+        var spksIn = MLXArray.zeros([2, nFeats])
+        var condIn = MLXArray.zeros([2, nFeats, T_len])
+
+        // Python: `t = mx.expand_dims(t_span[0], 0)` → shape (1,)
+        // t_span[0] is scalar, expand_dims(0) gives 1D array of shape (1,)
+        var t = tSpan[0].expandedDimensions(axis: 0) // (1,)
+        var dt = tSpan[1] - tSpan[0]
+
         let nSteps = tSpan.dim(0) - 1
-
-        for i in 0 ..< nSteps {
-            let t = tSpan[i ..< (i + 1)]
-            let r = tSpan[(i + 1) ..< (i + 2)]
-
+        for step in 1 ... nSteps {
             // Duplicate for classifier-free guidance: [conditional, unconditional]
             let xIn = MLX.concatenated([x, x], axis: 0)
             let maskIn = MLX.concatenated([mask, mask], axis: 0)
             let muIn = MLX.concatenated([mu, MLXArray.zeros(like: mu)], axis: 0)
-            let tIn = MLX.broadcast(t, to: [2 * batchSize])
-            // r is only passed for meanflow; for regular it's nil
-            let rIn: MLXArray? = meanflow ? MLX.broadcast(r, to: [2 * batchSize]) : nil
+            let tIn = MLX.concatenated([t, t], axis: 0)
 
-            let spksIn: MLXArray? = spks.map {
-                MLX.concatenated([$0, MLXArray.zeros(like: $0)], axis: 0)
+            if let spks = spks {
+                spksIn = MLX.concatenated([spks, MLXArray.zeros(like: spks)], axis: 0)
             }
-            let condIn: MLXArray? = cond.map {
-                MLX.concatenated([$0, MLXArray.zeros(like: $0)], axis: 0)
+            if let cond = cond {
+                condIn = MLX.concatenated([cond, MLXArray.zeros(like: cond)], axis: 0)
             }
 
             // Predict velocity for both conditional and unconditional
+            // Regular model: no `r` parameter (r is nil)
             let dxdt = estimator(
                 x: xIn, mask: maskIn, mu: muIn, t: tIn,
-                spks: spksIn, cond: condIn, r: rIn)
+                spks: spksIn, cond: condIn, r: nil)
 
             // Split conditional and unconditional predictions
             let dxdtCond = dxdt[0 ..< batchSize]
@@ -724,8 +755,13 @@ class CausalConditionalCFM: Module {
             let pred = (1 + cfgRate) * dxdtCond - cfgRate * dxdtUncond
 
             // Euler step
-            let dt = r - t
             x = x + dt * pred
+            t = t + dt
+
+            // Update dt for next step (Python: `dt = t_span[step+1] - t`)
+            if step < nSteps {
+                dt = tSpan[step + 1] - t
+            }
         }
         return x
     }
@@ -735,16 +771,25 @@ class CausalConditionalCFM: Module {
         spks: MLXArray? = nil, cond: MLXArray? = nil,
         noisedMels: MLXArray? = nil
     ) -> MLXArray {
-        // Initialize with fresh random noise (matching Python: mx.random.normal(mu.shape))
-        var z = MLXRandom.normal(mu.shape)
+        let z: MLXArray
 
-        // If noised_mels provided (for meanflow), splice into generated portion
-        if let noisedMels = noisedMels {
-            let promptMelLen = mu.dim(2) - noisedMels.dim(2)
-            if promptMelLen > 0 {
-                let promptPart = z[0..., 0..., ..<promptMelLen]
-                z = MLX.concatenated([promptPart, noisedMels], axis: 2)
+        if meanflow {
+            // Turbo: fresh random noise + optional noised_mels splice
+            var noise = MLXRandom.normal(mu.shape)
+            if let noisedMels = noisedMels {
+                let promptMelLen = mu.dim(2) - noisedMels.dim(2)
+                if promptMelLen > 0 {
+                    let promptPart = noise[0..., 0..., ..<promptMelLen]
+                    noise = MLX.concatenated([promptPart, noisedMels], axis: 2)
+                }
             }
+            z = noise
+        } else {
+            // Regular: deterministic noise from pre-generated buffer (seed=0).
+            // Python: `z = self.rand_noise[:, :, :T] * temperature`
+            // Temperature is always 1.0 for CausalConditionalCFM.
+            let T = mu.dim(2)
+            z = randNoise![0..., 0..., ..<T]
         }
 
         // Time schedule: cosine for Regular, linear for Turbo (meanflow)
@@ -854,26 +899,34 @@ class CausalMaskedDiffWithXvec: Module {
         let normalizedEmb = embedding / (norm + 1e-8)
         let spkEmb = spkEmbedAffineLayer(normalizedEmb) // (B, 80)
 
-        // 2. Concatenate prompt + generated tokens, embed together
+        // 2. Concatenate prompt + generated tokens
         let combinedToken = MLX.concatenated([promptToken, token], axis: 1) // (B, T_prompt + T_gen)
         let combinedLen = promptTokenLen + tokenLen
 
-        // Clip token IDs to valid range and embed
+        // Create embedding mask: (B, T, 1) — masks padding positions before embedding.
+        // Python: `mask = (seq_range < seq_length).unsqueeze(-1).astype(dtype)`
+        let maxLen = combinedToken.dim(1)
+        let seqRange = MLXArray(0 ..< Int32(maxLen)).expandedDimensions(axis: 0)  // (1, T)
+        let seqLenExpanded = combinedLen.expandedDimensions(axis: -1)  // (B, 1)
+        let embMask = (seqRange .< seqLenExpanded).asType(.float32).expandedDimensions(axis: -1) // (B, T, 1)
+
+        // Clip token IDs to valid range, embed, and apply mask
         let clipped = MLX.clip(combinedToken, min: 0, max: vocabSize - 1)
-        let embedded = inputEmbedding(clipped) // (B, T_combined, 512)
+        let embedded = inputEmbedding(clipped) * embMask // (B, T_combined, 512) — masked
 
         // 3. Conformer encoder (includes 2x upsample internally)
         let (encoderOut, _) = encoder(xs: embedded, xsLens: combinedLen, streaming: streaming)
         // encoderOut: (B, T_up, 512) where T_up ≈ T_combined * 2
 
-        // 4. Project encoder output to mel dimension
-        let h = encoderProj(encoderOut) // (B, T_up, 80)
-
-        // 5. Build conditioning signal from prompt mel features
-        let totalMelLen = h.dim(1)
+        // 4. Compute mel lengths from prompt feat
         let promptMelLen = promptFeat.dim(1)
 
-        // Create conditioning: prompt mel features followed by zeros
+        // 5. Project encoder output to mel dimension
+        let h = encoderProj(encoderOut) // (B, T_up, 80)
+        let totalMelLen = h.dim(1)
+
+        // 6. Build conditioning signal from prompt mel features
+        // Python: `conds = mx.zeros([1, mel_len1 + mel_len2, D]); conds[:, :mel_len1] = prompt_feat`
         var condsSlices: [MLXArray] = []
         if promptMelLen > 0 {
             let copyLen = min(promptMelLen, totalMelLen)
@@ -886,13 +939,12 @@ class CausalMaskedDiffWithXvec: Module {
         }
         let conds = MLX.concatenated(condsSlices, axis: 1).transposed(0, 2, 1) // (B, 80, T_up)
 
-        // 6. Create decoder mask from upsampled lengths
-        let hLengths = combinedLen * Int32(tokenMelRatio)
-        let decoderMask = MLX.logicalNot(
-            s3genMakePadMask(lengths: hLengths, maxLen: totalMelLen)
-        ).asType(.float32).expandedDimensions(axis: 1) // (B, 1, T_up)
+        // 7. Create decoder mask — Python uses all-ones: `mask = mx.ones([1, 1, total_len])`
+        // The flow matching decoder doesn't need padding masks since batch=1 and
+        // all positions are valid.
+        let decoderMask = MLXArray.ones([1, 1, totalMelLen]).asType(.float32)
 
-        // 7. Flow matching decode
+        // 8. Flow matching decode
         let mu = h.transposed(0, 2, 1) // (B, 80, T_up)
 
         // For meanflow, generate noised mels for the generated portion only

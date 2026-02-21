@@ -181,6 +181,28 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
                 var remapped = key
                 remapped = remapped.replacingOccurrences(of: ".net.0.", with: ".gelu_gate.")
                 remapped = remapped.replacingOccurrences(of: ".net.1.", with: ".out_proj.")
+
+                // Regular model: remap Python MLX weight keys to Swift module structure.
+                //
+                // The Regular model safetensors stores post-Python-sanitized keys which use
+                // Python MLX module naming conventions. These differ from Swift's module
+                // nesting in several ways:
+                //
+                // 1. Block arrays: Python uses setattr-based naming (down_blocks_0, transformer_0)
+                //    while Swift uses [Module] arrays (down_blocks.0, transformer_blocks.0)
+                // 2. Conv wrapping: Python uses nn.Conv1d directly, Swift wraps in S3GenConv1dPT
+                // 3. CausalBlock1D: Python uses named attrs (self.conv, self.norm),
+                //    Swift uses [Module] array (block.0, block.1)
+                // 4. Transformer attention: Python post-sanitized keys use (attn.query_proj),
+                //    Swift uses original PyTorch names (attn1.to_q)
+                // 5. FeedForward: Python post-sanitized keys use (ff.layers.0),
+                //    Swift uses (ff.gelu_gate.proj, ff.out_proj)
+                //
+                // Turbo weights use PyTorch-format keys that the existing remapping handles.
+                if config.modelType == "chatterbox" {
+                    remapped = Self.remapRegularS3GenKey(remapped)
+                }
+
                 otherS3GenWeights[remapped] = value
             }
         }
@@ -206,6 +228,135 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
         }
 
         return result
+    }
+
+    /// Remap a single S3Gen weight key from Python-MLX naming (post-sanitized) to Swift module naming.
+    ///
+    /// The Regular model's safetensors stores post-Python-sanitized keys which use Python MLX
+    /// module naming conventions. These differ from Swift's module nesting in several ways:
+    ///
+    /// Python → Swift key mapping:
+    /// 1. `down_blocks_0.` → `down_blocks.0.` (setattr vs [Module] array)
+    /// 2. `transformer_0.` → `transformer_blocks.0.` (setattr vs array @ModuleInfo)
+    /// 3. `.attn.query_proj.` → `.attn1.to_q.` (Python sanitized → Swift original PyTorch)
+    /// 4. `.ff.layers.0.` → `.ff.gelu_gate.proj.` (Python LayerList → Swift named submodules)
+    /// 5. `.block1.conv.conv.` → `.block1.block.0.conv.conv.` (named attrs → block array)
+    /// 6. `.res_conv.weight` → `.res_conv.conv.weight` (bare Conv1d → S3GenConv1dPT wrapper)
+    /// 7. `.final_proj.weight` → `.final_proj.conv.weight`
+    /// 8. `.final_block.conv.` → `.final_block.block.0.conv.` (CausalBlock1D)
+    /// 9. `.downsample.conv.weight` → `.downsample.conv.conv.weight` (Downsample1D wrapping)
+    /// 10. `.mlp_linear.` → `.mlp.0.` (Python sanitized mlp.1→mlp_linear, Swift uses [Linear])
+    static func remapRegularS3GenKey(_ key: String) -> String {
+        var k = key
+
+        // --- 1. Block array naming: setattr → Swift [Module] arrays ---
+        // Python uses `down_blocks_0`, Swift uses `down_blocks.0`
+        // Must handle multi-digit indices: down_blocks_12 → down_blocks.12
+        k = k.replacingOccurrences(
+            of: #"down_blocks_(\d+)\."#,
+            with: "down_blocks.$1.",
+            options: .regularExpression)
+        k = k.replacingOccurrences(
+            of: #"mid_blocks_(\d+)\."#,
+            with: "mid_blocks.$1.",
+            options: .regularExpression)
+        k = k.replacingOccurrences(
+            of: #"up_blocks_(\d+)\."#,
+            with: "up_blocks.$1.",
+            options: .regularExpression)
+
+        // --- 2. Transformer array naming within blocks ---
+        // Python: `transformer_0.` → Swift: `transformer_blocks.0.`
+        k = k.replacingOccurrences(
+            of: #"\.transformer_(\d+)\."#,
+            with: ".transformer_blocks.$1.",
+            options: .regularExpression)
+        // Also handle top-level transformer_ (without leading dot)
+        if k.hasPrefix("transformer_") {
+            k = k.replacingOccurrences(
+                of: #"^transformer_(\d+)\."#,
+                with: "transformer_blocks.$1.",
+                options: .regularExpression)
+        }
+
+        // --- 3. Attention naming: Python sanitized → Swift original PyTorch names ---
+        // Python: .attn.query_proj. → Swift: .attn1.to_q.
+        k = k.replacingOccurrences(of: ".attn.query_proj.", with: ".attn1.to_q.")
+        k = k.replacingOccurrences(of: ".attn.key_proj.", with: ".attn1.to_k.")
+        k = k.replacingOccurrences(of: ".attn.value_proj.", with: ".attn1.to_v.")
+        k = k.replacingOccurrences(of: ".attn.out_proj.", with: ".attn1.to_out.0.")
+
+        // --- 4. FeedForward naming: Python LayerList → Swift named submodules ---
+        // Python: .ff.layers.0. (GELU proj) → Swift: .ff.gelu_gate.proj.
+        // Python: .ff.layers.1. (output Linear) → Swift: .ff.out_proj.
+        k = k.replacingOccurrences(of: ".ff.layers.0.", with: ".ff.gelu_gate.proj.")
+        k = k.replacingOccurrences(of: ".ff.layers.1.", with: ".ff.out_proj.")
+
+        // --- 5. CausalBlock1D: Python named attrs → Swift block array ---
+        // Python CausalBlock1D stores: self.conv (CausalConv1d), self.norm (LayerNorm)
+        // Swift S3GenCausalBlock1D stores: block[0] (CausalConv1d), block[1] (LayerNorm)
+        //
+        // Python key: .block1.conv.conv.weight → Swift: .block1.block.0.conv.conv.weight
+        // Python key: .block1.norm.weight → Swift: .block1.block.1.weight
+        // Same for block2 and final_block
+        //
+        // IMPORTANT: Must replace `conv.conv.` (CausalConv1d path) with `block.0.conv.conv.`
+        // and `norm.` with `block.1.` — NOT just `conv.` → `block.0.` which would eat one
+        // level of the CausalConv1d nesting.
+        k = k.replacingOccurrences(of: ".block1.conv.conv.", with: ".block1.block.0.conv.conv.")
+        k = k.replacingOccurrences(of: ".block1.norm.", with: ".block1.block.1.")
+        k = k.replacingOccurrences(of: ".block2.conv.conv.", with: ".block2.block.0.conv.conv.")
+        k = k.replacingOccurrences(of: ".block2.norm.", with: ".block2.block.1.")
+        k = k.replacingOccurrences(of: ".final_block.conv.conv.", with: ".final_block.block.0.conv.conv.")
+        k = k.replacingOccurrences(of: ".final_block.norm.", with: ".final_block.block.1.")
+
+        // --- 6. res_conv: bare Conv1d → S3GenConv1dPT wrapper ---
+        // Python: .res_conv.weight → Swift: .res_conv.conv.weight
+        // Must NOT double-convert if already has .conv.
+        // The Python key is `res_conv.weight` or `res_conv.bias` (bare nn.Conv1d).
+        // Swift has S3GenConv1dPT which nests as res_conv.conv.weight.
+        k = k.replacingOccurrences(
+            of: #"\.res_conv\.(weight|bias)"#,
+            with: ".res_conv.conv.$1",
+            options: .regularExpression)
+
+        // --- 7. final_proj: bare Conv1d → S3GenConv1dPT wrapper ---
+        // Python: final_proj.weight → Swift: final_proj.conv.weight
+        k = k.replacingOccurrences(
+            of: #"\.final_proj\.(weight|bias)"#,
+            with: ".final_proj.conv.$1",
+            options: .regularExpression)
+        // Also handle if final_proj is at the start of the key
+        if k.hasPrefix("final_proj.") && !k.hasPrefix("final_proj.conv.") {
+            k = k.replacingOccurrences(
+                of: #"^final_proj\.(weight|bias)"#,
+                with: "final_proj.conv.$1",
+                options: .regularExpression)
+        }
+
+        // --- 8. Downsample/Upsample: bare Conv1d → S3GenConv1dPT/S3GenConvTranspose1dPT ---
+        // Python Downsample1D: .downsample.conv.weight (nn.Conv1d is self.conv)
+        // Swift S3GenDownsample1D: .downsample.conv.conv.weight (S3GenConv1dPT wraps Conv1d)
+        // But: the last-layer downsample is a CausalConv1d which already has .conv.conv
+        // So only add extra .conv when not already present.
+        //
+        // Match `.downsample.conv.weight` but NOT `.downsample.conv.conv.weight`
+        k = k.replacingOccurrences(
+            of: #"\.downsample\.conv\.(weight|bias)$"#,
+            with: ".downsample.conv.conv.$1",
+            options: .regularExpression)
+        k = k.replacingOccurrences(
+            of: #"\.upsample\.conv\.(weight|bias)$"#,
+            with: ".upsample.conv.conv.$1",
+            options: .regularExpression)
+
+        // --- 9. MLP naming: Python sanitized mlp_linear → Swift mlp.0 ---
+        // Python sanitize: .mlp.1. → .mlp_linear.
+        // So safetensors has: .mlp_linear.weight
+        // Swift has: @ModuleInfo(key: "mlp") var mlp: [Linear] → .mlp.0.weight
+        k = k.replacingOccurrences(of: ".mlp_linear.", with: ".mlp.0.")
+
+        return k
     }
 
     // MARK: - Text Tokenization
