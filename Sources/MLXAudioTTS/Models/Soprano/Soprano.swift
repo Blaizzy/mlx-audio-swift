@@ -947,7 +947,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
             }
         }
 
-        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
+        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .all)
 
         eval(model)
 

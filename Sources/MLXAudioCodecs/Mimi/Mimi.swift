@@ -237,7 +237,7 @@ public extension Mimi {
         repoId: String = "kyutai/moshiko-pytorch-bf16",
         filename: String = "tokenizer-e351c8d8-checkpoint125.safetensors",
         cache: HubCache = .default,
-        progressHandler: @escaping (Progress) -> Void
+        progressHandler: @Sendable @escaping (Progress) -> Void
     ) async throws -> Mimi {
         print("[Mimi] Starting Mimi model loading from \(repoId)")
 
@@ -320,7 +320,7 @@ public extension Mimi {
         print("[Mimi] Updating model parameters...")
         let updateStart = CFAbsoluteTimeGetCurrent()
         let parameters = ModuleParameters.unflattened(weights)
-        try model.update(parameters: parameters, verify: [.all])
+        try model.update(parameters: parameters, verify: .all)
         let updateTime = CFAbsoluteTimeGetCurrent() - updateStart
         print(String(format: "[Mimi] Model parameters updated in %.2f seconds", updateTime))
 

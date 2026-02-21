@@ -589,7 +589,7 @@ public class Qwen3ForcedAlignerModel: Module {
             }
         }
 
-        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
+        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .all)
         eval(model)
 
         return model

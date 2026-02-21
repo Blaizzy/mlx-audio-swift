@@ -551,7 +551,7 @@ public extension ParakeetModel {
             }
         }
 
-        try model.update(parameters: ModuleParameters.unflattened(sanitized), verify: [.all])
+        try model.update(parameters: ModuleParameters.unflattened(sanitized), verify: .all)
         eval(model)
         return model
     }

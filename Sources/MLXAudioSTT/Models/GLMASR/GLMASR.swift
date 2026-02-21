@@ -658,7 +658,7 @@ public class GLMASRModel: Module {
                 }
             }
         }
-        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
+        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .all)
 
         eval(model)
 

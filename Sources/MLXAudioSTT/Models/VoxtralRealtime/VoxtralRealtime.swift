@@ -417,7 +417,7 @@ public extension VoxtralRealtimeModel {
             }
         }
 
-        try model.update(parameters: ModuleParameters.unflattened(sanitized), verify: [.all])
+        try model.update(parameters: ModuleParameters.unflattened(sanitized), verify: .all)
         model.ensureAdaScales(transcriptionDelayMs: config.transcriptionDelayMs)
         eval(model)
 

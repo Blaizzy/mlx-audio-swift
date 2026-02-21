@@ -118,7 +118,7 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
     public static func loadPredefinedVoice(
         _ voiceName: String,
         modelFolder: URL,
-        progressHandler: @escaping (Progress) -> Void = { _ in }
+        progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
     ) async throws -> MLXArray? {
         _ = progressHandler
         let fileURL = modelFolder.appendingPathComponent("embeddings/\(voiceName).safetensors")
@@ -135,7 +135,7 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
     private func resolveAudioPrompt(
         voice: String?,
         refAudio: MLXArray?,
-        progressHandler: @escaping (Progress) -> Void = { _ in }
+        progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
     ) async throws -> AudioPrompt {
         if let refAudio {
             return .audio(normalizeAudio(refAudio))
@@ -355,7 +355,7 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
 
         let model = try await PocketTTSModel.fromConfig(config, modelFolder: modelDir)
         let weights = try await loadPocketTTSWeights(modelDir: modelDir)
-        try model.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
+        try model.update(parameters: ModuleParameters.unflattened(weights), verify: .all)
 
         eval(model)
         return model

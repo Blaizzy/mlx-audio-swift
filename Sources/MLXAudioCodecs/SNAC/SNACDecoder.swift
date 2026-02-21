@@ -179,7 +179,7 @@ public class SNAC: Module {
         let snac = try fromConfig(configPath)
 
         let weights = try loadArrays(url: weightsPath)
-        try snac.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
+        try snac.update(parameters: ModuleParameters.unflattened(weights), verify: .all)
         eval(snac)
 
         return snac

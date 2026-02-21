@@ -1518,7 +1518,7 @@ public class Qwen3ASRModel: Module {
         }
 
         // Load weights into model
-        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
+        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .all)
         eval(model)
 
         return model

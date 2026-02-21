@@ -53,7 +53,7 @@ public final class MarvisTTSModel: Module {
         hub: HubApi = .shared,
         repoId: String,
         promptURLs: [URL]? = nil,
-        progressHandler: @escaping (Progress) -> Void
+        progressHandler: @Sendable @escaping (Progress) -> Void
     ) async throws {
         let textTokenizer = try await loadTokenizer(configuration: ModelConfiguration(id: repoId), hub: hub)
         let codec = try await Mimi.fromPretrained(progressHandler: progressHandler)
@@ -144,7 +144,7 @@ public extension MarvisTTSModel {
     static func fromPretrained(
         _ modelRepo: String = "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit",
         cache: HubCache = .default,
-        progressHandler: @escaping (Progress) -> Void = { _ in }
+        progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
     ) async throws -> MarvisTTSModel {
         Memory.cacheLimit = 100 * 1024 * 1024
 
@@ -206,7 +206,7 @@ public extension MarvisTTSModel {
         }
         
         let parameters = ModuleParameters.unflattened(weights)
-        try model.update(parameters: parameters, verify: [.all])
+        try model.update(parameters: parameters, verify: .all)
         
         eval(model)
         return model
@@ -216,7 +216,7 @@ public extension MarvisTTSModel {
         hub: HubApi = .shared,
         repoId: String = "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit",
         cache: HubCache = .default,
-        progressHandler: @escaping (Progress) -> Void
+        progressHandler: @Sendable @escaping (Progress) -> Void
     ) async throws -> MarvisTTSModel {
         _ = hub
         return try await fromPretrained(repoId, cache: cache, progressHandler: progressHandler)

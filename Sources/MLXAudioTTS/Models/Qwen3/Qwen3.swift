@@ -920,7 +920,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
 
 
 
-        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
+        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .all)
         eval(model)
 
         try await model.post_load_hook(model: model, modelDir: modelDir, cache: cache)

@@ -358,7 +358,7 @@ public final class MossFormer2SEModel: STSModel {
             }
         }
 
-        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
+        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .all)
         eval(model)
         return MossFormer2SEModel(model: model, config: config)
     }
