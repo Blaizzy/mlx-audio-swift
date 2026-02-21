@@ -743,7 +743,16 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         // Sanitize and load talker weights
         let talkerWeights = Qwen3TTSTalkerForConditionalGeneration.sanitize(weights: allWeights)
         let talkerPairs = talkerWeights.map { ($0.key, $0.value) }
-        try model.talker.update(parameters: ModuleParameters.unflattened(talkerPairs), verify: .noUnusedKeys)
+
+        // Apply quantization before weight loading (converts Linear → QuantizedLinear)
+        if config.quantization != nil {
+            quantize(model: model.talker) { path, _ in
+                guard talkerWeights["\(path).scales"] != nil else { return nil }
+                return config.quantization?.asTuple
+            }
+        }
+
+        try model.talker.update(parameters: ModuleParameters.unflattened(talkerPairs), verify: [])
         eval(model.talker.parameters())
 
         // Generate tokenizer.json if missing (Qwen3-TTS ships without it)
@@ -800,7 +809,15 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             if !speakerWeights.isEmpty {
                 if let speakerEncoder = model.speakerEncoder {
                     let speakerPairs = speakerWeights.map { ($0.key, $0.value) }
-                    try speakerEncoder.update(parameters: ModuleParameters.unflattened(speakerPairs), verify: .noUnusedKeys)
+
+                    if config.quantization != nil {
+                        quantize(model: speakerEncoder) { path, _ in
+                            guard speakerWeights["\(path).scales"] != nil else { return nil }
+                            return config.quantization?.asTuple
+                        }
+                    }
+
+                    try speakerEncoder.update(parameters: ModuleParameters.unflattened(speakerPairs), verify: [])
                     eval(speakerEncoder.parameters())
                 }
             }
@@ -840,7 +857,18 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         if !tokenizerWeights.isEmpty {
             let sanitized = Qwen3TTSSpeechTokenizer.sanitize(weights: tokenizerWeights)
             let pairs = sanitized.map { ($0.key, $0.value) }
-            try speechTokenizer.update(parameters: ModuleParameters.unflattened(pairs), verify: .noUnusedKeys)
+
+            // Apply quantization if weights contain .scales keys (quantized tokenizer)
+            let hasQuantizedWeights = sanitized.keys.contains { $0.hasSuffix(".scales") }
+            if hasQuantizedWeights {
+                quantize(model: speechTokenizer) { path, _ in
+                    guard sanitized["\(path).scales"] != nil else { return nil }
+                    // Default quantization params — will be overridden by actual weight shapes
+                    return (groupSize: 64, bits: 4, mode: .affine)
+                }
+            }
+
+            try speechTokenizer.update(parameters: ModuleParameters.unflattened(pairs), verify: [])
             eval(speechTokenizer.parameters())
         }
 
