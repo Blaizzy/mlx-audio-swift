@@ -457,7 +457,9 @@ public struct ChatterboxConfiguration: Codable, Sendable {
         self.modelPath = try container.decodeIfPresent(String.self, forKey: .modelPath)
 
         // S3Gen decoder config
-        self.meanflow = try container.decodeIfPresent(Bool.self, forKey: .meanflow) ?? true
+        // meanflow=true for Turbo (distilled flow matching), false for Regular (ODE solver with CFG)
+        let isTurboModel = self.modelType == "chatterbox_turbo" || (self.t3Config.isGPT)
+        self.meanflow = try container.decodeIfPresent(Bool.self, forKey: .meanflow) ?? isTurboModel
         self.decoderInChannels = try container.decodeIfPresent(Int.self, forKey: .decoderInChannels) ?? 320
         self.decoderOutChannels = try container.decodeIfPresent(Int.self, forKey: .decoderOutChannels) ?? 80
         self.decoderChannels = try container.decodeIfPresent([Int].self, forKey: .decoderChannels) ?? [256]
