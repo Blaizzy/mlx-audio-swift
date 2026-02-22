@@ -370,6 +370,7 @@ public class T3Model: Module {
         maxNewTokens: Int = 1024,
         temperature: Float = 0.8,
         topP: Float = 0.95,
+        minP: Float = 0.05,
         repetitionPenalty: Float = 1.2,
         cfgWeight: Float = 0.5
     ) -> MLXArray {
@@ -417,7 +418,7 @@ public class T3Model: Module {
         // Track generated tokens
         var generatedIds = [hp.startSpeechToken]
 
-        print("[T3-LLaMA] Starting generation (maxNewTokens=\(maxNewTokens), temp=\(temperature), topP=\(topP), cfg=\(cfgWeight))")
+        print("[T3-LLaMA] Starting generation (maxNewTokens=\(maxNewTokens), temp=\(temperature), topP=\(topP), minP=\(minP), cfg=\(cfgWeight))")
         let genStart = CFAbsoluteTimeGetCurrent()
 
         // Generation loop
@@ -440,8 +441,8 @@ public class T3Model: Module {
                 logits = applyRepetitionPenalty(logits: logits, generatedIds: generatedIds, penalty: repetitionPenalty, vocabSize: hp.speechTokensDictSize)
             }
 
-            // Sample (temperature + top-p)
-            let nextToken = sampleToken(logits: logits, temperature: temperature, topP: topP)
+            // Sample (temperature + min-p + top-p)
+            let nextToken = sampleToken(logits: logits, temperature: temperature, topP: topP, minP: minP)
             eval(nextToken)
             let nextTokenId = nextToken[0].item(Int.self)
 
@@ -517,13 +518,13 @@ func applyRepetitionPenalty(logits: MLXArray, generatedIds: [Int], penalty: Floa
     return putAlong(logits, tokenIds, values: penalized, axis: -1)
 }
 
-/// Sample a token from logits using temperature, top-k, and top-p.
+/// Sample a token from logits using temperature, top-k, min-p, and top-p.
 ///
 /// Uses fully vectorized MLX operations (no element-by-element loops).
 /// Matches the Python implementation: operates on logits throughout,
 /// then uses categorical (which applies softmax internally) to sample.
 /// Shared by both T3Model (LLaMA) and T3GPT2Model (Turbo).
-func sampleToken(logits: MLXArray, temperature: Float, topK: Int = 0, topP: Float = 1.0) -> MLXArray {
+func sampleToken(logits: MLXArray, temperature: Float, topK: Int = 0, topP: Float = 1.0, minP: Float = 0.0) -> MLXArray {
     var filtered = logits
 
     // 1. Temperature scaling (on logits)
@@ -544,7 +545,18 @@ func sampleToken(logits: MLXArray, temperature: Float, topK: Int = 0, topP: Floa
         }
     }
 
-    // 3. Top-p (nucleus) filtering using vectorized takeAlong/putAlong
+    // 3. Min-p filtering — matches Python mlx_lm apply_min_p.
+    // Keeps all tokens whose probability is at least minP × max_token_probability.
+    // More adaptive than top-k: aggressive when the model is confident, permissive when uncertain.
+    if minP > 0.0 {
+        let probs = softmax(filtered, axis: -1)
+        let topProb = MLX.max(probs, axis: -1, keepDims: true)
+        let threshold = topProb * MLXArray(minP)
+        let mask = probs .< threshold
+        filtered = MLX.where(mask, MLXArray(-Float.infinity), filtered)
+    }
+
+    // 4. Top-p (nucleus) filtering using vectorized takeAlong/putAlong
     if topP < 1.0 {
         // Sort in descending order
         let sortedIndices = argSort(-filtered, axis: -1)
@@ -573,6 +585,6 @@ func sampleToken(logits: MLXArray, temperature: Float, topK: Int = 0, topP: Floa
         filtered = takeAlong(maskedSorted, inverseIndices, axis: -1)
     }
 
-    // 4. Sample using categorical (applies softmax internally on logits)
+    // 5. Sample using categorical (applies softmax internally on logits)
     return MLXRandom.categorical(filtered)
 }
