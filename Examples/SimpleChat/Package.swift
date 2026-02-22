@@ -19,7 +19,8 @@ let package = Package(
             name: "SimpleChat",
             dependencies: [
                 .product(name: "MLXAudioTTS", package: "mlx-audio-swift"),
-                .product(name: "MLXAudioCore", package: "mlx-audio-swift")
+                .product(name: "MLXAudioCore", package: "mlx-audio-swift"),
+                .product(name: "MLXAudioVAD", package: "mlx-audio-swift")
             ],
             path: "SimpleChat"
         )
