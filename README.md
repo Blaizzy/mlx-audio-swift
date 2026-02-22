@@ -198,6 +198,15 @@ let audio = try await model.generate(
 - **Xcode 15+**
 - **Swift 5.9+**
 
+## Examples
+
+Check out the [Examples/VoicesApp](Examples/VoicesApp) directory for a complete SwiftUI application demonstrating:
+- Loading and running TTS models
+- Playing generated audio
+- UI components for model interaction
+
+Additional usage examples can be found in the test files.
+
 ## Testing
 
 ### Unit Tests
@@ -258,15 +267,6 @@ xcodebuild test \
 ```bash
 2>&1 | grep -E '(Test .* (started|passed|failed)|Suite .* (started|passed|failed)|TEST (PASSED|FAILED))'
 ```
-
-## Examples
-
-Check out the [Examples/VoicesApp](Examples/VoicesApp) directory for a complete SwiftUI application demonstrating:
-- Loading and running TTS models
-- Playing generated audio
-- UI components for model interaction
-
-Additional usage examples can be found in the test files.
 
 ## Credits
 
