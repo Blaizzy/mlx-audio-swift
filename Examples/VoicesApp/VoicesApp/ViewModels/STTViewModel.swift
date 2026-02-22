@@ -3,7 +3,7 @@ import SwiftUI
 import MLXAudioSTT
 import MLXAudioCore
 import MLX
-import AVFoundation
+@preconcurrency import AVFoundation
 import Combine
 
 @MainActor
@@ -45,7 +45,7 @@ class STTViewModel {
     var audioLevel: Float { recorder.audioLevel }
 
     private var model: Qwen3ASRModel?
-    private let audioPlayer = AudioPlayerManager()
+    private let audioPlayer = AudioPlayer()
     private let recorder = AudioRecorderManager()
     private var cancellables = Set<AnyCancellable>()
     private var generationTask: Task<Void, Never>?

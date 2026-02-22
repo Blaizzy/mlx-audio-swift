@@ -9,6 +9,10 @@
 /* Begin PBXBuildFile section */
 		3322ACB42F2FC458008246F3 /* MLXAudioCore in Frameworks */ = {isa = PBXBuildFile; productRef = 33B1215C2F2EA41E006A1A8A /* MLXAudioCore */; };
 		3322ACB52F2FC458008246F3 /* MLXAudioTTS in Frameworks */ = {isa = PBXBuildFile; productRef = 33B1215E2F2EA41E006A1A8A /* MLXAudioTTS */; };
+		3322ACB62F2FC458008246F3 /* MLXAudioSTT in Frameworks */ = {isa = PBXBuildFile; productRef = 33B121602F2EA41E006A1A8A /* MLXAudioSTT */; };
+		332425792F4BBFB6002EBAE4 /* Lily.wav in Resources */ = {isa = PBXBuildFile; fileRef = 332425772F4BBFB6002EBAE4 /* Lily.wav */; };
+		3324257B2F4BC0D5002EBAE4 /* James.wav in Resources */ = {isa = PBXBuildFile; fileRef = 3324257A2F4BC0D5002EBAE4 /* James.wav */; };
+		3324257D2F4BC1A9002EBAE4 /* Sophie.wav in Resources */ = {isa = PBXBuildFile; fileRef = 3324257C2F4BC1A9002EBAE4 /* Sophie.wav */; };
 		APP001 /* VoicesApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC001 /* VoicesApp.swift */; };
 		APP002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC002 /* ContentView.swift */; };
 		APP003 /* Voice.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC003 /* Voice.swift */; };
@@ -22,10 +26,12 @@
 		APP011 /* STTViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC011 /* STTViewModel.swift */; };
 		APP012 /* STTSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC012 /* STTSettingsView.swift */; };
 		APP013 /* AudioRecorderManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC013 /* AudioRecorderManager.swift */; };
-		3322ACB62F2FC458008246F3 /* MLXAudioSTT in Frameworks */ = {isa = PBXBuildFile; productRef = 33B121602F2EA41E006A1A8A /* MLXAudioSTT */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		332425772F4BBFB6002EBAE4 /* Lily.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = Lily.wav; sourceTree = "<group>"; };
+		3324257A2F4BC0D5002EBAE4 /* James.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = James.wav; sourceTree = "<group>"; };
+		3324257C2F4BC1A9002EBAE4 /* Sophie.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = Sophie.wav; sourceTree = "<group>"; };
 		CONF001 /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
 		CONF002 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
 		CONF003 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
@@ -40,10 +46,10 @@
 		SRC007 /* VoiceRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceRow.swift; sourceTree = "<group>"; };
 		SRC008 /* VoiceCollectionCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCollectionCard.swift; sourceTree = "<group>"; };
 		SRC009 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
-		SRC0A0 /* STTView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = STTView.swift; sourceTree = "<group>"; };
 		SRC011 /* STTViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = STTViewModel.swift; sourceTree = "<group>"; };
 		SRC012 /* STTSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = STTSettingsView.swift; sourceTree = "<group>"; };
 		SRC013 /* AudioRecorderManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorderManager.swift; sourceTree = "<group>"; };
+		SRC0A0 /* STTView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = STTView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -60,6 +66,16 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		332425782F4BBFB6002EBAE4 /* Voices */ = {
+			isa = PBXGroup;
+			children = (
+				3324257A2F4BC0D5002EBAE4 /* James.wav */,
+				332425772F4BBFB6002EBAE4 /* Lily.wav */,
+				3324257C2F4BC1A9002EBAE4 /* Sophie.wav */,
+			);
+			path = Voices;
+			sourceTree = "<group>";
+		};
 		GRP001 = {
 			isa = PBXGroup;
 			children = (
@@ -72,12 +88,13 @@
 		GRP002 /* VoicesApp */ = {
 			isa = PBXGroup;
 			children = (
-				SRC001 /* VoicesApp.swift */,
-				SRC0A0 /* STTView.swift */,
+				GRP009 /* Helpers */,
 				GRP003 /* Models */,
+				SRC0A0 /* STTView.swift */,
 				GRP004 /* ViewModels */,
 				GRP005 /* Views */,
-				GRP009 /* Helpers */,
+				332425782F4BBFB6002EBAE4 /* Voices */,
+				SRC001 /* VoicesApp.swift */,
 			);
 			path = VoicesApp;
 			sourceTree = "<group>";
@@ -214,6 +231,9 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3324257D2F4BC1A9002EBAE4 /* Sophie.wav in Resources */,
+				332425792F4BBFB6002EBAE4 /* Lily.wav in Resources */,
+				3324257B2F4BC0D5002EBAE4 /* James.wav in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

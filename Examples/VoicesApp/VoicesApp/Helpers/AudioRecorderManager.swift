@@ -1,5 +1,5 @@
 import Foundation
-import AVFoundation
+@preconcurrency import AVFoundation
 import MLX
 
 /// Manages continuous audio capture via AVAudioEngine with a ring buffer.

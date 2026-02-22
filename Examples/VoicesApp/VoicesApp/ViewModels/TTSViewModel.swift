@@ -77,7 +77,7 @@ class TTSViewModel {
     var streamingPlayback: Bool = true // Play audio as chunks are generated
 
     // Model configuration
-    var modelId: String = "mlx-community/VyvoTTS-EN-Beta-4bit"
+    var modelId: String = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit"
     private var loadedModelId: String?
 
     // Audio player state (manually synced from AudioPlayerManager)
@@ -86,7 +86,7 @@ class TTSViewModel {
     var duration: TimeInterval = 0
 
     private var model: SpeechGenerationModel?
-    private let audioPlayer = AudioPlayerManager()
+    private let audioPlayer = AudioPlayer()
     private var cancellables = Set<AnyCancellable>()
     private var generationTask: Task<Void, Never>?
 
@@ -394,9 +394,12 @@ class TTSViewModel {
             audioURL = finalURL
             generationProgress = "" // Clear progress
 
-            // For single chunk, load normally for playback
-            if !useStreaming {
+            // Finalize playback state once generation completes.
+            if useStreaming {
+                audioPlayer.finishStreamingInput()
+            } else {
                 audioPlayer.loadAudio(from: finalURL)
+                audioPlayer.play()
             }
 
         } catch is CancellationError {

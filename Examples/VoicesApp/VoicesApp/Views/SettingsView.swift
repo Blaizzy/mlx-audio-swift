@@ -1,8 +1,19 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var viewModel: TTSViewModel
+    @FocusState private var focusedField: Field?
+
+    private enum Field {
+        case modelId
+    }
 
     var body: some View {
         NavigationStack {
@@ -48,9 +59,17 @@ struct SettingsView: View {
                     TextField("Model ID", text: $viewModel.modelId)
                         .font(textFont)
                         .textFieldStyle(.plain)
+#if os(iOS)
+                        .textInputAutocapitalization(.never)
+#endif
+                        .autocorrectionDisabled()
+                        .focused($focusedField, equals: Field.modelId)
                         .padding(8)
                         .background(Color.gray.opacity(0.15))
                         .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .onTapGesture {
+                            focusedField = .modelId
+                        }
 
                     Button(action: {
                         Task {
@@ -147,7 +166,7 @@ struct SettingsView: View {
                         Text("Voice Description")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-
+                        
                         TextEditor(text: $viewModel.voiceDescription)
                             .font(textFont)
                             .frame(height: 80)
@@ -407,7 +426,7 @@ struct SettingsView: View {
 
             // Reset button
             Button(action: {
-                viewModel.modelId = "mlx-community/VyvoTTS-EN-Beta-4bit"
+                viewModel.modelId = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit"
                 viewModel.resetGenerationParameterOverrides()
                 viewModel.useVoiceDesign = false
                 viewModel.voiceDescription = ""
@@ -447,10 +466,19 @@ struct ModelHintRow: View {
             Text(modelId)
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundStyle(.secondary)
-                .textSelection(.enabled)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                #if os(macOS)
+                .textSelection(.enabled)
                 .help("Click to select and copy")
+                #endif
+                #if os(iOS)
+                .contextMenu {
+                    Button("Copy Model ID") {
+                        UIPasteboard.general.string = modelId
+                    }
+                }
+                #endif
         }
     }
 }
