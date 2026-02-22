@@ -32,12 +32,14 @@ enum ParakeetAudio {
         )
 
         let power = MLX.abs(stftOutput).square().asType(originalDType)
+        // NeMo's AudioToMelSpectrogramPreprocessor defaults to HTK mel scale.
+        // Both Parakeet V2 and V3 were trained with NeMo, so use HTK here.
         let filters = melFilters(
             sampleRate: config.sampleRate,
             nFft: config.nFft,
             nMels: config.features,
             norm: config.normalize,
-            melScale: .slaney
+            melScale: .htk
         )
 
         var mel = MLX.matmul(power, filters.asType(power.dtype))
