@@ -666,6 +666,137 @@ struct TTSSmokeTests {
             print("\u{001B}[33mNo default conditioning — skipping generation (Regular model requires reference audio)\u{001B}[0m")
         }
     }
+
+    // MARK: - Kokoro TTS Tests
+
+    @Test func kokoroGenerate() async throws {
+        testHeader("kokoroGenerate")
+        defer { testCleanup("kokoroGenerate") }
+
+        print("\u{001B}[33mLoading Kokoro TTS model...\u{001B}[0m")
+        let model = try await KokoroModel.fromPretrained("mlx-community/Kokoro-82M-bf16")
+        print("\u{001B}[32mKokoro model loaded!\u{001B}[0m")
+
+        // Verify model properties
+        #expect(model.sampleRate == 24000, "Sample rate should be 24kHz")
+
+        // List available voices
+        let voices = model.availableVoices()
+        print("\u{001B}[36mAvailable voices (\(voices.count)): \(voices.joined(separator: ", "))\u{001B}[0m")
+        #expect(!voices.isEmpty, "Should have at least one available voice")
+        #expect(voices.contains("af_heart"), "Should have af_heart voice")
+
+        // Pre-phonemized IPA text (Kokoro needs phonemized input — no G2P yet)
+        let phonemizedText = "hɛloʊ, ðɪs ɪz ə tɛst."
+        print("\u{001B}[33mGenerating audio for phonemized: \"\(phonemizedText)\"...\u{001B}[0m")
+
+        let audio = try await model.generate(
+            text: phonemizedText,
+            voice: "af_heart",
+            refAudio: nil,
+            refText: nil,
+            language: nil,
+            generationParameters: GenerateParameters()
+        )
+
+        // Audio may be 2D [1, samples] or 1D [samples] — use last dim for sample count
+        let sampleCount = audio.shape[audio.ndim - 1]
+        print("\u{001B}[32mGenerated audio shape: \(audio.shape) (\(sampleCount) samples)\u{001B}[0m")
+        #expect(sampleCount > 0, "Audio should have samples")
+
+        // At 24kHz, even a short phrase should produce at least 0.1s of audio
+        let durationSeconds = Double(sampleCount) / 24000.0
+        print("\u{001B}[32mGenerated audio duration: \(String(format: "%.2f", durationSeconds))s\u{001B}[0m")
+        #expect(durationSeconds > 0.1, "Audio should be at least 0.1 seconds long")
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kokoro_test_output.wav")
+        try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+        print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
+    }
+
+    @Test func kokoroGenerateStream() async throws {
+        testHeader("kokoroGenerateStream")
+        defer { testCleanup("kokoroGenerateStream") }
+
+        print("\u{001B}[33mLoading Kokoro TTS model...\u{001B}[0m")
+        let model = try await KokoroModel.fromPretrained("mlx-community/Kokoro-82M-bf16")
+        print("\u{001B}[32mKokoro model loaded!\u{001B}[0m")
+
+        let phonemizedText = "hɛloʊ, ðɪs ɪz ə tɛst."
+        print("\u{001B}[33mStreaming generation for phonemized: \"\(phonemizedText)\"...\u{001B}[0m")
+
+        var finalAudio: MLXArray?
+
+        for try await event in model.generateStream(
+            text: phonemizedText,
+            voice: "af_heart",
+            refAudio: nil,
+            refText: nil,
+            language: nil,
+            generationParameters: GenerateParameters()
+        ) {
+            switch event {
+            case .audio(let audio):
+                finalAudio = audio
+                print("\u{001B}[32mReceived audio: \(audio.shape)\u{001B}[0m")
+            case .info(let info):
+                print("\u{001B}[36mGeneration info: \(info)\u{001B}[0m")
+            case .token(_):
+                break
+            }
+        }
+
+        #expect(finalAudio != nil, "Should have received final audio from stream")
+
+        if let audio = finalAudio {
+            let sampleCount = audio.shape[audio.ndim - 1]
+            #expect(sampleCount > 0, "Audio should have samples")
+
+            let outputURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("kokoro_stream_test_output.wav")
+            try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+            print("\u{001B}[32mSaved streamed audio to\u{001B}[0m: \(outputURL.path)")
+        }
+    }
+
+    @Test func kokoroSynthesizeDirect() async throws {
+        testHeader("kokoroSynthesizeDirect")
+        defer { testCleanup("kokoroSynthesizeDirect") }
+
+        print("\u{001B}[33mLoading Kokoro TTS model...\u{001B}[0m")
+        let model = try await KokoroModel.fromPretrained("mlx-community/Kokoro-82M-bf16")
+        print("\u{001B}[32mKokoro model loaded!\u{001B}[0m")
+
+        let voiceEmbedding = try model.loadVoice(named: "af_heart")
+        print("\u{001B}[36mVoice embedding shape: \(voiceEmbedding.shape)\u{001B}[0m")
+
+        let phonemizedText = "hɛloʊ, ðɪs ɪz ə tɛst."
+
+        // Generate at normal speed
+        print("\u{001B}[33mSynthesizing at normal speed (1.0x)...\u{001B}[0m")
+        let normalAudio = try model.synthesize(phonemizedText: phonemizedText, voice: voiceEmbedding, speed: 1.0)
+        let normalSamples = normalAudio.shape[normalAudio.ndim - 1]
+        let normalDuration = Double(normalSamples) / 24000.0
+        print("\u{001B}[32mNormal speed: \(normalAudio.shape) (\(String(format: "%.2f", normalDuration))s)\u{001B}[0m")
+
+        // Generate at 1.5x speed
+        print("\u{001B}[33mSynthesizing at fast speed (1.5x)...\u{001B}[0m")
+        let fastAudio = try model.synthesize(phonemizedText: phonemizedText, voice: voiceEmbedding, speed: 1.5)
+        let fastSamples = fastAudio.shape[fastAudio.ndim - 1]
+        let fastDuration = Double(fastSamples) / 24000.0
+        print("\u{001B}[32mFast speed: \(fastAudio.shape) (\(String(format: "%.2f", fastDuration))s)\u{001B}[0m")
+
+        #expect(normalSamples > 0, "Normal audio should have samples")
+        #expect(fastSamples > 0, "Fast audio should have samples")
+        // Faster speed should produce shorter audio
+        #expect(fastDuration < normalDuration, "1.5x speed should produce shorter audio than 1.0x")
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kokoro_synthesize_direct_output.wav")
+        try saveAudioArray(normalAudio, sampleRate: 24000.0, to: outputURL)
+        print("\u{001B}[32mSaved synthesized audio to\u{001B}[0m: \(outputURL.path)")
+    }
 }
 
 
@@ -832,6 +963,7 @@ struct STTSmokeTests {
             print("\u{001B}[32m\(output)\u{001B}[0m")
         }
     }
+
 }
 
 
