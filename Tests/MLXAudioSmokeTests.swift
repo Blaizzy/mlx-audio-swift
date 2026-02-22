@@ -9,18 +9,17 @@
 //    xcodebuild test \
 //      -scheme MLXAudio-Package \
 //      -destination 'platform=macOS' \
-//      -only-testing:MLXAudioTests/Smoke \
-//      CODE_SIGNING_ALLOWED=NO
+//      -only-testing:MLXAudioTests/SmokeTests
 //
 //  Run a single category:
-//    -only-testing:'MLXAudioTests/Smoke/CodecsSmokeTests'
-//    -only-testing:'MLXAudioTests/Smoke/TTSSmokeTests'
-//    -only-testing:'MLXAudioTests/Smoke/STTSmokeTests'
-//    -only-testing:'MLXAudioTests/Smoke/VADSmokeTests'
-//    -only-testing:'MLXAudioTests/Smoke/STSSmokeTests'
+//    -only-testing:'MLXAudioTests/SmokeTests/CodecsSmokeTests'
+//    -only-testing:'MLXAudioTests/SmokeTests/TTSSmokeTests'
+//    -only-testing:'MLXAudioTests/SmokeTests/STTSmokeTests'
+//    -only-testing:'MLXAudioTests/SmokeTests/VADSmokeTests'
+//    -only-testing:'MLXAudioTests/SmokeTests/STSSmokeTests'
 //
 //  Run a single test (note the trailing parentheses for Swift Testing):
-//    -only-testing:'MLXAudioTests/Smoke/STTSmokeTests/qwen3ASRTranscribe()'
+//    -only-testing:'MLXAudioTests/SmokeTests/STTSmokeTests/qwen3ASRTranscribe()'
 //
 //  Filter test results:
 //   2>&1 | grep --color=never -E '(^􀟈 |^􁁛 |^􀢄 |^\*\* TEST|\x1b\[1;35m|model loaded|Encoded to|Reconstructed audio|Generating audio|Generated audio|Generated [0-9]+ tokens|Streaming|Saved |Received final|Found [0-9]|Processing time|Streaming complete|Chunk [0-9]|  [Tt]ext:|  prompt_tokens|  generation_tokens|  total_tokens|  prompt_tps|  generation_tps|total_time| peak_memory|Peak Memory|Prompt:.*tokens/s|Prompt Tokens|Total Time|SPEAKER audio|Sortformer Output|Audio input shape|Loading.*model|Loaded audio|ForcedAligner|Running forced|\[.*s - .*s\])'
@@ -450,150 +449,6 @@ struct TTSSmokeTests {
         print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
     }
 
-    @Test func chatterboxTurboDebugPipeline() async throws {
-        testHeader("chatterboxTurboDebugPipeline")
-        defer { testCleanup("chatterboxTurboDebugPipeline") }
-
-        func dumpStats(_ name: String, _ arr: MLXArray) {
-            let flat = arr.reshaped([-1])
-            eval(flat)
-            let count = flat.dim(0)
-            let minVal = flat.min().item(Float.self)
-            let maxVal = flat.max().item(Float.self)
-            let meanVal = flat.mean().item(Float.self)
-            let first10 = (0 ..< min(10, count)).map { flat[$0].item(Float.self) }
-            print("  \(name): shape=\(arr.shape), range=[\(String(format: "%.6f", minVal)), \(String(format: "%.6f", maxVal))], mean=\(String(format: "%.6f", meanVal)), first=\(first10.prefix(5).map { String(format: "%.4f", $0) })")
-        }
-
-        print("\u{001B}[33mLoading Chatterbox Turbo model...\u{001B}[0m")
-        let model = try await ChatterboxModel.fromPretrained("mlx-community/chatterbox-turbo-fp16")
-        guard let defaults = model.defaultConditioning else {
-            Issue.record("No default conditioning")
-            return
-        }
-
-        // Use same test tokens as Python (first 30 from prompt_token)
-        let promptToken = defaults.promptToken              // (1, 250)
-        let promptTokenLen = defaults.promptTokenLen        // [250]
-        let promptFeat = defaults.promptFeat                // (1, 500, 80)
-        let embedding = defaults.xVector                    // (1, 192)
-
-        print("\n=== Conditioning ===")
-        dumpStats("prompt_token", promptToken)
-        dumpStats("prompt_token_len", promptTokenLen)
-        dumpStats("prompt_feat", promptFeat)
-        dumpStats("embedding", embedding)
-
-        // Test speech tokens = first 30 of prompt_token (same as Python)
-        let testSpeechTokens = promptToken[0..., ..<30].reshaped([1, 30])
-        dumpStats("test_speech_tokens", testSpeechTokens)
-
-        // --- Manually trace through S3Gen pipeline ---
-        let s3gen = model.s3gen
-
-        // 1. Speaker embedding normalization + projection
-        let norm = MLX.sqrt((embedding * embedding).sum(axis: 1, keepDims: true))
-        let normalizedEmb = embedding / (norm + 1e-8)
-        let spkEmb = s3gen.spkEmbedAffineLayer(normalizedEmb)
-        print("\n=== S3Gen Pipeline ===")
-        dumpStats("spk_emb_projected", spkEmb)
-
-        // 2. Concatenate prompt + generated tokens
-        let combinedToken = MLX.concatenated([promptToken, testSpeechTokens], axis: 1)
-        let tokenLen = MLXArray([Int32(testSpeechTokens.dim(1))])
-        let combinedTokenLen = promptTokenLen + tokenLen
-        dumpStats("combined_token", combinedToken)
-        dumpStats("combined_token_len", combinedTokenLen)
-
-        // 3. Clip + embed
-        let clipped = MLX.clip(combinedToken, min: 0, max: s3gen.vocabSize - 1)
-        let embedded = s3gen.inputEmbedding(clipped)
-        dumpStats("token_emb", embedded)
-
-        // 4. Conformer encoder
-        let (encoderOut, _) = s3gen.encoder(xs: embedded, xsLens: combinedTokenLen, streaming: false)
-        dumpStats("encoder_out_h", encoderOut)
-
-        // 5. Project
-        let hProj = s3gen.encoderProj(encoderOut)
-        dumpStats("encoder_proj_h", hProj)
-
-        let totalMelLen = hProj.dim(1)
-        let promptMelLen = promptFeat.dim(1)
-        let genMelLen = totalMelLen - promptMelLen
-        print("  mel_len1 (prompt): \(promptMelLen), mel_len2 (gen): \(genMelLen), totalMelLen: \(totalMelLen)")
-
-        // 6. Build conditioning
-        var condsSlices: [MLXArray] = []
-        if promptMelLen > 0 {
-            let copyLen = min(promptMelLen, totalMelLen)
-            condsSlices.append(promptFeat[0..., ..<copyLen, 0...])
-            if copyLen < totalMelLen {
-                condsSlices.append(MLXArray.zeros([1, totalMelLen - copyLen, 80]))
-            }
-        }
-        let condSignal = MLX.concatenated(condsSlices, axis: 1).transposed(0, 2, 1)
-        dumpStats("conds_signal", condSignal)
-
-        // 7. Decoder mask
-        let hLengths = combinedTokenLen * Int32(2)  // tokenMelRatio = 2
-        let decoderMask = MLX.logicalNot(
-            s3genMakePadMask(lengths: hLengths, maxLen: totalMelLen)
-        ).asType(.float32).expandedDimensions(axis: 1)
-        dumpStats("dec_mask", decoderMask)
-
-        // 8. mu
-        let mu = hProj.transposed(0, 2, 1)
-        dumpStats("mu", mu)
-
-        // 9. Flow matching (meanflow, 2 steps)
-        let noisedMels = MLXRandom.normal([1, 80, testSpeechTokens.dim(1) * 2])
-        dumpStats("noised_mels", noisedMels)
-
-        let mel = s3gen.decoder(
-            mu: mu, mask: decoderMask, nTimesteps: 2,
-            spks: spkEmb, cond: condSignal, noisedMels: noisedMels)
-        dumpStats("flow_matching_output", mel)
-
-        // 10. Extract generated portion
-        let featGen: MLXArray
-        if promptMelLen > 0 && promptMelLen < totalMelLen {
-            featGen = mel[0..., 0..., promptMelLen...]
-        } else {
-            featGen = mel
-        }
-        dumpStats("feat_gen_only", featGen)
-
-        // 11. Vocoder
-        print("\n=== HiFi-GAN Vocoder ===")
-        let (waveform, _) = s3gen.vocoder(featGen)
-        dumpStats("vocoder_output", waveform)
-
-        // Save WAV
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("chatterbox_debug_swift.wav")
-        // waveform is (B, T) or (T,) — flatten to 1D
-        let audioFlat = waveform.reshaped([-1])
-        try saveAudioArray(audioFlat, sampleRate: 24000.0, to: outputURL)
-        print("\u{001B}[32mSaved debug audio to\u{001B}[0m: \(outputURL.path)")
-
-        // Also run the full generate() to save that WAV too
-        print("\n=== Full generate() ===")
-        let text = "Testing one, two, three."
-        let fullAudio = try await model.generate(
-            text: text, voice: nil, refAudio: nil, refText: nil, language: nil,
-            generationParameters: GenerateParameters(temperature: 0.8)
-        )
-        dumpStats("full_generate_audio", fullAudio)
-
-        let fullURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("chatterbox_swift_full_output.wav")
-        try saveAudioArray(fullAudio.reshaped([-1]), sampleRate: 24000.0, to: fullURL)
-        print("\u{001B}[32mSaved full generate audio to\u{001B}[0m: \(fullURL.path)")
-
-        #expect(fullAudio.shape[0] > 0, "Should produce audio")
-    }
-
     @Test func chatterboxTurboGenerateStream() async throws {
         testHeader("chatterboxTurboGenerateStream")
         defer { testCleanup("chatterboxTurboGenerateStream") }
@@ -639,31 +494,90 @@ struct TTSSmokeTests {
     @Test func chatterboxRegularGenerate() async throws {
         testHeader("chatterboxRegularGenerate")
         defer { testCleanup("chatterboxRegularGenerate") }
+
+        // Load reference audio for voice cloning (Regular model's primary use case)
+        guard let audioURL = Bundle.module.url(
+            forResource: "conversational_a", withExtension: "wav", subdirectory: "media"
+        ) else {
+            Issue.record("Test audio file 'conversational_a.wav' not found in bundle")
+            return
+        }
+        let (_, refAudio) = try loadAudioArray(from: audioURL)
+        print("\u{001B}[36mLoaded reference audio: \(refAudio.shape)\u{001B}[0m")
+
         print("\u{001B}[33mLoading Chatterbox Regular (LLaMA) model...\u{001B}[0m")
         let model = try await ChatterboxModel.fromPretrained("mlx-community/Chatterbox-TTS-fp16")
         print("\u{001B}[32mChatterbox Regular model loaded!\u{001B}[0m")
 
-        // Verify model state
         #expect(model.tokenizer != nil, "Tokenizer should be loaded")
         #expect(model.sampleRate == 24000, "Sample rate should be 24kHz")
 
         let text = "Hello, this is a test of the Chatterbox model."
         print("\u{001B}[33mGenerating audio for: \"\(text)\"...\u{001B}[0m")
 
-        if model.defaultConditioning != nil {
-            let audio = try await model.generate(
-                text: text, voice: nil, refAudio: nil, refText: nil, language: nil,
-                generationParameters: GenerateParameters(temperature: 0.8)
-            )
-            print("\u{001B}[32mGenerated audio shape: \(audio.shape)\u{001B}[0m")
-            #expect(audio.shape[0] > 0, "Audio should have samples")
+        let audio = try await model.generate(
+            text: text, voice: nil, refAudio: refAudio, refText: nil, language: nil,
+            generationParameters: GenerateParameters(temperature: 0.8)
+        )
+
+        print("\u{001B}[32mGenerated audio shape: \(audio.shape)\u{001B}[0m")
+        let sampleCount = audio.shape[audio.ndim - 1]
+        #expect(sampleCount > 0, "Audio should have samples")
+        let duration = Float(sampleCount) / Float(model.sampleRate)
+        print("\u{001B}[32mGenerated \(String(format: "%.2f", duration))s of audio\u{001B}[0m")
+        #expect(duration > 0.1, "Audio duration should be > 0.1s")
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chatterbox_regular_test_output.wav")
+        try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+        print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
+    }
+
+    @Test func chatterboxRegularGenerateStream() async throws {
+        testHeader("chatterboxRegularGenerateStream")
+        defer { testCleanup("chatterboxRegularGenerateStream") }
+
+        // Load reference audio for voice cloning
+        guard let audioURL = Bundle.module.url(
+            forResource: "conversational_a", withExtension: "wav", subdirectory: "media"
+        ) else {
+            Issue.record("Test audio file 'conversational_a.wav' not found in bundle")
+            return
+        }
+        let (_, refAudio) = try loadAudioArray(from: audioURL)
+
+        print("\u{001B}[33mLoading Chatterbox Regular (LLaMA) model...\u{001B}[0m")
+        let model = try await ChatterboxModel.fromPretrained("mlx-community/Chatterbox-TTS-fp16")
+        print("\u{001B}[32mChatterbox Regular model loaded!\u{001B}[0m")
+
+        let text = "Streaming test for Chatterbox Regular."
+        print("\u{001B}[33mStreaming audio for: \"\(text)\"...\u{001B}[0m")
+
+        var finalAudio: MLXArray?
+        for try await event in model.generateStream(
+            text: text, voice: nil, refAudio: refAudio, refText: nil, language: nil,
+            generationParameters: GenerateParameters(temperature: 0.8)
+        ) {
+            switch event {
+            case .audio(let audio):
+                finalAudio = audio
+                print("\u{001B}[32mReceived audio chunk: \(audio.shape)\u{001B}[0m")
+            case .info(let info):
+                print("\u{001B}[36mGeneration info: \(String(format: "%.2f", info.generateTime))s\u{001B}[0m")
+            case .token(_):
+                break
+            }
+        }
+
+        #expect(finalAudio != nil, "Should receive audio from stream")
+        if let audio = finalAudio {
+            let sampleCount = audio.shape[audio.ndim - 1]
+            #expect(sampleCount > 0, "Audio should have samples")
 
             let outputURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("chatterbox_regular_test_output.wav")
+                .appendingPathComponent("chatterbox_regular_stream_test_output.wav")
             try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
-            print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
-        } else {
-            print("\u{001B}[33mNo default conditioning — skipping generation (Regular model requires reference audio)\u{001B}[0m")
+            print("\u{001B}[32mSaved streamed audio to\u{001B}[0m: \(outputURL.path)")
         }
     }
 
