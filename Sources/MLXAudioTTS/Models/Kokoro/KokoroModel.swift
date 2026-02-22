@@ -66,6 +66,10 @@ public final class KokoroModel: SpeechGenerationModel, @unchecked Sendable {
     /// Cached voice embeddings.
     private var voiceCache: [String: MLXArray] = [:]
 
+    /// Speed multiplier for speech rate (0.5–2.0). Higher = faster.
+    /// Set from the host app to override the default 1.0.
+    public var speed: Float = 1.0
+
     init(
         config: KokoroConfig, weights: [String: MLXArray],
         modelDirectory: URL? = nil, textProcessor: TextProcessor? = nil
@@ -149,7 +153,7 @@ public final class KokoroModel: SpeechGenerationModel, @unchecked Sendable {
             phonemizedText = text
         }
 
-        return try synthesize(phonemizedText: phonemizedText, voice: voiceEmbedding)
+        return try synthesize(phonemizedText: phonemizedText, voice: voiceEmbedding, speed: speed)
     }
 
     public func generateStream(
