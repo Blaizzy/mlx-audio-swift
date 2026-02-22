@@ -355,10 +355,12 @@ final class Qwen3TTSSpeakerEncoder: Module {
         return out
     }
 
-    /// Sanitize weights from PyTorch format to MLX format.
+    /// Sanitize speaker encoder weights for loading.
     ///
     /// - Removes the `speaker_encoder.` prefix from keys.
-    /// - Transposes Conv1d weights from PyTorch `[out, in, kernel]` to MLX `[out, kernel, in]`.
+    /// - Transposes Conv1d weights from PyTorch `[out, in, kernel]` to MLX `[out, kernel, in]`
+    ///   only when needed. Pre-converted MLX models (e.g. mlx-community) already store weights
+    ///   in MLX format and must not be transposed again.
     static func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var sanitized = [String: MLXArray]()
 
@@ -368,16 +370,23 @@ final class Qwen3TTSSpeakerEncoder: Module {
             let newKey = String(k.dropFirst("speaker_encoder.".count))
 
             var value = v
-            // Handle all Conv1d weights: PyTorch [out, in, kernel] -> MLX [out, kernel, in]
+            // Conv1d weights are 3-D. Determine if they need transposing:
+            //   PyTorch layout: [out_channels, in_channels, kernel_size]  → dim(1) > dim(2)
+            //   MLX layout:     [out_channels, kernel_size, in_channels]  → dim(1) <= dim(2)
+            //
+            // For all ECAPA-TDNN conv layers, kernel_size ∈ {1,3,5} while
+            // in_channels ∈ {64,128,512,1536,3072,4608}, so dim(1) > dim(2)
+            // reliably identifies PyTorch format. Pre-converted MLX weights
+            // (mlx-community models) already have dim(1) <= dim(2) and are
+            // left unchanged.
             if newKey.hasSuffix(".weight") && v.ndim == 3 {
-                // Check if already in MLX format by comparing dimensions.
-                // PyTorch: [out_channels, in_channels, kernel_size]
-                // MLX:     [out_channels, kernel_size, in_channels]
-                // For kernel_size=1, the last two dims are ambiguous. We transpose
-                // only if the shape looks like PyTorch format (dim(1) > dim(2) for
-                // typical conv layers where in_channels > kernel_size).
-                // Following the Python reference: always transpose unless already correct.
-                value = v.transposed(0, 2, 1)
+                let dim1 = v.dim(1)
+                let dim2 = v.dim(2)
+                if dim1 > dim2 {
+                    // PyTorch format → transpose to MLX format
+                    value = v.transposed(0, 2, 1)
+                }
+                // else: already MLX format, no transpose needed
             }
 
             sanitized[newKey] = value

@@ -2715,6 +2715,41 @@ struct Qwen3TTSSpeakerEncoderWeightTests {
                 "2D weights should not be transposed, got shape \(result.shape)")
     }
 
+    /// Verify sanitize does NOT double-transpose weights already in MLX format.
+    /// mlx-community models store weights as [out, kernel, in] (already converted).
+    @Test func testSanitizeSkipsAlreadyMLXFormatWeights() {
+        // MLX format: [out_channels=512, kernel_size=5, in_channels=128]
+        // dim(1)=5 <= dim(2)=128 → already MLX, should NOT transpose
+        let mlxWeight = MLXArray.zeros([512, 5, 128])
+        let weights: [String: MLXArray] = [
+            "speaker_encoder.blocks.0.conv.weight": mlxWeight,
+        ]
+
+        let sanitized = Qwen3TTSSpeakerEncoder.sanitize(weights: weights)
+        let result = sanitized["blocks.0.conv.weight"]!
+        eval(result)
+
+        #expect(result.shape == [512, 5, 128],
+                "MLX-format weight should NOT be transposed, got \(result.shape)")
+    }
+
+    /// Verify sanitize does NOT transpose kernel_size=1 weights already in MLX format.
+    @Test func testSanitizeSkipsMLXFormatKernel1Weights() {
+        // MLX format: [out=128, kernel=1, in=4608]
+        // dim(1)=1 <= dim(2)=4608 → already MLX
+        let mlxWeight = MLXArray.zeros([128, 1, 4608])
+        let weights: [String: MLXArray] = [
+            "speaker_encoder.asp.tdnn.conv.weight": mlxWeight,
+        ]
+
+        let sanitized = Qwen3TTSSpeakerEncoder.sanitize(weights: weights)
+        let result = sanitized["asp.tdnn.conv.weight"]!
+        eval(result)
+
+        #expect(result.shape == [128, 1, 4608],
+                "MLX-format kernel=1 weight should NOT be transposed, got \(result.shape)")
+    }
+
     // MARK: - Model property integration
 
     /// Verify Qwen3TTSModel has speakerEncoder property, initially nil

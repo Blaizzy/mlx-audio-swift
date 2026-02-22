@@ -863,6 +863,13 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             }
         }
 
+        // Flush GPU state after generation completes.
+        // The KV cache (`cache`) is function-scoped but Metal buffers can linger
+        // in the GPU allocator pool, causing stale state to bleed into subsequent
+        // generation calls and produce inconsistent audio quality.
+        Stream.defaultStream(.gpu).synchronize()
+        Memory.clearCache()
+
         return generatedCodes
     }
 
