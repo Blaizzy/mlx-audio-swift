@@ -61,6 +61,8 @@ public enum TTS {
             return try await SopranoModel.fromPretrained(modelRepo, cache: cache)
         case "pocket_tts":
             return try await PocketTTSModel.fromPretrained(modelRepo, cache: cache)
+        case "chatterbox", "chatterbox_tts", "chatterbox_turbo":
+            return try await ChatterboxModel.fromPretrained(modelRepo)
         default:
             throw TTSModelError.unsupportedModelType(modelType ?? resolvedType)
         }
@@ -92,6 +94,9 @@ public enum TTS {
         }
         if lower.contains("pocket_tts") {
             return "pocket_tts"
+        }
+        if lower.contains("chatterbox") {
+            return "chatterbox"
         }
         return nil
     }
