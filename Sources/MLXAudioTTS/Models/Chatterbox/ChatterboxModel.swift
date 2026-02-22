@@ -756,13 +756,16 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
                 repetitionPenalty: 1.2
             )
         } else if let t3llama = t3 as? T3Model {
-            // Regular: LLaMA inference (with CFG)
+            // Regular: LLaMA inference (with CFG + min_p filtering)
+            // Python reference uses topP=1.0 (disabled) + minP=0.05 for the Regular model,
+            // relying on min-p filtering instead of nucleus sampling.
             speechTokens = t3llama.inference(
                 t3Cond: &t3CondMut,
                 textTokens: textTokens,
                 maxNewTokens: maxTokens,
                 temperature: temperature,
-                topP: topP,
+                topP: 1.0,
+                minP: 0.05,
                 repetitionPenalty: 1.2,
                 cfgWeight: cfgWeightOverride ?? 0.5
             )
