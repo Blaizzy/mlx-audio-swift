@@ -724,7 +724,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         cache: HubCache = .default
     ) async throws -> Qwen3TTSModel {
         let repoID = Repo.ID(rawValue: modelRepo)!
-        let modelDir = try await ModelUtils.resolveOrDownloadModel(
+        var modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
             requiredExtension: "safetensors",
             cache: cache
