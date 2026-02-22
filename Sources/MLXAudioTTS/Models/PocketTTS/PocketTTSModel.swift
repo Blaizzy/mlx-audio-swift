@@ -1,5 +1,4 @@
 import Foundation
-import Hub
 import HuggingFace
 @preconcurrency import MLX
 import MLXAudioCore
@@ -119,7 +118,7 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
     public static func loadPredefinedVoice(
         _ voiceName: String,
         modelFolder: URL,
-        progressHandler: @escaping (Progress) -> Void = { _ in }
+        progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
     ) async throws -> MLXArray? {
         _ = progressHandler
         let fileURL = modelFolder.appendingPathComponent("embeddings/\(voiceName).safetensors")
@@ -136,7 +135,7 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
     private func resolveAudioPrompt(
         voice: String?,
         refAudio: MLXArray?,
-        progressHandler: @escaping (Progress) -> Void = { _ in }
+        progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
     ) async throws -> AudioPrompt {
         if let refAudio {
             return .audio(normalizeAudio(refAudio))
@@ -334,65 +333,33 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
 
     // MARK: - Loading
 
-    public static func fromPretrained(_ modelRepo: String) async throws -> PocketTTSModel {
+    public static func fromPretrained(
+        _ modelRepo: String,
+        cache: HubCache = .default
+    ) async throws -> PocketTTSModel {
         let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
             ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
-
-        let client = if let token = hfToken, !token.isEmpty {
-            HubClient(host: HubClient.defaultHost, bearerToken: token)
-        } else {
-            HubClient.default
-        }
-        let cache = client.cache ?? HubCache.default
 
         guard let repoID = Repo.ID(rawValue: modelRepo) else {
             throw NSError(domain: "PocketTTSModel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid repository ID: \(modelRepo)"])
         }
 
-        let modelDir = try await resolveOrDownloadPocketTTSModel(client: client, cache: cache, repoID: repoID)
+        let modelDir = try await ModelUtils.resolveOrDownloadModel(
+            repoID: repoID,
+            requiredExtension: ".safetensors",
+            hfToken: hfToken,
+            cache: cache
+        )
         let configURL = modelDir.appendingPathComponent("config.json")
         let config = try PocketTTSModelConfig.load(from: configURL)
 
         let model = try await PocketTTSModel.fromConfig(config, modelFolder: modelDir)
         let weights = try await loadPocketTTSWeights(modelDir: modelDir)
-        try model.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
+        try model.update(parameters: ModuleParameters.unflattened(weights), verify: .all)
 
         eval(model)
         return model
     }
-}
-
-private func resolveOrDownloadPocketTTSModel(
-    client: HubClient,
-    cache: HubCache,
-    repoID: Repo.ID
-) async throws -> URL {
-    let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
-    let modelDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        .appendingPathComponent("mlx-audio")
-        .appendingPathComponent(modelSubdir)
-
-    if FileManager.default.fileExists(atPath: modelDir.path) {
-        let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
-        let hasConfig = files?.contains { $0.lastPathComponent == "config.json" } ?? false
-        let hasWeights = files?.contains { $0.pathExtension == "safetensors" } ?? false
-        if hasConfig, hasWeights {
-            return modelDir
-        }
-    }
-
-    try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
-    _ = try await client.downloadSnapshot(
-        of: repoID,
-        kind: .model,
-        to: modelDir,
-        revision: "main",
-        matching: ["*.json", "*.safetensors", "embeddings/*.safetensors"],
-        progressHandler: { progress in
-            print("\(progress.completedUnitCount)/\(progress.totalUnitCount) files")
-        }
-    )
-    return modelDir
 }
 
 private func loadPocketTTSWeights(modelDir: URL) async throws -> [String: MLXArray] {

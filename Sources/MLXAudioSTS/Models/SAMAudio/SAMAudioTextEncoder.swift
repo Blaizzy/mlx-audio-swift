@@ -45,8 +45,8 @@ private struct T5ModelConfig: Codable {
         relativeAttentionMaxDistance: Int = 128,
         dropoutRate: Float = 0.1,
         layerNormEpsilon: Float = 1e-6,
-        isGatedAct: Bool = true,
-        denseActFn: String = "gelu_new"
+        isGatedAct: Bool = false,
+        denseActFn: String = "relu"
     ) {
         self.vocabSize = vocabSize
         self.dModel = dModel
@@ -74,8 +74,8 @@ private struct T5ModelConfig: Codable {
         relativeAttentionMaxDistance = try c.decodeIfPresent(Int.self, forKey: .relativeAttentionMaxDistance) ?? 128
         dropoutRate = try c.decodeIfPresent(Float.self, forKey: .dropoutRate) ?? 0.1
         layerNormEpsilon = try c.decodeIfPresent(Float.self, forKey: .layerNormEpsilon) ?? 1e-6
-        isGatedAct = try c.decodeIfPresent(Bool.self, forKey: .isGatedAct) ?? true
-        denseActFn = try c.decodeIfPresent(String.self, forKey: .denseActFn) ?? "gelu_new"
+        isGatedAct = try c.decodeIfPresent(Bool.self, forKey: .isGatedAct) ?? false
+        denseActFn = try c.decodeIfPresent(String.self, forKey: .denseActFn) ?? "relu"
     }
 }
 

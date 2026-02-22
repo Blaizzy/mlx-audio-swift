@@ -2,6 +2,7 @@
 import os
 import Speech
 
+@MainActor
 protocol SimpleVADDelegate: AnyObject {
     func didStartSpeaking()
     func didStopSpeaking(transcription: String?)

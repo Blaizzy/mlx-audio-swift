@@ -15,7 +15,7 @@ MLXAudio follows a modular design allowing you to import only what you need:
 - **MLXAudioTTS**: Text-to-Speech models (Soprano, VyvoTTS, Orpheus, Marvis TTS, Pocket TTS)
 - **MLXAudioSTT**: Speech-to-Text models (GLMASR)
 - **MLXAudioVAD**: Voice Activity Detection & Speaker Diarization (Sortformer)
-- **MLXAudioSTS**: Speech-to-Speech (future)
+- **MLXAudioSTS**: Speech-to-Speech models (LFM2.5-Audio)
 - **MLXAudioUI**: SwiftUI components for audio interfaces
 
 ## Installation
@@ -127,6 +127,12 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | Model | Model README | HuggingFace Repo |
 |-------|--------------|------------------|
 | GLMASR | [GLMASR README](Sources/MLXAudioSTT/Models/GLMASR/README.md) | [mlx-community/GLM-ASR-Nano-2512-4bit](https://huggingface.co/mlx-community/GLM-ASR-Nano-2512-4bit) |
+
+### STS Models
+
+| Model | Model README | HuggingFace Repo |
+|-------|--------------|------------------|
+| LFM2.5-Audio | [LFM Audio README](Sources/MLXAudioSTS/Models/LFMAudio/README.md) | [mlx-community/LFM2.5-Audio-1.5B-6bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-6bit) |
 
 ### VAD / Speaker Diarization Models
 

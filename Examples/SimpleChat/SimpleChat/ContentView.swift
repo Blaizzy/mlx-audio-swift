@@ -1,12 +1,16 @@
 import AVFoundation
 import FoundationModels
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @Observable
+@MainActor
 class ContentViewModel {
     var speechController = SpeechController()
     
-    private static let instructions = "You are a helpful voice assistant that answers the user's questions with very consise and natural full sentences, as it will be TTS-rendered downstream as speech. You typically answer in three sentences or less. You NEVER use lists, emojis, markdown, or other non-essential embellishments."
+    private static let instructions = "You are a helpful voice assistant that answers the user's questions with very consise and natural full sentences, as it will be TTS-rendered downstream as speech. You typically answer in three sentences or less. IMPORTANT: Never use lists, emojis, markdown, or other non-essential embellishments."
     
     @ObservationIgnored
     private var session: LanguageModelSession?
@@ -22,17 +26,17 @@ class ContentViewModel {
         
         try await speechController.start()
         
-        Task { @MainActor in
-            UIApplication.shared.isIdleTimerDisabled = true
-        }
+#if canImport(UIKit)
+        UIApplication.shared.isIdleTimerDisabled = true
+#endif
     }
     
     func stopConversation() async throws {
         try await speechController.stop()
         
-        Task { @MainActor in
-            UIApplication.shared.isIdleTimerDisabled = false
-        }
+#if canImport(UIKit)
+        UIApplication.shared.isIdleTimerDisabled = false
+#endif
         
         print("Stopped conversation.")
     }
@@ -40,10 +44,10 @@ class ContentViewModel {
 
 extension ContentViewModel: SpeechControllerDelegate {
     func speechController(_ controller: SpeechController, didFinish transcription: String) {
-        Task {
-            guard !controller.isSpeaking else { return }
+        Task { @MainActor in
+            guard !controller.isSpeaking && transcription.count > 1 else { return }
             
-            print("Got transcription: \(transcription)")
+            print("Got transcription: '\(transcription)'")
             let response = try await self.session?.respond(to: transcription)
             print("Got response: \(response?.content ?? "<empty>")")
             try await self.speechController.speak(text: response?.content ?? "I'm sorry, I didn't get that.")
@@ -101,6 +105,7 @@ struct ContentView: View {
                     .clipShape(Circle())
                     .contentShape(Circle())
             }
+            .buttonStyle(.plain)
             .padding(64)
         }
         .scaleEffect(CGSize(width: isActive ? 1.0 : 0.7, height: isActive ? 1.0 : 0.7))

@@ -31,6 +31,7 @@ class TTSViewModel {
     private var maxTokensOverride: Int?
     private var temperatureOverride: Float?
     private var topPOverride: Float?
+    private var repetitionPenaltyOverride: Float?
 
     var maxTokens: Int {
         get { maxTokensOverride ?? defaultMaxTokens }
@@ -54,7 +55,15 @@ class TTSViewModel {
             topPOverride = abs(newValue - defaultValue) < 0.0001 ? nil : newValue
         }
     }
-
+    
+    var repetitionPenalty: Float {
+        get { repetitionPenaltyOverride ?? defaultGenerationParameters.repetitionPenalty ?? 1.3 }
+        set {
+            let defaultValue = defaultGenerationParameters.repetitionPenalty ?? 1.3
+            repetitionPenaltyOverride = abs(newValue - defaultValue) < 0.0001 ? nil : newValue
+        }
+    }
+    
     // Voice Design (for Qwen3-TTS VoiceDesign models)
     var voiceDescription: String = ""
     var useVoiceDesign: Bool = false
@@ -126,7 +135,7 @@ class TTSViewModel {
 
         do {
             defaultGenerationParameters = model?.defaultGenerationParameters ?? defaultGenerationParameters
-            model = try await TTSModelUtils.loadModel(modelRepo: modelId)
+            model = try await TTS.loadModel(modelRepo: modelId)
             loadedModelId = modelId
             generationProgress = "" // Clear progress on success
         } catch {
@@ -325,8 +334,8 @@ class TTSViewModel {
                     voice: voiceParam,
                     refAudio: refAudio,
                     refText: refText,
-                    cache: nil,
-                    parameters: generationParameters
+                    language: nil,
+                    generationParameters: generationParameters
                 ) {
                     // Throw if cancelled - this will exit the loop and be caught below
                     try Task.checkCancellation()

@@ -719,10 +719,15 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
     // MARK: - fromPretrained
 
-    public static func fromPretrained(_ modelRepo: String) async throws -> Qwen3TTSModel {
+    public static func fromPretrained(
+        _ modelRepo: String,
+        cache: HubCache = .default
+    ) async throws -> Qwen3TTSModel {
         let repoID = Repo.ID(rawValue: modelRepo)!
-        var modelDir = try await ModelUtils.resolveOrDownloadModel(
-            repoID: repoID, requiredExtension: "safetensors"
+        let modelDir = try await ModelUtils.resolveOrDownloadModel(
+            repoID: repoID,
+            requiredExtension: "safetensors",
+            cache: cache
         )
 
         // Validate essential tokenizer files exist — incomplete caches can have
@@ -758,14 +763,24 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         let talkerPairs = talkerWeights.map { ($0.key, $0.value) }
 
         // Apply quantization before weight loading (converts Linear → QuantizedLinear)
-        if config.quantization != nil {
+        // Quantized checkpoints store packed weights and companion .scales tensors.
+        // Convert talker Linear layers before loading those tensors.
+        if config.quantization != nil || config.perLayerQuantization != nil {
             quantize(model: model.talker) { path, _ in
-                guard talkerWeights["\(path).scales"] != nil else { return nil }
+                guard talkerWeights["\(path).scales"] != nil else {
+                    return nil
+                }
+
+                if let perLayerQuant = config.perLayerQuantization,
+                   let layerQuant = perLayerQuant.quantization(layer: path) {
+                    return layerQuant.asTuple
+                }
+
                 return config.quantization?.asTuple
             }
         }
 
-        try model.talker.update(parameters: ModuleParameters.unflattened(talkerPairs), verify: [])
+        try model.talker.update(parameters: ModuleParameters.unflattened(talkerPairs), verify: .all)
         eval(model.talker.parameters())
 
         // Generate tokenizer.json if missing (Qwen3-TTS ships without it)

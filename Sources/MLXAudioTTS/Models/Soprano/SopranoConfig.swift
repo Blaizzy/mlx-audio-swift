@@ -170,7 +170,7 @@ public struct SopranoConfiguration: Codable, Sendable {
         let baseConfig = try? BaseConfiguration(from: decoder)
         let globalQuant = try container.decodeIfPresent(BaseConfiguration.Quantization.self, forKey: .quantization)
         let altGlobalQuant = try container.decodeIfPresent(BaseConfiguration.Quantization.self, forKey: .quantizationConfig)
-        self.quantization = globalQuant ?? altGlobalQuant ?? baseConfig?.quantization
+        self.quantization = globalQuant ?? altGlobalQuant
         self.perLayerQuantization = baseConfig?.perLayerQuantization
     }
 

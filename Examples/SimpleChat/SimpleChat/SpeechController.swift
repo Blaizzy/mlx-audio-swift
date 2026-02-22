@@ -4,11 +4,13 @@ import MLXAudioCore
 import MLXAudioTTS
 import MLXLMCommon
 
+@MainActor
 protocol SpeechControllerDelegate: AnyObject {
     func speechController(_ controller: SpeechController, didFinish transcription: String)
 }
 
 @Observable
+@MainActor
 final class SpeechController {
     @ObservationIgnored
     weak var delegate: SpeechControllerDelegate?
@@ -37,10 +39,10 @@ final class SpeechController {
         audioEngine.delegate = self
         vad.delegate = self
 
-        Task {
+        Task { @MainActor in
             do {
                 print("Loading TTS model: \(ttsRepoId)")
-                self.model = try await TTSModelUtils.loadModel(modelRepo: ttsRepoId)
+                self.model = try await TTS.loadModel(modelRepo: ttsRepoId)
                 print("Loaded TTS model.")
             } catch {
                 print("Error loading model: \(error)")
@@ -50,11 +52,13 @@ final class SpeechController {
     }
 
     func start() async throws {
+#if os(iOS)
         let session = AVAudioSession.sharedInstance()
         try session.setActive(false)
         try session.setCategory(.playAndRecord, mode: .voiceChat, policy: .default, options: [.defaultToSpeaker])
         try session.setPreferredIOBufferDuration(0.02)
         try session.setActive(true)
+#endif
 
         try await ensureEngineStarted()
         isActive = true
@@ -65,7 +69,9 @@ final class SpeechController {
         audioEngine.stop()
         isDetectingSpeech = false
         vad.reset()
+#if os(iOS)
         try AVAudioSession.sharedInstance().setActive(false)
+#endif
         isActive = false
     }
 
@@ -90,7 +96,7 @@ final class SpeechController {
             return
         }
 
-        let audioStream = model.generateStream(
+        let audioStream = model.generatePCMBufferStream(
             text: text,
             voice: "cosette",
             refAudio: nil,
@@ -99,12 +105,7 @@ final class SpeechController {
         )
         try await ensureEngineStarted()
 
-        audioEngine.speak(samplesStream: proxyAudioStream(audioStream, extract: {
-            switch $0 {
-            case .audio(let samples): samples.asArray(Float.self)
-            default: fatalError("Unsupported sample type.")
-            }
-        }))
+        audioEngine.speak(buffersStream: audioStream)
     }
 
     private func ensureEngineStarted() async throws {
@@ -117,24 +118,6 @@ final class SpeechController {
         audioEngine.isMicrophoneMuted = false
         print("Started audio engine.")
     }
-
-    private func proxyAudioStream<T>(_ upstream: AsyncThrowingStream<T, any Error>, extract: @escaping (T) -> [Float]) -> AsyncThrowingStream<[Float], any Error> {
-        AsyncThrowingStream<[Float], any Error> { continuation in
-            let task = Task {
-                do {
-                    for try await value in upstream {
-                        continuation.yield(extract(value))
-                    }
-                    continuation.finish()
-                } catch is CancellationError {
-                    continuation.finish(throwing: CancellationError())
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { @Sendable _ in task.cancel() }
-        }
-    }
 }
 
 // MARK: - AudioEngineDelegate
@@ -143,9 +126,7 @@ extension SpeechController: AudioEngineDelegate {
     func audioCaptureEngine(_ engine: AudioEngine, didReceive buffer: AVAudioPCMBuffer) {
         guard !audioEngine.isSpeaking else { return }
 
-        Task {
-            vad.process(buffer: buffer)
-        }
+        vad.process(buffer: buffer)
     }
 
     func audioCaptureEngine(_ engine: AudioEngine, isSpeakingDidChange speaking: Bool) {

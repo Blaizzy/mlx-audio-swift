@@ -73,8 +73,8 @@ enum App {
 
         let loadedModel: SpeechGenerationModel
         do {
-            loadedModel = try await TTSModelUtils.loadModel(modelRepo: model, hfToken: hfToken)
-        } catch let error as TTSModelUtilsError {
+            loadedModel = try await TTS.loadModel(modelRepo: model, hfToken: hfToken)
+        } catch let error as TTSModelError {
             switch error {
             case .invalidRepositoryID(let modelRepo):
                 throw AppError.invalidRepositoryID(modelRepo)
