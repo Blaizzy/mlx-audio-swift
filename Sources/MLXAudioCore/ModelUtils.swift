@@ -74,10 +74,14 @@ public enum ModelUtils {
 
         // Check if model already exists with required files
         if FileManager.default.fileExists(atPath: modelDir.path) {
-            let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
-            let hasRequiredFiles = files?.contains { $0.pathExtension == normalizedRequiredExtension } ?? false
+            let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: [.fileSizeKey])
+            let hasRequiredFile = files?.contains { file in
+                guard file.pathExtension == normalizedRequiredExtension else { return false }
+                let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                return size > 0
+            } ?? false
 
-            if hasRequiredFiles {
+            if hasRequiredFile {
                 // Validate that config.json is valid JSON
                 let configPath = modelDir.appendingPathComponent("config.json")
                 if FileManager.default.fileExists(atPath: configPath.path) {
@@ -90,6 +94,9 @@ public enum ModelUtils {
                         try? FileManager.default.removeItem(at: modelDir)
                     }
                 }
+            } else {
+                print("Cached model appears incomplete, clearing cache...")
+                try? FileManager.default.removeItem(at: modelDir)
             }
         }
 
