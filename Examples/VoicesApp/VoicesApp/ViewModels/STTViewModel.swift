@@ -193,7 +193,7 @@ class STTViewModel {
     private var streamingSession: StreamingInferenceSession?
     private var lastReadPos: Int = 0
 
-    func startRecording() {
+    func startRecording() async {
         guard let model = model else {
             errorMessage = "Model not loaded"
             return
@@ -206,7 +206,7 @@ class STTViewModel {
         lastReadPos = 0
 
         do {
-            try recorder.startRecording()
+            try await recorder.startRecording()
         } catch {
             errorMessage = error.localizedDescription
             return

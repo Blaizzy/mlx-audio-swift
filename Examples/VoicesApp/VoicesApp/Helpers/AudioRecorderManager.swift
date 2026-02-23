@@ -18,7 +18,11 @@ class AudioRecorderManager: NSObject {
     /// The underlying capture engine (non-isolated, runs on GCD main queue)
     private let capture = AudioCaptureEngine()
 
-    func startRecording() throws {
+    func startRecording() async throws {
+        #if os(macOS)
+        try await Self.requestMicrophoneAccess()
+        #endif
+
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker])
@@ -82,6 +86,33 @@ class AudioRecorderManager: NSObject {
 
         capture.stop()
         capture.reset()
+    }
+
+    #if os(macOS)
+    private static func requestMicrophoneAccess() async throws {
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        switch status {
+        case .authorized:
+            return
+        case .notDetermined:
+            let granted = await AVCaptureDevice.requestAccess(for: .audio)
+            if !granted {
+                throw MicrophonePermissionError.denied
+            }
+        case .denied, .restricted:
+            throw MicrophonePermissionError.denied
+        @unknown default:
+            break
+        }
+    }
+    #endif
+}
+
+enum MicrophonePermissionError: LocalizedError {
+    case denied
+
+    var errorDescription: String? {
+        "Microphone access is required for recording. Please grant access in System Settings > Privacy & Security > Microphone."
     }
 }
 
