@@ -1,9 +1,8 @@
 import AVFoundation
-import FoundationModels
 import MLX
 import MLXAudioCore
 import MLXAudioTTS
-import MLXLMCommon
+@preconcurrency import MLXLMCommon
 
 @MainActor
 protocol ConversationControllerDelegate: AnyObject {
@@ -83,6 +82,11 @@ final class ConversationController {
     - A complete request with missing details is still COMPLETE. Ask clarifying questions in your ✓ response.
       Example: "Can you tell me what the weather is today?" -> `✓ Sure. What city are you in?`
 
+    ANTI-ECHO RULE (CRITICAL):
+    - If you choose COMPLETE (✓), you must answer the user's intent.
+    - Do NOT repeat, restate, or lightly paraphrase the user transcript as your full response.
+    - Never output `✓` followed by the same question the user just asked.
+
     RESPOND in one of these three formats:
     1. If COMPLETE: `✓` followed by a space and your full substantive response
     2. If INCOMPLETE SHORT: ONLY the character `○` (user will continue in a few seconds)
@@ -90,7 +94,7 @@ final class ConversationController {
 
     FORMAT REQUIREMENTS:
     - ALWAYS use single-character indicators: `✓` (complete), `○` (short wait), or `◐` (long wait)
-    - For COMPLETE: `✓` followed by a space and your full response
+    - For COMPLETE: `✓` followed by a space and your full response to the user's intent
     - For INCOMPLETE: ONLY the single character (`○` or `◐`) with absolutely nothing else
     - Your turn indicator must be the very first character in your response
     """
@@ -98,7 +102,7 @@ final class ConversationController {
     private nonisolated static let defaultIncompleteShortPrompt = """
     The user paused briefly. Generate a brief, natural prompt to encourage them to continue.
 
-    IMPORTANT: You MUST respond with ✓ followed by your message. Do NOT output ○ or ◐ - the user has already been given time to continue.
+    IMPORTANT: You MUST respond with ✓ followed by your full response. Do NOT output ○ or ◐ - the user has already been given time to continue.
 
     Your response should:
     - Be contextually relevant to what was just discussed
@@ -110,7 +114,7 @@ final class ConversationController {
     private nonisolated static let defaultIncompleteLongPrompt = """
     The user has been quiet for a while. Generate a friendly check-in message.
 
-    IMPORTANT: You MUST respond with ✓ followed by your message. Do NOT output ○ or ◐ - the user has already been given plenty of time.
+    IMPORTANT: You MUST respond with ✓ followed by your full response. Do NOT output ○ or ◐ - the user has already been given plenty of time.
 
     Your response should:
     - Acknowledge they might be thinking or busy
@@ -142,7 +146,7 @@ final class ConversationController {
     @ObservationIgnored
     private var captureTask: Task<Void, Never>?
     @ObservationIgnored
-    private var languageSession: LanguageModelSession?
+    private var languageSession: ChatSession?
     @ObservationIgnored
     private var incompleteTimeoutTask: Task<Void, Never>?
     @ObservationIgnored
@@ -180,7 +184,7 @@ final class ConversationController {
         try session.setActive(true)
 #endif
 
-        resetLanguageSession()
+        try await resetLanguageSession()
         try await ensureEngineStarted()
         startCaptureLoopIfNeeded()
         isActive = true
@@ -239,9 +243,10 @@ final class ConversationController {
         audioEngine.speak(buffersStream: audioStream)
     }
 
-    private func resetLanguageSession() {
+    private func resetLanguageSession() async throws {
+        let model = try await loadModelContainer(id: "mlx-community/Qwen3-1.7B-4bit")
         let instructions = Self.baseInstructions + "\n\n" + turnCompletionConfig.completionInstructions
-        languageSession = LanguageModelSession(instructions: instructions)
+        languageSession = ChatSession(model, instructions: instructions, generateParameters: GenerateParameters(maxTokens: 4096, temperature: 0.6, topP: 0.95))
     }
 
     private func ensureEngineStarted() async throws {
@@ -372,9 +377,13 @@ final class ConversationController {
         do {
             print("Using LLM prompt:\n\(prompt)")
             let response = try await session.respond(to: prompt)
-            print("LLM turn response [\(source)]: \(response.content)")
+            print("LLM turn response [\(source)]: \(response)")
+
+            let text = stripThinkContent(from: response)
+            print("Cleaned LLM turn response [\(source)]: \(text)")
+
             try await handleTurnResponse(
-                response.content,
+                text,
                 source: source,
                 originalTranscript: originalTranscript
             )
@@ -432,7 +441,7 @@ final class ConversationController {
         User transcript:
         \(transcript)
 
-        IMPORTANT: Your response MUST start with ✓ followed by your response text.
+        IMPORTANT: Your response MUST start with ✓ followed by your full response.
         Do NOT output ○ or ◐.
         """
         await requestTurnAwareResponse(
@@ -450,6 +459,15 @@ final class ConversationController {
             return true
         }
         return false
+    }
+
+    private func stripThinkContent(from text: String) -> String {
+        let withoutThinkBlocks = text.replacingOccurrences(
+            of: #"(?is)<think\b[^>]*>.*?</think>"#,
+            with: "",
+            options: .regularExpression
+        )
+        return withoutThinkBlocks.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func parseTurnResponse(_ text: String) -> (TurnMarker, String)? {
@@ -480,15 +498,25 @@ final class ConversationController {
     private func handleCompletedUserTranscript(_ transcription: String) {
         guard !isSpeaking, transcription.count > 1 else { return }
         let prompt = """
-        Determine whether the user has completed their turn, then respond in the required marker format.
+        Determine whether the user has completed their turn, then produce the final response in marker format.
 
         User transcript:
         \(transcription)
 
-        IMPORTANT:
-        - Your response MUST begin with exactly one turn marker: ✓, ○, or ◐.
-        - If COMPLETE, respond with ✓ followed by a space and your response text.
-        - If INCOMPLETE, respond with ONLY ○ or ONLY ◐ and no additional text.
+        Follow these steps:
+        1. Decide turn status:
+           - COMPLETE: user finished speaking and you can respond now.
+           - INCOMPLETE SHORT: user was cut off and will continue in a few seconds.
+           - INCOMPLETE LONG: user is still thinking and needs more time.
+        2. Format output exactly:
+           - If COMPLETE: start with `✓ `, then give a direct helpful answer to the user's intent.
+           - If INCOMPLETE SHORT: output only `○`.
+           - If INCOMPLETE LONG: output only `◐`.
+
+        Critical constraints:
+        - Do not repeat the user's transcript as your answer.
+        - Do not output explanations of your reasoning.
+        - Output exactly one response in one of the formats above.
         """
         startLLMTurnTask(
             prompt: prompt,
