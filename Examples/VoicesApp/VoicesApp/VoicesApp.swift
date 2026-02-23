@@ -1,5 +1,8 @@
 
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 @main
 struct VoicesApp: App {
@@ -8,12 +11,12 @@ struct VoicesApp: App {
             TabView {
                 ContentView()
                     .tabItem {
-                        Label("TTS", systemImage: "waveform")
+                        Label("Text to Speech", systemImage: "waveform")
                     }
 
                 STTView()
                     .tabItem {
-                        Label("STT", systemImage: "mic")
+                        Label("Speech to Text", systemImage: "mic")
                     }
             }
         }

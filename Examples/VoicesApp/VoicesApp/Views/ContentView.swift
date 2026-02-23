@@ -89,21 +89,15 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel = TTSViewModel()
     @State private var textInput = ""
-    @State private var selectedVoice: Voice?
+    @State private var selectedVoice: Voice? = Voice.samples.first(where: { $0.name == "Lily" }) ?? Voice.samples.first
     @State private var showVoices = false
     @State private var showSettings = false
     @State private var recentlyUsed: [Voice] = Voice.samples
     @State private var customVoices: [Voice] = Voice.customVoices
 
-    #if os(iOS)
     private let buttonHeight: CGFloat = 44
-    private let buttonFont: Font = .callout
-    private let inputFont: Font = .body
-    #else
-    private let buttonHeight: CGFloat = 44
-    private let buttonFont: Font = .subheadline
+    private let buttonFont: Font = .title3
     private let inputFont: Font = .title2
-    #endif
 
     var body: some View {
         VStack(spacing: 0) {
@@ -113,18 +107,17 @@ struct ContentView: View {
                 .scrollContentBackground(.hidden)
                 .background(.clear)
                 .disabled(viewModel.isGenerating)
-                .padding(.horizontal, 12)
-                .padding(.top, 4)
                 .overlay(alignment: .topLeading) {
                     if textInput.isEmpty {
                         Text("Start typing here...")
                             .font(inputFont)
                             .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 16)
-                            .padding(.top, 12)
+                            .padding(.horizontal, 4)
                             .allowsHitTesting(false)
                     }
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
 
             // Bottom content (status, player)
             VStack(spacing: 4) {
@@ -169,7 +162,10 @@ struct ContentView: View {
                         }
                         .buttonStyle(.plain)
                         .help("Save audio file")
+                        .padding(.trailing, 12)
                     }
+                    .background(Color.gray.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                     .padding(.horizontal)
                 }
             }
@@ -245,15 +241,16 @@ struct ContentView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!canGenerate)
+                    .keyboardShortcut(.return, modifiers: [.command])
                 }
             }
             .padding(.horizontal)
             .padding(.vertical, 8)
-            #if os(iOS)
+#if os(iOS)
             .background(Color(uiColor: .systemBackground).opacity(0.95))
-            #else
+#else
             .background(.bar)
-            #endif
+#endif
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .sheet(isPresented: $showVoices) {
@@ -264,17 +261,13 @@ struct ContentView: View {
                 selectedVoice = voice
                 showVoices = false
             }
-            #if os(iOS)
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
-            #endif
         }
         .sheet(isPresented: $showSettings) {
             SettingsView(viewModel: viewModel)
-                #if os(iOS)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
-                #endif
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
@@ -356,36 +349,6 @@ struct VoiceSelectorButton: View {
     }
 }
 
-// MARK: - Text Input Section
-
-struct TextInputSection: View {
-    @Binding var text: String
-    let isGenerating: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Enter text to synthesize")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            TextField("Type something here...", text: $text, axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(5...15)
-                .padding(12)
-                .background(Color.gray.opacity(0.15))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .disabled(isGenerating)
-
-            HStack {
-                Spacer()
-                Text("\(text.count) characters")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
 // MARK: - Status View
 
 struct StatusView: View {
@@ -448,15 +411,9 @@ struct CompactAudioPlayer: View {
     let onPlayPause: () -> Void
     let onSeek: (TimeInterval) -> Void
 
-    #if os(iOS)
-    private let playButtonSize: CGFloat = 32
-    private let spacing: CGFloat = 8
-    private let padding: CGFloat = 8
-    #else
     private let playButtonSize: CGFloat = 44
     private let spacing: CGFloat = 12
     private let padding: CGFloat = 12
-    #endif
 
     var body: some View {
         HStack(spacing: spacing) {
@@ -492,20 +449,18 @@ struct CompactAudioPlayer: View {
                 // Time labels
                 HStack {
                     Text(formatTime(currentTime))
-                        .font(.caption2)
+                        .font(.body)
                         .foregroundStyle(.secondary)
 
                     Spacer()
 
                     Text(formatTime(duration))
-                        .font(.caption2)
+                        .font(.body)
                         .foregroundStyle(.secondary)
                 }
             }
         }
         .padding(padding)
-        .background(Color.gray.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private func formatTime(_ time: TimeInterval) -> String {
@@ -558,6 +513,10 @@ struct BottomActionBar: View {
     }
 }
 
-#Preview {
+#Preview("CompactAudioPlayer") {
+    CompactAudioPlayer(isPlaying: true, currentTime: 1.0, duration: 5.0, onPlayPause: {}, onSeek: { _ in })
+}
+
+#Preview("ContentView") {
     ContentView()
 }
