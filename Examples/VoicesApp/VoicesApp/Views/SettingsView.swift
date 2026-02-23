@@ -376,14 +376,14 @@ struct SettingsView: View {
                     .padding(.top, 4)
                 #endif
 
-                if viewModel.enableChunking {
-                    #if os(iOS)
-                    CompactToggle(label: "Stream audio", isOn: $viewModel.streamingPlayback, font: textFont)
-                    #else
-                    Toggle("Stream audio", isOn: $viewModel.streamingPlayback)
-                        .font(textFont)
-                    #endif
+                #if os(iOS)
+                CompactToggle(label: "Stream audio", isOn: $viewModel.streamingPlayback, font: textFont)
+                #else
+                Toggle("Stream audio", isOn: $viewModel.streamingPlayback)
+                    .font(textFont)
+                #endif
 
+                if viewModel.enableChunking {
                     HStack {
                         Text("Max chunk length")
                             .font(textFont)
