@@ -77,7 +77,7 @@ class TTSViewModel {
     var streamingPlayback: Bool = true // Play audio as chunks are generated
 
     // Model configuration
-    var modelId: String = "mlx-community/VyvoTTS-EN-Beta-4bit"
+    var modelId: String = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit"
     private var loadedModelId: String?
 
     // Audio player state (manually synced from AudioPlayerManager)
@@ -86,7 +86,7 @@ class TTSViewModel {
     var duration: TimeInterval = 0
 
     private var model: SpeechGenerationModel?
-    private let audioPlayer = AudioPlayerManager()
+    private let audioPlayer = AudioPlayer()
     private var cancellables = Set<AnyCancellable>()
     private var generationTask: Task<Void, Never>?
 
@@ -302,8 +302,8 @@ class TTSViewModel {
 
             var totalTokenCount = 0
 
-            // Start streaming playback if enabled and we have multiple chunks
-            let useStreaming = streamingPlayback && chunks.count > 1
+            // Streaming playback — model yields audio chunks progressively
+            let useStreaming = streamingPlayback
             if useStreaming {
                 audioPlayer.startStreaming(sampleRate: sampleRate)
             }
@@ -317,7 +317,6 @@ class TTSViewModel {
                 }
 
                 var chunkTokenCount = 0
-                var audio: MLXArray?
 
                 // Set cache limit for this chunk
                 Memory.cacheLimit = 512 * 1024 * 1024 // 512MB cache limit
@@ -329,6 +328,7 @@ class TTSViewModel {
                     : voice?.name
 
                 // Each chunk needs a fresh generation
+                // Audio chunks arrive progressively during streaming
                 for try await event in model.generateStream(
                     text: chunk,
                     voice: voiceParam,
@@ -354,25 +354,17 @@ class TTSViewModel {
                     case .info(let info):
                         tokensPerSecond = info.tokensPerSecond
                     case .audio(let audioData):
-                        audio = audioData
-                    }
-                }
+                        autoreleasepool {
+                            let samples = audioData.asArray(Float.self)
 
-                // Convert to CPU samples and write directly to file
-                if let audioData = audio {
-                    autoreleasepool {
-                        let samples = audioData.asArray(Float.self)
+                            if useStreaming {
+                                audioPlayer.scheduleAudioChunk(samples, withCrossfade: true)
+                            }
 
-                        // Stream playback immediately as chunks are ready
-                        if useStreaming {
-                            audioPlayer.scheduleAudioChunk(samples, withCrossfade: true)
+                            try? wavWriter.writeChunk(samples)
                         }
-
-                        // Write directly to file - no memory accumulation
-                        try? wavWriter.writeChunk(samples)
                     }
                 }
-                audio = nil
 
                 // Clear GPU cache after each chunk
                 Memory.clearCache()
@@ -394,9 +386,12 @@ class TTSViewModel {
             audioURL = finalURL
             generationProgress = "" // Clear progress
 
-            // For single chunk, load normally for playback
-            if !useStreaming {
+            // Finalize playback state once generation completes.
+            if useStreaming {
+                audioPlayer.finishStreamingInput()
+            } else {
                 audioPlayer.loadAudio(from: finalURL)
+                audioPlayer.play()
             }
 
         } catch is CancellationError {

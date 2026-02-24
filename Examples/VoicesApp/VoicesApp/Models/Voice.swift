@@ -76,21 +76,27 @@ extension Voice {
             description: "Velvety Actress",
             language: "English",
             color: .purple.opacity(0.3),
-            lastUsed: Date()
+            lastUsed: Date(),
+            audioFileURL: Bundle.main.url(forResource: "Lily", withExtension: "wav"),
+            transcription: "Judge Victor quickly mixed a beige waxy potion for the zesty, grumpy elf who yawns."
         ),
         Voice(
             name: "James",
             description: "Professional Narrator",
             language: "English",
             color: .blue.opacity(0.3),
-            lastUsed: Date().addingTimeInterval(-3600)
+            lastUsed: Date().addingTimeInterval(-3600),
+            audioFileURL: Bundle.main.url(forResource: "James", withExtension: "wav"),
+            transcription: "Judge Victor quickly mixed a beige waxy potion for the zesty, grumpy elf who yawns."
         ),
         Voice(
             name: "Sophie",
             description: "Warm & Friendly",
             language: "English",
             color: .orange.opacity(0.3),
-            lastUsed: Date().addingTimeInterval(-7200)
+            lastUsed: Date().addingTimeInterval(-7200),
+            audioFileURL: Bundle.main.url(forResource: "Sophie", withExtension: "wav"),
+            transcription: "Judge Victor quickly mixed a beige waxy potion for the zesty, grumpy elf who yawns."
         )
     ]
 
