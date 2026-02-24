@@ -44,7 +44,9 @@ class STTViewModel {
     var recordingDuration: TimeInterval { recorder.recordingDuration }
     var audioLevel: Float { recorder.audioLevel }
 
-    private var model: Qwen3ASRModel?
+    private var model: (any STTGenerationModel)?
+    private var modelSampleRate: Int = 16000
+    private var qwen3Model: Qwen3ASRModel? { model as? Qwen3ASRModel }
     private let audioPlayer = AudioPlayer()
     private let recorder = AudioRecorderManager()
     private var cancellables = Set<AnyCancellable>()
@@ -89,7 +91,16 @@ class STTViewModel {
         generationProgress = "Downloading model..."
 
         do {
-            model = try await Qwen3ASRModel.fromPretrained(modelId)
+            let lowerId = modelId.lowercased()
+            if lowerId.contains("parakeet") {
+                let parakeet = try await ParakeetModel.fromPretrained(modelId)
+                model = parakeet
+                modelSampleRate = parakeet.preprocessConfig.sampleRate
+            } else {
+                let qwen3 = try await Qwen3ASRModel.fromPretrained(modelId)
+                model = qwen3
+                modelSampleRate = qwen3.sampleRate
+            }
             loadedModelId = modelId
             generationProgress = ""
         } catch {
@@ -139,7 +150,7 @@ class STTViewModel {
 
         do {
             let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
-            let targetRate = model.sampleRate
+            let targetRate = modelSampleRate
 
             let resampled: MLXArray
             if sampleRate != targetRate {
@@ -151,13 +162,17 @@ class STTViewModel {
 
             generationProgress = "Transcribing..."
 
-            var tokenCount = 0
-            for try await event in model.generateStream(
-                audio: resampled,
+            let params = STTGenerateParameters(
                 maxTokens: maxTokens,
                 temperature: temperature,
                 language: language,
                 chunkDuration: chunkDuration
+            )
+
+            var tokenCount = 0
+            for try await event in model.generateStream(
+                audio: resampled,
+                generationParameters: params
             ) {
                 try Task.checkCancellation()
 
@@ -190,11 +205,11 @@ class STTViewModel {
 
     private var liveTask: Task<Void, Never>?
     private var eventTask: Task<Void, Never>?
-    private var streamingSession: StreamingInferenceSession?
+    private var streamingSession: (any StreamingSession)?
     private var lastReadPos: Int = 0
 
     func startRecording() async {
-        guard let model = model else {
+        guard model != nil else {
             errorMessage = "Model not loaded"
             return
         }
@@ -212,7 +227,7 @@ class STTViewModel {
             return
         }
 
-        // Create streaming session
+        // Create streaming session matching the loaded model type
         let config = StreamingConfig(
             decodeIntervalSeconds: 1.0,
             maxCachedWindows: 60,
@@ -221,7 +236,17 @@ class STTViewModel {
             temperature: temperature,
             maxTokensPerPass: maxTokens
         )
-        let session = StreamingInferenceSession(model: model, config: config)
+
+        let session: any StreamingSession
+        if let qwen3 = qwen3Model {
+            session = StreamingInferenceSession(model: qwen3, config: config)
+        } else if let parakeet = model as? ParakeetModel {
+            session = StreamingInferenceSession(model: parakeet, config: config)
+        } else {
+            errorMessage = "Loaded model does not support live streaming"
+            recorder.cancelRecording()
+            return
+        }
         streamingSession = session
 
         // Listen to events from the session

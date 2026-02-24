@@ -12,6 +12,13 @@ import MLXLMCommon
 import Tokenizers
 import os
 
+// MARK: - Model Backend
+
+private enum ModelBackend: @unchecked Sendable {
+    case qwen3(Qwen3ASRModel)
+    case parakeet(ParakeetModel)
+}
+
 // MARK: - Shared State
 
 private struct SessionSharedState: Sendable {
@@ -24,6 +31,12 @@ private struct SessionSharedState: Sendable {
     var provisionalAgreementCounts: [Int] = []
     var confirmedText: String = ""
     var isDecoding: Bool = false
+
+    // Parakeet word-level state
+    var confirmedWords: [String] = []
+    var provisionalWords: [String] = []
+    var wordFirstSeen: [Date] = []
+    var wordAgreementCounts: [Int] = []
 }
 
 // MARK: - Decode Pass Parameters
@@ -59,6 +72,22 @@ private struct StopSnapshot: Sendable {
     let fallbackFinalText: String?
 }
 
+private struct ParakeetDecodePassParams: Sendable {
+    /// Completed chunks to freeze (one-shot decode each, then commit text)
+    let completedChunks: UncheckedSendableBox<[[Float]]>
+    /// Current partial chunk for streaming decode + word promotion
+    let activeAudio: UncheckedSendableBox<[Float]>
+    let model: UncheckedSendableBox<ParakeetModel>
+    let config: StreamingConfig
+    let sampleRate: Int
+    let totalSamples: Int
+    let prevConfirmedWords: [String]
+    let prevProvisionalWords: [String]
+    let prevFirstSeen: [Date]
+    let prevAgreementCounts: [Int]
+    let frozenText: String
+}
+
 /// Orchestrates streaming speech-to-text inference.
 ///
 /// Streaming decode runs on the current **pending** (partial) encoder window for
@@ -66,11 +95,20 @@ private struct StopSnapshot: Sendable {
 /// optionally run a one-shot decode for that completed window
 /// (`StreamingConfig.finalizeCompletedWindows`) to improve accuracy, then resets
 /// decode state for the next window.
-public class StreamingInferenceSession: @unchecked Sendable {
-    private let model: Qwen3ASRModel
+public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
+    private let backend: ModelBackend
     private let config: StreamingConfig
-    private let melProcessor: IncrementalMelSpectrogram
-    private let encoder: StreamingEncoder
+
+    // Qwen3-specific
+    private let melProcessor: IncrementalMelSpectrogram?
+    private let encoder: StreamingEncoder?
+
+    // Parakeet-specific
+    private var audioBuffer: [Float] = []
+    private var frozenSampleCount: Int = 0
+    /// Chunk duration for Parakeet sliding window (~8s)
+    private let parakeetChunkSeconds: Double = 8.0
+    private var parakeetSampleRate: Int = 16000
 
     private let shared = OSAllocatedUnfairLock(initialState: SessionSharedState())
     private let sessionLock = OSAllocatedUnfairLock(initialState: 0)
@@ -90,7 +128,7 @@ public class StreamingInferenceSession: @unchecked Sendable {
     public let events: AsyncStream<TranscriptionEvent>
 
     public init(model: Qwen3ASRModel, config: StreamingConfig = StreamingConfig()) {
-        self.model = model
+        self.backend = .qwen3(model)
         self.config = config
         let overlapFrames = max(0, Int(round(config.encoderWindowOverlapSeconds * Double(model.sampleRate) / 160.0)))
         self.melProcessor = IncrementalMelSpectrogram(
@@ -111,13 +149,36 @@ public class StreamingInferenceSession: @unchecked Sendable {
         self.isActive = true
     }
 
+    public init(model: ParakeetModel, config: StreamingConfig = StreamingConfig()) {
+        self.backend = .parakeet(model)
+        self.config = config
+        self.melProcessor = nil
+        self.encoder = nil
+        self.parakeetSampleRate = model.preprocessConfig.sampleRate
+
+        var continuation: AsyncStream<TranscriptionEvent>.Continuation!
+        self.events = AsyncStream { continuation = $0 }
+        self.continuation = continuation
+        self.isActive = true
+    }
+
     public func feedAudio(samples: [Float]) {
+        switch backend {
+        case .qwen3:
+            feedAudioQwen3(samples: samples)
+        case .parakeet:
+            feedAudioParakeet(samples: samples)
+        }
+    }
+
+    private func feedAudioQwen3(samples: [Float]) {
         sessionLock.withLock { _ in
             guard isActive else { return }
 
             totalSamplesFed += samples.count
 
-            guard let melFrames = melProcessor.process(samples: samples) else { return }
+            guard let melFrames = melProcessor?.process(samples: samples) else { return }
+            guard let encoder else { return }
 
             let newWindows = encoder.feed(melFrames: melFrames)
             if newWindows > 0 || encoder.hasPendingFrames {
@@ -174,23 +235,97 @@ public class StreamingInferenceSession: @unchecked Sendable {
         }
     }
 
+    private func feedAudioParakeet(samples: [Float]) {
+        sessionLock.withLock { _ in
+            guard isActive else { return }
+
+            audioBuffer.append(contentsOf: samples)
+            totalSamplesFed += samples.count
+
+            let now = Date()
+            let shouldDecode: Bool
+            if let lastDecode = lastDecodeTime {
+                shouldDecode = now.timeIntervalSince(lastDecode) >= config.decodeIntervalSeconds
+            } else {
+                shouldDecode = !audioBuffer.isEmpty
+            }
+
+            guard shouldDecode else { return }
+
+            let canDecode = shared.withLock { state in
+                guard !state.isDecoding else { return false }
+                state.isDecoding = true
+                return true
+            }
+            guard canDecode else { return }
+
+            lastDecodeTime = now
+
+            guard case .parakeet(let model) = backend else { return }
+
+            // Split buffer into completed chunks and active partial chunk
+            let chunkSamples = Int(parakeetChunkSeconds * Double(parakeetSampleRate))
+            var completedChunks: [[Float]] = []
+            while audioBuffer.count > chunkSamples {
+                completedChunks.append(Array(audioBuffer.prefix(chunkSamples)))
+                audioBuffer = Array(audioBuffer.dropFirst(chunkSamples))
+                frozenSampleCount += chunkSamples
+            }
+
+            let snapshot = shared.withLock { state in
+                (state.confirmedWords, state.provisionalWords,
+                 state.wordFirstSeen, state.wordAgreementCounts,
+                 state.completedText)
+            }
+
+            let params = ParakeetDecodePassParams(
+                completedChunks: UncheckedSendableBox(completedChunks),
+                activeAudio: UncheckedSendableBox(Array(audioBuffer)),
+                model: UncheckedSendableBox(model),
+                config: config,
+                sampleRate: parakeetSampleRate,
+                totalSamples: frozenSampleCount + audioBuffer.count,
+                prevConfirmedWords: snapshot.0,
+                prevProvisionalWords: snapshot.1,
+                prevFirstSeen: snapshot.2,
+                prevAgreementCounts: snapshot.3,
+                frozenText: snapshot.4
+            )
+
+            let continuation = self.continuation
+            let sharedState = self.shared
+
+            decodeTask = Task.detached {
+                defer { sharedState.withLock { $0.isDecoding = false } }
+
+                Self.runParakeetDecodePass(
+                    params: params,
+                    continuation: continuation,
+                    sharedState: sharedState
+                )
+            }
+        }
+    }
+
     // MARK: - Window Completion
 
     /// When the encoder completes a full window, freeze the current streaming
     /// text and reset decode state — next decode starts fresh on new pending.
     private func freezeCompletedWindowsLocked() {
+        guard let encoder else { return }
         let currentWindowCount = encoder.encodedWindowCount
         guard currentWindowCount > frozenWindowCount else { return }
 
+        guard case .qwen3(let qwen3Model) = backend else { return }
+        let tokenizer = qwen3Model.tokenizer
+
         shared.withLock { state in
-            // Promote provisional and freeze everything
             var allTokens = state.confirmedTokenIds
             allTokens.append(contentsOf: state.provisionalTokenIds)
-            if let tokenizer = model.tokenizer, !allTokens.isEmpty {
+            if let tokenizer, !allTokens.isEmpty {
                 let windowText = tokenizer.decode(tokens: allTokens)
                 Self.appendText(windowText, to: &state.completedText)
             }
-            // Reset — next decode is a fresh start on new pending frames
             state.confirmedTokenIds = []
             state.provisionalTokenIds = []
             state.provisionalFirstSeen = []
@@ -202,6 +337,9 @@ public class StreamingInferenceSession: @unchecked Sendable {
     }
 
     private func launchDecodePassLocked() {
+        guard let encoder else { return }
+        guard case .qwen3(let qwen3Model) = backend else { return }
+
         if config.finalizeCompletedWindows {
             let windowsToFinalize = encoder.drainNewlyEncodedWindows()
             if !windowsToFinalize.isEmpty {
@@ -209,7 +347,7 @@ public class StreamingInferenceSession: @unchecked Sendable {
 
                 let params = FinalizeWindowsParams(
                     windows: UncheckedSendableBox(windowsToFinalize),
-                    model: UncheckedSendableBox(self.model),
+                    model: UncheckedSendableBox(qwen3Model),
                     config: self.config,
                     totalSamples: totalSamplesFed,
                     encodedWindowCount: encoder.encodedWindowCount
@@ -235,7 +373,6 @@ public class StreamingInferenceSession: @unchecked Sendable {
             freezeCompletedWindowsLocked()
         }
 
-        // Only decode the current pending (partial) window
         guard let audioFeatures = encoder.encodePending() else {
             shared.withLock { $0.isDecoding = false }
             return
@@ -261,7 +398,7 @@ public class StreamingInferenceSession: @unchecked Sendable {
 
         let params = DecodePassParams(
             audioFeatures: UncheckedSendableBox(audioFeatures),
-            model: UncheckedSendableBox(self.model),
+            model: UncheckedSendableBox(qwen3Model),
             config: self.config,
             confirmedTokenIds: confirmedTokenIds,
             displayPrefix: displayPrefix,
@@ -726,6 +863,201 @@ public class StreamingInferenceSession: @unchecked Sendable {
         )))
     }
 
+    // MARK: - Parakeet Decode Pass
+
+    private static func runParakeetDecodePass(
+        params: ParakeetDecodePassParams,
+        continuation: AsyncStream<TranscriptionEvent>.Continuation?,
+        sharedState: OSAllocatedUnfairLock<SessionSharedState>
+    ) {
+        if Task.isCancelled { return }
+
+        let model = params.model.value
+
+        // 1. Freeze completed chunks (one-shot decode each, commit text)
+        let completedChunks = params.completedChunks.value
+        var didFreezeChunks = false
+        if !completedChunks.isEmpty {
+            for chunk in completedChunks {
+                if Task.isCancelled { return }
+                let chunkArray = MLXArray(chunk)
+                let result = model.decodeChunk(chunkArray)
+                eval()
+
+                let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty {
+                    sharedState.withLock { state in
+                        if state.completedText.isEmpty {
+                            state.completedText = text
+                        } else {
+                            state.completedText += " " + text
+                        }
+                    }
+                }
+                Memory.clearCache()
+            }
+            didFreezeChunks = true
+
+            // Reset word promotion — active chunk is a fresh window
+            sharedState.withLock { state in
+                state.confirmedWords = []
+                state.provisionalWords = []
+                state.wordFirstSeen = []
+                state.wordAgreementCounts = []
+            }
+
+            // Emit display update so frozen text appears immediately
+            let frozenText = sharedState.withLock { $0.completedText }
+            continuation?.yield(.displayUpdate(confirmedText: frozenText, provisionalText: ""))
+        }
+
+        // 2. Streaming decode on the active partial chunk only
+        let audio = params.activeAudio.value
+        guard !audio.isEmpty else { return }
+
+        let startTime = Date()
+        let audioArray = MLXArray(audio)
+        let result = model.decodeChunk(audioArray)
+        eval()
+        let decodeTime = Date().timeIntervalSince(startTime)
+
+        if Task.isCancelled { return }
+
+        let currentWords = result.text
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+
+        // After freezing chunks, override stale params with empty word state
+        let effectiveParams: ParakeetDecodePassParams
+        if didFreezeChunks {
+            effectiveParams = ParakeetDecodePassParams(
+                completedChunks: params.completedChunks,
+                activeAudio: params.activeAudio,
+                model: params.model,
+                config: params.config,
+                sampleRate: params.sampleRate,
+                totalSamples: params.totalSamples,
+                prevConfirmedWords: [],
+                prevProvisionalWords: [],
+                prevFirstSeen: [],
+                prevAgreementCounts: [],
+                frozenText: sharedState.withLock { $0.completedText }
+            )
+        } else {
+            effectiveParams = params
+        }
+
+        promoteParakeetWords(
+            currentWords: currentWords,
+            params: effectiveParams,
+            continuation: continuation,
+            sharedState: sharedState,
+            decodeTime: decodeTime
+        )
+    }
+
+    private static func promoteParakeetWords(
+        currentWords: [String],
+        params: ParakeetDecodePassParams,
+        continuation: AsyncStream<TranscriptionEvent>.Continuation?,
+        sharedState: OSAllocatedUnfairLock<SessionSharedState>,
+        decodeTime: Double
+    ) {
+        // After a chunk freeze, confirmed/provisional are empty and currentWords
+        // covers only the new partial chunk. Clamp confirmedCount so we never
+        // build an invalid range.
+        let confirmedCount = min(params.prevConfirmedWords.count, currentWords.count)
+        let prevAllWords = params.prevConfirmedWords.prefix(confirmedCount) + params.prevProvisionalWords
+
+        let now = Date()
+        let delaySeconds = Double(params.config.delayPreset.delayMs) / 1000.0
+
+        let compareLen = min(prevAllWords.count, currentWords.count)
+        var matchLen = 0
+        for i in 0..<compareLen {
+            if prevAllWords[i].lowercased() == currentWords[i].lowercased() {
+                matchLen = i + 1
+            } else {
+                break
+            }
+        }
+
+        let provisionalStart = confirmedCount
+        var nextFirstSeen: [Date] = []
+        var nextAgreementCounts: [Int] = []
+
+        for i in provisionalStart..<currentWords.count {
+            let prevProvIdx = i - confirmedCount
+            if i < matchLen && prevProvIdx >= 0 && prevProvIdx < params.prevFirstSeen.count {
+                nextFirstSeen.append(params.prevFirstSeen[prevProvIdx])
+                let prevAg = prevProvIdx < params.prevAgreementCounts.count
+                    ? params.prevAgreementCounts[prevProvIdx] : 1
+                nextAgreementCounts.append(prevAg + 1)
+            } else {
+                nextFirstSeen.append(now)
+                nextAgreementCounts.append(1)
+            }
+        }
+
+        let minAgreement = max(1, params.config.minAgreementPasses)
+        var promotionCount = 0
+        for i in 0..<nextFirstSeen.count {
+            let wordIdx = provisionalStart + i
+            guard wordIdx < matchLen else { break }
+            let hasDelay = now.timeIntervalSince(nextFirstSeen[i]) >= delaySeconds
+            let hasAgreement = nextAgreementCounts[i] >= minAgreement
+            if hasDelay && hasAgreement {
+                promotionCount = i + 1
+            } else {
+                break
+            }
+        }
+
+        let newConfirmedWords = Array(params.prevConfirmedWords.prefix(confirmedCount)) + Array(currentWords[confirmedCount..<(confirmedCount + promotionCount)])
+        let newProvisionalWords = Array(currentWords.dropFirst(confirmedCount + promotionCount))
+        let finalFirstSeen = Array(nextFirstSeen.dropFirst(promotionCount))
+        let finalAgreementCounts = Array(nextAgreementCounts.dropFirst(promotionCount))
+
+        let confirmedText = newConfirmedWords.joined(separator: " ")
+        let provisionalText = newProvisionalWords.joined(separator: " ")
+
+        let displayPrefix: String = sharedState.withLock { state in
+            state.confirmedWords = newConfirmedWords
+            state.provisionalWords = newProvisionalWords
+            state.wordFirstSeen = finalFirstSeen
+            state.wordAgreementCounts = finalAgreementCounts
+
+            let frozen = state.completedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let confirmed = confirmedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if frozen.isEmpty { return confirmed }
+            if confirmed.isEmpty { return frozen }
+            return frozen + " " + confirmed
+        }
+
+        continuation?.yield(.displayUpdate(
+            confirmedText: displayPrefix,
+            provisionalText: provisionalText
+        ))
+
+        if promotionCount > 0 {
+            continuation?.yield(.confirmed(text: displayPrefix))
+        }
+
+        let totalAudioSeconds = Double(params.totalSamples) / Double(params.sampleRate)
+        let wordsPerSec = decodeTime > 0 ? Double(currentWords.count) / decodeTime : 0
+        continuation?.yield(.stats(StreamingStats(
+            encodedWindowCount: 0,
+            totalAudioSeconds: totalAudioSeconds,
+            tokensPerSecond: wordsPerSec,
+            realTimeFactor: totalAudioSeconds > 0 ? decodeTime / totalAudioSeconds : 0,
+            peakMemoryGB: Double(Memory.peakMemory) / 1e9
+        )))
+
+        Memory.clearCache()
+    }
+
+    // MARK: - Stop / Cancel
+
     public func stop() {
         sessionLock.withLock { _ in
             guard isActive else { return }
@@ -735,13 +1067,65 @@ public class StreamingInferenceSession: @unchecked Sendable {
             decodeTask = nil
 
             stopTask?.cancel()
-            stopTask = Task.detached { [self] in
-                await finishStop(waitingFor: inFlightDecode)
+            switch backend {
+            case .qwen3:
+                stopTask = Task.detached { [self] in
+                    await finishStopQwen3(waitingFor: inFlightDecode)
+                }
+            case .parakeet:
+                stopTask = Task.detached { [self] in
+                    await finishStopParakeet(waitingFor: inFlightDecode)
+                }
             }
         }
     }
 
-    private func finishStop(waitingFor inFlightDecode: Task<Void, Never>?) async {
+    private func finishStopParakeet(waitingFor inFlightDecode: Task<Void, Never>?) async {
+        if let inFlightDecode {
+            _ = await inFlightDecode.value
+        }
+
+        guard case .parakeet(let model) = backend else { return }
+
+        let finalAudio: [Float] = sessionLock.withLock { _ in Array(audioBuffer) }
+
+        let finalText: String
+        if !finalAudio.isEmpty {
+            let audioArray = MLXArray(finalAudio)
+            let result = model.decodeChunk(audioArray)
+            eval()
+
+            finalText = shared.withLock { state in
+                let decoded = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let frozen = state.completedText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if frozen.isEmpty { return decoded }
+                if decoded.isEmpty { return frozen }
+                return frozen + " " + decoded
+            }
+        } else {
+            finalText = shared.withLock { state in
+                let allWords = state.confirmedWords + state.provisionalWords
+                let current = allWords.joined(separator: " ")
+                let frozen = state.completedText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if frozen.isEmpty { return current }
+                if current.isEmpty { return frozen }
+                return frozen + " " + current
+            }
+        }
+
+        continuation?.yield(.ended(fullText: finalText))
+        continuation?.finish()
+
+        sessionLock.withLock { _ in
+            continuation = nil
+            stopTask = nil
+            audioBuffer = []
+        }
+
+        Memory.clearCache()
+    }
+
+    private func finishStopQwen3(waitingFor inFlightDecode: Task<Void, Never>?) async {
         if let inFlightDecode {
             _ = await inFlightDecode.value
         }
@@ -750,28 +1134,30 @@ public class StreamingInferenceSession: @unchecked Sendable {
             return
         }
 
+        guard case .qwen3(let qwen3Model) = backend else { return }
+        let qwen3Tokenizer = qwen3Model.tokenizer
+
         let snapshot: StopSnapshot = sessionLock.withLock { _ in
-            if let melFrames = melProcessor.flush() {
-                _ = encoder.feed(melFrames: melFrames)
+            if let melFrames = melProcessor?.flush() {
+                _ = encoder?.feed(melFrames: melFrames)
             }
 
             let completedWindows: [MLXArray]
-            if config.finalizeCompletedWindows {
+            if config.finalizeCompletedWindows, let encoder {
                 completedWindows = encoder.drainNewlyEncodedWindows()
                 frozenWindowCount = encoder.encodedWindowCount
             } else {
                 completedWindows = []
-                // Freeze any windows completed since last decode
                 freezeCompletedWindowsLocked()
             }
 
             let continuation = self.continuation
             let totalSamples = totalSamplesFed
-            let encodedWindowCount = encoder.encodedWindowCount
+            let encodedWindowCount = encoder?.encodedWindowCount ?? 0
 
-            if let audioFeatures = encoder.encodePending(),
+            if let audioFeatures = encoder?.encodePending(),
                audioFeatures.dim(0) > 0,
-               model.tokenizer != nil
+               qwen3Tokenizer != nil
             {
                 let confirmedCount = shared.withLock { $0.confirmedTokenIds.count }
                 return StopSnapshot(
@@ -792,8 +1178,8 @@ public class StreamingInferenceSession: @unchecked Sendable {
                     state.provisionalFirstSeen = []
                     state.provisionalAgreementCounts = []
                 }
-                if let tokenizer = model.tokenizer, !state.confirmedTokenIds.isEmpty {
-                    state.confirmedText = tokenizer.decode(tokens: state.confirmedTokenIds)
+                if let qwen3Tokenizer, !state.confirmedTokenIds.isEmpty {
+                    state.confirmedText = qwen3Tokenizer.decode(tokens: state.confirmedTokenIds)
                 }
                 return Self.concatText(state.completedText, state.confirmedText)
             }
@@ -815,14 +1201,14 @@ public class StreamingInferenceSession: @unchecked Sendable {
 
         if let completedWindows = snapshot.completedWindows?.value,
            !completedWindows.isEmpty,
-           let tokenizer = model.tokenizer
+           let tokenizer = qwen3Model.tokenizer
         {
             for audioFeatures in completedWindows {
                 if Task.isCancelled { return }
 
                 if audioFeatures.dim(0) <= 0 { continue }
                 let tokenIds = Self.decodeAllTokenIds(
-                    model: model,
+                    model: qwen3Model,
                     audioFeatures: audioFeatures,
                     confirmedCount: 0,
                     config: config
@@ -847,11 +1233,11 @@ public class StreamingInferenceSession: @unchecked Sendable {
 
         let finalText: String
         if let audioFeatures = snapshot.pendingAudioFeatures?.value,
-           let tokenizer = model.tokenizer
+           let tokenizer = qwen3Model.tokenizer
         {
             let startTime = Date()
             let tokenIds = Self.decodeAllTokenIds(
-                model: model,
+                model: qwen3Model,
                 audioFeatures: audioFeatures,
                 confirmedCount: snapshot.confirmedCount,
                 config: config
@@ -882,6 +1268,7 @@ public class StreamingInferenceSession: @unchecked Sendable {
                 peakMemoryGB: Double(Memory.peakMemory) / 1e9
             )))
         } else {
+            let tokenizer2 = qwen3Model.tokenizer
             finalText = shared.withLock { state in
                 if !state.provisionalTokenIds.isEmpty {
                     state.confirmedTokenIds.append(contentsOf: state.provisionalTokenIds)
@@ -889,8 +1276,8 @@ public class StreamingInferenceSession: @unchecked Sendable {
                     state.provisionalFirstSeen = []
                     state.provisionalAgreementCounts = []
                 }
-                if let tokenizer = model.tokenizer, !state.confirmedTokenIds.isEmpty {
-                    state.confirmedText = tokenizer.decode(tokens: state.confirmedTokenIds)
+                if let tokenizer2, !state.confirmedTokenIds.isEmpty {
+                    state.confirmedText = tokenizer2.decode(tokens: state.confirmedTokenIds)
                 }
                 return Self.concatText(state.completedText, state.confirmedText)
             }
@@ -906,8 +1293,8 @@ public class StreamingInferenceSession: @unchecked Sendable {
         sessionLock.withLock { _ in
             self.continuation = nil
             stopTask = nil
-            encoder.reset()
-            melProcessor.reset()
+            encoder?.reset()
+            melProcessor?.reset()
             boundaryFastDecodeUntil = nil
         }
 
@@ -923,8 +1310,9 @@ public class StreamingInferenceSession: @unchecked Sendable {
             stopTask = nil
             continuation?.finish()
             continuation = nil
-            encoder.reset()
-            melProcessor.reset()
+            encoder?.reset()
+            melProcessor?.reset()
+            audioBuffer = []
             boundaryFastDecodeUntil = nil
         }
     }

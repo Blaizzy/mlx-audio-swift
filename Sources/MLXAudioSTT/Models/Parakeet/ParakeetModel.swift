@@ -430,7 +430,7 @@ public final class ParakeetModel: Module, STTGenerationModel {
         Double(frameIndex * encoderConfig.subsamplingFactor * preprocessConfig.hopLength) / Double(preprocessConfig.sampleRate)
     }
 
-    private func decodeChunk(_ chunkAudio: MLXArray) -> ParakeetAlignedResult {
+    func decodeChunk(_ chunkAudio: MLXArray) -> ParakeetAlignedResult {
         let mel = ParakeetAudio.logMelSpectrogram(chunkAudio, config: preprocessConfig)
         return decode(mel: mel)[0]
     }

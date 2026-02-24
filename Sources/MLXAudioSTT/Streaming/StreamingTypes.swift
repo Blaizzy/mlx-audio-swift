@@ -108,6 +108,23 @@ public enum TranscriptionEvent: Sendable {
     case ended(fullText: String)
 }
 
+// MARK: - Streaming Session Protocol
+
+/// Protocol for streaming speech-to-text sessions.
+///
+/// Both `StreamingInferenceSession` (Qwen3) and `ParakeetStreamingSession` conform to this,
+/// enabling the same ViewModel code to drive either model type.
+public protocol StreamingSession: AnyObject, Sendable {
+    /// Async stream of transcription events (confirmed text, provisional text, stats, etc.)
+    var events: AsyncStream<TranscriptionEvent> { get }
+    /// Feed new audio samples into the session for incremental processing.
+    func feedAudio(samples: [Float])
+    /// Stop the session gracefully — runs a final decode pass and emits `.ended`.
+    func stop()
+    /// Cancel the session immediately without a final decode.
+    func cancel()
+}
+
 // MARK: - Streaming Stats
 
 /// Performance statistics for a streaming session.
