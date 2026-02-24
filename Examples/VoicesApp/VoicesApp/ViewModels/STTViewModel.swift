@@ -227,8 +227,8 @@ class STTViewModel {
             return
         }
 
-        // Create streaming session matching the loaded model type
-        let config = StreamingConfig(
+        // Base streaming config; model-specific tweaks are applied below.
+        var config = StreamingConfig(
             decodeIntervalSeconds: 1.0,
             maxCachedWindows: 60,
             delayPreset: .custom(ms: streamingDelayMs),
@@ -241,6 +241,8 @@ class STTViewModel {
         if let qwen3 = qwen3Model {
             session = StreamingInferenceSession(model: qwen3, config: config)
         } else if let parakeet = model as? ParakeetModel {
+            // Faster decode interval for Parakeet
+            config.decodeIntervalSeconds = 0.25
             session = StreamingInferenceSession(model: parakeet, config: config)
         } else {
             errorMessage = "Loaded model does not support live streaming"
@@ -294,8 +296,6 @@ class STTViewModel {
         liveTask?.cancel()
         liveTask = nil
 
-        _ = recorder.stopRecording()
-
         // Feed any remaining audio, then stop session
         if let session = streamingSession {
             if let (audio, endPos) = recorder.getAudio(from: lastReadPos) {
@@ -304,9 +304,14 @@ class STTViewModel {
                 session.feedAudio(samples: samples)
             }
 
+            // Stop capture after flushing pending samples from the recorder buffer.
+            _ = recorder.stopRecording()
+
             // Stop promotes all provisional tokens and emits .ended
             // The eventTask will process .ended and clean up naturally
             session.stop()
+        } else {
+            _ = recorder.stopRecording()
         }
     }
 

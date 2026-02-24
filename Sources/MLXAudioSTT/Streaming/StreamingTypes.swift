@@ -60,6 +60,10 @@ public struct StreamingConfig: Sendable {
     public var maxDecodeWindows: Int
     /// Whether to run a one-shot decode on each completed 8s window for accuracy
     public var finalizeCompletedWindows: Bool
+    /// Chunk size (seconds) for buffered streaming commit steps.
+    public var bufferedChunkSeconds: Double
+    /// Total buffered decode window (seconds), including left and right context.
+    public var bufferedTotalWindowSeconds: Double
 
     public init(
         decodeIntervalSeconds: Double = 1.0,
@@ -74,7 +78,9 @@ public struct StreamingConfig: Sendable {
         minAgreementPasses: Int = 2,
         boundaryMinAgreementPasses: Int = 3,
         maxDecodeWindows: Int = 1,
-        finalizeCompletedWindows: Bool = true
+        finalizeCompletedWindows: Bool = true,
+        bufferedChunkSeconds: Double = 1.6,
+        bufferedTotalWindowSeconds: Double = 4.0
     ) {
         self.decodeIntervalSeconds = decodeIntervalSeconds
         self.boundaryDecodeIntervalSeconds = boundaryDecodeIntervalSeconds
@@ -89,6 +95,57 @@ public struct StreamingConfig: Sendable {
         self.boundaryMinAgreementPasses = boundaryMinAgreementPasses
         self.maxDecodeWindows = maxDecodeWindows
         self.finalizeCompletedWindows = finalizeCompletedWindows
+        self.bufferedChunkSeconds = bufferedChunkSeconds
+        self.bufferedTotalWindowSeconds = bufferedTotalWindowSeconds
+    }
+
+    @available(*, deprecated, message: "Use bufferedChunkSeconds and bufferedTotalWindowSeconds.")
+    public init(
+        decodeIntervalSeconds: Double = 1.0,
+        boundaryDecodeIntervalSeconds: Double = 0.2,
+        boundaryBoostSeconds: Double = 1.0,
+        encoderWindowOverlapSeconds: Double = 1.0,
+        maxCachedWindows: Int = 60,
+        delayPreset: DelayPreset = .agent,
+        language: String = "English",
+        temperature: Float = 0.0,
+        maxTokensPerPass: Int = 512,
+        minAgreementPasses: Int = 2,
+        boundaryMinAgreementPasses: Int = 3,
+        maxDecodeWindows: Int = 1,
+        finalizeCompletedWindows: Bool = true,
+        parakeetChunkSeconds: Double,
+        parakeetTotalBufferSeconds: Double
+    ) {
+        self.init(
+            decodeIntervalSeconds: decodeIntervalSeconds,
+            boundaryDecodeIntervalSeconds: boundaryDecodeIntervalSeconds,
+            boundaryBoostSeconds: boundaryBoostSeconds,
+            encoderWindowOverlapSeconds: encoderWindowOverlapSeconds,
+            maxCachedWindows: maxCachedWindows,
+            delayPreset: delayPreset,
+            language: language,
+            temperature: temperature,
+            maxTokensPerPass: maxTokensPerPass,
+            minAgreementPasses: minAgreementPasses,
+            boundaryMinAgreementPasses: boundaryMinAgreementPasses,
+            maxDecodeWindows: maxDecodeWindows,
+            finalizeCompletedWindows: finalizeCompletedWindows,
+            bufferedChunkSeconds: parakeetChunkSeconds,
+            bufferedTotalWindowSeconds: parakeetTotalBufferSeconds
+        )
+    }
+
+    @available(*, deprecated, message: "Use bufferedChunkSeconds.")
+    public var parakeetChunkSeconds: Double {
+        get { bufferedChunkSeconds }
+        set { bufferedChunkSeconds = newValue }
+    }
+
+    @available(*, deprecated, message: "Use bufferedTotalWindowSeconds.")
+    public var parakeetTotalBufferSeconds: Double {
+        get { bufferedTotalWindowSeconds }
+        set { bufferedTotalWindowSeconds = newValue }
     }
 }
 

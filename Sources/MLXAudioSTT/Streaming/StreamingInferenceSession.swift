@@ -72,11 +72,24 @@ private struct StopSnapshot: Sendable {
     let fallbackFinalText: String?
 }
 
+private struct ParakeetBufferedWindow: Sendable {
+    /// Absolute sample index where this decode window starts.
+    let windowStartSample: Int
+    /// Absolute sample interval whose tokens should be frozen.
+    let commitStartSample: Int
+    let commitEndSample: Int
+    /// Audio samples for the decode window.
+    let samples: [Float]
+}
+
 private struct ParakeetDecodePassParams: Sendable {
-    /// Completed chunks to freeze (one-shot decode each, then commit text)
-    let completedChunks: UncheckedSendableBox<[[Float]]>
-    /// Current partial chunk for streaming decode + word promotion
+    /// Completed buffered windows to freeze (one-shot decode and commit middle chunk)
+    let completedWindows: UncheckedSendableBox<[ParakeetBufferedWindow]>
+    /// Current active window for streaming decode + word promotion
     let activeAudio: UncheckedSendableBox<[Float]>
+    let activeWindowStartSample: Int
+    /// Tokens before this absolute sample are already frozen in `completedText`.
+    let activeCommitStartSample: Int
     let model: UncheckedSendableBox<ParakeetModel>
     let config: StreamingConfig
     let sampleRate: Int
@@ -85,7 +98,6 @@ private struct ParakeetDecodePassParams: Sendable {
     let prevProvisionalWords: [String]
     let prevFirstSeen: [Date]
     let prevAgreementCounts: [Int]
-    let frozenText: String
 }
 
 /// Orchestrates streaming speech-to-text inference.
@@ -105,9 +117,10 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
 
     // Parakeet-specific
     private var audioBuffer: [Float] = []
+    /// Absolute sample index of `audioBuffer[0]`.
+    private var audioBufferStartSample: Int = 0
+    /// Absolute sample index of the next chunk start to freeze.
     private var frozenSampleCount: Int = 0
-    /// Chunk duration for Parakeet sliding window (~8s)
-    private let parakeetChunkSeconds: Double = 8.0
     private var parakeetSampleRate: Int = 16000
 
     private let shared = OSAllocatedUnfairLock(initialState: SessionSharedState())
@@ -245,7 +258,7 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
             let now = Date()
             let shouldDecode: Bool
             if let lastDecode = lastDecodeTime {
-                shouldDecode = now.timeIntervalSince(lastDecode) >= config.decodeIntervalSeconds
+                shouldDecode = now.timeIntervalSince(lastDecode) >= max(0.05, config.decodeIntervalSeconds)
             } else {
                 shouldDecode = !audioBuffer.isEmpty
             }
@@ -263,33 +276,91 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
 
             guard case .parakeet(let model) = backend else { return }
 
-            // Split buffer into completed chunks and active partial chunk
-            let chunkSamples = Int(parakeetChunkSeconds * Double(parakeetSampleRate))
-            var completedChunks: [[Float]] = []
-            while audioBuffer.count > chunkSamples {
-                completedChunks.append(Array(audioBuffer.prefix(chunkSamples)))
-                audioBuffer = Array(audioBuffer.dropFirst(chunkSamples))
+            // NeMo-like buffered RNNT decode:
+            // freeze `chunk` spans using windows of `totalBuffer` audio (left+right context).
+            let sampleRate = parakeetSampleRate
+            let chunkSeconds = max(0.2, config.bufferedChunkSeconds)
+            let chunkSamples = max(1, Int(round(chunkSeconds * Double(sampleRate))))
+            let totalBufferSeconds = max(config.bufferedTotalWindowSeconds, chunkSeconds)
+            let totalBufferSamples = max(chunkSamples, Int(round(totalBufferSeconds * Double(sampleRate))))
+            let contextSamples = max(0, totalBufferSamples - chunkSamples)
+            let leftContextSamples = contextSamples / 2
+            let rightContextSamples = contextSamples - leftContextSamples
+
+            let bufferEndSample = audioBufferStartSample + audioBuffer.count
+
+            var completedWindows: [ParakeetBufferedWindow] = []
+            while frozenSampleCount + chunkSamples + rightContextSamples <= totalSamplesFed {
+                let commitStart = frozenSampleCount
+                let commitEnd = commitStart + chunkSamples
+                let windowStart = max(0, commitStart - leftContextSamples)
+                let windowEnd = commitEnd + rightContextSamples
+
+                guard windowStart >= audioBufferStartSample,
+                      windowEnd <= bufferEndSample
+                else { break }
+
+                let startIdx = windowStart - audioBufferStartSample
+                let endIdx = windowEnd - audioBufferStartSample
+                guard startIdx >= 0,
+                      endIdx <= audioBuffer.count,
+                      endIdx > startIdx
+                else { break }
+
+                completedWindows.append(
+                    ParakeetBufferedWindow(
+                        windowStartSample: windowStart,
+                        commitStartSample: commitStart,
+                        commitEndSample: commitEnd,
+                        samples: Array(audioBuffer[startIdx..<endIdx])
+                    )
+                )
                 frozenSampleCount += chunkSamples
+            }
+
+            let activeCommitStartSample = frozenSampleCount
+            let activeWindowStartSample = max(0, activeCommitStartSample - leftContextSamples)
+            let activeWindowEndSample = totalSamplesFed
+
+            let activeAudio: [Float]
+            if activeWindowEndSample > activeWindowStartSample,
+               activeWindowStartSample >= audioBufferStartSample,
+               activeWindowEndSample <= bufferEndSample {
+                let startIdx = activeWindowStartSample - audioBufferStartSample
+                let endIdx = activeWindowEndSample - audioBufferStartSample
+                activeAudio = Array(audioBuffer[startIdx..<endIdx])
+            } else {
+                activeAudio = []
+            }
+
+            // Keep only the minimum history needed for the next buffered window.
+            let keepFromSample = max(0, activeCommitStartSample - leftContextSamples)
+            if keepFromSample > audioBufferStartSample {
+                let dropCount = min(keepFromSample - audioBufferStartSample, audioBuffer.count)
+                if dropCount > 0 {
+                    audioBuffer.removeFirst(dropCount)
+                    audioBufferStartSample += dropCount
+                }
             }
 
             let snapshot = shared.withLock { state in
                 (state.confirmedWords, state.provisionalWords,
-                 state.wordFirstSeen, state.wordAgreementCounts,
-                 state.completedText)
+                 state.wordFirstSeen, state.wordAgreementCounts)
             }
 
             let params = ParakeetDecodePassParams(
-                completedChunks: UncheckedSendableBox(completedChunks),
-                activeAudio: UncheckedSendableBox(Array(audioBuffer)),
+                completedWindows: UncheckedSendableBox(completedWindows),
+                activeAudio: UncheckedSendableBox(activeAudio),
+                activeWindowStartSample: activeWindowStartSample,
+                activeCommitStartSample: activeCommitStartSample,
                 model: UncheckedSendableBox(model),
                 config: config,
-                sampleRate: parakeetSampleRate,
-                totalSamples: frozenSampleCount + audioBuffer.count,
+                sampleRate: sampleRate,
+                totalSamples: totalSamplesFed,
                 prevConfirmedWords: snapshot.0,
                 prevProvisionalWords: snapshot.1,
                 prevFirstSeen: snapshot.2,
-                prevAgreementCounts: snapshot.3,
-                frozenText: snapshot.4
+                prevAgreementCounts: snapshot.3
             )
 
             let continuation = self.continuation
@@ -865,6 +936,41 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
 
     // MARK: - Parakeet Decode Pass
 
+    private static func absoluteParakeetTokens(
+        from result: ParakeetAlignedResult,
+        windowStartSample: Int,
+        sampleRate: Int
+    ) -> [ParakeetAlignedToken] {
+        let offsetSeconds = Double(windowStartSample) / Double(sampleRate)
+        var tokens = result.sentences.flatMap(\.tokens)
+        guard offsetSeconds != 0 else { return tokens }
+        for i in tokens.indices {
+            tokens[i].start += offsetSeconds
+        }
+        return tokens
+    }
+
+    private static func selectParakeetTokens(
+        _ tokens: [ParakeetAlignedToken],
+        startSample: Int,
+        endSample: Int,
+        sampleRate: Int
+    ) -> [ParakeetAlignedToken] {
+        let start = Double(startSample) / Double(sampleRate)
+        let end = Double(endSample) / Double(sampleRate)
+        guard end > start else { return [] }
+        return tokens.filter { token in
+            let midpoint = token.start + (token.duration * 0.5)
+            return midpoint >= start && midpoint < end
+        }
+    }
+
+    private static func parakeetText(from tokens: [ParakeetAlignedToken]) -> String {
+        tokens.map(\.text)
+            .joined()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static func runParakeetDecodePass(
         params: ParakeetDecodePassParams,
         continuation: AsyncStream<TranscriptionEvent>.Continuation?,
@@ -874,31 +980,38 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
 
         let model = params.model.value
 
-        // 1. Freeze completed chunks (one-shot decode each, commit text)
-        let completedChunks = params.completedChunks.value
-        var didFreezeChunks = false
-        if !completedChunks.isEmpty {
-            for chunk in completedChunks {
+        // 1. Freeze completed chunk spans from buffered windows.
+        let completedWindows = params.completedWindows.value
+        var didFreezeWindows = false
+        if !completedWindows.isEmpty {
+            for window in completedWindows {
                 if Task.isCancelled { return }
-                let chunkArray = MLXArray(chunk)
-                let result = model.decodeChunk(chunkArray)
+                let windowArray = MLXArray(window.samples)
+                let result = model.decodeChunk(windowArray)
                 eval()
 
-                let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty {
+                let windowTokens = absoluteParakeetTokens(
+                    from: result,
+                    windowStartSample: window.windowStartSample,
+                    sampleRate: params.sampleRate
+                )
+                let committedTokens = selectParakeetTokens(
+                    windowTokens,
+                    startSample: window.commitStartSample,
+                    endSample: window.commitEndSample,
+                    sampleRate: params.sampleRate
+                )
+                let committedText = parakeetText(from: committedTokens)
+                if !committedText.isEmpty {
                     sharedState.withLock { state in
-                        if state.completedText.isEmpty {
-                            state.completedText = text
-                        } else {
-                            state.completedText += " " + text
-                        }
+                        Self.appendText(committedText, to: &state.completedText)
                     }
                 }
                 Memory.clearCache()
             }
-            didFreezeChunks = true
+            didFreezeWindows = true
 
-            // Reset word promotion — active chunk is a fresh window
+            // Reset word promotion because the commit boundary advanced.
             sharedState.withLock { state in
                 state.confirmedWords = []
                 state.provisionalWords = []
@@ -911,7 +1024,7 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
             continuation?.yield(.displayUpdate(confirmedText: frozenText, provisionalText: ""))
         }
 
-        // 2. Streaming decode on the active partial chunk only
+        // 2. Streaming decode on an active window that includes left context.
         let audio = params.activeAudio.value
         guard !audio.isEmpty else { return }
 
@@ -923,16 +1036,27 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
 
         if Task.isCancelled { return }
 
-        let currentWords = result.text
+        let activeTokens = absoluteParakeetTokens(
+            from: result,
+            windowStartSample: params.activeWindowStartSample,
+            sampleRate: params.sampleRate
+        ).filter { token in
+            let midpoint = token.start + (token.duration * 0.5)
+            return midpoint >= Double(params.activeCommitStartSample) / Double(params.sampleRate)
+        }
+
+        let currentWords = parakeetText(from: activeTokens)
             .split(whereSeparator: \.isWhitespace)
             .map(String.init)
 
-        // After freezing chunks, override stale params with empty word state
+        // After freezing windows, override stale params with empty word state.
         let effectiveParams: ParakeetDecodePassParams
-        if didFreezeChunks {
+        if didFreezeWindows {
             effectiveParams = ParakeetDecodePassParams(
-                completedChunks: params.completedChunks,
+                completedWindows: params.completedWindows,
                 activeAudio: params.activeAudio,
+                activeWindowStartSample: params.activeWindowStartSample,
+                activeCommitStartSample: params.activeCommitStartSample,
                 model: params.model,
                 config: params.config,
                 sampleRate: params.sampleRate,
@@ -940,8 +1064,7 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
                 prevConfirmedWords: [],
                 prevProvisionalWords: [],
                 prevFirstSeen: [],
-                prevAgreementCounts: [],
-                frozenText: sharedState.withLock { $0.completedText }
+                prevAgreementCounts: []
             )
         } else {
             effectiveParams = params
@@ -1087,29 +1210,55 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
 
         guard case .parakeet(let model) = backend else { return }
 
-        let finalAudio: [Float] = sessionLock.withLock { _ in Array(audioBuffer) }
+        let finalSnapshot: (audio: [Float], windowStartSample: Int, commitStartSample: Int, sampleRate: Int) = sessionLock.withLock { _ in
+            let sampleRate = parakeetSampleRate
+            let chunkSeconds = max(0.2, config.bufferedChunkSeconds)
+            let chunkSamples = max(1, Int(round(chunkSeconds * Double(sampleRate))))
+            let totalBufferSeconds = max(config.bufferedTotalWindowSeconds, chunkSeconds)
+            let totalBufferSamples = max(chunkSamples, Int(round(totalBufferSeconds * Double(sampleRate))))
+            let contextSamples = max(0, totalBufferSamples - chunkSamples)
+            let leftContextSamples = contextSamples / 2
+
+            let windowStartSample = max(0, frozenSampleCount - leftContextSamples)
+            let bufferEndSample = audioBufferStartSample + audioBuffer.count
+
+            if windowStartSample >= audioBufferStartSample,
+               bufferEndSample > windowStartSample {
+                let startIdx = windowStartSample - audioBufferStartSample
+                let finalAudio = Array(audioBuffer[startIdx..<audioBuffer.count])
+                return (finalAudio, windowStartSample, frozenSampleCount, sampleRate)
+            }
+
+            return ([], 0, frozenSampleCount, sampleRate)
+        }
 
         let finalText: String
-        if !finalAudio.isEmpty {
-            let audioArray = MLXArray(finalAudio)
+        if !finalSnapshot.audio.isEmpty {
+            let audioArray = MLXArray(finalSnapshot.audio)
             let result = model.decodeChunk(audioArray)
             eval()
 
             finalText = shared.withLock { state in
-                let decoded = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                let frozen = state.completedText.trimmingCharacters(in: .whitespacesAndNewlines)
-                if frozen.isEmpty { return decoded }
-                if decoded.isEmpty { return frozen }
-                return frozen + " " + decoded
+                let tokens = Self.absoluteParakeetTokens(
+                    from: result,
+                    windowStartSample: finalSnapshot.windowStartSample,
+                    sampleRate: finalSnapshot.sampleRate
+                ).filter { token in
+                    let midpoint = token.start + (token.duration * 0.5)
+                    return midpoint >= Double(finalSnapshot.commitStartSample) / Double(finalSnapshot.sampleRate)
+                }
+                let decodedTail = Self.parakeetText(from: tokens)
+                if decodedTail.isEmpty {
+                    let fallbackTail = (state.confirmedWords + state.provisionalWords).joined(separator: " ")
+                    return Self.concatText(state.completedText, fallbackTail)
+                }
+                return Self.concatText(state.completedText, decodedTail)
             }
         } else {
             finalText = shared.withLock { state in
                 let allWords = state.confirmedWords + state.provisionalWords
                 let current = allWords.joined(separator: " ")
-                let frozen = state.completedText.trimmingCharacters(in: .whitespacesAndNewlines)
-                if frozen.isEmpty { return current }
-                if current.isEmpty { return frozen }
-                return frozen + " " + current
+                return Self.concatText(state.completedText, current)
             }
         }
 
@@ -1120,6 +1269,8 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
             continuation = nil
             stopTask = nil
             audioBuffer = []
+            audioBufferStartSample = 0
+            frozenSampleCount = 0
         }
 
         Memory.clearCache()
@@ -1313,6 +1464,8 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
             encoder?.reset()
             melProcessor?.reset()
             audioBuffer = []
+            audioBufferStartSample = 0
+            frozenSampleCount = 0
             boundaryFastDecodeUntil = nil
         }
     }
