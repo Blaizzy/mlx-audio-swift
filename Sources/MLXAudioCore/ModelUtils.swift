@@ -91,12 +91,12 @@ public enum ModelUtils {
                         return modelDir
                     } else {
                         print("Cached config.json is invalid, clearing cache...")
-                        try? FileManager.default.removeItem(at: modelDir)
+                        Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
                     }
                 }
             } else {
                 print("Cached model appears incomplete, clearing cache...")
-                try? FileManager.default.removeItem(at: modelDir)
+                Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
             }
         }
 
@@ -117,7 +117,43 @@ public enum ModelUtils {
             }
         )
 
+        // Post-download validation: ensure required files are non-zero
+        let downloadedFiles = try? FileManager.default.contentsOfDirectory(
+            at: modelDir, includingPropertiesForKeys: [.fileSizeKey]
+        )
+        let hasValidFile = downloadedFiles?.contains { file in
+            guard file.pathExtension == normalizedRequiredExtension else { return false }
+            let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            return size > 0
+        } ?? false
+
+        if !hasValidFile {
+            Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
+            throw ModelUtilsError.incompleteDownload(repoID.description)
+        }
+
         print("Model downloaded to: \(modelDir.path)")
         return modelDir
+    }
+
+    private static func clearCaches(modelDir: URL, repoID: Repo.ID, hubCache: HubCache) {
+        try? FileManager.default.removeItem(at: modelDir)
+        let hubRepoDir = hubCache.repoDirectory(repo: repoID, kind: .model)
+        if FileManager.default.fileExists(atPath: hubRepoDir.path) {
+            print("Clearing Hub cache at: \(hubRepoDir.path)")
+            try? FileManager.default.removeItem(at: hubRepoDir)
+        }
+    }
+}
+
+public enum ModelUtilsError: LocalizedError {
+    case incompleteDownload(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .incompleteDownload(let repo):
+            return "Downloaded model '\(repo)' has missing or zero-byte weight files. "
+                + "The cache has been cleared — please try again."
+        }
     }
 }
