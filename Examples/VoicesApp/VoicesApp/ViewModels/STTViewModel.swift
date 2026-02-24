@@ -254,7 +254,13 @@ class STTViewModel {
             for await event in session.events {
                 switch event {
                 case .displayUpdate(let confirmed, let provisional):
-                    transcriptionText = confirmed + provisional
+                    if confirmed.isEmpty {
+                        transcriptionText = provisional
+                    } else if provisional.isEmpty {
+                        transcriptionText = confirmed
+                    } else {
+                        transcriptionText = confirmed + " " + provisional
+                    }
                 case .confirmed:
                     break  // displayUpdate handles the UI
                 case .provisional:
