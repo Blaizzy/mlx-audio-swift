@@ -32,11 +32,15 @@ private struct SessionSharedState: Sendable {
     var confirmedText: String = ""
     var isDecoding: Bool = false
 
-    // Parakeet word-level state
-    var confirmedWords: [String] = []
-    var provisionalWords: [String] = []
-    var wordFirstSeen: [Date] = []
-    var wordAgreementCounts: [Int] = []
+    // Parakeet token-piece state
+    var confirmedPieces: [String] = []
+    var provisionalPieces: [String] = []
+    var pieceFirstSeen: [Date] = []
+    var pieceAgreementCounts: [Int] = []
+    /// Merged absolute tokens from recent buffered windows (used for boundary stitching).
+    var parakeetMergedTokens: [ParakeetAlignedToken] = []
+    /// Commit boundary held back by one window to reduce boundary word splits.
+    var parakeetPendingCommitEndSample: Int?
 }
 
 // MARK: - Decode Pass Parameters
@@ -94,8 +98,8 @@ private struct ParakeetDecodePassParams: Sendable {
     let config: StreamingConfig
     let sampleRate: Int
     let totalSamples: Int
-    let prevConfirmedWords: [String]
-    let prevProvisionalWords: [String]
+    let prevConfirmedPieces: [String]
+    let prevProvisionalPieces: [String]
     let prevFirstSeen: [Date]
     let prevAgreementCounts: [Int]
 }
@@ -290,7 +294,9 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
             let bufferEndSample = audioBufferStartSample + audioBuffer.count
 
             var completedWindows: [ParakeetBufferedWindow] = []
-            while frozenSampleCount + chunkSamples + rightContextSamples <= totalSamplesFed {
+            let maxCompletedWindowsPerPass = 3
+            while completedWindows.count < maxCompletedWindowsPerPass,
+                  frozenSampleCount + chunkSamples + rightContextSamples <= totalSamplesFed {
                 let commitStart = frozenSampleCount
                 let commitEnd = commitStart + chunkSamples
                 let windowStart = max(0, commitStart - leftContextSamples)
@@ -320,17 +326,18 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
 
             let activeCommitStartSample = frozenSampleCount
             let activeWindowStartSample = max(0, activeCommitStartSample - leftContextSamples)
-            let activeWindowEndSample = totalSamplesFed
+            let desiredActiveWindowEndSample = activeWindowStartSample + totalBufferSamples
+            let activeWindowEndSample = min(desiredActiveWindowEndSample, bufferEndSample)
 
-            let activeAudio: [Float]
+            var activeAudio: [Float] = []
             if activeWindowEndSample > activeWindowStartSample,
-               activeWindowStartSample >= audioBufferStartSample,
-               activeWindowEndSample <= bufferEndSample {
+               activeWindowStartSample >= audioBufferStartSample {
                 let startIdx = activeWindowStartSample - audioBufferStartSample
                 let endIdx = activeWindowEndSample - audioBufferStartSample
                 activeAudio = Array(audioBuffer[startIdx..<endIdx])
-            } else {
-                activeAudio = []
+            }
+            if activeAudio.count < totalBufferSamples {
+                activeAudio.append(contentsOf: Array(repeating: 0, count: totalBufferSamples - activeAudio.count))
             }
 
             // Keep only the minimum history needed for the next buffered window.
@@ -340,12 +347,16 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
                 if dropCount > 0 {
                     audioBuffer.removeFirst(dropCount)
                     audioBufferStartSample += dropCount
+                    Self.compactFloatBufferIfNeeded(
+                        &audioBuffer,
+                        minRetainedSamples: max(totalBufferSamples, audioBuffer.count)
+                    )
                 }
             }
 
             let snapshot = shared.withLock { state in
-                (state.confirmedWords, state.provisionalWords,
-                 state.wordFirstSeen, state.wordAgreementCounts)
+                (state.confirmedPieces, state.provisionalPieces,
+                 state.pieceFirstSeen, state.pieceAgreementCounts)
             }
 
             let params = ParakeetDecodePassParams(
@@ -357,8 +368,8 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
                 config: config,
                 sampleRate: sampleRate,
                 totalSamples: totalSamplesFed,
-                prevConfirmedWords: snapshot.0,
-                prevProvisionalWords: snapshot.1,
+                prevConfirmedPieces: snapshot.0,
+                prevProvisionalPieces: snapshot.1,
                 prevFirstSeen: snapshot.2,
                 prevAgreementCounts: snapshot.3
             )
@@ -950,25 +961,90 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
         return tokens
     }
 
-    private static func selectParakeetTokens(
-        _ tokens: [ParakeetAlignedToken],
-        startSample: Int,
-        endSample: Int,
-        sampleRate: Int
-    ) -> [ParakeetAlignedToken] {
-        let start = Double(startSample) / Double(sampleRate)
-        let end = Double(endSample) / Double(sampleRate)
-        guard end > start else { return [] }
-        return tokens.filter { token in
-            let midpoint = token.start + (token.duration * 0.5)
-            return midpoint >= start && midpoint < end
-        }
-    }
-
     private static func parakeetText(from tokens: [ParakeetAlignedToken]) -> String {
         tokens.map(\.text)
             .joined()
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func compactFloatBufferIfNeeded(_ buffer: inout [Float], minRetainedSamples: Int) {
+        let minSamples = max(4096, minRetainedSamples)
+        let maxAllowedCapacity = minSamples * 8
+        guard buffer.capacity > maxAllowedCapacity,
+              buffer.count < minSamples * 2
+        else { return }
+
+        var compacted = Array(buffer)
+        compacted.reserveCapacity(max(compacted.count, minSamples * 2))
+        buffer = compacted
+    }
+
+    private static func mergeParakeetTokenSequences(
+        existing: [ParakeetAlignedToken],
+        incoming: [ParakeetAlignedToken],
+        overlapDuration: Double
+    ) -> [ParakeetAlignedToken] {
+        if existing.isEmpty { return incoming }
+        if incoming.isEmpty { return existing }
+
+        do {
+            return try ParakeetAlignment.mergeLongestContiguous(
+                existing,
+                incoming,
+                overlapDuration: overlapDuration
+            )
+        } catch {
+            return ParakeetAlignment.mergeLongestCommonSubsequence(
+                existing,
+                incoming,
+                overlapDuration: overlapDuration
+            )
+        }
+    }
+
+    private static func splitParakeetTokensForCommit(
+        _ tokens: [ParakeetAlignedToken],
+        commitEndSample: Int,
+        sampleRate: Int
+    ) -> (committed: [ParakeetAlignedToken], pending: [ParakeetAlignedToken]) {
+        let commitEnd = Double(commitEndSample) / Double(sampleRate)
+        var commitCount = 0
+        while commitCount < tokens.count {
+            let token = tokens[commitCount]
+            let midpoint = token.start + (token.duration * 0.5)
+            if midpoint < commitEnd {
+                commitCount += 1
+            } else {
+                break
+            }
+        }
+
+        if commitCount <= 0 {
+            return ([], tokens)
+        }
+        if commitCount >= tokens.count {
+            return (tokens, [])
+        }
+        return (
+            Array(tokens[..<commitCount]),
+            Array(tokens[commitCount...])
+        )
+    }
+
+    private static func concatParakeetText(_ base: String, _ segment: String) -> String {
+        if base.isEmpty { return segment }
+        if segment.isEmpty { return base }
+        return base + segment
+    }
+
+    private static func appendParakeetTextSegment(_ segment: String, to base: inout String) {
+        let normalizedSegment = segment.replacingOccurrences(of: "\n", with: " ")
+        guard !normalizedSegment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        if base.isEmpty {
+            base = normalizedSegment.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            base += normalizedSegment
+        }
     }
 
     private static func runParakeetDecodePass(
@@ -984,6 +1060,10 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
         let completedWindows = params.completedWindows.value
         var didFreezeWindows = false
         if !completedWindows.isEmpty {
+            let chunkSeconds = max(0.2, params.config.bufferedChunkSeconds)
+            let totalBufferSeconds = max(params.config.bufferedTotalWindowSeconds, chunkSeconds)
+            let overlapDuration = max(0.2, totalBufferSeconds - chunkSeconds)
+
             for window in completedWindows {
                 if Task.isCancelled { return }
                 let windowArray = MLXArray(window.samples)
@@ -995,17 +1075,29 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
                     windowStartSample: window.windowStartSample,
                     sampleRate: params.sampleRate
                 )
-                let committedTokens = selectParakeetTokens(
-                    windowTokens,
-                    startSample: window.commitStartSample,
-                    endSample: window.commitEndSample,
-                    sampleRate: params.sampleRate
-                )
-                let committedText = parakeetText(from: committedTokens)
-                if !committedText.isEmpty {
-                    sharedState.withLock { state in
-                        Self.appendText(committedText, to: &state.completedText)
+                sharedState.withLock { state in
+                    state.parakeetMergedTokens = Self.mergeParakeetTokenSequences(
+                        existing: state.parakeetMergedTokens,
+                        incoming: windowTokens,
+                        overlapDuration: overlapDuration
+                    )
+
+                    if let pendingCommitEnd = state.parakeetPendingCommitEndSample {
+                        let split = Self.splitParakeetTokensForCommit(
+                            state.parakeetMergedTokens,
+                            commitEndSample: pendingCommitEnd,
+                            sampleRate: params.sampleRate
+                        )
+                        state.parakeetMergedTokens = split.pending
+
+                        let committedText = parakeetText(from: split.committed)
+                        if !committedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Self.appendParakeetTextSegment(committedText, to: &state.completedText)
+                        }
                     }
+
+                    // Hold back this boundary until the next window arrives.
+                    state.parakeetPendingCommitEndSample = window.commitEndSample
                 }
                 Memory.clearCache()
             }
@@ -1013,10 +1105,10 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
 
             // Reset word promotion because the commit boundary advanced.
             sharedState.withLock { state in
-                state.confirmedWords = []
-                state.provisionalWords = []
-                state.wordFirstSeen = []
-                state.wordAgreementCounts = []
+                state.confirmedPieces = []
+                state.provisionalPieces = []
+                state.pieceFirstSeen = []
+                state.pieceAgreementCounts = []
             }
 
             // Emit display update so frozen text appears immediately
@@ -1045,11 +1137,9 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
             return midpoint >= Double(params.activeCommitStartSample) / Double(params.sampleRate)
         }
 
-        let currentWords = parakeetText(from: activeTokens)
-            .split(whereSeparator: \.isWhitespace)
-            .map(String.init)
+        let currentPieces = activeTokens.map(\.text).filter { !$0.isEmpty }
 
-        // After freezing windows, override stale params with empty word state.
+        // After freezing windows, override stale params with empty piece state.
         let effectiveParams: ParakeetDecodePassParams
         if didFreezeWindows {
             effectiveParams = ParakeetDecodePassParams(
@@ -1061,8 +1151,8 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
                 config: params.config,
                 sampleRate: params.sampleRate,
                 totalSamples: params.totalSamples,
-                prevConfirmedWords: [],
-                prevProvisionalWords: [],
+                prevConfirmedPieces: [],
+                prevProvisionalPieces: [],
                 prevFirstSeen: [],
                 prevAgreementCounts: []
             )
@@ -1070,8 +1160,8 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
             effectiveParams = params
         }
 
-        promoteParakeetWords(
-            currentWords: currentWords,
+        promoteParakeetPieces(
+            currentPieces: currentPieces,
             params: effectiveParams,
             continuation: continuation,
             sharedState: sharedState,
@@ -1079,26 +1169,40 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
         )
     }
 
-    private static func promoteParakeetWords(
-        currentWords: [String],
+    private static func normalizedParakeetPiece(_ piece: String) -> String {
+        piece.lowercased()
+    }
+
+    private static func parakeetPiecesEquivalent(_ lhs: String, _ rhs: String) -> Bool {
+        let lhsNormalized = normalizedParakeetPiece(lhs)
+        let rhsNormalized = normalizedParakeetPiece(rhs)
+        if !lhsNormalized.isEmpty && !rhsNormalized.isEmpty {
+            return lhsNormalized == rhsNormalized
+        }
+        return lhs == rhs
+    }
+
+    private static func promoteParakeetPieces(
+        currentPieces: [String],
         params: ParakeetDecodePassParams,
         continuation: AsyncStream<TranscriptionEvent>.Continuation?,
         sharedState: OSAllocatedUnfairLock<SessionSharedState>,
         decodeTime: Double
     ) {
-        // After a chunk freeze, confirmed/provisional are empty and currentWords
+        // After a chunk freeze, confirmed/provisional are empty and currentPieces
         // covers only the new partial chunk. Clamp confirmedCount so we never
         // build an invalid range.
-        let confirmedCount = min(params.prevConfirmedWords.count, currentWords.count)
-        let prevAllWords = params.prevConfirmedWords.prefix(confirmedCount) + params.prevProvisionalWords
+        let confirmedCount = min(params.prevConfirmedPieces.count, currentPieces.count)
+        let prevConfirmedPrefix = Array(params.prevConfirmedPieces.prefix(confirmedCount))
+        let prevAllPieces = prevConfirmedPrefix + params.prevProvisionalPieces
 
         let now = Date()
         let delaySeconds = Double(params.config.delayPreset.delayMs) / 1000.0
 
-        let compareLen = min(prevAllWords.count, currentWords.count)
+        let compareLen = min(prevAllPieces.count, currentPieces.count)
         var matchLen = 0
         for i in 0..<compareLen {
-            if prevAllWords[i].lowercased() == currentWords[i].lowercased() {
+            if parakeetPiecesEquivalent(prevAllPieces[i], currentPieces[i]) {
                 matchLen = i + 1
             } else {
                 break
@@ -1109,7 +1213,7 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
         var nextFirstSeen: [Date] = []
         var nextAgreementCounts: [Int] = []
 
-        for i in provisionalStart..<currentWords.count {
+        for i in provisionalStart..<currentPieces.count {
             let prevProvIdx = i - confirmedCount
             if i < matchLen && prevProvIdx >= 0 && prevProvIdx < params.prevFirstSeen.count {
                 nextFirstSeen.append(params.prevFirstSeen[prevProvIdx])
@@ -1136,25 +1240,23 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
             }
         }
 
-        let newConfirmedWords = Array(params.prevConfirmedWords.prefix(confirmedCount)) + Array(currentWords[confirmedCount..<(confirmedCount + promotionCount)])
-        let newProvisionalWords = Array(currentWords.dropFirst(confirmedCount + promotionCount))
+        let newConfirmedPieces = prevConfirmedPrefix + Array(currentPieces[confirmedCount..<(confirmedCount + promotionCount)])
+        let newProvisionalPieces = Array(currentPieces.dropFirst(confirmedCount + promotionCount))
         let finalFirstSeen = Array(nextFirstSeen.dropFirst(promotionCount))
         let finalAgreementCounts = Array(nextAgreementCounts.dropFirst(promotionCount))
 
-        let confirmedText = newConfirmedWords.joined(separator: " ")
-        let provisionalText = newProvisionalWords.joined(separator: " ")
+        let confirmedText = newConfirmedPieces.joined()
+        let provisionalText = newProvisionalPieces.joined()
 
         let displayPrefix: String = sharedState.withLock { state in
-            state.confirmedWords = newConfirmedWords
-            state.provisionalWords = newProvisionalWords
-            state.wordFirstSeen = finalFirstSeen
-            state.wordAgreementCounts = finalAgreementCounts
+            state.confirmedPieces = newConfirmedPieces
+            state.provisionalPieces = newProvisionalPieces
+            state.pieceFirstSeen = finalFirstSeen
+            state.pieceAgreementCounts = finalAgreementCounts
 
-            let frozen = state.completedText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let confirmed = confirmedText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if frozen.isEmpty { return confirmed }
-            if confirmed.isEmpty { return frozen }
-            return frozen + " " + confirmed
+            let frozen = state.completedText
+            let confirmed = confirmedText
+            return concatParakeetText(frozen, confirmed).trimmingCharacters(in: .newlines)
         }
 
         continuation?.yield(.displayUpdate(
@@ -1167,11 +1269,11 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
         }
 
         let totalAudioSeconds = Double(params.totalSamples) / Double(params.sampleRate)
-        let wordsPerSec = decodeTime > 0 ? Double(currentWords.count) / decodeTime : 0
+        let piecesPerSec = decodeTime > 0 ? Double(currentPieces.count) / decodeTime : 0
         continuation?.yield(.stats(StreamingStats(
             encodedWindowCount: 0,
             totalAudioSeconds: totalAudioSeconds,
-            tokensPerSecond: wordsPerSec,
+            tokensPerSecond: piecesPerSec,
             realTimeFactor: totalAudioSeconds > 0 ? decodeTime / totalAudioSeconds : 0,
             peakMemoryGB: Double(Memory.peakMemory) / 1e9
         )))
@@ -1209,6 +1311,23 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
         }
 
         guard case .parakeet(let model) = backend else { return }
+        let sampleRateForCommit = parakeetSampleRate
+
+        shared.withLock { state in
+            if let pendingCommitEnd = state.parakeetPendingCommitEndSample {
+                let split = Self.splitParakeetTokensForCommit(
+                    state.parakeetMergedTokens,
+                    commitEndSample: pendingCommitEnd,
+                    sampleRate: sampleRateForCommit
+                )
+                state.parakeetMergedTokens = split.pending
+                let committedText = Self.parakeetText(from: split.committed)
+                if !committedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Self.appendParakeetTextSegment(committedText, to: &state.completedText)
+                }
+                state.parakeetPendingCommitEndSample = nil
+            }
+        }
 
         let finalSnapshot: (audio: [Float], windowStartSample: Int, commitStartSample: Int, sampleRate: Int) = sessionLock.withLock { _ in
             let sampleRate = parakeetSampleRate
@@ -1248,17 +1367,21 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
                     return midpoint >= Double(finalSnapshot.commitStartSample) / Double(finalSnapshot.sampleRate)
                 }
                 let decodedTail = Self.parakeetText(from: tokens)
-                if decodedTail.isEmpty {
-                    let fallbackTail = (state.confirmedWords + state.provisionalWords).joined(separator: " ")
-                    return Self.concatText(state.completedText, fallbackTail)
+                if decodedTail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let fallbackTail = (state.confirmedPieces + state.provisionalPieces).joined()
+                    let mergedTail = Self.parakeetText(from: state.parakeetMergedTokens)
+                    let fallbackCombined = Self.concatParakeetText(fallbackTail, mergedTail)
+                    return Self.concatParakeetText(state.completedText, fallbackCombined)
                 }
-                return Self.concatText(state.completedText, decodedTail)
+                return Self.concatParakeetText(state.completedText, decodedTail)
             }
         } else {
             finalText = shared.withLock { state in
-                let allWords = state.confirmedWords + state.provisionalWords
-                let current = allWords.joined(separator: " ")
-                return Self.concatText(state.completedText, current)
+                let allPieces = state.confirmedPieces + state.provisionalPieces
+                let current = allPieces.joined()
+                let mergedTail = Self.parakeetText(from: state.parakeetMergedTokens)
+                let combinedTail = Self.concatParakeetText(current, mergedTail)
+                return Self.concatParakeetText(state.completedText, combinedTail)
             }
         }
 
@@ -1272,6 +1395,7 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
             audioBufferStartSample = 0
             frozenSampleCount = 0
         }
+        shared.withLock { $0 = SessionSharedState() }
 
         Memory.clearCache()
     }
@@ -1448,6 +1572,7 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
             melProcessor?.reset()
             boundaryFastDecodeUntil = nil
         }
+        shared.withLock { $0 = SessionSharedState() }
 
         Memory.clearCache()
     }
@@ -1468,6 +1593,8 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
             frozenSampleCount = 0
             boundaryFastDecodeUntil = nil
         }
+        shared.withLock { $0 = SessionSharedState() }
+        Memory.clearCache()
     }
 
     private static func decodeAllTokenIds(

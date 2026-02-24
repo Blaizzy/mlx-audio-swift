@@ -51,6 +51,7 @@ class STTViewModel {
     private let recorder = AudioRecorderManager()
     private var cancellables = Set<AnyCancellable>()
     private var generationTask: Task<Void, Never>?
+    private var previousMemoryCacheLimit: Int?
 
     var isModelLoaded: Bool {
         model != nil
@@ -207,6 +208,25 @@ class STTViewModel {
     private var eventTask: Task<Void, Never>?
     private var streamingSession: (any StreamingSession)?
     private var lastReadPos: Int = 0
+    private let liveStreamingCacheLimitBytes = 256 * 1024 * 1024
+
+    private func applyLiveStreamingMemoryBudget() {
+        if previousMemoryCacheLimit == nil {
+            previousMemoryCacheLimit = Memory.cacheLimit
+        }
+        let target = min(previousMemoryCacheLimit ?? liveStreamingCacheLimitBytes, liveStreamingCacheLimitBytes)
+        if Memory.cacheLimit != target {
+            Memory.cacheLimit = target
+        }
+        Memory.clearCache()
+    }
+
+    private func restoreMemoryBudgetIfNeeded() {
+        guard let previous = previousMemoryCacheLimit else { return }
+        Memory.cacheLimit = previous
+        previousMemoryCacheLimit = nil
+        Memory.clearCache()
+    }
 
     func startRecording() async {
         guard model != nil else {
@@ -250,6 +270,7 @@ class STTViewModel {
             return
         }
         streamingSession = session
+        applyLiveStreamingMemoryBudget()
 
         // Listen to events from the session
         eventTask = Task {
@@ -261,7 +282,7 @@ class STTViewModel {
                     } else if provisional.isEmpty {
                         transcriptionText = confirmed
                     } else {
-                        transcriptionText = confirmed + " " + provisional
+                        transcriptionText = confirmed + provisional
                     }
                 case .confirmed:
                     break  // displayUpdate handles the UI
@@ -277,15 +298,17 @@ class STTViewModel {
             // Stream ended naturally — clean up
             streamingSession = nil
             eventTask = nil
+            restoreMemoryBudgetIfNeeded()
         }
 
         // Audio feed loop: read new samples every 100ms and feed to session
         liveTask = Task {
             while !Task.isCancelled && recorder.isRecording {
-                if let (audio, endPos) = recorder.getAudio(from: lastReadPos) {
+                if let (samples, endPos) = recorder.getSamples(from: lastReadPos) {
                     lastReadPos = endPos
-                    let samples = audio.asArray(Float.self)
                     session.feedAudio(samples: samples)
+                    // Keep live capture memory bounded by discarding consumed samples.
+                    recorder.discardAudio(before: lastReadPos)
                 }
                 try? await Task.sleep(for: .milliseconds(100))
             }
@@ -298,9 +321,8 @@ class STTViewModel {
 
         // Feed any remaining audio, then stop session
         if let session = streamingSession {
-            if let (audio, endPos) = recorder.getAudio(from: lastReadPos) {
+            if let (samples, endPos) = recorder.getSamples(from: lastReadPos) {
                 lastReadPos = endPos
-                let samples = audio.asArray(Float.self)
                 session.feedAudio(samples: samples)
             }
 
@@ -312,6 +334,7 @@ class STTViewModel {
             session.stop()
         } else {
             _ = recorder.stopRecording()
+            restoreMemoryBudgetIfNeeded()
         }
     }
 
@@ -324,6 +347,7 @@ class STTViewModel {
         eventTask = nil
         recorder.cancelRecording()
         lastReadPos = 0
+        restoreMemoryBudgetIfNeeded()
     }
 
     func stop() {
@@ -345,6 +369,7 @@ class STTViewModel {
             isGenerating = false
             generationProgress = ""
         }
+        restoreMemoryBudgetIfNeeded()
     }
 
     func play() {
