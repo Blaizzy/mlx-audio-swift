@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 @preconcurrency import MLX
 import MLXAudioCore
+import MLXAudioSTT
 import MLXAudioTTS
 import MLXLMCommon
 
@@ -31,6 +32,8 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
 
 @main
 enum App {
+    private static let forcedAlignerRepo = "mlx-community/Qwen3-ForcedAligner-0.6B-4bit"
+
     static func main() async {
         do {
             let args = try CLI.parse()
@@ -43,7 +46,8 @@ enum App {
                 refText: args.refText,
                 maxTokens: args.maxTokens,
                 temperature: args.temperature,
-                topP: args.topP
+                topP: args.topP,
+                timestamps: args.timestamps
             )
         } catch {
             fputs("Error: \(error)\n", stderr)
@@ -62,6 +66,7 @@ enum App {
         maxTokens: Int?,
         temperature: Float?,
         topP: Float?,
+        timestamps: Bool,
         hfToken: String? = nil
     ) async throws {
         Memory.cacheLimit = 100 * 1024 * 1024
@@ -119,6 +124,28 @@ enum App {
         try writeWavFile(samples: audioData, sampleRate: sampleRate, outputURL: outputURL)
         print("Wrote WAV to \(outputURL.path)")
 
+        if timestamps {
+            print("Loading forced aligner (\(forcedAlignerRepo))")
+            let forcedAligner = try await Qwen3ForcedAlignerModel.fromPretrained(forcedAlignerRepo)
+            let alignmentAudio = try prepareAudioForForcedAlignment(
+                samples: audioData,
+                sampleRate: Int(loadedModel.sampleRate)
+            )
+            let aligned = forcedAligner.generate(audio: alignmentAudio, text: text, language: "English")
+
+            print("Timestamps:")
+            for item in aligned.items {
+                print(
+                    String(
+                        format: "  [%.3fs - %.3fs] %@",
+                        item.startTime,
+                        item.endTime,
+                        item.text
+                    )
+                )
+            }
+        }
+
         print(String(format: "Finished generation in %0.2fs", CFAbsoluteTimeGetCurrent() - started))
         print("Memory usage:\n\(Memory.snapshot())")
 
@@ -159,6 +186,14 @@ enum App {
         let audioFile = try AVAudioFile(forWriting: outputURL, settings: format.settings)
         try audioFile.write(from: buffer)
     }
+
+    private static func prepareAudioForForcedAlignment(samples: [Float], sampleRate: Int) throws -> MLXArray {
+        guard sampleRate != 16000 else {
+            return MLXArray(samples)
+        }
+        let resampled = try resampleAudio(samples, from: sampleRate, to: 16000)
+        return MLXArray(resampled)
+    }
 }
 
 // MARK: -
@@ -187,6 +222,7 @@ struct CLI {
     let maxTokens: Int?
     let temperature: Float?
     let topP: Float?
+    let timestamps: Bool
 
     static func parse() throws -> CLI {
         var text: String?
@@ -198,6 +234,7 @@ struct CLI {
         var maxTokens: Int? = nil
         var temperature: Float? = nil
         var topP: Float? = nil
+        var timestamps = false
 
         var it = CommandLine.arguments.dropFirst().makeIterator()
         while let arg = it.next() {
@@ -232,6 +269,8 @@ struct CLI {
                 guard let v = it.next() else { throw CLIError.missingValue(arg) }
                 guard let value = Float(v) else { throw CLIError.invalidValue(arg, v) }
                 topP = value
+            case "--timestamps":
+                timestamps = true
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -257,7 +296,8 @@ struct CLI {
             refText: refText,
             maxTokens: maxTokens,
             temperature: temperature,
-            topP: topP
+            topP: topP,
+            timestamps: timestamps
         )
     }
 
@@ -265,7 +305,7 @@ struct CLI {
         let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "marvis-tts-cli"
         print("""
         Usage:
-          \(exe) --text "Hello world" [--voice conversational_b] [--model <hf-repo>] [--output <path>] [--ref_audio <path>] [--ref_text <string>] [--max_tokens <int>] [--temperature <float>] [--top_p <float>]
+          \(exe) --text "Hello world" [--voice conversational_b] [--model <hf-repo>] [--output <path>] [--ref_audio <path>] [--ref_text <string>] [--max_tokens <int>] [--temperature <float>] [--top_p <float>] [--timestamps]
 
         Options:
           -t, --text <string>           Text to synthesize (required if not passed as trailing arg)
@@ -277,6 +317,7 @@ struct CLI {
               --max_tokens <int>       Maximum number of tokens to generate (overrides model default)
               --temperature <float>    Sampling temperature (overrides model default)
               --top_p <float>          Top-p sampling (overrides model default)
+              --timestamps             Emit word timestamps using mlx-community/Qwen3-ForcedAligner-0.6B-4bit
           -h, --help                    Show this help
         """)
     }
