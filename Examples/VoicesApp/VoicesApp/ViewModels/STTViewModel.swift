@@ -261,7 +261,10 @@ class STTViewModel {
         if let qwen3 = qwen3Model {
             session = StreamingInferenceSession(model: qwen3, config: config)
         } else if let parakeet = model as? ParakeetModel {
-            // Faster decode interval for Parakeet
+            // Match NeMo buffered RNNT defaults (chunk=1.6s, total window=4.0s).
+            config.bufferedChunkSeconds = 1.6
+            config.bufferedTotalWindowSeconds = 4.0
+            // Faster decode interval for responsive provisional text.
             config.decodeIntervalSeconds = 0.25
             session = StreamingInferenceSession(model: parakeet, config: config)
         } else {

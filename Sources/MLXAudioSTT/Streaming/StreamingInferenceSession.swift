@@ -1030,6 +1030,40 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
         )
     }
 
+    /// Keep pending merge state bounded so overlap alignment remains O(1)-window
+    /// instead of growing with full session duration when commit boundaries lag.
+    private static func trimParakeetPendingTokens(
+        _ tokens: [ParakeetAlignedToken],
+        pendingCommitEndSample: Int?,
+        sampleRate: Int,
+        chunkSeconds: Double,
+        totalBufferSeconds: Double
+    ) -> [ParakeetAlignedToken] {
+        guard !tokens.isEmpty else { return [] }
+
+        let retentionSeconds = max(
+            chunkSeconds + totalBufferSeconds,
+            totalBufferSeconds * 3.0
+        )
+        let maxTokenCount = max(512, Int(ceil(retentionSeconds * 64.0)))
+
+        var trimmed = tokens
+        if let pendingCommitEndSample {
+            let pendingCommitEnd = Double(pendingCommitEndSample) / Double(sampleRate)
+            let minEndToKeep = max(0, pendingCommitEnd - retentionSeconds)
+
+            if let firstKept = trimmed.firstIndex(where: { $0.end >= minEndToKeep }), firstKept > 0 {
+                trimmed.removeFirst(firstKept)
+            }
+        }
+
+        if trimmed.count > maxTokenCount {
+            trimmed = Array(trimmed.suffix(maxTokenCount))
+        }
+
+        return trimmed
+    }
+
     private static func concatParakeetText(_ base: String, _ segment: String) -> String {
         if base.isEmpty { return segment }
         if segment.isEmpty { return base }
@@ -1098,6 +1132,13 @@ public class StreamingInferenceSession: @unchecked Sendable, StreamingSession {
 
                     // Hold back this boundary until the next window arrives.
                     state.parakeetPendingCommitEndSample = window.commitEndSample
+                    state.parakeetMergedTokens = Self.trimParakeetPendingTokens(
+                        state.parakeetMergedTokens,
+                        pendingCommitEndSample: state.parakeetPendingCommitEndSample,
+                        sampleRate: params.sampleRate,
+                        chunkSeconds: chunkSeconds,
+                        totalBufferSeconds: totalBufferSeconds
+                    )
                 }
                 Memory.clearCache()
             }
