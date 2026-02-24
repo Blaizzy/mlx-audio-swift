@@ -277,13 +277,13 @@ extension Qwen3TTSModel {
             return MLXArray.zeros([1])
         }
 
-        // Step 6: Prepend reference codes to generated codes before decoding
+        // Step 6: Stack generated codes (skip prepending reference codes)
+        // Reference codes already served their purpose during generation (Step 1-4)
+        // We only need to decode the NEW codes, not the reference
         let genCodes = stacked(generatedCodes, axis: 1)  // [1, genLen, numCodeGroups]
-        let refCodesT = refCodes.transposed(0, 2, 1)  // [1, refTime, 16]
-        let fullCodes = concatenated([refCodesT, genCodes], axis: 1)  // [1, refTime+genLen, 16]
 
-        // Step 7: Decode full codes
-        let (audio, audioLengths) = speechTokenizer.decode(fullCodes)
+        // Step 7: Decode only generated codes (not reference + generated)
+        let (audio, audioLengths) = speechTokenizer.decode(genCodes)
         var audioOut = audio[0]  // Remove batch dim
 
         // Step 8: Trim to valid length
@@ -292,13 +292,8 @@ extension Qwen3TTSModel {
             audioOut = audioOut[..<validLen]
         }
 
-        // Step 9: Proportional trimming — remove the reference audio portion
-        let refLen = refCodes.dim(2)  // refTime
-        let totalLen = fullCodes.dim(1)  // refTime + genLen
-        let cut = Int(Float(refLen) / Float(max(totalLen, 1)) * Float(audioOut.dim(0)))
-        if cut > 0 && cut < audioOut.dim(0) {
-            audioOut = audioOut[cut...]
-        }
+        // Step 9: (Removed) Proportional trimming no longer needed since we're not
+        // including reference codes in the decode step
 
         // Step 10: Evaluate and return
         eval(audioOut)
