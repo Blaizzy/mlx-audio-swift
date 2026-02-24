@@ -13,14 +13,14 @@
 //      CODE_SIGNING_ALLOWED=NO
 //
 //  Run a single category:
-//    -only-testing:'MLXAudioTests/Smoke/CodecsSmokeTests'
-//    -only-testing:'MLXAudioTests/Smoke/TTSSmokeTests'
-//    -only-testing:'MLXAudioTests/Smoke/STTSmokeTests'
-//    -only-testing:'MLXAudioTests/Smoke/VADSmokeTests'
-//    -only-testing:'MLXAudioTests/Smoke/STSSmokeTests'
+//    -only-testing:'MLXAudioTests/SmokeTests/CodecsSmokeTests'
+//    -only-testing:'MLXAudioTests/SmokeTests/TTSSmokeTests'
+//    -only-testing:'MLXAudioTests/SmokeTests/STTSmokeTests'
+//    -only-testing:'MLXAudioTests/SmokeTests/VADSmokeTests'
+//    -only-testing:'MLXAudioTests/SmokeTests/STSSmokeTests'
 //
 //  Run a single test (note the trailing parentheses for Swift Testing):
-//    -only-testing:'MLXAudioTests/Smoke/STTSmokeTests/qwen3ASRTranscribe()'
+//    -only-testing:'MLXAudioTests/SmokeTests/STTSmokeTests/qwen3ASRTranscribe()'
 //
 //  Filter test results:
 //   2>&1 | grep --color=never -E '(^􀟈 |^􁁛 |^􀢄 |^\*\* TEST|\x1b\[1;35m|model loaded|Encoded to|Reconstructed audio|Generating audio|Generated audio|Generated [0-9]+ tokens|Streaming|Saved |Received final|Found [0-9]|Processing time|Streaming complete|Chunk [0-9]|  [Tt]ext:|  prompt_tokens|  generation_tokens|  total_tokens|  prompt_tps|  generation_tps|total_time| peak_memory|Peak Memory|Prompt:.*tokens/s|Prompt Tokens|Total Time|SPEAKER audio|Sortformer Output|Audio input shape|Loading.*model|Loaded audio|ForcedAligner|Running forced|\[.*s - .*s\])'
@@ -365,6 +365,79 @@ struct TTSSmokeTests {
             .appendingPathComponent("soprano_test_output.wav")
         try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
         print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
+    }
+
+    @Test func marvisTTSGenerate() async throws {
+        testHeader("marvisTTSGenerate")
+        defer { testCleanup("marvisTTSGenerate") }
+        print("\u{001B}[33mLoading Marvis TTS model...\u{001B}[0m")
+        let model = try await MarvisTTSModel.fromPretrained("Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit")
+        print("\u{001B}[32mMarvis TTS model loaded!\u{001B}[0m")
+
+        let text = "Hello, this is a test of the Marvis text to speech model."
+        print("\u{001B}[33mGenerating audio for: \"\(text)\"...\u{001B}[0m")
+
+        let audio = try await model.generate(
+            text: text,
+            voice: "conversational_a",
+            refAudio: nil,
+            refText: nil,
+            language: nil,
+            generationParameters: GenerateParameters(temperature: 0.7)
+        )
+
+        print("\u{001B}[32mGenerated audio shape: \(audio.shape)\u{001B}[0m")
+        #expect(audio.shape[0] > 0, "Audio should have samples")
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("marvis_tts_test_output.wav")
+        try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+        print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
+    }
+
+    @Test func marvisTTSGenerateStream() async throws {
+        testHeader("marvisTTSGenerateStream")
+        defer { testCleanup("marvisTTSGenerateStream") }
+        print("\u{001B}[33mLoading Marvis TTS model...\u{001B}[0m")
+        let model = try await MarvisTTSModel.fromPretrained("Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit")
+        print("\u{001B}[32mMarvis TTS model loaded!\u{001B}[0m")
+
+        let text = "Streaming test for Marvis model."
+        print("\u{001B}[33mStreaming generation for: \"\(text)\"...\u{001B}[0m")
+
+        var chunkCount = 0
+        var finalAudio: MLXArray?
+
+        for try await event in model.generateStream(
+            text: text,
+            voice: "conversational_a",
+            refAudio: nil,
+            refText: nil,
+            language: nil,
+            generationParameters: GenerateParameters(temperature: 0.7)
+        ) {
+            switch event {
+            case .audio(let audio):
+                chunkCount += 1
+                finalAudio = audio
+                print("  Chunk \(chunkCount): \(audio.shape)")
+            case .token(_), .info(_):
+                break
+            }
+        }
+
+        print("\u{001B}[32mStreaming complete: \(chunkCount) chunks\u{001B}[0m")
+        #expect(chunkCount > 0, "Should have received at least one audio chunk")
+        #expect(finalAudio != nil, "Should have received audio")
+
+        if let audio = finalAudio {
+            #expect(audio.shape[0] > 0, "Audio should have samples")
+
+            let outputURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("marvis_tts_stream_test_output.wav")
+            try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+            print("\u{001B}[32mSaved streamed audio to\u{001B}[0m: \(outputURL.path)")
+        }
     }
 
     @Test func sopranoGenerateStream() async throws {
