@@ -296,7 +296,6 @@ extension Qwen3TTSModel {
         // The model generates audio for refText + targetText combined.
         // We need to remove the portion corresponding to refText.
         let refTokenCount = tokenizer.encode(text: clonePrompt.refText).count
-        let targetTokenCount = tokenizer.encode(text: text).count
         let totalTokenCount = refTokenCount + targetTokenCount
 
         // Calculate the audio cut point proportional to text tokens
