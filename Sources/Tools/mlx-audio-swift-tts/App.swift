@@ -127,9 +127,10 @@ enum App {
         if timestamps {
             print("Loading forced aligner (\(forcedAlignerRepo))")
             let forcedAligner = try await Qwen3ForcedAlignerModel.fromPretrained(forcedAlignerRepo)
-            let alignmentAudio = try prepareAudioForForcedAlignment(
-                samples: audioData,
-                sampleRate: Int(loadedModel.sampleRate)
+            let alignmentAudio = try resampleAudio(
+                MLXArray(audioData),
+                from: Int(loadedModel.sampleRate),
+                to: 16000
             )
             let aligned = forcedAligner.generate(audio: alignmentAudio, text: text, language: "English")
 
@@ -187,13 +188,6 @@ enum App {
         try audioFile.write(from: buffer)
     }
 
-    private static func prepareAudioForForcedAlignment(samples: [Float], sampleRate: Int) throws -> MLXArray {
-        guard sampleRate != 16000 else {
-            return MLXArray(samples)
-        }
-        let resampled = try resampleAudio(samples, from: sampleRate, to: 16000)
-        return MLXArray(resampled)
-    }
 }
 
 // MARK: -

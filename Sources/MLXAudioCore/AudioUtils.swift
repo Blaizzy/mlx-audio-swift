@@ -207,6 +207,21 @@ public func resampleAudio(
     return Array(UnsafeBufferPointer(start: outData, count: outCount))
 }
 
+/// Resample audio to a target sample rate.
+public func resampleAudio(
+    _ samples: MLXArray,
+    from sourceSampleRate: Int,
+    to targetSampleRate: Int
+) throws -> MLXArray {
+    let input = samples.asArray(Float.self)
+    let resampled = try resampleAudio(
+        input,
+        from: sourceSampleRate,
+        to: targetSampleRate
+    )
+    return MLXArray(resampled)
+}
+
 /// A streaming WAV writer that allows writing audio chunks incrementally to a file.
 /// This is more memory efficient than collecting all audio in memory before writing.
 public class StreamingWAVWriter {

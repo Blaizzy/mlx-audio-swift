@@ -44,7 +44,7 @@ private let delimiter = String(repeating: "=", count: 60)
 
 private func testHeader(_ name: String) {
     // Free memory left over from the previous test (locals are now out of scope)
-    GPU.clearCache()
+    Memory.clearCache()
     GPU.resetPeakMemory()
     print("\n\u{001B}[1;35m\(delimiter)\u{001B}[0m")
     print("\u{001B}[1;35m  \(name)\u{001B}[0m")
@@ -52,7 +52,7 @@ private func testHeader(_ name: String) {
 }
 
 private func testCleanup(_ name: String) {
-    let peak = Double(GPU.peakMemory) / 1_073_741_824
+    let peak = Double(Memory.peakMemory) / 1_073_741_824
     print("\u{001B}[1;35m\(delimiter) \(name) done (peak: \(String(format: "%.2f", peak)) GB)\u{001B}[0m\n")
 }
 
