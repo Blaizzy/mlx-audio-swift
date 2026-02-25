@@ -292,8 +292,20 @@ extension Qwen3TTSModel {
             audioOut = audioOut[..<validLen]
         }
 
-        // Step 9: (Removed) Proportional trimming no longer needed since we're not
-        // including reference codes in the decode step
+        // Step 9: Trim reference audio portion based on text token ratio
+        // The model generates audio for refText + targetText combined.
+        // We need to remove the portion corresponding to refText.
+        let refTokenCount = tokenizer.encode(text: clonePrompt.refText).count
+        let targetTokenCount = tokenizer.encode(text: text).count
+        let totalTokenCount = refTokenCount + targetTokenCount
+
+        // Calculate the audio cut point proportional to text tokens
+        let cutRatio = Float(refTokenCount) / Float(max(totalTokenCount, 1))
+        let cut = Int(cutRatio * Float(audioOut.dim(0)))
+
+        if cut > 0 && cut < audioOut.dim(0) {
+            audioOut = audioOut[cut...]
+        }
 
         // Step 10: Evaluate and return
         eval(audioOut)
