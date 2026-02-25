@@ -277,13 +277,13 @@ extension Qwen3TTSModel {
             return MLXArray.zeros([1])
         }
 
-        // Step 6: Stack generated codes (skip prepending reference codes)
-        // Reference codes already served their purpose during generation (Step 1-4)
-        // We only need to decode the NEW codes, not the reference
+        // Step 6: Prepend reference codes to generated codes before decoding
         let genCodes = stacked(generatedCodes, axis: 1)  // [1, genLen, numCodeGroups]
+        let refCodesT = refCodes.transposed(0, 2, 1)  // [1, refTime, 16]
+        let fullCodes = concatenated([refCodesT, genCodes], axis: 1)  // [1, refTime+genLen, 16]
 
-        // Step 7: Decode only generated codes (not reference + generated)
-        let (audio, audioLengths) = speechTokenizer.decode(genCodes)
+        // Step 7: Decode full codes
+        let (audio, audioLengths) = speechTokenizer.decode(fullCodes)
         var audioOut = audio[0]  // Remove batch dim
 
         // Step 8: Trim to valid length
@@ -292,33 +292,12 @@ extension Qwen3TTSModel {
             audioOut = audioOut[..<validLen]
         }
 
-        // Step 9: Trim reference audio portion based on text token ratio
-        // The model generates audio for refText + targetText combined.
-        // We need to remove the portion corresponding to refText.
-        let refTokenCount = tokenizer.encode(text: clonePrompt.refText).count
-        let totalTokenCount = refTokenCount + targetTokenCount
-
-        // Calculate the audio cut point proportional to text tokens
-        let cutRatio = Float(refTokenCount) / Float(max(totalTokenCount, 1))
-        let cut = Int(cutRatio * Float(audioOut.dim(0)))
-
-        // Debug logging
-        print("[Qwen3TTS] Trimming debug:")
-        print("  refText: \(clonePrompt.refText)")
-        print("  targetText: \(text)")
-        print("  refTokenCount: \(refTokenCount)")
-        print("  targetTokenCount: \(targetTokenCount)")
-        print("  totalTokenCount: \(totalTokenCount)")
-        print("  audioOut.dim(0): \(audioOut.dim(0))")
-        print("  cutRatio: \(cutRatio)")
-        print("  cut: \(cut)")
-
+        // Step 9: Proportional trimming — remove the reference audio portion
+        let refLen = refCodes.dim(2)  // refTime
+        let totalLen = fullCodes.dim(1)  // refTime + genLen
+        let cut = Int(Float(refLen) / Float(max(totalLen, 1)) * Float(audioOut.dim(0)))
         if cut > 0 && cut < audioOut.dim(0) {
-            print("  Trimming audio from \(cut) to \(audioOut.dim(0))")
             audioOut = audioOut[cut...]
-            print("  New audioOut.dim(0): \(audioOut.dim(0))")
-        } else {
-            print("  No trimming applied (cut: \(cut), audioLen: \(audioOut.dim(0)))")
         }
 
         // Step 10: Evaluate and return
