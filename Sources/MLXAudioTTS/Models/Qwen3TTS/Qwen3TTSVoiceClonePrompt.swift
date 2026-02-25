@@ -302,8 +302,23 @@ extension Qwen3TTSModel {
         let cutRatio = Float(refTokenCount) / Float(max(totalTokenCount, 1))
         let cut = Int(cutRatio * Float(audioOut.dim(0)))
 
+        // Debug logging
+        print("[Qwen3TTS] Trimming debug:")
+        print("  refText: \(clonePrompt.refText)")
+        print("  targetText: \(text)")
+        print("  refTokenCount: \(refTokenCount)")
+        print("  targetTokenCount: \(targetTokenCount)")
+        print("  totalTokenCount: \(totalTokenCount)")
+        print("  audioOut.dim(0): \(audioOut.dim(0))")
+        print("  cutRatio: \(cutRatio)")
+        print("  cut: \(cut)")
+
         if cut > 0 && cut < audioOut.dim(0) {
+            print("  Trimming audio from \(cut) to \(audioOut.dim(0))")
             audioOut = audioOut[cut...]
+            print("  New audioOut.dim(0): \(audioOut.dim(0))")
+        } else {
+            print("  No trimming applied (cut: \(cut), audioLen: \(audioOut.dim(0)))")
         }
 
         // Step 10: Evaluate and return
