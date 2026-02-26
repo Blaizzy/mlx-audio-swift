@@ -256,10 +256,15 @@ extension Qwen3TTSModel {
 
         // Step 2: Cap max tokens based on text length
         let targetTokenCount = tokenizer.encode(text: text).count
-        let effectiveMaxTokens = min(maxTokens, max(75, targetTokenCount * 6))
+        let effectiveMaxTokens = min(maxTokens, max(200, targetTokenCount * 12))
 
-        // Step 3: Apply minimum repetition penalty of 1.5 for ICL
-        let effectiveRepPenalty = max(repetitionPenalty, 1.5)
+        // Step 3: Use caller's repetition penalty
+        let effectiveRepPenalty = repetitionPenalty
+
+        // Telemetry: Log effective generation parameters
+        FileHandle.standardError.write(Data("[ICL] refText=\"\(clonePrompt.refText.prefix(50))\", targetText=\"\(text.prefix(50))\"\n".utf8))
+        FileHandle.standardError.write(Data("[ICL] targetTokens=\(targetTokenCount), effectiveMaxTokens=\(effectiveMaxTokens), effectiveRepPenalty=\(effectiveRepPenalty)\n".utf8))
+        FileHandle.standardError.write(Data("[ICL] refCodes shape=\(refCodes.shape), speakerEmbedding=\(clonePrompt.speakerEmbedding != nil)\n".utf8))
 
         // Step 4: Run shared autoregressive generation loop
         let generatedCodes = generateFromEmbeddings(
@@ -274,6 +279,7 @@ extension Qwen3TTSModel {
 
         // Step 5: Check for empty generation
         guard !generatedCodes.isEmpty else {
+            FileHandle.standardError.write(Data("[ICL] WARNING: Empty generation — no audio codes produced\n".utf8))
             return MLXArray.zeros([1])
         }
 
@@ -282,25 +288,39 @@ extension Qwen3TTSModel {
         let refCodesT = refCodes.transposed(0, 2, 1)  // [1, refTime, 16]
         let fullCodes = concatenated([refCodesT, genCodes], axis: 1)  // [1, refTime+genLen, 16]
 
+        // Telemetry: Log code dimensions
+        let genLen = genCodes.dim(1)
+        let refTimeLen = refCodesT.dim(1)
+        FileHandle.standardError.write(Data("[ICL] generatedCodes=\(genLen) codes, refCodes=\(refTimeLen) codes, fullCodes=\(fullCodes.dim(1)) codes\n".utf8))
+
         // Step 7: Decode full codes
         let (audio, audioLengths) = speechTokenizer.decode(fullCodes)
         var audioOut = audio[0]  // Remove batch dim
 
         // Step 8: Trim to valid length
         let validLen = Int(audioLengths[0].item(Int32.self))
+        FileHandle.standardError.write(Data("[ICL] decodedAudio=\(audioOut.dim(0)) samples, validLen=\(validLen) samples\n".utf8))
         if validLen > 0 && validLen < audioOut.dim(0) {
             audioOut = audioOut[..<validLen]
+            FileHandle.standardError.write(Data("[ICL] trimmedToValid=\(audioOut.dim(0)) samples\n".utf8))
         }
 
         // Step 9: Proportional trimming — remove the reference audio portion
         let refLen = refCodes.dim(2)  // refTime
         let totalLen = fullCodes.dim(1)  // refTime + genLen
         let cut = Int(Float(refLen) / Float(max(totalLen, 1)) * Float(audioOut.dim(0)))
+        let trimRatio = Float(refLen) / Float(max(totalLen, 1))
+        let remainingSamples = audioOut.dim(0) - cut
+        let remainingSeconds = Float(remainingSamples) / 24000.0
+        FileHandle.standardError.write(Data("[ICL] TRIM: refLen=\(refLen), totalLen=\(totalLen), ratio=\(String(format: "%.3f", trimRatio)), cut=\(cut) samples, remaining=\(remainingSamples) samples (~\(String(format: "%.2f", remainingSeconds))s)\n".utf8))
         if cut > 0 && cut < audioOut.dim(0) {
             audioOut = audioOut[cut...]
+        } else {
+            FileHandle.standardError.write(Data("[ICL] WARNING: Trim skipped — cut=\(cut), audioLen=\(audioOut.dim(0))\n".utf8))
         }
 
         // Step 10: Evaluate and return
+        FileHandle.standardError.write(Data("[ICL] finalAudio=\(audioOut.dim(0)) samples (~\(String(format: "%.2f", Float(audioOut.dim(0)) / 24000.0))s)\n".utf8))
         eval(audioOut)
         return audioOut
     }

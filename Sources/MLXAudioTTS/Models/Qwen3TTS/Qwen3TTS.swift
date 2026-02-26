@@ -1169,11 +1169,10 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
         // Step 2: Cap max tokens based on text length
         let targetTokenCount = tokenizer.encode(text: text).count
-        let effectiveMaxTokens = min(maxTokens, max(75, targetTokenCount * 6))
+        let effectiveMaxTokens = min(maxTokens, max(200, targetTokenCount * 12))
 
-        // Step 3: Apply minimum repetition penalty of 1.5 for ICL
-        // Prevents code degeneration with long reference prefills
-        let effectiveRepPenalty = max(repetitionPenalty, 1.5)
+        // Step 3: Use caller's repetition penalty
+        let effectiveRepPenalty = repetitionPenalty
 
         // Step 4: Run shared autoregressive generation loop
         let generatedCodes = generateFromEmbeddings(
