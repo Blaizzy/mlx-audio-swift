@@ -322,6 +322,7 @@ extension Qwen3TTSModel {
         // Step 10: Evaluate and return
         FileHandle.standardError.write(Data("[ICL] finalAudio=\(audioOut.dim(0)) samples (~\(String(format: "%.2f", Float(audioOut.dim(0)) / 24000.0))s)\n".utf8))
         eval(audioOut)
+        flushGPUState()
         return audioOut
     }
 
