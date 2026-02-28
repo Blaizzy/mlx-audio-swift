@@ -39,6 +39,10 @@ let package = Package(
         .package(url: "https://github.com/huggingface/swift-transformers.git", .upToNextMajor(from: "1.1.6")),
         .package(url: "https://github.com/huggingface/swift-huggingface.git", .upToNextMajor(from: "0.6.0")),
         .package(url: "https://github.com/intrusive-memory/SwiftAcervo.git", from: "0.1.0"),
+        // Transitive dependencies for Xcode 26 compatibility
+        .package(url: "https://github.com/apple/swift-numerics", from: "1.0.0"),
+        .package(url: "https://github.com/apple/swift-collections.git", from: "1.0.0"),
+        .package(url: "https://github.com/apple/swift-crypto.git", "3.0.0"..<"5.0.0"),
     ],
     targets: [
         // MARK: - MLXAudioCore
@@ -49,6 +53,10 @@ let package = Package(
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "SwiftAcervo", package: "SwiftAcervo"),
+                // Transitive dependencies for MLX/MLXNN
+                .product(name: "Numerics", package: "swift-numerics"),
+                .product(name: "RealModule", package: "swift-numerics"),
+                .product(name: "ComplexModule", package: "swift-numerics"),
             ],
             path: "Sources/MLXAudioCore",
             swiftSettings: [
@@ -65,6 +73,12 @@ let package = Package(
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
+                // Transitive dependencies for MLXLMCommon
+                .product(name: "Numerics", package: "swift-numerics"),
+                .product(name: "RealModule", package: "swift-numerics"),
+                .product(name: "ComplexModule", package: "swift-numerics"),
+                .product(name: "OrderedCollections", package: "swift-collections"),
+                .product(name: "Crypto", package: "swift-crypto"),
             ],
             path: "Sources/MLXAudioCodecs"
         ),
@@ -81,6 +95,12 @@ let package = Package(
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "Transformers", package: "swift-transformers"),
+                // Transitive dependencies for MLXLMCommon
+                .product(name: "Numerics", package: "swift-numerics"),
+                .product(name: "RealModule", package: "swift-numerics"),
+                .product(name: "ComplexModule", package: "swift-numerics"),
+                .product(name: "OrderedCollections", package: "swift-collections"),
+                .product(name: "Crypto", package: "swift-crypto"),
             ],
             path: "Sources/MLXAudioTTS"
         ),
@@ -97,6 +117,12 @@ let package = Package(
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "Transformers", package: "swift-transformers"),
+                // Transitive dependencies for MLXLMCommon
+                .product(name: "Numerics", package: "swift-numerics"),
+                .product(name: "RealModule", package: "swift-numerics"),
+                .product(name: "ComplexModule", package: "swift-numerics"),
+                .product(name: "OrderedCollections", package: "swift-collections"),
+                .product(name: "Crypto", package: "swift-crypto"),
             ],
             path: "Sources/MLXAudioSTT"
         ),
