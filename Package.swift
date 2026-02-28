@@ -35,8 +35,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMajor(from: "0.30.3")),
-        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", .upToNextMajor(from: "2.30.3")),
-        .package(url: "https://github.com/huggingface/swift-transformers.git", .upToNextMajor(from: "1.1.6")),
+        .package(url: "https://github.com/intrusive-memory/mlx-swift-lm.git", branch: "xcode26-deps-fix"),
+        .package(url: "https://github.com/intrusive-memory/swift-transformers.git", branch: "xcode26-yyjson-fix"),
         .package(url: "https://github.com/huggingface/swift-huggingface.git", .upToNextMajor(from: "0.6.0")),
         .package(url: "https://github.com/intrusive-memory/SwiftAcervo.git", from: "0.1.0"),
     ],
