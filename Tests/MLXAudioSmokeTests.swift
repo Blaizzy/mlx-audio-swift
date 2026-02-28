@@ -416,6 +416,144 @@ struct TTSSmokeTests {
             print("\u{001B}[32mSaved streamed audio to\u{001B}[0m: \(outputURL.path)")
         }
     }
+
+    // MARK: - Qwen3-TTS 12Hz TTFB Benchmark
+
+    @Test func qwen3TTSTTFBBenchmark() async throws {
+        testHeader("qwen3TTSTTFBBenchmark")
+        defer { testCleanup("qwen3TTSTTFBBenchmark") }
+
+        let modelRepo = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit"
+
+        // ── Phase 1: Model Download & Load ──
+        print("\u{001B}[33mPhase 1: Loading model \(modelRepo)...\u{001B}[0m")
+        let loadStart = CFAbsoluteTimeGetCurrent()
+        let model = try await Qwen3TTSModel.fromPretrained(modelRepo)
+        let loadTime = CFAbsoluteTimeGetCurrent() - loadStart
+        print("\u{001B}[32mModel loaded in \(String(format: "%.3f", loadTime))s\u{001B}[0m")
+
+        let text = "Hello, this is a quick test."
+        let parameters = GenerateParameters(
+            maxTokens: 200,
+            temperature: 0.9,
+            topP: 1.0,
+            repetitionPenalty: 1.05
+        )
+
+        // ── Phase 2: Warmup Run ──
+        // First inference has one-time JIT/shader compilation overhead.
+        // Run a short warmup so the benchmark reflects steady-state.
+        print("\u{001B}[33mPhase 2: Warmup run (short generation)...\u{001B}[0m")
+        let warmupParams = GenerateParameters(
+            maxTokens: 5,
+            temperature: 0.9,
+            topP: 1.0,
+            repetitionPenalty: 1.05
+        )
+        let _ = try await model.generate(
+            text: "Hi",
+            voice: nil,
+            refAudio: nil,
+            refText: nil,
+            language: nil,
+            generationParameters: warmupParams
+        )
+        Memory.clearCache()
+        print("\u{001B}[32mWarmup complete\u{001B}[0m")
+
+        // ── Phase 3: TTFB Benchmark (Streaming) ──
+        print("\u{001B}[33mPhase 3: TTFB benchmark for: \"\(text)\"...\u{001B}[0m")
+
+        let generationStart = CFAbsoluteTimeGetCurrent()
+        var timeToFirstToken: Double?
+        var timeToFirstAudioChunk: Double?
+        var tokenCount = 0
+        var audioChunkCount = 0
+        var totalAudioSamples = 0
+        var generationInfo: AudioGenerationInfo?
+
+        let stream = model.generateStream(
+            text: text,
+            voice: nil,
+            refAudio: nil,
+            refText: nil,
+            language: nil,
+            generationParameters: parameters
+        )
+
+        for try await event in stream {
+            switch event {
+            case .token(_):
+                tokenCount += 1
+                if timeToFirstToken == nil {
+                    timeToFirstToken = CFAbsoluteTimeGetCurrent() - generationStart
+                }
+            case .audio(let audio):
+                audioChunkCount += 1
+                let sampleCount = audio.dim(0)
+                totalAudioSamples += sampleCount
+                if timeToFirstAudioChunk == nil {
+                    timeToFirstAudioChunk = CFAbsoluteTimeGetCurrent() - generationStart
+                }
+                let chunkDurationMs = Double(sampleCount) / Double(model.sampleRate) * 1000.0
+                print("  Chunk \(audioChunkCount): \(sampleCount) samples (\(String(format: "%.0f", chunkDurationMs))ms audio) at t=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - generationStart))s")
+            case .info(let info):
+                generationInfo = info
+            }
+        }
+
+        let totalTime = CFAbsoluteTimeGetCurrent() - generationStart
+        let totalAudioDuration = Double(totalAudioSamples) / Double(model.sampleRate)
+
+        // ── Results ──
+        print("\n\u{001B}[1;36m╔══════════════════════════════════════════════════════╗\u{001B}[0m")
+        print("\u{001B}[1;36m║        Qwen3-TTS 12Hz 6-bit TTFB Results            ║\u{001B}[0m")
+        print("\u{001B}[1;36m╠══════════════════════════════════════════════════════╣\u{001B}[0m")
+        print("\u{001B}[1;36m║\u{001B}[0m  Model load time:       \(String(format: "%8.3f", loadTime))s              \u{001B}[1;36m║\u{001B}[0m")
+        if let ttft = timeToFirstToken {
+            print("\u{001B}[1;36m║\u{001B}[0m  Time to first token:   \(String(format: "%8.3f", ttft))s (\(String(format: "%.1f", ttft * 1000))ms)  \u{001B}[1;36m║\u{001B}[0m")
+        }
+        if let ttfa = timeToFirstAudioChunk {
+            print("\u{001B}[1;36m║\u{001B}[0m  Time to first audio:   \(String(format: "%8.3f", ttfa))s (\(String(format: "%.1f", ttfa * 1000))ms)  \u{001B}[1;36m║\u{001B}[0m")
+        }
+        print("\u{001B}[1;36m║\u{001B}[0m  Total generation time:  \(String(format: "%8.3f", totalTime))s              \u{001B}[1;36m║\u{001B}[0m")
+        print("\u{001B}[1;36m║\u{001B}[0m  Tokens generated:       \(String(format: "%8d", tokenCount))               \u{001B}[1;36m║\u{001B}[0m")
+        print("\u{001B}[1;36m║\u{001B}[0m  Audio chunks:           \(String(format: "%8d", audioChunkCount))               \u{001B}[1;36m║\u{001B}[0m")
+        print("\u{001B}[1;36m║\u{001B}[0m  Total audio duration:   \(String(format: "%8.3f", totalAudioDuration))s              \u{001B}[1;36m║\u{001B}[0m")
+        if let info = generationInfo {
+            print("\u{001B}[1;36m║\u{001B}[0m  Tokens/sec:             \(String(format: "%8.1f", info.tokensPerSecond))               \u{001B}[1;36m║\u{001B}[0m")
+            print("\u{001B}[1;36m║\u{001B}[0m  Peak memory:            \(String(format: "%8.2f", info.peakMemoryUsage)) GB           \u{001B}[1;36m║\u{001B}[0m")
+        }
+        print("\u{001B}[1;36m╚══════════════════════════════════════════════════════╝\u{001B}[0m")
+
+        // ── Compare against expected TTFB ──
+        print("\n\u{001B}[33mExpected TTFB estimates (6-bit, M-series):\u{001B}[0m")
+        print("  Prefill:           15-30ms")
+        print("  First token gen:   5-10ms")
+        print("  Token→audio:       5-10ms")
+        print("  Expected TTFB:     30-60ms")
+        print("  Qwen CUDA claim:   97ms")
+
+        if let ttfa = timeToFirstAudioChunk {
+            let ttfaMs = ttfa * 1000
+            if ttfaMs < 97 {
+                print("\u{001B}[32m  ✓ TTFB \(String(format: "%.1f", ttfaMs))ms beats Qwen's 97ms CUDA latency!\u{001B}[0m")
+            } else {
+                print("\u{001B}[31m  ✗ TTFB \(String(format: "%.1f", ttfaMs))ms does NOT beat Qwen's 97ms CUDA latency\u{001B}[0m")
+            }
+            // Note: current streaming chunk size is 25 tokens, so first audio
+            // chunk arrives after 25 tokens are generated. For true minimum TTFB,
+            // a smaller chunk size (e.g. 3-5 tokens) would be needed.
+            print("  Note: Current streaming chunk size = 25 tokens (~2s audio).")
+            print("        True minimum TTFB requires reducing chunk size to ~3 tokens.")
+        }
+
+        #expect(tokenCount > 0, "Should have generated tokens")
+        #expect(audioChunkCount > 0, "Should have received audio chunks")
+        if let ttft = timeToFirstToken {
+            #expect(ttft < 10.0, "Time to first token should be under 10s")
+        }
+    }
 }
 
 

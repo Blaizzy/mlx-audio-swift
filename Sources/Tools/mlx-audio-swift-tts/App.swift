@@ -37,18 +37,31 @@ enum App {
     static func main() async {
         do {
             let args = try CLI.parse()
-            try await run(
-                model: args.model,
-                text: args.text,
-                voice: args.voice,
-                outputPath: args.outputPath,
-                refAudioPath: args.refAudioPath,
-                refText: args.refText,
-                maxTokens: args.maxTokens,
-                temperature: args.temperature,
-                topP: args.topP,
-                timestamps: args.timestamps
-            )
+            if args.benchmark {
+                try await benchmark(
+                    model: args.model,
+                    text: args.text,
+                    voice: args.voice,
+                    refAudioPath: args.refAudioPath,
+                    refText: args.refText,
+                    maxTokens: args.maxTokens,
+                    temperature: args.temperature,
+                    topP: args.topP
+                )
+            } else {
+                try await run(
+                    model: args.model,
+                    text: args.text,
+                    voice: args.voice,
+                    outputPath: args.outputPath,
+                    refAudioPath: args.refAudioPath,
+                    refText: args.refText,
+                    maxTokens: args.maxTokens,
+                    temperature: args.temperature,
+                    topP: args.topP,
+                    timestamps: args.timestamps
+                )
+            }
         } catch {
             fputs("Error: \(error)\n", stderr)
             CLI.printUsage()
@@ -154,6 +167,154 @@ enum App {
         print(String(format: "Done. Elapsed: %.2fs", elapsed))
     }
 
+    // MARK: - Streaming TTFB Benchmark
+
+    private static func benchmark(
+        model: String,
+        text: String,
+        voice: String?,
+        refAudioPath: String?,
+        refText: String?,
+        maxTokens: Int?,
+        temperature: Float?,
+        topP: Float?,
+        hfToken: String? = nil
+    ) async throws {
+        Memory.cacheLimit = 100 * 1024 * 1024
+
+        let hfToken: String? = hfToken ?? ProcessInfo.processInfo.environment["HF_TOKEN"]
+            ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
+
+        // Phase 1: Load model
+        print("Phase 1: Loading model (\(model))")
+        let loadStart = CFAbsoluteTimeGetCurrent()
+        let loadedModel: SpeechGenerationModel
+        do {
+            loadedModel = try await TTS.loadModel(modelRepo: model, hfToken: hfToken)
+        } catch let error as TTSModelError {
+            switch error {
+            case .invalidRepositoryID(let r): throw AppError.invalidRepositoryID(r)
+            case .unsupportedModelType(let t): throw AppError.unsupportedModelType(t)
+            }
+        }
+        let loadTime = CFAbsoluteTimeGetCurrent() - loadStart
+        print(String(format: "Model loaded in %.3fs", loadTime))
+
+        let refAudio: MLXArray?
+        if let refAudioPath, !refAudioPath.isEmpty {
+            let refAudioURL = resovleURL(path: refAudioPath)
+            (_, refAudio) = try loadAudioArray(from: refAudioURL)
+        } else {
+            refAudio = nil
+        }
+
+        var generationParameters = loadedModel.defaultGenerationParameters
+        if let maxTokens { generationParameters.maxTokens = maxTokens }
+        if let temperature { generationParameters.temperature = temperature }
+        if let topP { generationParameters.topP = topP }
+
+        // Phase 2: Warmup (JIT/shader compilation)
+        print("Phase 2: Warmup run...")
+        var warmup = loadedModel.defaultGenerationParameters
+        warmup.maxTokens = 3
+        let _ = try await loadedModel.generate(
+            text: "Hi",
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: nil,
+            generationParameters: warmup
+        )
+        Memory.clearCache()
+        print("Warmup complete")
+
+        // Phase 3: Streaming TTFB measurement
+        print(String(format: "Phase 3: Streaming TTFB for: \"%@\"", text))
+        let genStart = CFAbsoluteTimeGetCurrent()
+        var timeToFirstToken: Double?
+        var timeToFirstAudio: Double?
+        var tokenCount = 0
+        var audioChunkCount = 0
+        var totalAudioSamples = 0
+        var genInfo: AudioGenerationInfo?
+
+        let stream = loadedModel.generateStream(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: nil,
+            generationParameters: generationParameters
+        )
+
+        for try await event in stream {
+            switch event {
+            case .token(_):
+                tokenCount += 1
+                if timeToFirstToken == nil {
+                    timeToFirstToken = CFAbsoluteTimeGetCurrent() - genStart
+                }
+            case .audio(let audio):
+                audioChunkCount += 1
+                let samples = audio.dim(0)
+                totalAudioSamples += samples
+                if timeToFirstAudio == nil {
+                    timeToFirstAudio = CFAbsoluteTimeGetCurrent() - genStart
+                }
+                let chunkMs = Double(samples) / Double(loadedModel.sampleRate) * 1000
+                print(String(format: "  Chunk %d: %d samples (%.0fms audio) at t=%.3fs",
+                             audioChunkCount, samples, chunkMs,
+                             CFAbsoluteTimeGetCurrent() - genStart))
+            case .info(let info):
+                genInfo = info
+            }
+        }
+
+        let totalTime = CFAbsoluteTimeGetCurrent() - genStart
+        let audioDuration = Double(totalAudioSamples) / Double(loadedModel.sampleRate)
+
+        // Results
+        print("\n========== TTFB Benchmark Results ==========")
+        print(String(format: "  Model load time:       %.3fs", loadTime))
+        if let ttft = timeToFirstToken {
+            print(String(format: "  Time to first token:   %.3fs (%.1fms)", ttft, ttft * 1000))
+        }
+        if let ttfa = timeToFirstAudio {
+            print(String(format: "  Time to first audio:   %.3fs (%.1fms) << TTFB", ttfa, ttfa * 1000))
+        }
+        print(String(format: "  Total generation time: %.3fs", totalTime))
+        print(String(format: "  Tokens generated:      %d", tokenCount))
+        print(String(format: "  Audio chunks:          %d", audioChunkCount))
+        print(String(format: "  Total audio duration:  %.3fs", audioDuration))
+        if let info = genInfo {
+            print(String(format: "  Tokens/sec:            %.1f", info.tokensPerSecond))
+            print(String(format: "  Peak memory:           %.2f GB", info.peakMemoryUsage))
+        }
+        print("=============================================")
+
+        print("\nStreaming config:")
+        print("  First chunk:       1 token (~80ms audio) — emit ASAP")
+        print("  Subsequent chunks: 8 tokens (~640ms audio)")
+        print("  Context overlap:   10 tokens")
+        print("\nExpected TTFB estimates (6-bit, M-series):")
+        print("  Prefill:           15-30ms")
+        print("  First token gen:   ~73ms (at ~13.7 tok/s)")
+        print("  Speech decode:     ~5-15ms (direct decode, 1 token)")
+        print("  Expected TTFB:     ~100-120ms")
+        print("  Qwen CUDA claim:   97ms (12Hz-0.6B), 101ms (12Hz-1.7B)")
+
+        if let ttfa = timeToFirstAudio {
+            let ms = ttfa * 1000
+            if ms < 101 {
+                print(String(format: "\n  RESULT: %.1fms — beats Qwen's 101ms CUDA latency!", ms))
+            } else if ms < 150 {
+                print(String(format: "\n  RESULT: %.1fms — competitive with Qwen's 101ms CUDA", ms))
+            } else {
+                print(String(format: "\n  RESULT: %.1fms — above target", ms))
+            }
+        }
+    }
+
     private static func makeOutputURL(outputPath: String?) -> URL {
         let outputName = outputPath?.isEmpty == false ? outputPath! : "output.wav"
         if outputName.hasPrefix("/") {
@@ -217,6 +378,7 @@ struct CLI {
     let temperature: Float?
     let topP: Float?
     let timestamps: Bool
+    let benchmark: Bool
 
     static func parse() throws -> CLI {
         var text: String?
@@ -229,6 +391,7 @@ struct CLI {
         var temperature: Float? = nil
         var topP: Float? = nil
         var timestamps = false
+        var benchmark = false
 
         var it = CommandLine.arguments.dropFirst().makeIterator()
         while let arg = it.next() {
@@ -265,6 +428,8 @@ struct CLI {
                 topP = value
             case "--timestamps":
                 timestamps = true
+            case "--benchmark":
+                benchmark = true
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -291,7 +456,8 @@ struct CLI {
             maxTokens: maxTokens,
             temperature: temperature,
             topP: topP,
-            timestamps: timestamps
+            timestamps: timestamps,
+            benchmark: benchmark
         )
     }
 

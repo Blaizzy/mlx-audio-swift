@@ -75,7 +75,7 @@ public enum TTS {
 
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
-        if lower.contains("qwen3_tts") {
+        if lower.contains("qwen3_tts") || lower.contains("qwen3-tts") {
             return "qwen3_tts"
         }
         if lower.contains("qwen3") || lower.contains("qwen") {

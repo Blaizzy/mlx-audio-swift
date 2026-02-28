@@ -131,9 +131,9 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return stream
     }
 
-    // MARK: - Decode chunk helper
+    // MARK: - Decode chunk helpers
 
-    /// Decode a chunk of codec codes to audio waveform.
+    /// Decode a chunk of codec codes to audio waveform (chunked path for large sequences).
     /// - Parameters:
     ///   - codes: Codec codes [1, time, numCodeGroups]
     ///   - chunkTokens: Tokens per decode chunk (controls decode granularity)
@@ -153,6 +153,18 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             audio = audio[..<validLen]
         }
 
+        eval(audio)
+        return audio
+    }
+
+    /// Fast direct decode for small streaming chunks — bypasses chunked decode overhead.
+    /// - Parameter codes: Codec codes [1, time, numCodeGroups]
+    /// - Returns: Decoded audio waveform (1D)
+    private func decodeChunkDirect(_ codes: MLXArray) -> MLXArray {
+        guard let speechTokenizer else { return MLXArray.zeros([1]) }
+        let transposed = codes.transposed(0, 2, 1) // [1, time, groups] -> [1, groups, time]
+        var audio = speechTokenizer.decoder(transposed) // [1, 1, samples]
+        audio = audio.squeezed(axis: 1)[0] // -> [samples]
         eval(audio)
         return audio
     }
@@ -225,10 +237,12 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         let suppressTokens = (talkerConfig.vocabSize - 1024 ..< talkerConfig.vocabSize)
             .filter { $0 != eosTokenId }
 
-        // Streaming decode state
-        let streamingChunkSize = 25  // ~2s at 12.5Hz codec rate
-        let contextSize = 25        // Overlap tokens for smooth audio transitions
+        // Streaming decode state — emit first chunk ASAP for minimal TTFB
+        let firstChunkSize = 1       // 1 token = ~80ms audio, emit immediately
+        let subsequentChunkSize = 8  // 8 tokens = ~640ms audio per chunk
+        let streamContextSize = 10   // Overlap tokens for smooth transitions
         var decodedTokens = 0
+        var isFirstChunk = true
 
         var trailingIdx = 0
         var inputEmbeds = inputEmbedsInit
@@ -289,21 +303,29 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             generatedCodes.append(allCodes)
 
             codeCache = nil
-            Memory.clearCache()
+            // Defer memory clear when about to decode first chunk — saves latency
+            if !(isFirstChunk && onAudioChunk != nil) {
+                Memory.clearCache()
+            }
 
             // Streaming: decode and yield audio chunks during generation
             if let onAudioChunk {
                 let newTokens = generatedCodes.count - decodedTokens
-                if newTokens >= streamingChunkSize {
-                    let startIdx = max(0, decodedTokens - contextSize)
+                let chunkSize = isFirstChunk ? firstChunkSize : subsequentChunkSize
+                if newTokens >= chunkSize {
+                    // Context overlap: none for first chunk, limited for subsequent
+                    let contextTokens = isFirstChunk ? 0 : min(streamContextSize, decodedTokens)
+                    let startIdx = decodedTokens - contextTokens
                     let codesChunk = stacked(Array(generatedCodes[startIdx...]), axis: 1)
-                    eval(codesChunk)
+                    if !isFirstChunk { eval(codesChunk) }
 
-                    var audioChunk = decodeChunk(codesChunk, chunkTokens: streamingChunkSize)
+                    // Use fast direct decode for small chunks, chunked for larger
+                    var audioChunk = codesChunk.dim(1) <= 16
+                        ? decodeChunkDirect(codesChunk)
+                        : decodeChunk(codesChunk, chunkTokens: subsequentChunkSize)
 
                     // Trim overlap audio from previous chunk
-                    if decodedTokens > 0, startIdx < decodedTokens {
-                        let contextTokens = decodedTokens - startIdx
+                    if contextTokens > 0 {
                         let trimSamples = contextTokens * speechTokenizer.decodeUpsampleRate
                         if trimSamples < audioChunk.dim(0) {
                             audioChunk = audioChunk[trimSamples ..< audioChunk.dim(0)]
@@ -311,7 +333,10 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                     }
 
                     decodedTokens = generatedCodes.count
+                    let wasFirst = isFirstChunk
+                    isFirstChunk = false
                     onAudioChunk(audioChunk)
+                    if wasFirst { Memory.clearCache() }
                 }
             }
 
@@ -358,15 +383,17 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         // Streaming path: yield remaining tokens and return early
         if let onAudioChunk {
             if generatedCodes.count > decodedTokens {
-                let startIdx = max(0, decodedTokens - contextSize)
+                let contextTokens = min(streamContextSize, decodedTokens)
+                let startIdx = decodedTokens - contextTokens
                 let codesChunk = stacked(Array(generatedCodes[startIdx...]), axis: 1)
                 eval(codesChunk)
 
-                var audioChunk = decodeChunk(codesChunk, chunkTokens: streamingChunkSize)
+                var audioChunk = codesChunk.dim(1) <= 16
+                    ? decodeChunkDirect(codesChunk)
+                    : decodeChunk(codesChunk, chunkTokens: subsequentChunkSize)
 
                 // Trim overlap audio from previous chunk
-                if decodedTokens > 0, startIdx < decodedTokens {
-                    let contextTokens = decodedTokens - startIdx
+                if contextTokens > 0 {
                     let trimSamples = contextTokens * speechTokenizer.decodeUpsampleRate
                     if trimSamples < audioChunk.dim(0) {
                         audioChunk = audioChunk[trimSamples ..< audioChunk.dim(0)]

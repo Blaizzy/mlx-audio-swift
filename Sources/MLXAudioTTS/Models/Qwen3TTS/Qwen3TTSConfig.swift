@@ -209,8 +209,16 @@ public struct Qwen3TTSTalkerConfig: Codable, Sendable {
         codecPadId = try c.decodeIfPresent(Int.self, forKey: .codecPadId) ?? 2148
         codecBosId = try c.decodeIfPresent(Int.self, forKey: .codecBosId) ?? 2149
         codecLanguageId = try c.decodeIfPresent([String: Int].self, forKey: .codecLanguageId)
-        spkId = try c.decodeIfPresent([String: [Int]].self, forKey: .spkId)
-        spkIsDialect = try c.decodeIfPresent([String: String].self, forKey: .spkIsDialect)
+        // spk_id can be [String: [Int]] or [String: Int] depending on the model variant
+        if let arrayDict = try? c.decodeIfPresent([String: [Int]].self, forKey: .spkId) {
+            spkId = arrayDict
+        } else if let intDict = try? c.decodeIfPresent([String: Int].self, forKey: .spkId) {
+            spkId = intDict.mapValues { [$0] }
+        } else {
+            spkId = nil
+        }
+        // spk_is_dialect can have mixed bool/string values; decode leniently
+        spkIsDialect = try? c.decodeIfPresent([String: String].self, forKey: .spkIsDialect)
     }
 
     var mropeSection: [Int]? {
