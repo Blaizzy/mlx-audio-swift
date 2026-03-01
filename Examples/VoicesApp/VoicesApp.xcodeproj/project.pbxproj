@@ -21,7 +21,7 @@
 		APP006 /* AddVoiceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC006 /* AddVoiceView.swift */; };
 		APP007 /* VoiceRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC007 /* VoiceRow.swift */; };
 		APP008 /* VoiceCollectionCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC008 /* VoiceCollectionCard.swift */; };
-V		APP009 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC009 /* SettingsView.swift */; };
+		APP009 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC009 /* SettingsView.swift */; };
 		APP010 /* STTView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC0A0 /* STTView.swift */; };
 		APP011 /* STTViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC011 /* STTViewModel.swift */; };
 		APP012 /* STTSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC012 /* STTSettingsView.swift */; };
