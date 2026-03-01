@@ -18,6 +18,7 @@
 //    -only-testing:'MLXAudioTests/Smoke/STTSmokeTests'
 //    -only-testing:'MLXAudioTests/Smoke/VADSmokeTests'
 //    -only-testing:'MLXAudioTests/Smoke/STSSmokeTests'
+//    -only-testing:'MLXAudioTests/Smoke/LIDSmokeTests'
 //
 //  Run a single test (note the trailing parentheses for Swift Testing):
 //    -only-testing:'MLXAudioTests/Smoke/STTSmokeTests/qwen3ASRTranscribe()'
@@ -36,6 +37,7 @@ import Foundation
 @testable import MLXAudioSTT
 @testable import MLXAudioVAD
 @testable import MLXAudioSTS
+@testable import MLXAudioLID
 
 
 // MARK: - Helpers
@@ -733,6 +735,43 @@ struct VADSmokeTests {
             #expect(seg.end > seg.start)
             #expect(seg.speaker >= 0 && seg.speaker < 4)
         }
+    }
+
+}
+
+// MARK: - LID Smoke Tests
+
+@Suite("LID Smoke Tests", .serialized)
+struct LIDSmokeTests {
+
+    @Test func mmsLid256LoadAndPredict() async throws {
+        testHeader("mmsLid256LoadAndPredict")
+        defer { testCleanup("mmsLid256LoadAndPredict") }
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network MMS-LID-256 smoke test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
+        let audioURL = Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media")!
+        let (_, audioData) = try loadAudioArray(from: audioURL)
+        print("Loaded audio: \(audioData.shape)")
+
+        print("\u{001B}[33mLoading MMS-LID-256 model...\u{001B}[0m")
+        let model = try await Wav2Vec2ForSequenceClassification.fromPretrained("facebook/mms-lid-256")
+        print("\u{001B}[32mMMS-LID-256 model loaded! (\(model.id2label.count) languages)\u{001B}[0m")
+
+        print("\u{001B}[33mRunning language detection...\u{001B}[0m")
+        let output = model.predict(waveform: audioData, topK: 5)
+        print("Detected language: \(output.language) (\(String(format: "%.1f", output.confidence * 100))%)")
+        for pred in output.topLanguages {
+            print("  \(pred.language): \(String(format: "%.1f", pred.confidence * 100))%")
+        }
+
+        #expect(!output.language.isEmpty)
+        #expect(output.confidence > 0)
+        #expect(output.topLanguages.count == 5)
+        #expect(output.confidence >= 0 && output.confidence <= 1, "Confidence should be in [0, 1]")
     }
 }
 
