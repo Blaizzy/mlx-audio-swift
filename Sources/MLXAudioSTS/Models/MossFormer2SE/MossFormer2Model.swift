@@ -252,11 +252,12 @@ public enum MossFormer2SEError: Error, LocalizedError {
     }
 }
 
-public final class MossFormer2SEModel {
+public final class MossFormer2SEModel: STSModel {
     public static let defaultRepo = "starkdmi/MossFormer2-SE-fp16"
 
     public let model: MossFormer2SE
     public let config: MossFormer2SEConfig
+    public var sampleRate: Int { config.sampleRate }
 
     public init(model: MossFormer2SE, config: MossFormer2SEConfig) {
         self.model = model
@@ -357,17 +358,24 @@ public final class MossFormer2SEModel {
             }
         }
 
-        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
+        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .all)
         eval(model)
         return MossFormer2SEModel(model: model, config: config)
     }
 
-    public static func fromPretrained(_ modelPath: String = defaultRepo) async throws -> MossFormer2SEModel {
+    public static func fromPretrained(
+        _ modelPath: String = defaultRepo,
+        cache: HubCache = .default
+    ) async throws -> MossFormer2SEModel {
         guard let repoID = Repo.ID(rawValue: modelPath) else {
             throw MossFormer2SEError.invalidRepoID(modelPath)
         }
 
-        let modelDir = try await ModelUtils.resolveOrDownloadModel(repoID: repoID, requiredExtension: "safetensors")
+        let modelDir = try await ModelUtils.resolveOrDownloadModel(
+            repoID: repoID,
+            requiredExtension: "safetensors",
+            cache: cache
+        )
         let config = try loadConfig(from: modelDir, fallbackPolicy: .fallbackOnReadError)
         let weights = try loadWeights(from: modelDir, duplicateKeyPolicy: .overwrite)
         return try buildModel(config: config, weights: weights)

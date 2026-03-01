@@ -17,6 +17,8 @@
 //    -only-testing:'MLXAudioTests/Smoke/TTSSmokeTests'
 //    -only-testing:'MLXAudioTests/Smoke/STTSmokeTests'
 //    -only-testing:'MLXAudioTests/Smoke/VADSmokeTests'
+//    -only-testing:'MLXAudioTests/Smoke/STSSmokeTests'
+//    -only-testing:'MLXAudioTests/Smoke/LIDSmokeTests'
 //
 //  Run a single test (note the trailing parentheses for Swift Testing):
 //    -only-testing:'MLXAudioTests/Smoke/STTSmokeTests/qwen3ASRTranscribe()'
@@ -34,6 +36,7 @@ import Foundation
 @testable import MLXAudioTTS
 @testable import MLXAudioSTT
 @testable import MLXAudioVAD
+@testable import MLXAudioSTS
 @testable import MLXAudioLID
 
 
@@ -43,7 +46,7 @@ private let delimiter = String(repeating: "=", count: 60)
 
 private func testHeader(_ name: String) {
     // Free memory left over from the previous test (locals are now out of scope)
-    GPU.clearCache()
+    Memory.clearCache()
     GPU.resetPeakMemory()
     print("\n\u{001B}[1;35m\(delimiter)\u{001B}[0m")
     print("\u{001B}[1;35m  \(name)\u{001B}[0m")
@@ -51,7 +54,7 @@ private func testHeader(_ name: String) {
 }
 
 private func testCleanup(_ name: String) {
-    let peak = Double(GPU.peakMemory) / 1_073_741_824
+    let peak = Double(Memory.peakMemory) / 1_073_741_824
     print("\u{001B}[1;35m\(delimiter) \(name) done (peak: \(String(format: "%.2f", peak)) GB)\u{001B}[0m\n")
 }
 
@@ -735,6 +738,287 @@ struct VADSmokeTests {
     }
 
 }
+
+// MARK: - LID Smoke Tests
+
+@Suite("LID Smoke Tests", .serialized)
+struct LIDSmokeTests {
+
+    @Test func mmsLid256LoadAndPredict() async throws {
+        testHeader("mmsLid256LoadAndPredict")
+        defer { testCleanup("mmsLid256LoadAndPredict") }
+        let audioURL = Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media")!
+        let (_, audioData) = try loadAudioArray(from: audioURL)
+        print("Loaded audio: \(audioData.shape)")
+
+        print("\u{001B}[33mLoading MMS-LID-256 model...\u{001B}[0m")
+        let model = try await Wav2Vec2ForSequenceClassification.fromPretrained("facebook/mms-lid-256")
+        print("\u{001B}[32mMMS-LID-256 model loaded! (\(model.id2label.count) languages)\u{001B}[0m")
+
+        print("\u{001B}[33mRunning language detection...\u{001B}[0m")
+        let output = model.predict(waveform: audioData, topK: 5)
+        print("Detected language: \(output.language) (\(String(format: "%.1f", output.confidence * 100))%)")
+        for pred in output.topLanguages {
+            print("  \(pred.language): \(String(format: "%.1f", pred.confidence * 100))%")
+        }
+
+        #expect(!output.language.isEmpty)
+        #expect(output.confidence > 0)
+        #expect(output.topLanguages.count == 5)
+        #expect(output.language == "eng", "intention.wav should be detected as English")
+    }
+}
+
+// MARK: - STS Smoke Tests
+
+@Suite("STS Smoke Tests", .serialized)
+struct STSSmokeTests {
+
+    static let modelName = "mlx-community/LFM2.5-Audio-1.5B-6bit"
+
+    @Test func lfm2TextToText() async throws {
+        testHeader("lfm2TextToText")
+        defer { testCleanup("lfm2TextToText") }
+
+        print("\u{001B}[33mLoading LFM2.5-Audio model...\u{001B}[0m")
+        let model = try await LFM2AudioModel.fromPretrained(Self.modelName)
+        let processor = model.processor!
+        print("\u{001B}[32mModel loaded!\u{001B}[0m")
+
+        let chat = ChatState(processor: processor)
+        chat.newTurn(role: "system")
+        chat.addText("Answer briefly in one sentence.")
+        chat.endTurn()
+        chat.newTurn(role: "user")
+        chat.addText("What is 2 + 2?")
+        chat.endTurn()
+        chat.newTurn(role: "assistant")
+
+        let genConfig = LFMGenerationConfig(
+            maxNewTokens: 64,
+            temperature: 0.8,
+            topK: 50
+        )
+
+        print("\u{001B}[33mGenerating text-to-text response...\u{001B}[0m")
+
+        var textTokens: [Int] = []
+        for try await (token, modality) in model.generateInterleaved(
+            textTokens: chat.getTextTokens(),
+            audioFeatures: chat.getAudioFeatures(),
+            modalities: chat.getModalities(),
+            config: genConfig
+        ) {
+            eval(token)
+            if modality == .text {
+                textTokens.append(token.item(Int.self))
+            }
+        }
+
+        let decodedText = processor.decodeText(textTokens)
+        print("\u{001B}[32mText-to-Text output: \(decodedText)\u{001B}[0m")
+        print("\u{001B}[32mGenerated \(textTokens.count) text tokens\u{001B}[0m")
+
+        #expect(textTokens.count > 0, "Should generate at least one text token")
+        #expect(!decodedText.isEmpty, "Decoded text should not be empty")
+    }
+
+    @Test func lfm2TextToSpeech() async throws {
+        testHeader("lfm2TextToSpeech")
+        defer { testCleanup("lfm2TextToSpeech") }
+
+        print("\u{001B}[33mLoading LFM2.5-Audio model...\u{001B}[0m")
+        let model = try await LFM2AudioModel.fromPretrained(Self.modelName)
+        let processor = model.processor!
+        print("\u{001B}[32mModel loaded!\u{001B}[0m")
+
+        let chat = ChatState(processor: processor)
+        chat.newTurn(role: "system")
+        chat.addText("Perform TTS. Use a UK male voice.")
+        chat.endTurn()
+        chat.newTurn(role: "user")
+        chat.addText("Hello, welcome to MLX Audio!")
+        chat.endTurn()
+        chat.newTurn(role: "assistant")
+        chat.addAudioStartToken()
+
+        let genConfig = LFMGenerationConfig(
+            maxNewTokens: 256,
+            temperature: 0.8,
+            topK: 50,
+            audioTemperature: 0.7,
+            audioTopK: 30
+        )
+
+        print("\u{001B}[33mGenerating text-to-speech response...\u{001B}[0m")
+
+        var audioCodes: [MLXArray] = []
+        for try await (token, modality) in model.generateSequential(
+            textTokens: chat.getTextTokens(),
+            audioFeatures: chat.getAudioFeatures(),
+            modalities: chat.getModalities(),
+            config: genConfig
+        ) {
+            eval(token)
+            if modality == .audioOut {
+                if token[0].item(Int.self) == lfmAudioEOSToken {
+                    break
+                }
+                audioCodes.append(token)
+            }
+        }
+
+        print("\u{001B}[32mText-to-Speech: generated \(audioCodes.count) audio frames\u{001B}[0m")
+
+        #expect(audioCodes.count > 0, "Should generate at least one audio frame")
+
+        if let firstFrame = audioCodes.first {
+            #expect(firstFrame.shape == [8], "Audio frame should have 8 codebook values")
+        }
+
+        let stacked = MLX.stacked(audioCodes, axis: 0)
+        let codesInput = stacked.transposed(1, 0).expandedDimensions(axis: 0)
+        eval(codesInput)
+
+        let detokenizer = try LFM2AudioDetokenizer.fromPretrained(modelPath: model.modelDirectory!)
+        let waveform = detokenizer(codesInput)
+        eval(waveform)
+        let samples = waveform[0].asArray(Float.self)
+        print("\u{001B}[32mDecoded \(samples.count) audio samples (\(String(format: "%.1f", Double(samples.count) / 24000.0))s at 24kHz)\u{001B}[0m")
+
+        let outputURL = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Desktop/lfm_tts_output.wav")
+        try AudioUtils.writeWavFile(samples: samples, sampleRate: 24000, fileURL: outputURL)
+        print("\u{001B}[32mSaved WAV to: \(outputURL.path)\u{001B}[0m")
+    }
+
+    @Test func lfm2SpeechToText() async throws {
+        testHeader("lfm2SpeechToText")
+        defer { testCleanup("lfm2SpeechToText") }
+
+        let audioURL = Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media")!
+        let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
+        print("\u{001B}[33mLoaded audio: \(audioData.shape), sample rate: \(sampleRate)\u{001B}[0m")
+
+        print("\u{001B}[33mLoading LFM2.5-Audio model...\u{001B}[0m")
+        let model = try await LFM2AudioModel.fromPretrained(Self.modelName)
+        let processor = model.processor!
+        print("\u{001B}[32mModel loaded!\u{001B}[0m")
+
+        let chat = ChatState(processor: processor)
+        chat.newTurn(role: "user")
+        chat.addAudio(audioData, sampleRate: sampleRate)
+        chat.addText("Transcribe the audio.")
+        chat.endTurn()
+        chat.newTurn(role: "assistant")
+
+        let genConfig = LFMGenerationConfig(
+            maxNewTokens: 256,
+            temperature: 0.8,
+            topK: 50
+        )
+
+        print("\u{001B}[33mGenerating speech-to-text response...\u{001B}[0m")
+
+        var textTokens: [Int] = []
+        for try await (token, modality) in model.generateInterleaved(
+            textTokens: chat.getTextTokens(),
+            audioFeatures: chat.getAudioFeatures(),
+            modalities: chat.getModalities(),
+            config: genConfig
+        ) {
+            eval(token)
+            if modality == .text {
+                textTokens.append(token.item(Int.self))
+                print(processor.decodeText([token.item(Int.self)]), terminator: "")
+            }
+        }
+
+        let decodedText = processor.decodeText(textTokens)
+        print("\n\u{001B}[32mSpeech-to-Text transcription: \(decodedText)\u{001B}[0m")
+        print("\u{001B}[32mGenerated \(textTokens.count) text tokens\u{001B}[0m")
+
+        #expect(textTokens.count > 0, "Should generate at least one text token")
+        #expect(!decodedText.isEmpty, "Transcription should not be empty")
+    }
+
+    @Test func lfm2SpeechToSpeech() async throws {
+        testHeader("lfm2SpeechToSpeech")
+        defer { testCleanup("lfm2SpeechToSpeech") }
+
+        let audioURL = Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media")!
+        let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
+        print("\u{001B}[33mLoaded audio: \(audioData.shape), sample rate: \(sampleRate)\u{001B}[0m")
+
+        print("\u{001B}[33mLoading LFM2.5-Audio model...\u{001B}[0m")
+        let model = try await LFM2AudioModel.fromPretrained(Self.modelName)
+        let processor = model.processor!
+        print("\u{001B}[32mModel loaded!\u{001B}[0m")
+
+        let chat = ChatState(processor: processor)
+        chat.newTurn(role: "system")
+        chat.addText("Respond with interleaved text and audio.")
+        chat.endTurn()
+        chat.newTurn(role: "user")
+        chat.addAudio(audioData, sampleRate: sampleRate)
+        chat.endTurn()
+        chat.newTurn(role: "assistant")
+
+        let genConfig = LFMGenerationConfig(
+            maxNewTokens: 512,
+            temperature: 0.8,
+            topK: 50,
+            audioTemperature: 0.7,
+            audioTopK: 30
+        )
+
+        print("\u{001B}[33mGenerating speech-to-speech response...\u{001B}[0m")
+
+        var textTokens: [Int] = []
+        var audioCodes: [MLXArray] = []
+        for try await (token, modality) in model.generateInterleaved(
+            textTokens: chat.getTextTokens(),
+            audioFeatures: chat.getAudioFeatures(),
+            modalities: chat.getModalities(),
+            config: genConfig
+        ) {
+            eval(token)
+            if modality == .text {
+                textTokens.append(token.item(Int.self))
+            } else if modality == .audioOut {
+                // Filter EOS frames (code 2048) — they're out-of-range for the detokenizer
+                if token[0].item(Int.self) != lfmAudioEOSToken {
+                    audioCodes.append(token)
+                }
+            }
+        }
+
+        let decodedText = processor.decodeText(textTokens)
+        print("\u{001B}[32mSpeech-to-Speech text: \(decodedText)\u{001B}[0m")
+        print("\u{001B}[32mGenerated \(textTokens.count) text tokens, \(audioCodes.count) audio frames\u{001B}[0m")
+
+        let totalTokens = textTokens.count + audioCodes.count
+        #expect(totalTokens > 0, "Should generate at least one token (text or audio)")
+
+        if !audioCodes.isEmpty {
+            let stacked = MLX.stacked(audioCodes, axis: 0)
+            let codesInput = stacked.transposed(1, 0).expandedDimensions(axis: 0)
+            eval(codesInput)
+
+            let detokenizer = try LFM2AudioDetokenizer.fromPretrained(modelPath: model.modelDirectory!)
+            let waveform = detokenizer(codesInput)
+            eval(waveform)
+            let samples = waveform[0].asArray(Float.self)
+            print("\u{001B}[32mDecoded \(samples.count) audio samples (\(String(format: "%.1f", Double(samples.count) / 24000.0))s at 24kHz)\u{001B}[0m")
+
+            let outputURL = URL(fileURLWithPath: NSHomeDirectory())
+                .appendingPathComponent("Desktop/lfm_sts_output.wav")
+            try AudioUtils.writeWavFile(samples: samples, sampleRate: 24000, fileURL: outputURL)
+            print("\u{001B}[32mSaved WAV to: \(outputURL.path)\u{001B}[0m")
+        }
+    }
+}
+
 
 // MARK: - LID Smoke Tests
 

@@ -25,6 +25,46 @@ private func floorDiv(_ a: MLXArray, _ b: Int) -> MLXArray {
     return floor(a.asType(.float32) / Float(b)).asType(.int32)
 }
 
+extension Qwen3ASRModel: STTGenerationModel {
+    public var defaultGenerationParameters: STTGenerateParameters {
+        STTGenerateParameters(
+            maxTokens: 8192,
+            temperature: 0.0,
+            topP: 0.95,
+            topK: 0,
+            verbose: false,
+            language: "English",
+            chunkDuration: 1200.0,
+            minChunkDuration: 1.0
+        )
+    }
+
+    public func generate(audio: MLXArray, generationParameters: STTGenerateParameters) -> STTOutput {
+        generate(
+            audio: audio,
+            maxTokens: generationParameters.maxTokens,
+            temperature: generationParameters.temperature,
+            language: generationParameters.language,
+            chunkDuration: generationParameters.chunkDuration,
+            minChunkDuration: generationParameters.minChunkDuration
+        )
+    }
+
+    public func generateStream(
+        audio: MLXArray,
+        generationParameters: STTGenerateParameters
+    ) -> AsyncThrowingStream<STTGeneration, Error> {
+        generateStream(
+            audio: audio,
+            maxTokens: generationParameters.maxTokens,
+            temperature: generationParameters.temperature,
+            language: generationParameters.language,
+            chunkDuration: generationParameters.chunkDuration,
+            minChunkDuration: generationParameters.minChunkDuration
+        )
+    }
+}
+
 func getFeatExtractOutputLengths(_ inputLengths: MLXArray) -> MLXArray {
     let inputLengthsLeave = inputLengths % 100
     let featLengths = floorDiv(inputLengthsLeave - 1, 2) + 1
@@ -1408,7 +1448,10 @@ public class Qwen3ASRModel: Module {
 
     // MARK: - Model Loading
 
-    public static func fromPretrained(_ modelPath: String) async throws -> Qwen3ASRModel {
+    public static func fromPretrained(
+        _ modelPath: String,
+        cache: HubCache = .default
+    ) async throws -> Qwen3ASRModel {
         let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
             ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
 
@@ -1423,7 +1466,8 @@ public class Qwen3ASRModel: Module {
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
             requiredExtension: "safetensors",
-            hfToken: hfToken
+            hfToken: hfToken,
+            cache: cache
         )
 
         // Load config
@@ -1474,7 +1518,7 @@ public class Qwen3ASRModel: Module {
         }
 
         // Load weights into model
-        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
+        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .all)
         eval(model)
 
         return model

@@ -3,7 +3,7 @@ import SwiftUI
 import MLXAudioSTT
 import MLXAudioCore
 import MLX
-import AVFoundation
+@preconcurrency import AVFoundation
 import Combine
 
 @MainActor
@@ -45,7 +45,7 @@ class STTViewModel {
     var audioLevel: Float { recorder.audioLevel }
 
     private var model: Qwen3ASRModel?
-    private let audioPlayer = AudioPlayerManager()
+    private let audioPlayer = AudioPlayer()
     private let recorder = AudioRecorderManager()
     private var cancellables = Set<AnyCancellable>()
     private var generationTask: Task<Void, Never>?
@@ -193,7 +193,7 @@ class STTViewModel {
     private var streamingSession: StreamingInferenceSession?
     private var lastReadPos: Int = 0
 
-    func startRecording() {
+    func startRecording() async {
         guard let model = model else {
             errorMessage = "Model not loaded"
             return
@@ -206,7 +206,7 @@ class STTViewModel {
         lastReadPos = 0
 
         do {
-            try recorder.startRecording()
+            try await recorder.startRecording()
         } catch {
             errorMessage = error.localizedDescription
             return

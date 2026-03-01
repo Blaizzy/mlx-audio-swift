@@ -21,12 +21,40 @@ enum AudioConstants {
     static let hopLength = 160
 }
 
-
 // MARK: - Prompt Templates
 
 private enum PromptTemplate {
     static let userPrefix = "<|user|>\n<|begin_of_audio|>"
     static let userSuffix = "<|end_of_audio|>\nPlease transcribe this audio into text<|assistant|>\n"
+}
+
+extension GLMASRModel: STTGenerationModel {
+    public var defaultGenerationParameters: STTGenerateParameters {
+        STTGenerateParameters(maxTokens: 128, temperature: 0.0, topP: 0.95, topK: 0, verbose: false)
+    }
+
+    public func generate(audio: MLXArray, generationParameters: STTGenerateParameters) -> STTOutput {
+        generate(
+            audio: audio,
+            maxTokens: generationParameters.maxTokens,
+            temperature: generationParameters.temperature,
+            topP: generationParameters.topP,
+            topK: generationParameters.topK,
+            verbose: generationParameters.verbose
+        )
+    }
+
+    public func generateStream(
+        audio: MLXArray,
+        generationParameters: STTGenerateParameters
+    ) -> AsyncThrowingStream<STTGeneration, Error> {
+        generateStream(
+            audio: audio,
+            maxTokens: generationParameters.maxTokens,
+            temperature: generationParameters.temperature,
+            topP: generationParameters.topP
+        )
+    }
 }
 
 // MARK: - LLaMA Components for STT
@@ -559,10 +587,10 @@ public class GLMASRModel: Module {
     }
 
     /// Load model from pretrained weights.
-    public static func fromPretrained(_ modelPath: String) async throws -> GLMASRModel {
-        let client = HubClient.default
-        let cache = client.cache ?? HubCache.default
-
+    public static func fromPretrained(
+        _ modelPath: String,
+        cache: HubCache = .default
+    ) async throws -> GLMASRModel {
         guard let repoID = Repo.ID(rawValue: modelPath) else {
             throw NSError(
                 domain: "GLMASRModel",
@@ -571,10 +599,10 @@ public class GLMASRModel: Module {
             )
         }
 
-        let modelDir = try await resolveOrDownloadModel(
-            client: client,
-            cache: cache,
-            repoID: repoID
+        let modelDir = try await ModelUtils.resolveOrDownloadModel(
+            repoID: repoID,
+            requiredExtension: ".safetensors",
+            cache: cache
         )
 
         // Load config
@@ -630,7 +658,7 @@ public class GLMASRModel: Module {
                 }
             }
         }
-        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
+        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .all)
 
         eval(model)
 
@@ -735,44 +763,4 @@ public class GLMASRModel: Module {
         )
     }
 
-    private static func resolveOrDownloadModel(
-        client: HubClient,
-        cache: HubCache,
-        repoID: Repo.ID
-    ) async throws -> URL {
-        let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
-        let modelDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("mlx-audio")
-            .appendingPathComponent(modelSubdir)
-
-        // Check if model already exists
-        let configPath = modelDir.appendingPathComponent("config.json")
-        if FileManager.default.fileExists(atPath: configPath.path) {
-            let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
-            let hasSafetensors = files?.contains { $0.pathExtension == "safetensors" } ?? false
-
-            if hasSafetensors {
-                print("Using cached model at: \(modelDir.path)")
-                return modelDir
-            }
-        }
-
-        // Create directory if needed
-        try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
-
-        // Download model
-        print("Downloading model \(repoID)...")
-        _ = try await client.downloadSnapshot(
-            of: repoID,
-            kind: .model,
-            to: modelDir,
-            revision: "main",
-            progressHandler: { progress in
-                print("\(progress.completedUnitCount)/\(progress.totalUnitCount) files")
-            }
-        )
-
-        print("Model downloaded to: \(modelDir.path)")
-        return modelDir
-    }
 }

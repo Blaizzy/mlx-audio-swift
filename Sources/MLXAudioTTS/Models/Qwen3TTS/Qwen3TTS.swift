@@ -101,7 +101,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                 let repPenalty = generationParameters.repetitionPenalty ?? 1.05
                 let maxTokens = generationParameters.maxTokens ?? 4096
 
-                let audio = generateVoiceDesign(
+                _ = generateVoiceDesign(
                     text: text,
                     instruct: instruct,
                     language: lang,
@@ -118,15 +118,43 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                     },
                     onInfo: { info in
                         continuation.yield(.info(info))
+                    },
+                    onAudioChunk: { chunk in
+                        continuation.yield(.audio(chunk))
                     }
                 )
-                continuation.yield(.audio(audio))
                 continuation.finish()
             } catch {
                 continuation.finish(throwing: error)
             }
         }
         return stream
+    }
+
+    // MARK: - Decode chunk helper
+
+    /// Decode a chunk of codec codes to audio waveform.
+    /// - Parameters:
+    ///   - codes: Codec codes [1, time, numCodeGroups]
+    ///   - chunkTokens: Tokens per decode chunk (controls decode granularity)
+    /// - Returns: Decoded audio waveform (1D)
+    private func decodeChunk(_ codes: MLXArray, chunkTokens: Int = 100) -> MLXArray {
+        guard let speechTokenizer else { return MLXArray.zeros([1]) }
+
+        var audioChunks = [MLXArray]()
+        for chunk in speechTokenizer.streamingDecode(codes, chunkTokens: chunkTokens) {
+            audioChunks.append(chunk)
+        }
+        var audio = concatenated(audioChunks, axis: -1)[0]
+
+        let validLen = Int((codes[0..., 0..., 0] .> 0).sum().item(Int32.self))
+            * speechTokenizer.decodeUpsampleRate
+        if validLen > 0, validLen < audio.dim(0) {
+            audio = audio[..<validLen]
+        }
+
+        eval(audio)
+        return audio
     }
 
     // MARK: - VoiceDesign generation
@@ -144,7 +172,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         minP: Float,
         maxTokens: Int,
         onToken: ((Int) -> Void)? = nil,
-        onInfo: ((AudioGenerationInfo) -> Void)? = nil
+        onInfo: ((AudioGenerationInfo) -> Void)? = nil,
+        onAudioChunk: ((MLXArray) -> Void)? = nil
     ) -> MLXArray {
         guard let speechTokenizer, let tokenizer else {
             return MLXArray.zeros([1])
@@ -195,6 +224,11 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         // Suppress special tokens
         let suppressTokens = (talkerConfig.vocabSize - 1024 ..< talkerConfig.vocabSize)
             .filter { $0 != eosTokenId }
+
+        // Streaming decode state
+        let streamingChunkSize = 25  // ~2s at 12.5Hz codec rate
+        let contextSize = 25        // Overlap tokens for smooth audio transitions
+        var decodedTokens = 0
 
         var trailingIdx = 0
         var inputEmbeds = inputEmbedsInit
@@ -257,6 +291,30 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             codeCache = nil
             Memory.clearCache()
 
+            // Streaming: decode and yield audio chunks during generation
+            if let onAudioChunk {
+                let newTokens = generatedCodes.count - decodedTokens
+                if newTokens >= streamingChunkSize {
+                    let startIdx = max(0, decodedTokens - contextSize)
+                    let codesChunk = stacked(Array(generatedCodes[startIdx...]), axis: 1)
+                    eval(codesChunk)
+
+                    var audioChunk = decodeChunk(codesChunk, chunkTokens: streamingChunkSize)
+
+                    // Trim overlap audio from previous chunk
+                    if decodedTokens > 0, startIdx < decodedTokens {
+                        let contextTokens = decodedTokens - startIdx
+                        let trimSamples = contextTokens * speechTokenizer.decodeUpsampleRate
+                        if trimSamples < audioChunk.dim(0) {
+                            audioChunk = audioChunk[trimSamples ..< audioChunk.dim(0)]
+                        }
+                    }
+
+                    decodedTokens = generatedCodes.count
+                    onAudioChunk(audioChunk)
+                }
+            }
+
             // Prepare next input
             let textEmbed: MLXArray
             if trailingIdx < trailingTextHidden.dim(1) {
@@ -297,28 +355,40 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         )
         onInfo?(info)
 
-        // Stack and decode
+        // Streaming path: yield remaining tokens and return early
+        if let onAudioChunk {
+            if generatedCodes.count > decodedTokens {
+                let startIdx = max(0, decodedTokens - contextSize)
+                let codesChunk = stacked(Array(generatedCodes[startIdx...]), axis: 1)
+                eval(codesChunk)
+
+                var audioChunk = decodeChunk(codesChunk, chunkTokens: streamingChunkSize)
+
+                // Trim overlap audio from previous chunk
+                if decodedTokens > 0, startIdx < decodedTokens {
+                    let contextTokens = decodedTokens - startIdx
+                    let trimSamples = contextTokens * speechTokenizer.decodeUpsampleRate
+                    if trimSamples < audioChunk.dim(0) {
+                        audioChunk = audioChunk[trimSamples ..< audioChunk.dim(0)]
+                    }
+                }
+
+                onAudioChunk(audioChunk)
+            }
+            // Streaming chunks already yielded; return empty (caller uses chunks)
+            return MLXArray.zeros([1])
+        }
+
+        // Non-streaming path: full decode (existing behavior)
         let codes = stacked(generatedCodes, axis: 1) // [1, seq_len, num_code_groups]
 
-        // Streaming decode for memory efficiency
         var decodeCodes = codes
         if let refCodes {
             let refCodesT = refCodes.transposed(0, 2, 1)
             decodeCodes = concatenated([refCodesT, codes], axis: 1)
         }
 
-        var audioChunks = [MLXArray]()
-        for chunk in speechTokenizer.streamingDecode(decodeCodes, chunkTokens: 100) {
-            audioChunks.append(chunk)
-        }
-        var audio = concatenated(audioChunks, axis: -1)[0] // Remove batch dim
-
-        // Trim to valid length
-        let validLen = Int((decodeCodes[0..., 0..., 0] .> 0).sum().item(Int32.self))
-            * speechTokenizer.decodeUpsampleRate
-        if validLen > 0, validLen < audio.dim(0) {
-            audio = audio[..<validLen]
-        }
+        var audio = decodeChunk(decodeCodes, chunkTokens: 100)
 
         if let refCodes {
             let refLen = refCodes.dim(2)
@@ -719,10 +789,15 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
     // MARK: - fromPretrained
 
-    public static func fromPretrained(_ modelRepo: String) async throws -> Qwen3TTSModel {
+    public static func fromPretrained(
+        _ modelRepo: String,
+        cache: HubCache = .default
+    ) async throws -> Qwen3TTSModel {
         let repoID = Repo.ID(rawValue: modelRepo)!
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
-            repoID: repoID, requiredExtension: "safetensors"
+            repoID: repoID,
+            requiredExtension: "safetensors",
+            cache: cache
         )
 
         // Load main config
@@ -743,6 +818,24 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         // Sanitize and load talker weights
         let talkerWeights = Qwen3TTSTalkerForConditionalGeneration.sanitize(weights: allWeights)
         let talkerPairs = talkerWeights.map { ($0.key, $0.value) }
+
+        // Quantized checkpoints store packed weights and companion .scales tensors.
+        // Convert talker Linear layers before loading those tensors.
+        if config.quantization != nil || config.perLayerQuantization != nil {
+            quantize(model: model.talker) { path, _ in
+                guard talkerWeights["\(path).scales"] != nil else {
+                    return nil
+                }
+
+                if let perLayerQuant = config.perLayerQuantization,
+                   let layerQuant = perLayerQuant.quantization(layer: path) {
+                    return layerQuant.asTuple
+                }
+
+                return config.quantization?.asTuple
+            }
+        }
+
         try model.talker.update(parameters: ModuleParameters.unflattened(talkerPairs), verify: .all)
         eval(model.talker.parameters())
 

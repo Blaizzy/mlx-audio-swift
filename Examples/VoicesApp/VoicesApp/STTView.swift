@@ -153,7 +153,7 @@ struct STTView: View {
                     if viewModel.isRecording {
                         viewModel.stopRecording()
                     } else {
-                        viewModel.startRecording()
+                        Task { await viewModel.startRecording() }
                     }
                 }) {
                     ViewThatFits(in: .horizontal) {

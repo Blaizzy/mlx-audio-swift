@@ -319,13 +319,24 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
 
             // Remove "model." prefix if present (e.g. "model.language_model.*" → "language_model.*")
             if newKey.hasPrefix("model.") {
-                newKey = String(newKey.dropFirst(6))
+                newKey = String(newKey.dropFirst("model.".count))
             }
 
-            // Decoder weights should be float32
+            // Keep packed quantized weights in their stored dtype.
+            let isPackedQuantizedWeight: Bool = {
+                guard key.hasSuffix(".weight") else { return false }
+                let base = String(key.dropLast(".weight".count))
+                return weights["\(base).scales"] != nil
+            }()
+
+            // Decoder weights should be float32 in non-quantized checkpoints.
             var newValue = value
             if newKey.hasPrefix("decoder.") {
-                newValue = value.asType(.float32)
+                if !newKey.hasSuffix(".scales"),
+                   !newKey.hasSuffix(".biases"),
+                   !isPackedQuantizedWeight {
+                    newValue = value.asType(.float32)
+                }
             } else if newKey.hasPrefix("language_model.lm_head") {
                 // lm_head is directly on SopranoModel, not inside model
                 newKey = newKey.replacingOccurrences(of: "language_model.", with: "")
@@ -880,17 +891,12 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
 
     // MARK: - Loading
 
-    public static func fromPretrained(_ modelRepo: String) async throws -> SopranoModel {
+    public static func fromPretrained(
+        _ modelRepo: String,
+        cache: HubCache = .default
+    ) async throws -> SopranoModel {
         let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
             ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
-
-        let client: HubClient
-        if let token = hfToken, !token.isEmpty {
-            client = HubClient(host: HubClient.defaultHost, bearerToken: token)
-        } else {
-            client = HubClient.default
-        }
-        let cache = client.cache ?? HubCache.default
 
         guard let repoID = Repo.ID(rawValue: modelRepo) else {
             throw NSError(domain: "SopranoModel", code: 1, userInfo: [
@@ -898,10 +904,11 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
             ])
         }
 
-        let modelDir = try await resolveOrDownloadSopranoModel(
-            client: client,
-            cache: cache,
-            repoID: repoID
+        let modelDir = try await ModelUtils.resolveOrDownloadModel(
+            repoID: repoID,
+            requiredExtension: ".safetensors",
+            hfToken: hfToken,
+            cache: cache
         )
 
         // Load config
@@ -925,16 +932,22 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
         let sanitizedWeights = model.sanitize(weights: weights)
 
         // Apply quantization if needed
-        if let perLayerQuant = config.perLayerQuantization {
+        if config.quantization != nil || config.perLayerQuantization != nil {
             quantize(model: model) { path, _ in
-                if weights["\(path).scales"] != nil {
-                    return perLayerQuant.quantization(layer: path)?.asTuple
+                guard sanitizedWeights["\(path).scales"] != nil else {
+                    return nil
                 }
-                return nil
+
+                if let perLayerQuant = config.perLayerQuantization,
+                    let layerQuant = perLayerQuant.quantization(layer: path) {
+                    return layerQuant.asTuple
+                }
+
+                return config.quantization?.asTuple
             }
         }
 
-        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [.all])
+        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .all)
 
         eval(model)
 
@@ -961,45 +974,6 @@ private func loadSopranoWeights(from directory: URL) throws -> [String: MLXArray
         weights.merge(fileWeights) { _, new in new }
     }
     return weights
-}
-
-private func resolveOrDownloadSopranoModel(
-    client: HubClient,
-    cache: HubCache,
-    repoID: Repo.ID
-) async throws -> URL {
-    let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
-    let modelDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        .appendingPathComponent("mlx-audio")
-        .appendingPathComponent(modelSubdir)
-
-    if FileManager.default.fileExists(atPath: modelDir.path) {
-        let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
-        let hasWeights = files?.contains { $0.pathExtension == "safetensors" } ?? false
-
-        if hasWeights {
-            let configPath = modelDir.appendingPathComponent("config.json")
-            if FileManager.default.fileExists(atPath: configPath.path),
-               let configData = try? Data(contentsOf: configPath),
-               (try? JSONSerialization.jsonObject(with: configData)) != nil {
-                return modelDir
-            }
-        }
-    }
-
-    try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
-
-    _ = try await client.downloadSnapshot(
-        of: repoID,
-        kind: .model,
-        to: modelDir,
-        revision: "main",
-        progressHandler: { progress in
-            print("\(progress.completedUnitCount)/\(progress.totalUnitCount) files")
-        }
-    )
-
-    return modelDir
 }
 
 // MARK: - TopP Sampler (matching Python's mlx_lm implementation)

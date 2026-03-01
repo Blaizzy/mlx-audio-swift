@@ -2,9 +2,18 @@ import Foundation
 import HuggingFace
 
 public enum ModelUtils {
-    public static func resolveModelType(repoID: Repo.ID, hfToken: String? = nil) async throws -> String? {
+    public static func resolveModelType(
+        repoID: Repo.ID,
+        hfToken: String? = nil,
+        cache: HubCache = .default
+    ) async throws -> String? {
         let modelNameComponents = repoID.name.split(separator: "/").last?.split(separator: "-")
-        let modelURL = try await resolveOrDownloadModel(repoID: repoID, requiredExtension: "safetensors", hfToken: hfToken)
+        let modelURL = try await resolveOrDownloadModel(
+            repoID: repoID,
+            requiredExtension: "safetensors",
+            hfToken: hfToken,
+            cache: cache
+        )
         let configJSON = try JSONSerialization.jsonObject(with: Data(contentsOf: modelURL.appendingPathComponent("config.json")))
         if let config = configJSON as? [String: Any] {
             return (config["model_type"] as? String) ?? (config["architecture"] as? String) ?? modelNameComponents?.first?.lowercased()
@@ -21,17 +30,23 @@ public enum ModelUtils {
     public static func resolveOrDownloadModel(
         repoID: Repo.ID,
         requiredExtension: String,
-        hfToken: String? = nil
+        hfToken: String? = nil,
+        cache: HubCache = .default
     ) async throws -> URL {
         let client: HubClient
         if let token = hfToken, !token.isEmpty {
             print("Using HuggingFace token from configuration")
-            client = HubClient(host: HubClient.defaultHost, bearerToken: token)
+            client = HubClient(host: HubClient.defaultHost, bearerToken: token, cache: cache)
         } else {
-            client = HubClient.default
+            client = HubClient(cache: cache)
         }
-        let cache = client.cache ?? HubCache.default
-        return try await resolveOrDownloadModel(client: client, cache: cache, repoID: repoID, requiredExtension: requiredExtension)
+        let resolvedCache = client.cache ?? cache
+        return try await resolveOrDownloadModel(
+            client: client,
+            cache: resolvedCache,
+            repoID: repoID,
+            requiredExtension: requiredExtension
+        )
     }
 
     /// Resolves a model from cache or downloads it if not cached.
@@ -43,20 +58,30 @@ public enum ModelUtils {
     /// - Returns: The model directory URL
     public static func resolveOrDownloadModel(
         client: HubClient,
-        cache: HubCache,
+        cache: HubCache = .default,
         repoID: Repo.ID,
         requiredExtension: String
     ) async throws -> URL {
-        // Use a persistent cache directory based on repo ID
+        let normalizedRequiredExtension = requiredExtension.hasPrefix(".")
+            ? String(requiredExtension.dropFirst())
+            : requiredExtension
+
+        // Store downloaded model snapshots under the configured Hugging Face cache root.
         let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
-        let modelDir = URL.cachesDirectory.appendingPathComponent("mlx-audio").appendingPathComponent(modelSubdir)
+        let modelDir = cache.cacheDirectory
+            .appendingPathComponent("mlx-audio")
+            .appendingPathComponent(modelSubdir)
 
         // Check if model already exists with required files
         if FileManager.default.fileExists(atPath: modelDir.path) {
-            let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
-            let hasRequiredFiles = files?.contains { $0.pathExtension == requiredExtension } ?? false
+            let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: [.fileSizeKey])
+            let hasRequiredFile = files?.contains { file in
+                guard file.pathExtension == normalizedRequiredExtension else { return false }
+                let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                return size > 0
+            } ?? false
 
-            if hasRequiredFiles {
+            if hasRequiredFile {
                 // Validate that config.json is valid JSON
                 let configPath = modelDir.appendingPathComponent("config.json")
                 if FileManager.default.fileExists(atPath: configPath.path) {
@@ -66,16 +91,19 @@ public enum ModelUtils {
                         return modelDir
                     } else {
                         print("Cached config.json is invalid, clearing cache...")
-                        try? FileManager.default.removeItem(at: modelDir)
+                        Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
                     }
                 }
+            } else {
+                print("Cached model appears incomplete, clearing cache...")
+                Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
             }
         }
 
         // Create directory if needed
         try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
 
-        let allowedExtensions: Set<String> = ["*.\(requiredExtension)", "*.safetensors", "*.json", "*.txt"]
+        let allowedExtensions: Set<String> = ["*.\(normalizedRequiredExtension)", "*.safetensors", "*.json", "*.txt", "*.wav"]
 
         print("Downloading model \(repoID)...")
         _ = try await client.downloadSnapshot(
@@ -89,7 +117,43 @@ public enum ModelUtils {
             }
         )
 
+        // Post-download validation: ensure required files are non-zero
+        let downloadedFiles = try? FileManager.default.contentsOfDirectory(
+            at: modelDir, includingPropertiesForKeys: [.fileSizeKey]
+        )
+        let hasValidFile = downloadedFiles?.contains { file in
+            guard file.pathExtension == normalizedRequiredExtension else { return false }
+            let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            return size > 0
+        } ?? false
+
+        if !hasValidFile {
+            Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
+            throw ModelUtilsError.incompleteDownload(repoID.description)
+        }
+
         print("Model downloaded to: \(modelDir.path)")
         return modelDir
+    }
+
+    private static func clearCaches(modelDir: URL, repoID: Repo.ID, hubCache: HubCache) {
+        try? FileManager.default.removeItem(at: modelDir)
+        let hubRepoDir = hubCache.repoDirectory(repo: repoID, kind: .model)
+        if FileManager.default.fileExists(atPath: hubRepoDir.path) {
+            print("Clearing Hub cache at: \(hubRepoDir.path)")
+            try? FileManager.default.removeItem(at: hubRepoDir)
+        }
+    }
+}
+
+public enum ModelUtilsError: LocalizedError {
+    case incompleteDownload(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .incompleteDownload(let repo):
+            return "Downloaded model '\(repo)' has missing or zero-byte weight files. "
+                + "The cache has been cleared — please try again."
+        }
     }
 }

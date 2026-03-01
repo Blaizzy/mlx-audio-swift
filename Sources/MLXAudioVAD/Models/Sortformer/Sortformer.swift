@@ -3,7 +3,7 @@ import MLX
 import MLXAudioCore
 import MLXNN
 import MLXLMCommon
-import Hub
+import HuggingFace
 
 private struct UncheckedSendableBox<T>: @unchecked Sendable {
     let value: T
@@ -1385,11 +1385,23 @@ public class SortformerModel: Module {
     }
 
     /// Load model from a HuggingFace repository.
-    public static func fromPretrained(_ repoId: String) async throws -> SortformerModel {
-        let hub = HubApi()
-        let repo = Hub.Repo(id: repoId)
+    public static func fromPretrained(
+        _ repoId: String,
+        cache: HubCache = .default
+    ) async throws -> SortformerModel {
+        guard let repoID = Repo.ID(rawValue: repoId) else {
+            throw NSError(
+                domain: "SortformerModel",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid repository ID: \(repoId)"]
+            )
+        }
 
-        let modelURL = try await hub.snapshot(from: repo, matching: ["*.json", "*.safetensors"])
+        let modelURL = try await ModelUtils.resolveOrDownloadModel(
+            repoID: repoID,
+            requiredExtension: ".safetensors",
+            cache: cache
+        )
 
         // Load config
         let configURL = modelURL.appendingPathComponent("config.json")

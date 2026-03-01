@@ -9,6 +9,9 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
     case anchorsUnsupportedForMode(SeparationMode)
     case failedToCreateAudioBuffer
     case failedToAccessAudioBufferData
+    case lfmRequiresText
+    case lfmRequiresAudioForMode(LFMMode)
+    case enhanceRequiresAudio
 
     var errorDescription: String? { description }
 
@@ -22,6 +25,12 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
             "Failed to create audio buffer"
         case .failedToAccessAudioBufferData:
             "Failed to access audio buffer data"
+        case .lfmRequiresText:
+            "--text is required for LFM text-to-text and text-to-speech modes."
+        case .lfmRequiresAudioForMode(let mode):
+            "--audio is required for LFM \(mode.rawValue) mode."
+        case .enhanceRequiresAudio:
+            "--audio is required for speech enhancement."
         }
     }
 }
@@ -32,28 +41,38 @@ enum SeparationMode: String {
     case stream
 }
 
+enum LFMMode: String {
+    case t2t
+    case tts
+    case stt
+    case sts
+}
+
 @main
 enum App {
     static func main() async {
         do {
             let args = try CLI.parse()
-            try await run(
+
+            let hfToken = args.hfToken
+                ?? ProcessInfo.processInfo.environment["HF_TOKEN"]
+                ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
+
+            print("Loading model (\(args.model))")
+            let loaded = try await STS.loadModel(
                 modelRepo: args.model,
-                audioPath: args.audioPath,
-                description: args.description,
-                mode: args.mode,
-                outputTargetPath: args.outputTargetPath,
-                outputResidualPath: args.outputResidualPath,
-                writeResidual: args.writeResidual,
-                chunkSeconds: args.chunkSeconds,
-                overlapSeconds: args.overlapSeconds,
-                odeMethod: args.odeMethod,
-                stepSize: args.stepSize,
-                odeDecodeChunkSize: args.odeDecodeChunkSize,
-                anchors: args.anchors,
-                strict: args.strict,
-                hfToken: args.hfToken
+                hfToken: hfToken,
+                strict: args.strict
             )
+
+            switch loaded {
+            case .lfmAudio(let model):
+                try await runLFM(model: model, args: args)
+            case .samAudio(let model):
+                try await runSAMAudio(model: model, args: args)
+            case .mossFormer2SE(let model):
+                try await runMossFormer2SE(model: model, args: args)
+            }
         } catch {
             fputs("Error: \(error)\n", stderr)
             CLI.printUsage()
@@ -61,69 +80,232 @@ enum App {
         }
     }
 
-    private static func run(
-        modelRepo: String,
-        audioPath: String,
-        description: String,
-        mode: SeparationMode,
-        outputTargetPath: String?,
-        outputResidualPath: String?,
-        writeResidual: Bool,
-        chunkSeconds: Float,
-        overlapSeconds: Float,
-        odeMethod: SAMAudioODEMethod,
-        stepSize: Float,
-        odeDecodeChunkSize: Int?,
-        anchors: [SAMAudioAnchor],
-        strict: Bool,
-        hfToken: String?
-    ) async throws {
+    // MARK: - LFM2.5-Audio
+
+    private static func runLFM(model: LFM2AudioModel, args: CLI) async throws {
+        let lfmMode = args.lfmMode ?? .sts
+
+        switch lfmMode {
+        case .t2t, .tts:
+            guard let text = args.text, !text.isEmpty else {
+                throw AppError.lfmRequiresText
+            }
+        case .stt, .sts:
+            guard args.audioPath != nil else {
+                throw AppError.lfmRequiresAudioForMode(lfmMode)
+            }
+        }
+
+        let processor = model.processor!
+        let chat = ChatState(processor: processor)
+
+        let defaultSystemPrompts: [LFMMode: String] = [
+            .t2t: "You are a helpful assistant.",
+            .tts: "Perform TTS. Use a UK male voice.",
+            .stt: "You are a helpful assistant that transcribes audio.",
+            .sts: "Respond to the user with interleaved text and speech audio. Use a UK male voice.",
+        ]
+        let systemPrompt = args.systemPrompt ?? defaultSystemPrompts[lfmMode]!
+
+        switch lfmMode {
+        case .t2t:
+            chat.newTurn(role: "system")
+            chat.addText(systemPrompt)
+            chat.endTurn()
+            chat.newTurn(role: "user")
+            chat.addText(args.text!)
+            chat.endTurn()
+            chat.newTurn(role: "assistant")
+
+        case .tts:
+            chat.newTurn(role: "system")
+            chat.addText(systemPrompt)
+            chat.endTurn()
+            chat.newTurn(role: "user")
+            chat.addText(args.text!)
+            chat.endTurn()
+            chat.newTurn(role: "assistant")
+
+        case .stt:
+            let inputURL = resolveURL(path: args.audioPath!)
+            guard FileManager.default.fileExists(atPath: inputURL.path) else {
+                throw AppError.inputFileNotFound(inputURL.path)
+            }
+            let (sampleRate, audioData) = try loadAudioArray(from: inputURL)
+            chat.newTurn(role: "system")
+            chat.addText(systemPrompt)
+            chat.endTurn()
+            chat.newTurn(role: "user")
+            chat.addAudio(audioData, sampleRate: sampleRate)
+            chat.addText(args.text ?? "Transcribe the audio.")
+            chat.endTurn()
+            chat.newTurn(role: "assistant")
+
+        case .sts:
+            let inputURL = resolveURL(path: args.audioPath!)
+            guard FileManager.default.fileExists(atPath: inputURL.path) else {
+                throw AppError.inputFileNotFound(inputURL.path)
+            }
+            let (sampleRate, audioData) = try loadAudioArray(from: inputURL)
+            chat.newTurn(role: "system")
+            chat.addText(systemPrompt)
+            chat.endTurn()
+            chat.newTurn(role: "user")
+            chat.addAudio(audioData, sampleRate: sampleRate)
+            if let text = args.text {
+                chat.addText(text)
+            }
+            chat.endTurn()
+            chat.newTurn(role: "assistant")
+        }
+
+        let genConfig = LFMGenerationConfig(
+            maxNewTokens: args.maxNewTokens,
+            temperature: args.temperature,
+            topK: args.topK,
+            audioTemperature: args.audioTemperature,
+            audioTopK: args.audioTopK
+        )
+
+        let started = CFAbsoluteTimeGetCurrent()
+        print("Generating (mode=\(lfmMode.rawValue))")
+
+        var textTokens: [Int] = []
+        var audioCodes: [MLXArray] = []
+
+        let useSequential = (lfmMode == .tts)
+        let collectText = (lfmMode == .t2t || lfmMode == .stt || lfmMode == .sts)
+        let collectAudio = (lfmMode == .tts || lfmMode == .sts)
+
+        let stream: AsyncThrowingStream<(MLXArray, LFMModality), Error>
+
+        if useSequential {
+            stream = model.generateSequential(
+                textTokens: chat.getTextTokens(),
+                audioFeatures: chat.getAudioFeatures(),
+                modalities: chat.getModalities(),
+                config: genConfig
+            )
+        } else {
+            stream = model.generateInterleaved(
+                textTokens: chat.getTextTokens(),
+                audioFeatures: chat.getAudioFeatures(),
+                modalities: chat.getModalities(),
+                config: genConfig
+            )
+        }
+
+        for try await (token, modality) in stream {
+            eval(token)
+            if modality == .text && collectText {
+                let tokenId = token.item(Int.self)
+                textTokens.append(tokenId)
+                if args.stream {
+                    print(processor.decodeText([tokenId]), terminator: "")
+                    fflush(stdout)
+                }
+            } else if modality == .audioOut && collectAudio {
+                if useSequential {
+                    if token[0].item(Int.self) == lfmAudioEOSToken { break }
+                    audioCodes.append(token)
+                } else {
+                    if token[0].item(Int.self) != lfmAudioEOSToken {
+                        audioCodes.append(token)
+                    }
+                }
+            }
+        }
+
+        if args.stream && !textTokens.isEmpty { print() }
+
+        let elapsed = CFAbsoluteTimeGetCurrent() - started
+
+        if collectText && !textTokens.isEmpty {
+            let decodedText = processor.decodeText(textTokens)
+            if !args.stream {
+                print("Text: \(decodedText)")
+            }
+            print("Generated \(textTokens.count) text tokens")
+
+            if let outputPath = args.outputTextPath {
+                let url = resolveURL(path: outputPath)
+                try decodedText.write(to: url, atomically: true, encoding: .utf8)
+                print("Wrote text to \(url.path)")
+            }
+        }
+
+        if collectAudio && !audioCodes.isEmpty {
+            print("Generated \(audioCodes.count) audio frames")
+            let stacked = MLX.stacked(audioCodes, axis: 0)
+            let codesInput = stacked.transposed(1, 0).expandedDimensions(axis: 0)
+            eval(codesInput)
+
+            let detokenizer = try LFM2AudioDetokenizer.fromPretrained(modelPath: model.modelDirectory!)
+            let waveform = detokenizer(codesInput)
+            eval(waveform)
+            let samples = waveform[0].asArray(Float.self)
+
+            let duration = Double(samples.count) / 24000.0
+            print(String(format: "Decoded %d audio samples (%.1fs at 24kHz)", samples.count, duration))
+
+            let outputURL: URL
+            if let path = args.outputTargetPath {
+                outputURL = resolveURL(path: path)
+            } else {
+                outputURL = resolveURL(path: "lfm_output.wav")
+            }
+
+            try AudioUtils.writeWavFile(samples: samples, sampleRate: 24000, fileURL: outputURL)
+            print("Wrote WAV to \(outputURL.path)")
+        }
+
+        print(String(format: "Done. Elapsed: %.2fs", elapsed))
+    }
+
+    // MARK: - SAM Audio
+
+    private static func runSAMAudio(model: SAMAudio, args: CLI) async throws {
+        let mode = args.mode
+
+        guard let audioPath = args.audioPath else {
+            throw AppError.inputFileNotFound("(none)")
+        }
+
         let inputURL = resolveURL(path: audioPath)
         guard FileManager.default.fileExists(atPath: inputURL.path) else {
             throw AppError.inputFileNotFound(inputURL.path)
         }
 
-        if !anchors.isEmpty, mode != .short {
+        if !args.anchors.isEmpty, mode != .short {
             throw AppError.anchorsUnsupportedForMode(mode)
         }
 
-        let resolvedHFToken = hfToken
-            ?? ProcessInfo.processInfo.environment["HF_TOKEN"]
-            ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
-
-        print("Loading SAM Audio model (\(modelRepo))")
-        let model = try await SAMAudio.fromPretrained(
-            modelRepo,
-            hfToken: resolvedHFToken,
-            strict: strict
-        )
-
         let targetOutputURL = makeOutputURL(
-            outputPath: outputTargetPath,
+            outputPath: args.outputTargetPath,
             inputURL: inputURL,
             defaultSuffix: "target.wav"
         )
 
         let residualOutputURL = makeOutputURL(
-            outputPath: outputResidualPath,
+            outputPath: args.outputResidualPath,
             inputURL: inputURL,
             defaultSuffix: "residual.wav"
         )
 
-        let ode = SAMAudioODEOptions(method: odeMethod, stepSize: stepSize)
+        let ode = SAMAudioODEOptions(method: args.odeMethod, stepSize: args.stepSize)
 
-        print("Running SAM Audio (mode=\(mode.rawValue), description=\"\(description)\")")
+        print("Running SAM Audio (mode=\(mode.rawValue), description=\"\(args.description)\")")
         let started = CFAbsoluteTimeGetCurrent()
 
         switch mode {
         case .short:
             let result = try await model.separate(
                 audioPaths: [inputURL.path],
-                descriptions: [description],
-                anchors: anchors.isEmpty ? nil : [anchors],
+                descriptions: [args.description],
+                anchors: args.anchors.isEmpty ? nil : [args.anchors],
                 noise: nil,
                 ode: ode,
-                odeDecodeChunkSize: odeDecodeChunkSize
+                odeDecodeChunkSize: args.odeDecodeChunkSize
             )
 
             try writeWavArray(
@@ -133,7 +315,7 @@ enum App {
             )
             print("Wrote target WAV to \(targetOutputURL.path)")
 
-            if writeResidual {
+            if args.writeResidual {
                 try writeWavArray(
                     result.residual[0],
                     sampleRate: Double(model.sampleRate),
@@ -145,11 +327,11 @@ enum App {
         case .long:
             let result = try await model.separateLong(
                 audioPaths: [inputURL.path],
-                descriptions: [description],
-                chunkSeconds: chunkSeconds,
-                overlapSeconds: overlapSeconds,
+                descriptions: [args.description],
+                chunkSeconds: args.chunkSeconds,
+                overlapSeconds: args.overlapSeconds,
                 ode: ode,
-                odeDecodeChunkSize: odeDecodeChunkSize
+                odeDecodeChunkSize: args.odeDecodeChunkSize
             )
 
             try writeWavArray(
@@ -159,7 +341,7 @@ enum App {
             )
             print("Wrote target WAV to \(targetOutputURL.path)")
 
-            if writeResidual {
+            if args.writeResidual {
                 try writeWavArray(
                     result.residual[0],
                     sampleRate: Double(model.sampleRate),
@@ -172,13 +354,13 @@ enum App {
             try await separateStreamingToDisk(
                 model: model,
                 audioPath: inputURL.path,
-                description: description,
-                chunkSeconds: chunkSeconds,
-                overlapSeconds: overlapSeconds,
+                description: args.description,
+                chunkSeconds: args.chunkSeconds,
+                overlapSeconds: args.overlapSeconds,
                 ode: ode,
                 targetOutputURL: targetOutputURL,
                 residualOutputURL: residualOutputURL,
-                writeResidual: writeResidual
+                writeResidual: args.writeResidual
             )
         }
 
@@ -233,6 +415,49 @@ enum App {
         print("Streamed \(chunks) chunk(s)")
     }
 
+    // MARK: - MossFormer2 Speech Enhancement
+
+    private static func runMossFormer2SE(model: MossFormer2SEModel, args: CLI) async throws {
+        guard let audioPath = args.audioPath else {
+            throw AppError.enhanceRequiresAudio
+        }
+
+        let inputURL = resolveURL(path: audioPath)
+        guard FileManager.default.fileExists(atPath: inputURL.path) else {
+            throw AppError.inputFileNotFound(inputURL.path)
+        }
+        // TODO: Handle loading and resamping inside enhance()
+        let (inputSampleRate, rawAudio) = try loadAudioArray(from: inputURL)
+        let audioData = try resampleIfNeeded(rawAudio, from: inputSampleRate, to: model.sampleRate)
+
+        print("Enhancing audio")
+        let started = CFAbsoluteTimeGetCurrent()
+
+        let enhanced = try model.enhance(audioData)
+        eval(enhanced)
+        let samples = enhanced.asArray(Float.self)
+
+        let duration = Double(samples.count) / Double(model.sampleRate)
+        print(String(format: "Enhanced %d samples (%.1fs at %dHz)", samples.count, duration, model.sampleRate))
+
+        let outputURL: URL
+        if let path = args.outputTargetPath {
+            outputURL = resolveURL(path: path)
+        } else {
+            let stem = inputURL.deletingPathExtension().lastPathComponent
+            outputURL = inputURL.deletingLastPathComponent()
+                .appendingPathComponent("\(stem).enhanced.wav")
+        }
+
+        try AudioUtils.writeWavFile(samples: samples, sampleRate: Double(model.sampleRate), fileURL: outputURL)
+        print("Wrote WAV to \(outputURL.path)")
+
+        let elapsed = CFAbsoluteTimeGetCurrent() - started
+        print(String(format: "Done. Elapsed: %.2fs", elapsed))
+    }
+
+    // MARK: - Helpers
+
     private static func resolveURL(path: String) -> URL {
         if path.hasPrefix("/") {
             return URL(fileURLWithPath: path)
@@ -275,7 +500,21 @@ enum App {
         let audioFile = try AVAudioFile(forWriting: outputURL, settings: format.settings)
         try audioFile.write(from: buffer)
     }
+
+    private static func resampleIfNeeded(_ audio: MLXArray, from inputSampleRate: Int, to targetSampleRate: Int) throws -> MLXArray {
+        let mono = audio.ndim > 1 ? audio.mean(axis: -1) : audio
+        guard inputSampleRate != targetSampleRate else { return mono }
+
+        print("Resampling \(inputSampleRate)Hz → \(targetSampleRate)Hz")
+        return try MLXAudioCore.resampleAudio(
+            mono,
+            from: inputSampleRate,
+            to: targetSampleRate
+        )
+    }
 }
+
+// MARK: - CLI
 
 enum CLIError: Error, CustomStringConvertible {
     case missingValue(String)
@@ -295,11 +534,16 @@ enum CLIError: Error, CustomStringConvertible {
 }
 
 struct CLI {
-    let audioPath: String
     let model: String
+    let audioPath: String?
+    let text: String?
+    let outputTargetPath: String?
+    let outputTextPath: String?
+    let hfToken: String?
+    let stream: Bool
+
     let description: String
     let mode: SeparationMode
-    let outputTargetPath: String?
     let outputResidualPath: String?
     let writeResidual: Bool
     let chunkSeconds: Float
@@ -309,15 +553,24 @@ struct CLI {
     let odeDecodeChunkSize: Int?
     let anchors: [SAMAudioAnchor]
     let strict: Bool
-    let hfToken: String?
+
+    let lfmMode: LFMMode?
+    let systemPrompt: String?
+    let maxNewTokens: Int
+    let temperature: Float
+    let topK: Int
+    let audioTemperature: Float
+    let audioTopK: Int
 
     static func parse() throws -> CLI {
         var audioPath: String?
         var model = SAMAudio.defaultRepo
+        var text: String?
         var description = "speech"
         var mode: SeparationMode = .short
         var outputTargetPath: String?
         var outputResidualPath: String?
+        var outputTextPath: String?
         var writeResidual = true
         var chunkSeconds: Float = 10.0
         var overlapSeconds: Float = 3.0
@@ -327,6 +580,15 @@ struct CLI {
         var anchors: [SAMAudioAnchor] = []
         var strict = false
         var hfToken: String?
+        var stream = false
+
+        var lfmMode: LFMMode?
+        var systemPrompt: String?
+        var maxNewTokens = 512
+        var temperature: Float = 0.7
+        var topK = 50
+        var audioTemperature: Float = 0.8
+        var audioTopK = 4
 
         var iterator = CommandLine.arguments.dropFirst().makeIterator()
         while let arg = iterator.next() {
@@ -337,18 +599,52 @@ struct CLI {
             case "--model":
                 guard let value = iterator.next() else { throw CLIError.missingValue(arg) }
                 model = value
+            case "--text", "-t":
+                guard let value = iterator.next() else { throw CLIError.missingValue(arg) }
+                text = value
             case "--description", "--prompt", "-d":
                 guard let value = iterator.next() else { throw CLIError.missingValue(arg) }
                 description = value
             case "--mode":
                 guard let value = iterator.next() else { throw CLIError.missingValue(arg) }
-                guard let parsed = SeparationMode(rawValue: value.lowercased()) else {
+                if let parsed = LFMMode(rawValue: value.lowercased()) {
+                    lfmMode = parsed
+                } else if let parsed = SeparationMode(rawValue: value.lowercased()) {
+                    mode = parsed
+                } else {
                     throw CLIError.invalidValue(arg, value)
                 }
-                mode = parsed
+            case "--system":
+                guard let value = iterator.next() else { throw CLIError.missingValue(arg) }
+                systemPrompt = value
+            case "--max-new-tokens":
+                guard let value = iterator.next() else { throw CLIError.missingValue(arg) }
+                guard let parsed = Int(value) else { throw CLIError.invalidValue(arg, value) }
+                maxNewTokens = parsed
+            case "--temperature":
+                guard let value = iterator.next() else { throw CLIError.missingValue(arg) }
+                guard let parsed = Float(value) else { throw CLIError.invalidValue(arg, value) }
+                temperature = parsed
+            case "--top-k":
+                guard let value = iterator.next() else { throw CLIError.missingValue(arg) }
+                guard let parsed = Int(value) else { throw CLIError.invalidValue(arg, value) }
+                topK = parsed
+            case "--audio-temperature":
+                guard let value = iterator.next() else { throw CLIError.missingValue(arg) }
+                guard let parsed = Float(value) else { throw CLIError.invalidValue(arg, value) }
+                audioTemperature = parsed
+            case "--audio-top-k":
+                guard let value = iterator.next() else { throw CLIError.missingValue(arg) }
+                guard let parsed = Int(value) else { throw CLIError.invalidValue(arg, value) }
+                audioTopK = parsed
+            case "--stream":
+                stream = true
             case "--output-target", "-o":
                 guard let value = iterator.next() else { throw CLIError.missingValue(arg) }
                 outputTargetPath = value
+            case "--output-text":
+                guard let value = iterator.next() else { throw CLIError.missingValue(arg) }
+                outputTextPath = value
             case "--output-residual":
                 guard let value = iterator.next() else { throw CLIError.missingValue(arg) }
                 outputResidualPath = value
@@ -396,16 +692,16 @@ struct CLI {
             }
         }
 
-        guard let finalAudioPath = audioPath, !finalAudioPath.isEmpty else {
-            throw CLIError.missingValue("--audio")
-        }
-
         return CLI(
-            audioPath: finalAudioPath,
             model: model,
+            audioPath: audioPath,
+            text: text,
+            outputTargetPath: outputTargetPath,
+            outputTextPath: outputTextPath,
+            hfToken: hfToken,
+            stream: stream,
             description: description,
             mode: mode,
-            outputTargetPath: outputTargetPath,
             outputResidualPath: outputResidualPath,
             writeResidual: writeResidual,
             chunkSeconds: chunkSeconds,
@@ -415,7 +711,13 @@ struct CLI {
             odeDecodeChunkSize: odeDecodeChunkSize,
             anchors: anchors,
             strict: strict,
-            hfToken: hfToken
+            lfmMode: lfmMode,
+            systemPrompt: systemPrompt,
+            maxNewTokens: maxNewTokens,
+            temperature: temperature,
+            topK: topK,
+            audioTemperature: audioTemperature,
+            audioTopK: audioTopK
         )
     }
 
@@ -442,41 +744,60 @@ struct CLI {
         print(
             """
             Usage:
-              \(executable) --audio <path> [--description <text>] [--mode short|long|stream] [options]
+              \(executable) [--model <repo>] [--mode <mode>] [options]
 
             Description:
-              Runs SAM Audio source separation and writes target/residual WAV output.
+              Runs STS (Speech-to-Speech) models. Model type is auto-detected from
+              config.json or repo name. Supports:
+                - LFM2.5-Audio: multimodal generation (t2t, tts, stt, sts)
+                - SAM Audio: source separation
+                - MossFormer2-SE: speech enhancement
 
-            Options:
-              -i, --audio <path>           Input audio file path (required if not passed as trailing arg)
-                  --model <repo-or-path>   SAM Audio model repo or local folder.
-                                           Default: \(SAMAudio.defaultRepo)
-              -d, --description <text>     Text prompt describing target sound.
-                                           Default: speech
-                  --mode <mode>            Separation mode: short, long, stream.
-                                           Default: short
-              -o, --output-target <path>   Target WAV output path.
-                                           Default: <input_stem>.target.wav
-                  --output-residual <path> Residual WAV output path.
-                                           Default: <input_stem>.residual.wav
-                  --no-residual            Skip writing residual output file.
+            Model Selection:
+              --model <repo>               Model repo or local path (auto-detected).
+                                           SAM Audio default: \(SAMAudio.defaultRepo)
+                                           LFM example: mlx-community/LFM2.5-Audio-1.5B-6bit
+                                           MossFormer2 example: starkdmi/MossFormer2-SE-fp16
 
-                  --chunk-seconds <float>  Chunk duration for long/stream modes.
-                                           Default: 10.0
-                  --overlap-seconds <float> Overlap duration for long/stream modes.
-                                           Default: 3.0
-                  --ode-method <method>    ODE method: midpoint or euler.
-                                           Default: midpoint
-                  --step-size <float>      ODE step size (0 < value < 1).
-                                           Default: 0.0625
-                  --decode-chunk-size <n>  Optional decoder chunk size.
+            LFM2.5-Audio Options:
+              --mode <t2t|tts|stt|sts>     LFM generation mode.
+                                             t2t: text-to-text
+                                             tts: text-to-speech
+                                             stt: speech-to-text
+                                             sts: speech-to-speech (default)
+              -t, --text <string>          Input text (required for t2t/tts, optional prompt for stt)
+              -i, --audio <path>           Input audio file (required for stt/sts)
+              --system <string>            System prompt (overrides per-mode default)
+              --max-new-tokens <int>       Max tokens to generate. Default: 512
+              --temperature <float>        Text sampling temperature. Default: 0.7
+              --top-k <int>                Text top-K. Default: 50
+              --audio-temperature <float>  Audio sampling temperature. Default: 0.8
+              --audio-top-k <int>          Audio top-K. Default: 4
+              --stream                     Stream text output to stdout
+              -o, --output-target <path>   Audio WAV output path. Default: lfm_output.wav
+              --output-text <path>         Text output path (optional)
 
-                  --anchor <tok:start:end> Temporal anchor (repeatable). tok is + or -.
-                                           Example: --anchor +:1.5:3.0
-                                           Note: anchors are only supported in --mode short.
+            SAM Audio Options:
+              --mode <short|long|stream>   Separation mode. Default: short
+              -i, --audio <path>           Input audio file (required)
+              -d, --description <text>     Target description. Default: speech
+              -o, --output-target <path>   Target WAV output. Default: <input>.target.wav
+              --output-residual <path>     Residual WAV output. Default: <input>.residual.wav
+              --no-residual                Skip residual write
+              --chunk-seconds <float>      Chunk duration for long/stream. Default: 10.0
+              --overlap-seconds <float>    Overlap for long/stream. Default: 3.0
+              --ode-method <method>        midpoint or euler. Default: midpoint
+              --step-size <float>          ODE step size. Default: 0.0625
+              --decode-chunk-size <n>      Optional decoder chunk size
+              --anchor <tok:start:end>     Anchor (short mode only, repeatable)
+              --strict                     Strict weight loading
 
-                  --strict                 Enable strict model weight loading.
-                  --hf-token <token>       Hugging Face token (or set HF_TOKEN env var)
+            MossFormer2-SE Options:
+              -i, --audio <path>           Input audio file (required)
+              -o, --output-target <path>   Enhanced WAV output. Default: <input>.enhanced.wav
+
+            Common:
+              --hf-token <token>           Hugging Face token (or set HF_TOKEN env var)
               -h, --help                   Show this help
             """
         )
