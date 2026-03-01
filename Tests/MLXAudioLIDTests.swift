@@ -305,6 +305,12 @@ struct Wav2Vec2ModelInitTests {
 struct MmsLid256IntegrationTests {
 
     @Test func loadRealModelAndPredict() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network MMS-LID-256 test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
         let audioURL = Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media")!
         let (_, audioData) = try MLXAudioCore.loadAudioArray(from: audioURL)
 
@@ -576,6 +582,12 @@ struct EcapaTdnnModelTests {
 struct EcapaTdnnIntegrationTests {
 
     @Test func loadRealModelAndPredict() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network ECAPA-TDNN test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
         let audioURL = Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media")!
         let (_, audioData) = try MLXAudioCore.loadAudioArray(from: audioURL)
 
