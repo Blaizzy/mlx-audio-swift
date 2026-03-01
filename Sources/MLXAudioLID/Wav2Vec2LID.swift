@@ -38,6 +38,9 @@ public class Wav2Vec2ForSequenceClassification: Module {
         _classifier.wrappedValue = Linear(config.classifierProjSize, outputLabels)
     }
 
+    /// Forward pass: raw waveform → logits over language classes.
+    /// - Parameter waveform: Raw audio waveform `(batch, time)` at 16 kHz
+    /// - Returns: Logits `(batch, numLabels)` — apply `softmax` for probabilities
     public func callAsFunction(_ waveform: MLXArray) -> MLXArray {
         var x = expandedDimensions(waveform, axis: -1)
         x = featureExtractor(x)
@@ -50,6 +53,12 @@ public class Wav2Vec2ForSequenceClassification: Module {
 
     // MARK: - Prediction
 
+    /// Run language identification on a 16 kHz mono audio waveform.
+    /// Audio is automatically normalized (zero-mean, unit-variance) before inference.
+    /// - Parameters:
+    ///   - waveform: 1-D audio samples at 16 kHz
+    ///   - topK: Number of top language predictions to return (default: 5)
+    /// - Returns: `LIDOutput` with top predicted language and confidence scores
     public func predict(waveform: MLXArray, topK: Int = 5) -> LIDOutput {
         let m = mean(waveform)
         let s = sqrt(mean((waveform - m) * (waveform - m)))
@@ -83,6 +92,11 @@ public class Wav2Vec2ForSequenceClassification: Module {
 
     // MARK: - Weight Sanitization
 
+    /// Remap HuggingFace weight keys to MLX model structure.
+    /// Handles `wav2vec2.*` prefix stripping, conv weight transposition,
+    /// and positional conv weight-norm decomposition (`weight_g` + `weight_v` → `weight`).
+    /// - Parameter weights: Raw weights loaded from `.safetensors` files
+    /// - Returns: Sanitized weight dictionary ready for `model.update(parameters:)`
     public static func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var sanitized: [String: MLXArray] = [:]
         var weightG: MLXArray?
@@ -129,24 +143,30 @@ public class Wav2Vec2ForSequenceClassification: Module {
 
     // MARK: - Loading
 
+    /// Download and load a pretrained MMS-LID model from Hugging Face.
+    /// Uses `HF_TOKEN` environment variable or Info.plist for authentication.
+    /// - Parameter modelName: Hugging Face repository ID (e.g. `"facebook/mms-lid-256"`)
+    /// - Returns: A loaded and evaluated `Wav2Vec2ForSequenceClassification` model
     public static func fromPretrained(
-        _ modelName: String, hfToken: String? = nil
+        _ modelName: String
     ) async throws -> Wav2Vec2ForSequenceClassification {
+        let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
+            ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
+
+        guard let repoID = Repo.ID(rawValue: modelName) else {
+            throw LIDError.invalidRepoID(modelName)
+        }
+
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
-            repoID: Repo.ID(rawValue: modelName)!,
+            repoID: repoID,
             requiredExtension: "safetensors",
             hfToken: hfToken
         )
 
-        let configPath = modelDir.appendingPathComponent("config.json")
-        guard FileManager.default.fileExists(atPath: configPath.path) else {
-            throw LIDError.configNotFound
-        }
-        let configData = try Data(contentsOf: configPath)
+        let configData = try Data(contentsOf: modelDir.appendingPathComponent("config.json"))
         let config = try JSONDecoder().decode(Wav2Vec2LIDConfig.self, from: configData)
 
         let model = Wav2Vec2ForSequenceClassification(config: config)
-        model.train(false)
 
         let files = try FileManager.default.contentsOfDirectory(
             at: modelDir, includingPropertiesForKeys: nil
@@ -158,13 +178,13 @@ public class Wav2Vec2ForSequenceClassification: Module {
 
         var weights: [String: MLXArray] = [:]
         for file in safetensorFiles {
-            let fileWeights = try loadArrays(url: file)
+            let fileWeights = try MLX.loadArrays(url: file)
             weights.merge(fileWeights) { _, new in new }
         }
 
         let sanitized = Self.sanitize(weights: weights)
         try model.update(
-            parameters: ModuleParameters.unflattened(sanitized), verify: .noUnusedKeys
+            parameters: ModuleParameters.unflattened(sanitized), verify: [.all]
         )
         eval(model)
 

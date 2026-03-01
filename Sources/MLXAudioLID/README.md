@@ -66,13 +66,10 @@ let logits = model(waveform)  // MLXArray (1, numLabels)
 
 ### `Wav2Vec2ForSequenceClassification.fromPretrained()`
 
-Download and load a model from Hugging Face.
+Download and load a model from Hugging Face. Authentication uses `HF_TOKEN` environment variable or Info.plist key.
 
 ```swift
-let model = try await Wav2Vec2ForSequenceClassification.fromPretrained(
-    "facebook/mms-lid-256",   // HuggingFace repo ID
-    hfToken: nil              // optional HF token for private models
-)
+let model = try await Wav2Vec2ForSequenceClassification.fromPretrained("facebook/mms-lid-256")
 ```
 
 ## Supported Models
@@ -88,3 +85,4 @@ let model = try await Wav2Vec2ForSequenceClassification.fromPretrained(
 - The model uses 48 transformer encoder layers — first inference includes weight loading (~3-4s), subsequent calls are fast (~250ms for 10s audio on M1)
 - Language codes follow ISO 639-3 (e.g. `"eng"` for English, `"fra"` for French, `"rus"` for Russian)
 - Ported from [facebook/mms-lid-256](https://huggingface.co/facebook/mms-lid-256) via the [MLX Audio Python LID implementation](https://github.com/Blaizzy/mlx-audio)
+- Set `HF_TOKEN` environment variable or Info.plist key for private model access
