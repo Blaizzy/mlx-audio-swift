@@ -1,17 +1,17 @@
-# MMS-LID Language Identification
+# MLXAudioLID — Language Identification
 
-Swift port of Meta's MMS-LID (Massively Multilingual Speech — Language Identification) model. Identifies the spoken language from raw audio waveforms using a Wav2Vec2 backbone with a classification head.
+Swift MLX implementations of spoken language identification models. Identifies the spoken language from raw audio waveforms.
 
-[Hugging Face Model Repo](https://huggingface.co/facebook/mms-lid-256)
+## Supported Models
 
-## Architecture
-
-1. **Feature Extractor** — 7 temporal convolution layers (stride-based downsampling) converting raw waveform to latent representations
-2. **Feature Projection** — LayerNorm + Linear projection to hidden dimension
-3. **Wav2Vec2 Encoder** — Positional convolutional embedding + 48 transformer encoder layers with pre-layer-norm
-4. **Classifier** — Mean pooling → Linear projector → Linear classifier over 256 languages
+| Model | Class | Languages | Size | Latency (M1, 10s) | Description |
+|-------|-------|-----------|------|--------------------|-------------|
+| `facebook/mms-lid-256` | `Wav2Vec2ForSequenceClassification` | 256 | 3.86 GB | ~250ms | Wav2Vec2-based LID |
+| `beshkenadze/lang-id-voxlingua107-ecapa-mlx` | `EcapaTdnn` | 107 | 81 MB | ~15ms | ECAPA-TDNN speaker/language embeddings |
 
 ## Quick Start
+
+### MMS-LID-256 (Wav2Vec2)
 
 ```swift
 import MLXAudioCore
@@ -23,14 +23,27 @@ let (_, audio) = try loadAudioArray(from: audioURL)
 let output = model.predict(waveform: audio, topK: 5)
 
 print("Language: \(output.language) (\(output.confidence * 100)%)")
-for pred in output.topLanguages {
-    print("  \(pred.language): \(pred.confidence * 100)%")
-}
+```
+
+### ECAPA-TDNN (VoxLingua107)
+
+```swift
+import MLXAudioCore
+import MLXAudioLID
+
+let model = try await EcapaTdnn.fromPretrained("beshkenadze/lang-id-voxlingua107-ecapa-mlx")
+
+let (_, audio) = try loadAudioArray(from: audioURL)
+let output = model.predict(waveform: audio, topK: 5)
+
+print("Language: \(output.language) (\(output.confidence * 100)%)")
 ```
 
 ## API
 
-### `model.predict()`
+Both models share the same `LIDOutput` type and `predict()` interface.
+
+### `model.predict(waveform:topK:)`
 
 Run language identification on a 16 kHz mono audio waveform.
 
@@ -45,44 +58,55 @@ let output = model.predict(
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `language` | `String` | ISO 639-3 code of the top predicted language |
-| `confidence` | `Float` | Softmax probability of the top prediction (0–1) |
+| `language` | `String` | ISO code of the top predicted language |
+| `confidence` | `Float` | Probability of the top prediction (0–1) |
 | `topLanguages` | `[LanguagePrediction]` | Top-K predictions sorted by confidence |
 
-Each `LanguagePrediction` contains:
+### `model.callAsFunction(_:)`
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `language` | `String` | ISO 639-3 language code (e.g. `"eng"`, `"fra"`, `"deu"`) |
-| `confidence` | `Float` | Softmax probability (0–1) |
-
-### `model.callAsFunction()`
-
-Low-level forward pass returning raw logits.
+Low-level forward pass returning raw logits/log-probabilities.
 
 ```swift
-let logits = model(waveform)  // MLXArray (1, numLabels)
+// Wav2Vec2: raw waveform → logits
+let logits = wav2vec2Model(waveform)
+
+// ECAPA-TDNN: mel spectrogram → log-probabilities
+let mel = EcapaMelSpectrogram.compute(audio: waveform)
+let logProbs = ecapaModel(mel)
 ```
 
-### `Wav2Vec2ForSequenceClassification.fromPretrained()`
+### `fromPretrained(_:)`
 
-Download and load a model from Hugging Face. Authentication uses `HF_TOKEN` environment variable or Info.plist key.
+Download and load a model from Hugging Face. Uses `HF_TOKEN` environment variable or Info.plist key.
 
 ```swift
-let model = try await Wav2Vec2ForSequenceClassification.fromPretrained("facebook/mms-lid-256")
+let wav2vec2 = try await Wav2Vec2ForSequenceClassification.fromPretrained("facebook/mms-lid-256")
+let ecapa = try await EcapaTdnn.fromPretrained("beshkenadze/lang-id-voxlingua107-ecapa-mlx")
 ```
 
-## Supported Models
+## Architecture
 
-| Model | Languages | Size | Description |
-|-------|-----------|------|-------------|
-| `facebook/mms-lid-256` | 256 | 3.86 GB | Primary MMS-LID model |
+### MMS-LID-256
+
+1. **Feature Extractor** — 7 temporal convolution layers converting raw waveform to latent representations
+2. **Feature Projection** — LayerNorm + Linear projection to hidden dimension
+3. **Wav2Vec2 Encoder** — Positional convolutional embedding + 48 transformer encoder layers
+4. **Classifier** — Mean pooling → Linear projector → Linear classifier over 256 languages
+
+### ECAPA-TDNN
+
+1. **Mel Spectrogram** — SpeechBrain-compatible 60-bin log-mel (Hamming window, HTK scale, top_db=80)
+2. **TDNN + SE-Res2Net Blocks** — 1 TDNN entry block + 3 SE-Res2Net blocks with multi-scale processing
+3. **Multi-layer Feature Aggregation** — Concatenation of block outputs → TDNN
+4. **Attentive Statistics Pooling** — Attention-weighted mean + std pooling
+5. **Classifier** — BatchNorm → DNN → Linear over 107 languages
 
 ## Notes
 
-- Input audio is automatically normalized (zero-mean, unit-variance) inside `predict()`
 - Audio should be 16 kHz mono; use `loadAudioArray(from:)` from `MLXAudioCore` for automatic resampling
-- The model uses 48 transformer encoder layers — first inference includes weight loading (~3-4s), subsequent calls are fast (~250ms for 10s audio on M1)
-- Language codes follow ISO 639-3 (e.g. `"eng"` for English, `"fra"` for French, `"rus"` for Russian)
-- Ported from [facebook/mms-lid-256](https://huggingface.co/facebook/mms-lid-256) via the [MLX Audio Python LID implementation](https://github.com/Blaizzy/mlx-audio)
+- MMS-LID-256 normalizes audio internally (zero-mean, unit-variance)
+- ECAPA-TDNN computes mel spectrogram internally from raw waveform
+- MMS-LID language codes follow ISO 639-3 (e.g. `"eng"`, `"fra"`, `"rus"`)
+- ECAPA-TDNN language codes follow ISO 639-1/3 (e.g. `"en"`, `"fr"`, `"ceb"`)
+- ECAPA-TDNN is ~16x faster and ~47x smaller than MMS-LID-256
 - Set `HF_TOKEN` environment variable or Info.plist key for private model access
