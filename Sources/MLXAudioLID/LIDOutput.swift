@@ -3,12 +3,23 @@ import Foundation
 public struct LanguagePrediction: Sendable {
     public let language: String
     public let confidence: Float
+
+    public init(language: String, confidence: Float) {
+        self.language = language
+        self.confidence = confidence
+    }
 }
 
 public struct LIDOutput: Sendable {
     public let language: String
     public let confidence: Float
     public let topLanguages: [LanguagePrediction]
+
+    public init(language: String, confidence: Float, topLanguages: [LanguagePrediction]) {
+        self.language = language
+        self.confidence = confidence
+        self.topLanguages = topLanguages
+    }
 }
 
 public enum LIDError: Error, LocalizedError, Sendable {

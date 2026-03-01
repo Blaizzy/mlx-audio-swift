@@ -145,7 +145,11 @@ public class EcapaTdnn: Module {
             hfToken: hfToken
         )
 
-        let configData = try Data(contentsOf: modelDir.appendingPathComponent("config.json"))
+        let configURL = modelDir.appendingPathComponent("config.json")
+        guard FileManager.default.fileExists(atPath: configURL.path) else {
+            throw LIDError.configNotFound
+        }
+        let configData = try Data(contentsOf: configURL)
         let config = try JSONDecoder().decode(EcapaTdnnConfig.self, from: configData)
 
         guard config.id2label != nil else {
@@ -157,7 +161,7 @@ public class EcapaTdnn: Module {
         let files = try FileManager.default.contentsOfDirectory(
             at: modelDir, includingPropertiesForKeys: nil
         )
-        let safetensorFiles = files.filter { $0.pathExtension == "safetensors" }
+        let safetensorFiles = files.filter { $0.pathExtension == "safetensors" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
         guard !safetensorFiles.isEmpty else {
             throw LIDError.weightsNotFound
         }

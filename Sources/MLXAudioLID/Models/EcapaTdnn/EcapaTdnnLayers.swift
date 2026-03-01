@@ -241,19 +241,19 @@ class ClassifierLinear: Module {
 
 class EcapaClassifier: Module {
     @ModuleInfo var norm: BatchNorm
-    @ModuleInfo var DNN: DNN
+    @ModuleInfo(key: "DNN") var dnn: DNN
     @ModuleInfo var out: ClassifierLinear
 
     init(config: EcapaTdnnConfig) {
         _norm.wrappedValue = BatchNorm(featureCount: config.embeddingDim)
-        _DNN.wrappedValue = .init(inputDim: config.embeddingDim, outputDim: config.classifierHiddenDim)
+        _dnn.wrappedValue = .init(inputDim: config.embeddingDim, outputDim: config.classifierHiddenDim)
         _out.wrappedValue = ClassifierLinear(inputDim: config.classifierHiddenDim, outputDim: config.numClasses)
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         var out = x.squeezed(axis: 1)
         out = norm(out)
-        out = DNN(out)
+        out = dnn(out)
         out = self.out(out)
         return logSoftmax(out, axis: -1)
     }

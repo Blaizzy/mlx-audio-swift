@@ -13,17 +13,22 @@ private let kNMels: Int = 60
 /// `10 * log10` normalization, and `top_db = 80` clipping.
 enum EcapaMelSpectrogram {
 
+    /// Cached Hamming window (periodic, length 400).
+    private nonisolated(unsafe) static let hammingWindow: MLXArray = MLXArray(
+        (0..<kWinLength).map { n -> Float in
+            0.54 - 0.46 * cos(2.0 * Float.pi * Float(n) / Float(kWinLength))
+        }
+    )
+
+    /// Cached HTK mel filterbank `[nfft/2+1, nMels]`.
+    private nonisolated(unsafe) static let melFilterbank: MLXArray = htkMelFilterbank(
+        sampleRate: kSampleRate, nfft: kNfft, nMels: kNMels
+    )
+
     /// Compute mel spectrogram from raw 16 kHz audio.
     /// - Parameter audio: 1-D `MLXArray` of audio samples
     /// - Returns: `[1, numFrames, 60]` log-mel spectrogram
     static func compute(audio: MLXArray) -> MLXArray {
-        let window = MLXArray(
-            (0..<kWinLength).map { n -> Float in
-                0.54 - 0.46 * cos(2.0 * Float.pi * Float(n) / Float(kWinLength))
-            }
-        )
-
-        let melFb = htkMelFilterbank(sampleRate: kSampleRate, nfft: kNfft, nMels: kNMels)
 
         let padLen = kNfft / 2
         let padded = concatenated([MLXArray.zeros([padLen]), audio, MLXArray.zeros([padLen])])
@@ -33,12 +38,12 @@ enum EcapaMelSpectrogram {
         if numFrames == 0 { return MLXArray.zeros([1, 0, kNMels]) }
 
         let frames = asStrided(padded, [numFrames, kNfft], strides: [kHopLength, 1])
-        let fftResult = rfft(frames * window, n: kNfft, axis: -1)
+        let fftResult = rfft(frames * hammingWindow, n: kNfft, axis: -1)
 
         let magnitude = abs(fftResult)
         let powerSpec = magnitude * magnitude
 
-        let melSpec = matmul(powerSpec, melFb)
+        let melSpec = matmul(powerSpec, melFilterbank)
 
         let logMel = 10.0 * log10(maximum(melSpec, MLXArray(Float(1e-10))))
         let clipped = maximum(logMel, logMel.max() - 80.0)
