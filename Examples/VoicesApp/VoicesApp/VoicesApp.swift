@@ -9,6 +9,11 @@ struct VoicesApp: App {
     var body: some Scene {
         WindowGroup {
             TabView {
+               STSView()
+                  .tabItem {
+                     Label("Speech to Speech", systemImage: "waveform.and.mic")
+                  }
+
                 ContentView()
                     .tabItem {
                         Label("Text to Speech", systemImage: "waveform")
