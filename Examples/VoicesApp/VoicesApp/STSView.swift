@@ -241,6 +241,13 @@ struct STSView: View {
       VStack(spacing: 10) {
          Button {
             guard let url = selectedInputURL else { return }
+            guard viewModel.isModelLoaded else {
+               Task {
+                  await viewModel.reloadModel()
+                  viewModel.startSeparation(inputURL: url)
+               }
+               return
+            }
             viewModel.startSeparation(inputURL: url)
          } label: {
             Label("Separate Audio", systemImage: "arrow.triangle.branch")
@@ -249,7 +256,7 @@ struct STSView: View {
          }
          .buttonStyle(.borderedProminent)
          .controlSize(.large)
-         .disabled(!viewModel.isModelLoaded || selectedInputURL == nil)
+         .disabled(selectedInputURL == nil)
       }
    }
    
