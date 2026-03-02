@@ -23,10 +23,13 @@ struct STSView: View {
                     modelSection
                     inputSection
                     settingsSection
-
-                    if viewModel.isModelLoaded && selectedInputURL != nil {
-                        separateButton
-                    }
+                   
+                   VStack(spacing: 4) {
+                      if viewModel.isGenerating {
+                         generationProgressView
+                      }
+                      separateButton
+                   }
 
                     if let error = viewModel.errorMessage {
                         errorBanner(error)
@@ -234,33 +237,33 @@ struct STSView: View {
 
     // MARK: - Separate Button
 
-    private var separateButton: some View {
-        VStack(spacing: 10) {
-            if viewModel.isGenerating {
-                VStack(spacing: 8) {
-                    ProgressView()
-                    Text(viewModel.generationProgress)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding()
-                .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
-            } else {
-                Button {
-                    guard let url = selectedInputURL else { return }
-                    viewModel.startSeparation(inputURL: url)
-                } label: {
-                    Label("Separate Audio", systemImage: "arrow.triangle.branch")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 4)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(!viewModel.isModelLoaded)
-            }
-        }
-    }
+   private var separateButton: some View {
+      VStack(spacing: 10) {
+         Button {
+            guard let url = selectedInputURL else { return }
+            viewModel.startSeparation(inputURL: url)
+         } label: {
+            Label("Separate Audio", systemImage: "arrow.triangle.branch")
+               .frame(maxWidth: .infinity)
+               .padding(.vertical, 4)
+         }
+         .buttonStyle(.borderedProminent)
+         .controlSize(.large)
+         .disabled(!viewModel.isModelLoaded || selectedInputURL == nil)
+      }
+   }
+   
+   private var generationProgressView: some View {
+      VStack(spacing: 8) {
+         ProgressView()
+         Text(viewModel.generationProgress)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+      }
+      .frame(maxWidth: .infinity)
+      .padding()
+      .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+   }
 
     // MARK: - Audio Player Section
 
