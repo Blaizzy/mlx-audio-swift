@@ -30,6 +30,12 @@ private func computeInvFreq(dim: Int, base: Float) -> MLXArray {
     return 1.0 / MLXArray(base).pow(exponent)
 }
 
+private let compiledTalkerSwiGLU: @Sendable (MLXArray, MLXArray) -> MLXArray = {
+    compile(shapeless: true) { gate, up in
+        silu(gate) * up
+    }
+}()
+
 // MARK: - Multimodal Rotary Embedding (3D MRoPE)
 
 final class TalkerRotaryEmbedding: Module {
@@ -193,7 +199,7 @@ final class TalkerMLP: Module {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        downProj(silu(gateProj(x)) * upProj(x))
+        downProj(compiledTalkerSwiGLU(gateProj(x), upProj(x)))
     }
 }
 

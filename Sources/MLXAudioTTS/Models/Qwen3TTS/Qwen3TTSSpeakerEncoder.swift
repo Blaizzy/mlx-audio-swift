@@ -6,31 +6,12 @@ import MLXNN
 private func reflectPad1D(_ x: MLXArray, pad: Int) -> MLXArray {
     guard pad > 0 else { return x }
     let timeLength = x.dim(1)
-    guard timeLength > 0 else { return x }
+    guard timeLength > 1 else { return x }
     let clampedPad = Swift.min(pad, Swift.max(timeLength - 1, 0))
     guard clampedPad > 0 else { return x }
 
-    var leftPieces: [MLXArray] = []
-    leftPieces.reserveCapacity(clampedPad)
-    if clampedPad > 0 {
-        for i in stride(from: clampedPad, through: 1, by: -1) {
-            leftPieces.append(x[0..., i ..< (i + 1), 0...])
-        }
-    }
-
-    var rightPieces: [MLXArray] = []
-    rightPieces.reserveCapacity(clampedPad)
-    if clampedPad > 0, timeLength > 1 {
-        let rightStart = timeLength - clampedPad - 1
-        let rightFrom = timeLength - 2
-        let rightTo = Swift.max(rightStart, 0)
-        for i in stride(from: rightFrom, through: rightTo, by: -1) {
-            rightPieces.append(x[0..., i ..< (i + 1), 0...])
-        }
-    }
-
-    let left = leftPieces.isEmpty ? MLXArray([]) : concatenated(leftPieces, axis: 1)
-    let right = rightPieces.isEmpty ? MLXArray([]) : concatenated(rightPieces, axis: 1)
+    let left = x[0..., 1 ..< (clampedPad + 1), 0...][0..., .stride(by: -1), 0...]
+    let right = x[0..., (-(clampedPad + 1)) ..< (-1), 0...][0..., .stride(by: -1), 0...]
     return concatenated([left, x, right], axis: 1)
 }
 

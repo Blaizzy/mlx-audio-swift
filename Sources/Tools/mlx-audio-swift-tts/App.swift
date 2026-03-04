@@ -69,7 +69,7 @@ enum App {
         timestamps: Bool,
         hfToken: String? = nil
     ) async throws {
-        Memory.cacheLimit = 100 * 1024 * 1024
+        Memory.cacheLimit = 256 * 1024 * 1024
 
         print("Loading model (\(model))")
 
@@ -118,6 +118,8 @@ enum App {
             language: nil,
             generationParameters: generationParameters
         ).asArray(Float.self)
+        
+        print(String(format: "Finished generation in %0.2fs", CFAbsoluteTimeGetCurrent() - started))
 
         let outputURL = makeOutputURL(outputPath: outputPath)
         let sampleRate = Double(loadedModel.sampleRate)
@@ -147,7 +149,6 @@ enum App {
             }
         }
 
-        print(String(format: "Finished generation in %0.2fs", CFAbsoluteTimeGetCurrent() - started))
         print("Memory usage:\n\(Memory.snapshot())")
 
         let elapsed = CFAbsoluteTimeGetCurrent() - started

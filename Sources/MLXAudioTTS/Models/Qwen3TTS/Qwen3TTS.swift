@@ -138,7 +138,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     ///   - codes: Codec codes [1, time, numCodeGroups]
     ///   - chunkTokens: Tokens per decode chunk (controls decode granularity)
     /// - Returns: Decoded audio waveform (1D)
-    private func decodeChunk(_ codes: MLXArray, chunkTokens: Int = 100) -> MLXArray {
+    private func decodeChunk(_ codes: MLXArray, chunkTokens: Int = 300) -> MLXArray {
         guard let speechTokenizer else { return MLXArray.zeros([1]) }
 
         var audioChunks = [MLXArray]()
@@ -232,6 +232,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
         var trailingIdx = 0
         var inputEmbeds = inputEmbedsInit
+        let eosTokenArray = MLXArray([Int32(eosTokenId)]).reshaped(1, 1)
+        let codeCache = talker.codePredictor.makeCache()
 
         for step in 0 ..< effectiveMaxTokens {
             // Forward pass through talker
@@ -250,16 +252,15 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                 minP: minP
             )
 
-            // Check EOS
-            let tokenId = Int(nextToken[0, 0].item(Int32.self))
-            onToken?(tokenId)
-            if tokenId == eosTokenId { break }
-            generatedCodebookTokens.append(tokenId)
+            // Defer sync to the eval boundary with inputEmbeds.
+            let isEOS = nextToken .== eosTokenArray
 
             // Generate remaining codebook tokens with code predictor
             var codeTokens = [nextToken]
             let codeHidden = hidden[0..., (-1)..., 0...]
-            var codeCache: [any KVCache]? = talker.codePredictor.makeCache()
+            for layerCache in codeCache {
+                _ = layerCache.trim(layerCache.offset)
+            }
 
             for codeIdx in 0 ..< talkerConfig.numCodeGroups - 1 {
                 let codeInput: MLXArray
@@ -270,10 +271,9 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                     codeInput = talker.codePredictor.codecEmbedding[codeIdx - 1](codeTokens.last!)
                 }
 
-                let (codeLogits, newCache, _) = talker.codePredictor(
+                let (codeLogits, _, _) = talker.codePredictor(
                     codeInput, cache: codeCache, generationStep: codeIdx
                 )
-                codeCache = newCache
 
                 let nextCode = sampleToken(
                     codeLogits,
@@ -286,10 +286,32 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             }
 
             let allCodes = concatenated(codeTokens, axis: 1) // [1, num_code_groups]
-            generatedCodes.append(allCodes)
 
-            codeCache = nil
-            Memory.clearCache()
+            // Prepare next input
+            let textEmbed: MLXArray
+            if trailingIdx < trailingTextHidden.dim(1) {
+                textEmbed = trailingTextHidden[0..., trailingIdx ..< (trailingIdx + 1), 0...]
+                trailingIdx += 1
+            } else {
+                textEmbed = ttsPadEmbed
+            }
+
+            // Sum all code embeddings for next step
+            var codecEmbed = talker.getInputEmbeddings()(nextToken)
+            for (i, code) in codeTokens.dropFirst().enumerated() {
+                codecEmbed = codecEmbed + talker.codePredictor.codecEmbedding[i](code)
+            }
+
+            inputEmbeds = textEmbed + codecEmbed
+            eval(inputEmbeds, isEOS)
+
+            let tokenId = Int(nextToken[0, 0].item(Int32.self))
+            onToken?(tokenId)
+            if isEOS.item(Bool.self) {
+                break
+            }
+            generatedCodebookTokens.append(tokenId)
+            generatedCodes.append(allCodes)
 
             // Streaming: decode and yield audio chunks during generation
             if let onAudioChunk {
@@ -314,24 +336,6 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                     onAudioChunk(audioChunk)
                 }
             }
-
-            // Prepare next input
-            let textEmbed: MLXArray
-            if trailingIdx < trailingTextHidden.dim(1) {
-                textEmbed = trailingTextHidden[0..., trailingIdx ..< (trailingIdx + 1), 0...]
-                trailingIdx += 1
-            } else {
-                textEmbed = ttsPadEmbed
-            }
-
-            // Sum all code embeddings for next step
-            var codecEmbed = talker.getInputEmbeddings()(nextToken)
-            for (i, code) in codeTokens.dropFirst().enumerated() {
-                codecEmbed = codecEmbed + talker.codePredictor.codecEmbedding[i](code)
-            }
-
-            inputEmbeds = textEmbed + codecEmbed
-            eval(inputEmbeds)
 
             if step > 0, step % 50 == 0 {
                 Memory.clearCache()
@@ -388,7 +392,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             decodeCodes = concatenated([refCodesT, codes], axis: 1)
         }
 
-        var audio = decodeChunk(decodeCodes, chunkTokens: 100)
+        var audio = decodeChunk(decodeCodes)
 
         if let refCodes {
             let refLen = refCodes.dim(2)

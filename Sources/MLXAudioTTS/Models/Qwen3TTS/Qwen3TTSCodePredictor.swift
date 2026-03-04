@@ -5,6 +5,12 @@ import MLXNN
 
 // MARK: - Code Predictor Attention
 
+private let compiledCodePredictorSwiGLU: @Sendable (MLXArray, MLXArray) -> MLXArray = {
+    compile(shapeless: true) { gate, up in
+        silu(gate) * up
+    }
+}()
+
 final class CodePredictorAttention: Module {
     let numHeads: Int
     let numKvHeads: Int
@@ -89,7 +95,7 @@ final class CodePredictorMLP: Module {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        downProj(silu(gateProj(x)) * upProj(x))
+        downProj(compiledCodePredictorSwiGLU(gateProj(x), upProj(x)))
     }
 }
 
