@@ -26,12 +26,21 @@
 		APP011 /* STTViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC011 /* STTViewModel.swift */; };
 		APP012 /* STTSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC012 /* STTSettingsView.swift */; };
 		APP013 /* AudioRecorderManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC013 /* AudioRecorderManager.swift */; };
+		C9383F162F4F820A00F82F53 /* STSView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9383F152F4F820A00F82F53 /* STSView.swift */; };
+		C9383F182F4F822500F82F53 /* STSViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9383F172F4F822500F82F53 /* STSViewModel.swift */; };
+		C9383F1B2F4F82E900F82F53 /* MLXAudio in Frameworks */ = {isa = PBXBuildFile; productRef = C9383F1A2F4F82E900F82F53 /* MLXAudio */; };
+		C9383F1D2F4F82E900F82F53 /* MLXAudioCore in Frameworks */ = {isa = PBXBuildFile; productRef = C9383F1C2F4F82E900F82F53 /* MLXAudioCore */; };
+		C9383F1F2F4F82E900F82F53 /* MLXAudioSTS in Frameworks */ = {isa = PBXBuildFile; productRef = C9383F1E2F4F82E900F82F53 /* MLXAudioSTS */; };
+		C9383F212F4F82E900F82F53 /* MLXAudioSTT in Frameworks */ = {isa = PBXBuildFile; productRef = C9383F202F4F82E900F82F53 /* MLXAudioSTT */; };
+		C9383F232F4F82E900F82F53 /* MLXAudioTTS in Frameworks */ = {isa = PBXBuildFile; productRef = C9383F222F4F82E900F82F53 /* MLXAudioTTS */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		332425772F4BBFB6002EBAE4 /* Lily.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = Lily.wav; sourceTree = "<group>"; };
 		3324257A2F4BC0D5002EBAE4 /* James.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = James.wav; sourceTree = "<group>"; };
 		3324257C2F4BC1A9002EBAE4 /* Sophie.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = Sophie.wav; sourceTree = "<group>"; };
+		C9383F152F4F820A00F82F53 /* STSView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = STSView.swift; sourceTree = "<group>"; };
+		C9383F172F4F822500F82F53 /* STSViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = STSViewModel.swift; sourceTree = "<group>"; };
 		CONF001 /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
 		CONF002 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
 		CONF003 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
@@ -57,9 +66,14 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C9383F1D2F4F82E900F82F53 /* MLXAudioCore in Frameworks */,
+				C9383F232F4F82E900F82F53 /* MLXAudioTTS in Frameworks */,
+				C9383F212F4F82E900F82F53 /* MLXAudioSTT in Frameworks */,
 				3322ACB52F2FC458008246F3 /* MLXAudioTTS in Frameworks */,
 				3322ACB42F2FC458008246F3 /* MLXAudioCore in Frameworks */,
 				3322ACB62F2FC458008246F3 /* MLXAudioSTT in Frameworks */,
+				C9383F1F2F4F82E900F82F53 /* MLXAudioSTS in Frameworks */,
+				C9383F1B2F4F82E900F82F53 /* MLXAudio in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -91,6 +105,7 @@
 				GRP009 /* Helpers */,
 				GRP003 /* Models */,
 				SRC0A0 /* STTView.swift */,
+				C9383F152F4F820A00F82F53 /* STSView.swift */,
 				GRP004 /* ViewModels */,
 				GRP005 /* Views */,
 				332425782F4BBFB6002EBAE4 /* Voices */,
@@ -112,6 +127,7 @@
 			children = (
 				SRC004 /* TTSViewModel.swift */,
 				SRC011 /* STTViewModel.swift */,
+				C9383F172F4F822500F82F53 /* STSViewModel.swift */,
 			);
 			path = ViewModels;
 			sourceTree = "<group>";
@@ -185,6 +201,11 @@
 				33B1215C2F2EA41E006A1A8A /* MLXAudioCore */,
 				33B1215E2F2EA41E006A1A8A /* MLXAudioTTS */,
 				33B121602F2EA41E006A1A8A /* MLXAudioSTT */,
+				C9383F1A2F4F82E900F82F53 /* MLXAudio */,
+				C9383F1C2F4F82E900F82F53 /* MLXAudioCore */,
+				C9383F1E2F4F82E900F82F53 /* MLXAudioSTS */,
+				C9383F202F4F82E900F82F53 /* MLXAudioSTT */,
+				C9383F222F4F82E900F82F53 /* MLXAudioTTS */,
 			);
 			productName = VoicesApp;
 			productReference = PROD001 /* VoicesApp.app */;
@@ -215,7 +236,7 @@
 			);
 			mainGroup = GRP001;
 			packageReferences = (
-				33B121592F2EA41E006A1A8A /* XCLocalSwiftPackageReference "../.." */,
+				C9383F192F4F82E900F82F53 /* XCLocalSwiftPackageReference "../../../mlx-audio-swift" */,
 			);
 			productRefGroup = GRP006 /* Products */;
 			projectDirPath = "";
@@ -252,11 +273,13 @@
 				APP006 /* AddVoiceView.swift in Sources */,
 				APP007 /* VoiceRow.swift in Sources */,
 				APP008 /* VoiceCollectionCard.swift in Sources */,
+				C9383F182F4F822500F82F53 /* STSViewModel.swift in Sources */,
 				APP009 /* SettingsView.swift in Sources */,
 				APP010 /* STTView.swift in Sources */,
 				APP011 /* STTViewModel.swift in Sources */,
 				APP012 /* STTSettingsView.swift in Sources */,
 				APP013 /* AudioRecorderManager.swift in Sources */,
+				C9383F162F4F820A00F82F53 /* STSView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -463,9 +486,9 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		33B121592F2EA41E006A1A8A /* XCLocalSwiftPackageReference "../.." */ = {
+		C9383F192F4F82E900F82F53 /* XCLocalSwiftPackageReference "../../../mlx-audio-swift" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = ../..;
+			relativePath = "../../../mlx-audio-swift";
 		};
 /* End XCLocalSwiftPackageReference section */
 
@@ -481,6 +504,26 @@
 		33B121602F2EA41E006A1A8A /* MLXAudioSTT */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MLXAudioSTT;
+		};
+		C9383F1A2F4F82E900F82F53 /* MLXAudio */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MLXAudio;
+		};
+		C9383F1C2F4F82E900F82F53 /* MLXAudioCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MLXAudioCore;
+		};
+		C9383F1E2F4F82E900F82F53 /* MLXAudioSTS */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MLXAudioSTS;
+		};
+		C9383F202F4F82E900F82F53 /* MLXAudioSTT */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MLXAudioSTT;
+		};
+		C9383F222F4F82E900F82F53 /* MLXAudioTTS */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MLXAudioTTS;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

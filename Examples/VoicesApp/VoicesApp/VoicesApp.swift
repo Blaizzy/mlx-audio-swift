@@ -18,6 +18,11 @@ struct VoicesApp: App {
                     .tabItem {
                         Label("Speech to Text", systemImage: "mic")
                     }
+
+               STSView()
+                  .tabItem {
+                     Label("Speech to Speech", systemImage: "waveform.and.mic")
+                  }
             }
         }
         #if os(macOS)
