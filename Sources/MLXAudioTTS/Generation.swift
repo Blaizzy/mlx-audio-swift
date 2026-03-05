@@ -26,6 +26,16 @@ public protocol SpeechGenerationModel: AnyObject {
         language: String?,
         generationParameters: GenerateParameters
     ) -> AsyncThrowingStream<AudioGeneration, Error>
+
+    func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        streamingInterval: Double
+    ) -> AsyncThrowingStream<AudioGeneration, Error>
 }
 
 public extension SpeechGenerationModel {
@@ -46,7 +56,8 @@ public extension SpeechGenerationModel {
         refAudio: MLXArray?,
         refText: String?,
         language: String?,
-        generationParameters: GenerateParameters? = nil
+        generationParameters: GenerateParameters? = nil,
+        streamingInterval: Double = 2.0
     ) -> AsyncThrowingStream<[Float], Error> {
         let stream = generateStream(
             text: text,
@@ -54,7 +65,8 @@ public extension SpeechGenerationModel {
             refAudio: refAudio,
             refText: refText,
             language: language,
-            generationParameters: generationParameters ?? defaultGenerationParameters
+            generationParameters: generationParameters ?? defaultGenerationParameters,
+            streamingInterval: streamingInterval
         )
         return proxyAudioStream(stream, extract: {
             guard case .audio(let samples) = $0 else { return nil }
@@ -70,7 +82,8 @@ public extension SpeechGenerationModel {
         refAudio: MLXArray?,
         refText: String?,
         language: String?,
-        generationParameters: GenerateParameters? = nil
+        generationParameters: GenerateParameters? = nil,
+        streamingInterval: Double = 2.0
     ) -> AsyncThrowingStream<AVAudioPCMBuffer, Error> {
         let sampleStream = generateSamplesStream(
             text: text,
@@ -78,7 +91,8 @@ public extension SpeechGenerationModel {
             refAudio: refAudio,
             refText: refText,
             language: language,
-            generationParameters: generationParameters
+            generationParameters: generationParameters,
+            streamingInterval: streamingInterval
         )
 
         let (stream, continuation) = AsyncThrowingStream<AVAudioPCMBuffer, Error>.makeStream()
@@ -101,6 +115,26 @@ public extension SpeechGenerationModel {
         return stream
     }
 #endif
+
+    func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        streamingInterval: Double = 2.0
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        _ = streamingInterval
+        return generateStream(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: language,
+            generationParameters: generationParameters
+        )
+    }
 }
 
 private func proxyAudioStream<T: Sendable, U: Sendable>(
