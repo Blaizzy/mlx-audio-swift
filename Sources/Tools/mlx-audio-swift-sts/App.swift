@@ -486,10 +486,12 @@ enum App {
         switch args.mode {
         case .stream:
             print("Enhancing audio with \(model.modelVersion) (mode=stream)")
+            let streamProfiling = ProcessInfo.processInfo.environment["DFN_STREAM_PROFILE"] == "1"
             let streamer = model.createStreamer(
                 config: DeepFilterNetStreamingConfig(
                     padEndFrames: 3,
-                    compensateDelay: true
+                    compensateDelay: true,
+                    enableProfiling: streamProfiling
                 )
             )
             let writer = try StreamingWAVWriter(url: outputURL, sampleRate: Double(model.sampleRate))
@@ -502,25 +504,39 @@ enum App {
 
             var chunkCount = 0
             var writtenSamples = 0
+            var processSeconds = 0.0
+            var emitSeconds = 0.0
             var start = 0
             let totalSamples = audioData.shape[0]
             while start < totalSamples {
                 let end = min(start + chunkSamples, totalSamples)
+                let tProcess0 = CFAbsoluteTimeGetCurrent()
                 let outChunk = try streamer.processChunk(audioData[start..<end])
+                if streamProfiling, outChunk.shape[0] > 0 {
+                    eval(outChunk)
+                }
+                processSeconds += CFAbsoluteTimeGetCurrent() - tProcess0
                 if outChunk.shape[0] > 0 {
-                    let outSamples = outChunk.asArray(Float.self)
-                    try writer.writeChunk(outSamples)
-                    writtenSamples += outSamples.count
+                    let tEmit0 = CFAbsoluteTimeGetCurrent()
+                    try writer.writeChunk(outChunk)
+                    emitSeconds += CFAbsoluteTimeGetCurrent() - tEmit0
+                    writtenSamples += outChunk.shape[0]
                     chunkCount += 1
                 }
                 start = end
             }
 
+            let tTail0 = CFAbsoluteTimeGetCurrent()
             let tail = try streamer.flushMLX()
+            if streamProfiling, tail.shape[0] > 0 {
+                eval(tail)
+            }
+            processSeconds += CFAbsoluteTimeGetCurrent() - tTail0
             if tail.shape[0] > 0 {
-                let tailSamples = tail.asArray(Float.self)
-                try writer.writeChunk(tailSamples)
-                writtenSamples += tailSamples.count
+                let tTailEmit0 = CFAbsoluteTimeGetCurrent()
+                try writer.writeChunk(tail)
+                emitSeconds += CFAbsoluteTimeGetCurrent() - tTailEmit0
+                writtenSamples += tail.shape[0]
                 chunkCount += 1
             }
             _ = writer.finalize()
@@ -528,6 +544,22 @@ enum App {
             print("Streamed \(chunkCount) chunk(s)")
             let duration = Double(writtenSamples) / Double(model.sampleRate)
             print(String(format: "Enhanced %d samples (%.1fs at %dHz)", writtenSamples, duration, model.sampleRate))
+            if streamProfiling {
+                let loopTotal = processSeconds + emitSeconds
+                print(
+                    String(
+                        format:
+                            "Stream loop profile: process=%.3fs (%.1f%%), emit(mlx->host+wav)=%.3fs (%.1f%%)",
+                        processSeconds,
+                        loopTotal > 0 ? (processSeconds / loopTotal) * 100.0 : 0.0,
+                        emitSeconds,
+                        loopTotal > 0 ? (emitSeconds / loopTotal) * 100.0 : 0.0
+                    )
+                )
+                if let summary = streamer.profilingSummary() {
+                    print(summary)
+                }
+            }
 
         case .short, .long:
             if args.mode == .long {

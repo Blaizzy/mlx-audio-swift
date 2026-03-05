@@ -39,6 +39,8 @@ public struct DeepFilterNetStreamingConfig: Sendable {
     public var minDbThresh: Float
     public var maxDbErbThresh: Float
     public var maxDbDfThresh: Float
+    public var enableProfiling: Bool
+    public var materializeEveryHops: Int
 
     public init(
         padEndFrames: Int = 3,
@@ -46,7 +48,9 @@ public struct DeepFilterNetStreamingConfig: Sendable {
         enableStageSkipping: Bool = false,
         minDbThresh: Float = -10.0,
         maxDbErbThresh: Float = 30.0,
-        maxDbDfThresh: Float = 20.0
+        maxDbDfThresh: Float = 20.0,
+        enableProfiling: Bool = false,
+        materializeEveryHops: Int = 32
     ) {
         self.padEndFrames = padEndFrames
         self.compensateDelay = compensateDelay
@@ -54,6 +58,8 @@ public struct DeepFilterNetStreamingConfig: Sendable {
         self.minDbThresh = minDbThresh
         self.maxDbErbThresh = maxDbErbThresh
         self.maxDbDfThresh = maxDbDfThresh
+        self.enableProfiling = enableProfiling
+        self.materializeEveryHops = materializeEveryHops
     }
 }
 
@@ -388,10 +394,18 @@ public final class DeepFilterNetModel: STSModel {
 
         private var delayDropped = 0
         private var hopsSinceMaterialize = 0
+        private let enableProfiling: Bool
+        private var profHopCount = 0
+        private var profAnalysisSeconds = 0.0
+        private var profFeaturesSeconds = 0.0
+        private var profInferSeconds = 0.0
+        private var profSynthesisSeconds = 0.0
+        private var profMaterializeSeconds = 0.0
 
         public init(model: DeepFilterNetModel, config: DeepFilterNetStreamingConfig = DeepFilterNetStreamingConfig()) {
             self.model = model
             self.config = config
+            self.enableProfiling = config.enableProfiling
 
             self.fftSize = model.config.fftSize
             self.hopSize = model.config.hopSize
@@ -449,6 +463,12 @@ public final class DeepFilterNetModel: STSModel {
             dfDecState = nil
             delayDropped = 0
             hopsSinceMaterialize = 0
+            profHopCount = 0
+            profAnalysisSeconds = 0.0
+            profFeaturesSeconds = 0.0
+            profInferSeconds = 0.0
+            profSynthesisSeconds = 0.0
+            profMaterializeSeconds = 0.0
         }
 
         public func processChunk(_ chunk: MLXArray, isLast: Bool = false) throws -> MLXArray {
@@ -491,7 +511,14 @@ public final class DeepFilterNetModel: STSModel {
                 }
             }
 
-            var y = outs.isEmpty ? MLXArray.zeros([0], type: Float.self) : MLX.concatenated(outs, axis: 0)
+            var y: MLXArray
+            if outs.isEmpty {
+                y = MLXArray.zeros([0], type: Float.self)
+            } else if outs.count == 1, let first = outs.first {
+                y = first
+            } else {
+                y = MLX.concatenated(outs, axis: 0)
+            }
 
             if config.compensateDelay {
                 let totalDelay = fftSize - hopSize
@@ -524,9 +551,48 @@ public final class DeepFilterNetModel: STSModel {
             try processChunk(MLXArray.zeros([0], type: Float.self), isLast: true)
         }
 
+        public func profilingSummary() -> String? {
+            guard enableProfiling else { return nil }
+            let hops = max(profHopCount, 1)
+            let total = profAnalysisSeconds + profFeaturesSeconds + profInferSeconds + profSynthesisSeconds + profMaterializeSeconds
+            let perHopMs = (total / Double(hops)) * 1000.0
+            func pct(_ v: Double) -> Double {
+                guard total > 0 else { return 0.0 }
+                return (v / total) * 100.0
+            }
+            return String(
+                format:
+                    """
+                    Stream profile: hops=%d total=%.3fs perHop=%.3fms
+                      analysis:    %.3fs (%.1f%%)
+                      features:    %.3fs (%.1f%%)
+                      infer:       %.3fs (%.1f%%)
+                      synthesis:   %.3fs (%.1f%%)
+                      materialize: %.3fs (%.1f%%)
+                    """,
+                profHopCount,
+                total,
+                perHopMs,
+                profAnalysisSeconds, pct(profAnalysisSeconds),
+                profFeaturesSeconds, pct(profFeaturesSeconds),
+                profInferSeconds, pct(profInferSeconds),
+                profSynthesisSeconds, pct(profSynthesisSeconds),
+                profMaterializeSeconds, pct(profMaterializeSeconds)
+            )
+        }
+
         private func processHop(_ hopTD: MLXArray) throws -> MLXArray? {
+            let tAnalysis0 = enableProfiling ? CFAbsoluteTimeGetCurrent() : 0
             let spec = analysisFrame(hopTD)
+            if enableProfiling {
+                profAnalysisSeconds += CFAbsoluteTimeGetCurrent() - tAnalysis0
+            }
+
+            let tFeatures0 = enableProfiling ? CFAbsoluteTimeGetCurrent() : 0
             let (featErb, featDf) = featuresFrame(spec)
+            if enableProfiling {
+                profFeaturesSeconds += CFAbsoluteTimeGetCurrent() - tFeatures0
+            }
             specQueue.append(spec)
             frameCount += 1
 
@@ -535,12 +601,28 @@ public final class DeepFilterNetModel: STSModel {
             }
 
             let specT = specQueue.removeFirst()
+            let tInfer0 = enableProfiling ? CFAbsoluteTimeGetCurrent() : 0
             let specEnhanced = try inferFrame(spec: specT, featErb: featErb, featDf: featDf)
+            if enableProfiling {
+                profInferSeconds += CFAbsoluteTimeGetCurrent() - tInfer0
+            }
+
+            let tSynth0 = enableProfiling ? CFAbsoluteTimeGetCurrent() : 0
             let out = synthesisFrame(specEnhanced.asType(.float32))
+            if enableProfiling {
+                profSynthesisSeconds += CFAbsoluteTimeGetCurrent() - tSynth0
+            }
             hopsSinceMaterialize += 1
-            if hopsSinceMaterialize >= 8 {
+            if config.materializeEveryHops > 0, hopsSinceMaterialize >= config.materializeEveryHops {
+                let tMat0 = enableProfiling ? CFAbsoluteTimeGetCurrent() : 0
                 materializeStreamingState(output: out)
+                if enableProfiling {
+                    profMaterializeSeconds += CFAbsoluteTimeGetCurrent() - tMat0
+                }
                 hopsSinceMaterialize = 0
+            }
+            if enableProfiling {
+                profHopCount += 1
             }
             return out
         }
