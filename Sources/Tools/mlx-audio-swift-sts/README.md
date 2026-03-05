@@ -89,6 +89,17 @@ swift run mlx-audio-swift-sts \
   --output-target /tmp/deepfilternet.wav
 ```
 
+### DeepFilterNet Streaming Example
+
+```bash
+swift run mlx-audio-swift-sts \
+  --model /path/to/DeepFilterNet3 \
+  --audio /path/to/noisy.wav \
+  --mode stream \
+  --chunk-seconds 0.48 \
+  --output-target /tmp/deepfilternet_stream.wav
+```
+
 ## Options
 
 ### LFM2.5-Audio
@@ -124,6 +135,8 @@ swift run mlx-audio-swift-sts \
 ### DeepFilterNet
 - `--model`: Local model directory (or HF repo) containing `config.json` and `model.safetensors`
 - `--audio`, `-i`: Input audio path (required)
+- `--mode`: `short | stream` (`short` uses offline full-context enhancement)
+- `--chunk-seconds`: Chunk length for `stream` mode. If omitted, DeepFilterNet defaults to 1 hop (10ms at 48kHz) for low-latency realtime behavior.
 - `--output-target`, `-o`: Enhanced output wav path (default: `<input>.deepfilternet.wav`)
 
 ### Common

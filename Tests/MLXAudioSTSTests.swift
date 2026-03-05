@@ -154,6 +154,23 @@ struct DeepFilterNetConfigTests {
     }
 }
 
+struct DeepFilterNetStreamingConfigTests {
+    @Test func deepFilterNetStreamingConfigDefaults() {
+        let config = DeepFilterNetStreamingConfig()
+        #expect(config.padEndFrames == 3)
+        #expect(config.compensateDelay)
+    }
+
+    @Test func deepFilterNetStreamingConfigOverride() {
+        let config = DeepFilterNetStreamingConfig(
+            padEndFrames: 1,
+            compensateDelay: false
+        )
+        #expect(config.padEndFrames == 1)
+        #expect(config.compensateDelay == false)
+    }
+}
+
 struct DeepFilterNetLoadingTests {
     @Test func deepFilterNetFromLocalRejectsMissingConfig() throws {
         let tempDir = FileManager.default.temporaryDirectory
@@ -1495,4 +1512,3 @@ struct LFMAudioModuleSetupTests {
         #expect(depthformer.layersCount == config.layers)
     }
 }
-

@@ -473,16 +473,6 @@ enum App {
         let (inputSampleRate, rawAudio) = try loadAudioArray(from: inputURL)
         let audioData = try resampleIfNeeded(rawAudio, from: inputSampleRate, to: model.sampleRate)
 
-        print("Enhancing audio with \(model.modelVersion)")
-        let started = CFAbsoluteTimeGetCurrent()
-
-        let enhanced = try model.enhance(audioData)
-        eval(enhanced)
-        let samples = enhanced.asArray(Float.self)
-
-        let duration = Double(samples.count) / Double(model.sampleRate)
-        print(String(format: "Enhanced %d samples (%.1fs at %dHz)", samples.count, duration, model.sampleRate))
-
         let outputURL: URL
         if let path = args.outputTargetPath {
             outputURL = resolveURL(path: path)
@@ -492,8 +482,66 @@ enum App {
                 .appendingPathComponent("\(stem).deepfilternet.wav")
         }
 
-        try AudioUtils.writeWavFile(samples: samples, sampleRate: Double(model.sampleRate), fileURL: outputURL)
-        print("Wrote WAV to \(outputURL.path)")
+        let started = CFAbsoluteTimeGetCurrent()
+        switch args.mode {
+        case .stream:
+            print("Enhancing audio with \(model.modelVersion) (mode=stream)")
+            let streamer = model.createStreamer(
+                config: DeepFilterNetStreamingConfig(
+                    padEndFrames: 3,
+                    compensateDelay: true
+                )
+            )
+            let writer = try StreamingWAVWriter(url: outputURL, sampleRate: Double(model.sampleRate))
+            let requestedChunkSamples = max(Int(Float(model.sampleRate) * args.chunkSeconds), model.config.hopSize)
+            let usingDefaultChunk = abs(args.chunkSeconds - 10.0) < 0.000_001
+            let chunkSamples = usingDefaultChunk ? model.config.hopSize : requestedChunkSamples
+            if usingDefaultChunk {
+                print("Using hop-by-hop streaming chunk (\(chunkSamples) samples) for low-latency mode")
+            }
+
+            var chunkCount = 0
+            var writtenSamples = 0
+            var start = 0
+            let totalSamples = audioData.shape[0]
+            while start < totalSamples {
+                let end = min(start + chunkSamples, totalSamples)
+                let outChunk = try streamer.processChunk(audioData[start..<end])
+                if outChunk.shape[0] > 0 {
+                    let outSamples = outChunk.asArray(Float.self)
+                    try writer.writeChunk(outSamples)
+                    writtenSamples += outSamples.count
+                    chunkCount += 1
+                }
+                start = end
+            }
+
+            let tail = try streamer.flushMLX()
+            if tail.shape[0] > 0 {
+                let tailSamples = tail.asArray(Float.self)
+                try writer.writeChunk(tailSamples)
+                writtenSamples += tailSamples.count
+                chunkCount += 1
+            }
+            _ = writer.finalize()
+            print("Wrote WAV to \(outputURL.path)")
+            print("Streamed \(chunkCount) chunk(s)")
+            let duration = Double(writtenSamples) / Double(model.sampleRate)
+            print(String(format: "Enhanced %d samples (%.1fs at %dHz)", writtenSamples, duration, model.sampleRate))
+
+        case .short, .long:
+            if args.mode == .long {
+                print("DeepFilterNet --mode long currently uses full-context offline enhancement.")
+            }
+            print("Enhancing audio with \(model.modelVersion) (mode=offline)")
+            let enhanced = try model.enhance(audioData)
+            eval(enhanced)
+            let samples = enhanced.asArray(Float.self)
+            try AudioUtils.writeWavFile(samples: samples, sampleRate: Double(model.sampleRate), fileURL: outputURL)
+            print("Wrote WAV to \(outputURL.path)")
+            let duration = Double(samples.count) / Double(model.sampleRate)
+            print(String(format: "Enhanced %d samples (%.1fs at %dHz)", samples.count, duration, model.sampleRate))
+        }
 
         let elapsed = CFAbsoluteTimeGetCurrent() - started
         print(String(format: "Done. Elapsed: %.2fs", elapsed))
@@ -845,6 +893,8 @@ struct CLI {
               --model <path-or-repo>       Local model dir with config.json + model.safetensors,
                                            or Hugging Face repo.
               -i, --audio <path>           Input audio file (required)
+              --mode <short|stream>        short = offline enhance, stream = stateful chunked enhance
+              --chunk-seconds <float>      Chunk duration in stream mode. Default: 10.0
               -o, --output-target <path>   Enhanced WAV output. Default: <input>.deepfilternet.wav
 
             Common:

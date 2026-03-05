@@ -17,3 +17,15 @@ let enhanced = try model.enhance(audio)
 ```
 
 `audio` is a mono `MLXArray` of shape `[samples]` in `[-1, 1]`.
+
+Streaming API:
+
+```swift
+let streamer = model.createStreamer(
+    config: DeepFilterNetStreamingConfig(padEndFrames: 3, compensateDelay: true)
+)
+
+let outA = try streamer.processChunk(chunkA)
+let outB = try streamer.processChunk(chunkB)
+let tail = try streamer.flush()
+```

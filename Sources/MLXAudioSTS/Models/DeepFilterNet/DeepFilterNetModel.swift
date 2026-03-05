@@ -32,6 +32,25 @@ public enum DeepFilterNetError: Error, LocalizedError, CustomStringConvertible {
     }
 }
 
+public struct DeepFilterNetStreamingConfig: Sendable {
+    public var padEndFrames: Int
+    public var compensateDelay: Bool
+
+    public init(
+        padEndFrames: Int = 3,
+        compensateDelay: Bool = true
+    ) {
+        self.padEndFrames = padEndFrames
+        self.compensateDelay = compensateDelay
+    }
+}
+
+public struct DeepFilterNetStreamingChunk: @unchecked Sendable {
+    public let audio: MLXArray
+    public let chunkIndex: Int
+    public let isLastChunk: Bool
+}
+
 public final class DeepFilterNetModel: STSModel {
     public static let defaultRepo = "kylehowells/DeepFilterNet3-MLX"
 
@@ -46,6 +65,8 @@ public final class DeepFilterNetModel: STSModel {
     private let erbBandWidths: [Int]
     private let vorbisWindow: MLXArray
     private let wnorm: Float
+    private let normAlphaValue: Float
+    private let inferenceDType: DType
     private let j: MLXArray = MLXArray(real: Float(0.0), imaginary: Float(1.0))
 
     private init(
@@ -76,6 +97,8 @@ public final class DeepFilterNetModel: STSModel {
         }
         self.vorbisWindow = Self.vorbisWindow(size: config.fftSize)
         self.wnorm = 1.0 / Float(config.fftSize * config.fftSize) * Float(2 * config.hopSize)
+        self.normAlphaValue = Self.computeNormAlpha(hopSize: config.hopSize, sampleRate: config.sampleRate)
+        self.inferenceDType = weights["enc.erb_conv0.1.weight"]?.dtype ?? .float32
     }
 
     // MARK: - Loading
@@ -174,7 +197,11 @@ public final class DeepFilterNetModel: STSModel {
             .expandedDimensions(axis: 0)
             .expandedDimensions(axis: 0)
 
-        let (specEnhanced, _, _, _) = try forward(spec: specIn, featErb: featErb, featSpec5D: featDf)
+        let (specEnhanced, _, _, _) = try forward(
+            spec: specIn.asType(inferenceDType),
+            featErb: featErb.asType(inferenceDType),
+            featSpec5D: featDf.asType(inferenceDType)
+        )
         var enh = specEnhanced[0, 0, 0..., 0..., 0] + j * specEnhanced[0, 0, 0..., 0..., 1]
         enh = enh / MLXArray(wnorm)
 
@@ -196,6 +223,694 @@ public final class DeepFilterNetModel: STSModel {
         let end = min(delay + origLen, audioOut.shape[0])
         audioOut = audioOut[delay..<end]
         return MLX.clip(audioOut, min: -1.0, max: 1.0)
+    }
+
+    public func createStreamer(
+        config: DeepFilterNetStreamingConfig = DeepFilterNetStreamingConfig()
+    ) -> DeepFilterNetStreamer {
+        DeepFilterNetStreamer(model: self, config: config)
+    }
+
+    public func enhanceStreaming(
+        _ audioInput: MLXArray,
+        chunkSamples: Int? = nil,
+        config: DeepFilterNetStreamingConfig = DeepFilterNetStreamingConfig()
+    ) throws -> MLXArray {
+        guard audioInput.ndim == 1 else {
+            throw DeepFilterNetError.invalidAudioShape(audioInput.shape)
+        }
+        let samples = audioInput.asType(.float32)
+        if samples.shape[0] == 0 {
+            return MLXArray.zeros([0], type: Float.self)
+        }
+
+        let streamer = createStreamer(config: config)
+        // Default to true low-latency chunking: one hop (10ms at 48kHz).
+        let frameChunk = max(self.config.hopSize, chunkSamples ?? self.config.hopSize)
+        var outputChunks = [MLXArray]()
+        outputChunks.reserveCapacity(max(1, samples.shape[0] / frameChunk))
+
+        var start = 0
+        while start < samples.shape[0] {
+            let end = min(start + frameChunk, samples.shape[0])
+            let chunk = samples[start..<end]
+            let out = try streamer.processChunk(chunk)
+            if out.shape[0] > 0 {
+                outputChunks.append(out)
+            }
+            start = end
+        }
+        let tail = try streamer.flushMLX()
+        if tail.shape[0] > 0 {
+            outputChunks.append(tail)
+        }
+        if outputChunks.isEmpty {
+            return MLXArray.zeros([0], type: Float.self)
+        }
+        return MLX.clip(MLX.concatenated(outputChunks, axis: 0), min: -1.0, max: 1.0)
+    }
+
+    public func enhanceStreaming(
+        _ audioInput: MLXArray,
+        chunkSamples: Int? = nil,
+        config: DeepFilterNetStreamingConfig = DeepFilterNetStreamingConfig()
+    ) -> AsyncThrowingStream<DeepFilterNetStreamingChunk, Error> {
+        AsyncThrowingStream { continuation in
+            do {
+                guard audioInput.ndim == 1 else {
+                    throw DeepFilterNetError.invalidAudioShape(audioInput.shape)
+                }
+                let samples = audioInput.asType(.float32)
+                let streamer = createStreamer(config: config)
+                // Default to true low-latency chunking: one hop (10ms at 48kHz).
+                let frameChunk = max(self.config.hopSize, chunkSamples ?? self.config.hopSize)
+
+                var chunkIndex = 0
+                var start = 0
+                while start < samples.shape[0] {
+                    let end = min(start + frameChunk, samples.shape[0])
+                    let chunk = samples[start..<end]
+                    let out = try streamer.processChunk(chunk)
+                    if out.shape[0] > 0 {
+                        continuation.yield(
+                            DeepFilterNetStreamingChunk(
+                                audio: out,
+                                chunkIndex: chunkIndex,
+                                isLastChunk: false
+                            )
+                        )
+                        chunkIndex += 1
+                    }
+                    start = end
+                }
+
+                let tail = try streamer.flushMLX()
+                if tail.shape[0] > 0 {
+                    continuation.yield(
+                        DeepFilterNetStreamingChunk(
+                            audio: tail,
+                            chunkIndex: chunkIndex,
+                            isLastChunk: true
+                        )
+                    )
+                }
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
+            }
+        }
+    }
+
+    // MARK: - Streaming
+
+    public final class DeepFilterNetStreamer {
+        private let model: DeepFilterNetModel
+        public let config: DeepFilterNetStreamingConfig
+
+        private let fftSize: Int
+        private let hopSize: Int
+        private let freqBins: Int
+        private let nbDf: Int
+        private let nbErb: Int
+        private let dfOrder: Int
+        private let dfLookahead: Int
+        private let convLookahead: Int
+
+        private let alphaArray: MLXArray
+        private let oneMinusAlphaArray: MLXArray
+        private let fftScaleArray: MLXArray
+        private let vorbisWindow: MLXArray
+        private let wnormArray: MLXArray
+        private let inferenceDType: DType
+        private let epsEnergy = MLXArray(Float(1e-10))
+        private let epsNorm = MLXArray(Float(1e-12))
+        private let tenArray = MLXArray(Float(10.0))
+        private let fortyArray = MLXArray(Float(40.0))
+        private let zeroSpecFrame: MLXArray
+        private let analysisMemCount: Int
+        private let synthMemCount: Int
+
+        private var pendingSamples = MLXArray.zeros([0], type: Float.self)
+        private var analysisMem: MLXArray
+        private var synthMem: MLXArray
+        private var erbState: MLXArray
+        private var dfState: MLXArray
+
+        private var specQueue: [MLXArray] = []
+        private var specPast: [MLXArray] = []
+        private var frameCount = 0
+
+        private var encErb0In: [MLXArray] = []
+        private var encDf0In: [MLXArray] = []
+        private var dfConvpIn: [MLXArray] = []
+
+        private var encEmbState: [MLXArray]?
+        private var erbDecState: [MLXArray]?
+        private var dfDecState: [MLXArray]?
+
+        private var delayDropped = 0
+        private var skipCounter = 0
+
+        public init(model: DeepFilterNetModel, config: DeepFilterNetStreamingConfig = DeepFilterNetStreamingConfig()) {
+            self.model = model
+            self.config = config
+
+            self.fftSize = model.config.fftSize
+            self.hopSize = model.config.hopSize
+            self.freqBins = model.config.freqBins
+            self.nbDf = model.config.nbDf
+            self.nbErb = model.config.nbErb
+            self.dfOrder = model.config.dfOrder
+            self.dfLookahead = model.config.dfLookahead
+            self.convLookahead = model.config.convLookahead
+
+            let alpha = model.normAlpha()
+            self.alphaArray = MLXArray(alpha)
+            self.oneMinusAlphaArray = MLXArray(Float(1.0) - alpha)
+            self.fftScaleArray = MLXArray(Float(model.config.fftSize))
+            self.vorbisWindow = model.vorbisWindow.asType(.float32)
+            self.wnormArray = MLXArray(model.wnorm)
+            self.inferenceDType = model.inferenceDType
+            self.analysisMemCount = max(0, model.config.fftSize - model.config.hopSize)
+            self.synthMemCount = max(0, model.config.fftSize - model.config.hopSize)
+            self.zeroSpecFrame = MLXArray.zeros([model.config.freqBins, 2], type: Float.self)
+
+            self.analysisMem = MLXArray.zeros([analysisMemCount], type: Float.self)
+            self.synthMem = MLXArray.zeros([synthMemCount], type: Float.self)
+            self.erbState = MLXArray(Self.linspace(start: -60.0, end: -90.0, count: model.config.nbErb))
+            self.dfState = MLXArray(Self.linspace(start: 0.001, end: 0.0001, count: model.config.nbDf))
+        }
+
+        public func reset() {
+            pendingSamples = MLXArray.zeros([0], type: Float.self)
+            analysisMem = MLXArray.zeros([analysisMemCount], type: Float.self)
+            synthMem = MLXArray.zeros([synthMemCount], type: Float.self)
+            erbState = MLXArray(Self.linspace(start: -60.0, end: -90.0, count: nbErb))
+            dfState = MLXArray(Self.linspace(start: 0.001, end: 0.0001, count: nbDf))
+            specQueue.removeAll(keepingCapacity: true)
+            specPast.removeAll(keepingCapacity: true)
+            frameCount = 0
+            encErb0In.removeAll(keepingCapacity: true)
+            encDf0In.removeAll(keepingCapacity: true)
+            dfConvpIn.removeAll(keepingCapacity: true)
+            encEmbState = nil
+            erbDecState = nil
+            dfDecState = nil
+            delayDropped = 0
+            skipCounter = 0
+        }
+
+        public func processChunk(_ chunk: MLXArray, isLast: Bool = false) throws -> MLXArray {
+            guard chunk.ndim == 1 else {
+                throw DeepFilterNetError.invalidAudioShape(chunk.shape)
+            }
+            let chunkF32 = chunk.asType(.float32)
+            if chunkF32.shape[0] > 0 {
+                if pendingSamples.shape[0] == 0 {
+                    pendingSamples = chunkF32
+                } else {
+                    pendingSamples = MLX.concatenated([pendingSamples, chunkF32], axis: 0)
+                }
+            }
+
+            var outs = [MLXArray]()
+            while pendingSamples.shape[0] >= hopSize {
+                let hop = pendingSamples[0..<hopSize]
+                pendingSamples = pendingSamples[hopSize..<pendingSamples.shape[0]]
+                if let out = try processHop(hop) {
+                    outs.append(out)
+                }
+            }
+
+            if isLast {
+                if config.padEndFrames > 0 {
+                    let pad = MLXArray.zeros([config.padEndFrames * hopSize], type: Float.self)
+                    if pendingSamples.shape[0] == 0 {
+                        pendingSamples = pad
+                    } else {
+                        pendingSamples = MLX.concatenated([pendingSamples, pad], axis: 0)
+                    }
+                }
+                while pendingSamples.shape[0] >= hopSize {
+                    let hop = pendingSamples[0..<hopSize]
+                    pendingSamples = pendingSamples[hopSize..<pendingSamples.shape[0]]
+                    if let out = try processHop(hop) {
+                        outs.append(out)
+                    }
+                }
+            }
+
+            var y = outs.isEmpty ? MLXArray.zeros([0], type: Float.self) : MLX.concatenated(outs, axis: 0)
+
+            if config.compensateDelay {
+                let totalDelay = fftSize - hopSize
+                if delayDropped < totalDelay {
+                    let toDrop = min(totalDelay - delayDropped, y.shape[0])
+                    if toDrop > 0 {
+                        y = y[toDrop..<y.shape[0]]
+                        delayDropped += toDrop
+                    }
+                }
+            }
+
+            return y
+        }
+
+        public func processChunk(_ chunk: [Float], isLast: Bool = false) throws -> [Float] {
+            guard !chunk.isEmpty || isLast else { return [] }
+            let y = try processChunk(MLXArray(chunk), isLast: isLast)
+            if y.shape[0] == 0 {
+                return []
+            }
+            return y.asArray(Float.self)
+        }
+
+        public func flush() throws -> [Float] {
+            try processChunk([], isLast: true)
+        }
+
+        public func flushMLX() throws -> MLXArray {
+            try processChunk(MLXArray.zeros([0], type: Float.self), isLast: true)
+        }
+
+        private func processHop(_ hopTD: MLXArray) throws -> MLXArray? {
+            let rms = MLX.mean(hopTD * hopTD, axis: 0).asArray(Float.self).first ?? 0
+            if rms < 1e-7 {
+                skipCounter += 1
+            } else {
+                skipCounter = 0
+            }
+            if skipCounter > 5 {
+                return MLXArray.zeros([hopSize], type: Float.self)
+            }
+
+            let spec = analysisFrame(hopTD)
+            let (featErb, featDf) = featuresFrame(spec)
+            specQueue.append(spec)
+            frameCount += 1
+
+            if frameCount <= convLookahead {
+                return nil
+            }
+
+            let specT = specQueue.removeFirst()
+            let specEnhanced = try inferFrame(spec: specT, featErb: featErb, featDf: featDf)
+            let out = synthesisFrame(specEnhanced.asType(.float32))
+            materializeStreamingState(output: out)
+            return out
+        }
+
+        private func analysisFrame(_ hopTD: MLXArray) -> MLXArray {
+            let frame = analysisMemCount > 0
+                ? MLX.concatenated([analysisMem, hopTD], axis: 0)
+                : hopTD
+            let frameWin = frame * vorbisWindow
+            let specComplex = MLXFFT.rfft(frameWin, axis: 0) * wnormArray
+            let spec = MLX.stacked([specComplex.realPart(), specComplex.imaginaryPart()], axis: -1)
+            updateAnalysisMemory(with: hopTD)
+            return spec
+        }
+
+        private func synthesisFrame(_ specNorm: MLXArray) -> MLXArray {
+            let complex = specNorm[0..., 0] + model.j * specNorm[0..., 1]
+            var time = MLXFFT.irfft(complex, axis: 0)
+            time = time * fftScaleArray
+            time = time * vorbisWindow
+
+            let out = time[0..<hopSize] + synthMem[0..<hopSize]
+            updateSynthesisMemory(with: time)
+            return out
+        }
+
+        private func updateAnalysisMemory(with hop: MLXArray) {
+            guard analysisMemCount > 0 else { return }
+            if analysisMemCount > hopSize {
+                let split = analysisMemCount - hopSize
+                let rotated = MLX.concatenated([
+                    analysisMem[hopSize..<analysisMemCount],
+                    analysisMem[0..<hopSize],
+                ], axis: 0)
+                analysisMem = MLX.concatenated([rotated[0..<split], hop], axis: 0)
+            } else {
+                analysisMem = hop[(hopSize - analysisMemCount)..<hopSize]
+            }
+        }
+
+        private func updateSynthesisMemory(with time: MLXArray) {
+            guard synthMemCount > 0 else { return }
+            let xSecond = time[hopSize..<fftSize]
+            if synthMemCount > hopSize {
+                let split = synthMemCount - hopSize
+                let rotated = MLX.concatenated([
+                    synthMem[hopSize..<synthMemCount],
+                    synthMem[0..<hopSize],
+                ], axis: 0)
+                let sFirst = rotated[0..<split] + xSecond[0..<split]
+                let sSecond = xSecond[split..<(split + hopSize)]
+                synthMem = MLX.concatenated([sFirst, sSecond], axis: 0)
+            } else {
+                synthMem = xSecond[0..<synthMemCount]
+            }
+        }
+
+        private func featuresFrame(_ spec: MLXArray) -> (MLXArray, MLXArray) {
+            let re = spec[0..., 0]
+            let im = spec[0..., 1]
+            let magSq = re.square() + im.square()
+
+            var erbBands = [MLXArray]()
+            erbBands.reserveCapacity(nbErb)
+            var start = 0
+            for width in model.erbBandWidths {
+                let stop = min(start + width, freqBins)
+                if stop > start {
+                    erbBands.append(MLX.mean(magSq[start..<stop], axis: 0))
+                } else {
+                    erbBands.append(MLXArray.zeros([1], type: Float.self).squeezed())
+                }
+                start = stop
+            }
+            let erb = MLX.stacked(erbBands, axis: 0)
+            let erbDB = tenArray * MLX.log10(erb + epsEnergy)
+            erbState = erbDB * oneMinusAlphaArray + erbState * alphaArray
+            let featErb = (erbDB - erbState) / fortyArray
+
+            let dfRe = re[0..<nbDf]
+            let dfIm = im[0..<nbDf]
+            let mag = MLX.sqrt(dfRe.square() + dfIm.square())
+            dfState = mag * oneMinusAlphaArray + dfState * alphaArray
+            let denom = MLX.sqrt(MLX.maximum(dfState, epsNorm))
+            let featDfRe = dfRe / denom
+            let featDfIm = dfIm / denom
+
+            let featErbMX = featErb
+                .expandedDimensions(axis: 0)
+                .expandedDimensions(axis: 0)
+                .expandedDimensions(axis: 0)
+            var featDfMX = MLX.stacked([featDfRe, featDfIm], axis: -1)
+                .expandedDimensions(axis: 0)
+                .expandedDimensions(axis: 0)
+            featDfMX = featDfMX.transposed(0, 3, 1, 2)
+            return (featErbMX, featDfMX)
+        }
+
+        private func inferFrame(
+            spec: MLXArray,
+            featErb: MLXArray,
+            featDf: MLXArray
+        ) throws -> MLXArray {
+            let specMX = spec
+                .expandedDimensions(axis: 0)
+                .expandedDimensions(axis: 0)
+                .expandedDimensions(axis: 0)
+                .asType(inferenceDType)
+            let featErbMX = featErb.asType(inferenceDType)
+            let featDfMX = featDf.asType(inferenceDType)
+            appendWithLimit(&encErb0In, featErbMX, maxLen: 3)
+            appendWithLimit(&encDf0In, featDfMX, maxLen: 3)
+
+            let e0 = try applyConvLast(inputs: encErb0In, prefix: "enc.erb_conv0", main: 1, pointwise: nil, bn: 2, fstride: 1)
+            let e1 = try applyConvLast(inputs: [e0], prefix: "enc.erb_conv1", main: 0, pointwise: 1, bn: 2, fstride: 2)
+            let e2 = try applyConvLast(inputs: [e1], prefix: "enc.erb_conv2", main: 0, pointwise: 1, bn: 2, fstride: 2)
+            let e3 = try applyConvLast(inputs: [e2], prefix: "enc.erb_conv3", main: 0, pointwise: 1, bn: 2, fstride: 1)
+
+            let c0 = try applyConvLast(inputs: encDf0In, prefix: "enc.df_conv0", main: 1, pointwise: 2, bn: 3, fstride: 1)
+            let c1 = try applyConvLast(inputs: [c0], prefix: "enc.df_conv1", main: 0, pointwise: 1, bn: 2, fstride: 2)
+
+            var cemb = c1.transposed(0, 2, 3, 1).reshaped([1, 1, -1])
+            cemb = relu(model.groupedLinear(cemb, weight: try model.w("enc.df_fc_emb.0.weight")))
+
+            var emb = e3.transposed(0, 2, 3, 1).reshaped([1, 1, -1])
+            emb = model.config.encConcat ? MLX.concatenated([emb, cemb], axis: -1) : (emb + cemb)
+
+            emb = try squeezedGRUStep(
+                emb,
+                prefix: "enc.emb_gru",
+                hiddenSize: model.config.embHiddenDim,
+                linearOut: true,
+                state: &encEmbState
+            )
+
+            let mask = try erbDecoderStep(emb: emb, e3: e3, e2: e2, e1: e1, e0: e0)
+            let specMasked = applyMask(spec: specMX, mask: mask)
+
+            var dfCoefs = try dfDecoderStep(emb: emb, c0: c0)
+            dfCoefs = dfCoefs.reshaped([1, 1, nbDf, dfOrder, 2]).transposed(0, 3, 1, 2, 4)
+
+            let specEnhanced = try deepFilterAssign(spec: specMX, specMasked: specMasked, dfCoefs: dfCoefs, currentSpec: spec)
+            return specEnhanced[0, 0, 0, 0..., 0...]
+        }
+
+        private func applyConvLast(
+            inputs: [MLXArray],
+            prefix: String,
+            main: Int,
+            pointwise: Int?,
+            bn: Int,
+            fstride: Int
+        ) throws -> MLXArray {
+            var y = MLX.concatenated(inputs, axis: 2)
+            y = try model.conv2dLayer(
+                y,
+                weight: model.w("\(prefix).\(main).weight"),
+                bias: nil,
+                fstride: fstride,
+                lookahead: 0
+            )
+            if let pointwise {
+                y = try model.conv2dLayer(
+                    y,
+                    weight: model.w("\(prefix).\(pointwise).weight"),
+                    bias: nil,
+                    fstride: 1,
+                    lookahead: 0
+                )
+            }
+            y = try model.batchNorm(y, prefix: "\(prefix).\(bn)")
+            y = relu(y)
+            let t = y.shape[2]
+            return y[0..., 0..., (t - 1)..<t, 0...]
+        }
+
+        private func squeezedGRUStep(
+            _ x: MLXArray,
+            prefix: String,
+            hiddenSize: Int,
+            linearOut: Bool,
+            state: inout [MLXArray]?
+        ) throws -> MLXArray {
+            var y = relu(model.groupedLinear(x, weight: try model.w("\(prefix).linear_in.0.weight")))
+            var nextState = [MLXArray]()
+            var layer = 0
+
+            while model.weights["\(prefix).gru.weight_ih_l\(layer)"] != nil {
+                let prevState: MLXArray
+                if let state, layer < state.count {
+                    prevState = state[layer]
+                } else {
+                    prevState = MLXArray.zeros([y.shape[0], hiddenSize], type: Float.self)
+                }
+                let h = try gruLayerStep(y, prefix: "\(prefix).gru", layer: layer, hiddenSize: hiddenSize, prevState: prevState)
+                nextState.append(h)
+                y = h.expandedDimensions(axis: 1)
+                layer += 1
+            }
+
+            state = nextState
+            if linearOut, model.weights["\(prefix).linear_out.0.weight"] != nil {
+                y = relu(model.groupedLinear(y, weight: try model.w("\(prefix).linear_out.0.weight")))
+            }
+            return y
+        }
+
+        private func gruLayerStep(
+            _ x: MLXArray,
+            prefix: String,
+            layer: Int,
+            hiddenSize: Int,
+            prevState: MLXArray
+        ) throws -> MLXArray {
+            let wih = try model.w("\(prefix).weight_ih_l\(layer)")
+            let whh = try model.w("\(prefix).weight_hh_l\(layer)")
+            let bih = try model.w("\(prefix).bias_ih_l\(layer)")
+            let bhh = try model.w("\(prefix).bias_hh_l\(layer)")
+
+            let xt = x[0..., 0, 0...]
+            let gx = MLX.addMM(bih, xt, wih.transposed())
+            let gh = MLX.addMM(bhh, prevState, whh.transposed())
+
+            let xr = gx[0..., 0..<hiddenSize]
+            let xz = gx[0..., hiddenSize..<(2 * hiddenSize)]
+            let xn = gx[0..., (2 * hiddenSize)...]
+            let hr = gh[0..., 0..<hiddenSize]
+            let hz = gh[0..., hiddenSize..<(2 * hiddenSize)]
+            let hn = gh[0..., (2 * hiddenSize)...]
+
+            let r = sigmoid(xr + hr)
+            let z = sigmoid(xz + hz)
+            let n = tanh(xn + r * hn)
+            return (MLXArray(Float(1.0)) - z) * n + z * prevState
+        }
+
+        private func erbDecoderStep(
+            emb: MLXArray,
+            e3: MLXArray,
+            e2: MLXArray,
+            e1: MLXArray,
+            e0: MLXArray
+        ) throws -> MLXArray {
+            var embDec = try squeezedGRUStep(
+                emb,
+                prefix: "erb_dec.emb_gru",
+                hiddenSize: model.config.embHiddenDim,
+                linearOut: true,
+                state: &erbDecState
+            )
+            let f8 = e3.shape[3]
+            embDec = embDec.reshaped([1, 1, f8, -1]).transposed(0, 3, 1, 2)
+
+            var d3 = relu(try model.applyPathwayConv(e3, prefix: "erb_dec.conv3p")) + embDec
+            d3 = relu(try model.applyRegularBlock(d3, prefix: "erb_dec.convt3"))
+            var d2 = relu(try model.applyPathwayConv(e2, prefix: "erb_dec.conv2p")) + d3
+            d2 = relu(try model.applyTransposeBlock(d2, prefix: "erb_dec.convt2", fstride: 2))
+            var d1 = relu(try model.applyPathwayConv(e1, prefix: "erb_dec.conv1p")) + d2
+            d1 = relu(try model.applyTransposeBlock(d1, prefix: "erb_dec.convt1", fstride: 2))
+            let d0 = relu(try model.applyPathwayConv(e0, prefix: "erb_dec.conv0p")) + d1
+            let out = try model.applyOutputConv(d0, prefix: "erb_dec.conv0_out")
+            return sigmoid(out)
+        }
+
+        private func dfDecoderStep(emb: MLXArray, c0: MLXArray) throws -> MLXArray {
+            var c = try squeezedGRUStep(
+                emb,
+                prefix: "df_dec.df_gru",
+                hiddenSize: model.config.dfHiddenDim,
+                linearOut: false,
+                state: &dfDecState
+            )
+            if model.weights["df_dec.df_skip.weight"] != nil {
+                c = c + model.groupedLinear(emb, weight: try model.w("df_dec.df_skip.weight"))
+            }
+
+            appendWithLimit(&dfConvpIn, c0, maxLen: model.config.dfPathwayKernelSizeT)
+            let c0Seq = MLX.concatenated(dfConvpIn, axis: 2)
+            var c0p = try model.conv2dLayer(
+                c0Seq,
+                weight: model.w("df_dec.df_convp.1.weight"),
+                bias: nil,
+                fstride: 1,
+                lookahead: 0
+            )
+            c0p = try model.conv2dLayer(
+                c0p,
+                weight: model.w("df_dec.df_convp.2.weight"),
+                bias: nil,
+                fstride: 1,
+                lookahead: 0
+            )
+            c0p = relu(try model.batchNorm(c0p, prefix: "df_dec.df_convp.3"))
+            let t = c0p.shape[2]
+            c0p = c0p[0..., 0..., (t - 1)..<t, 0...]
+            c0p = c0p.transposed(0, 2, 3, 1)
+
+            let dfOut = tanh(model.groupedLinear(c, weight: try model.w("df_dec.df_out.0.weight")))
+                .reshaped([1, 1, nbDf, dfOrder * 2])
+            return dfOut + c0p
+        }
+
+        private func applyMask(spec: MLXArray, mask: MLXArray) -> MLXArray {
+            let b = mask.shape[0]
+            let t = mask.shape[2]
+            let e = mask.shape[3]
+            let flat = mask.reshaped([b * t, e])
+            let gains = MLX.matmul(flat, model.erbInvFB).reshaped([b, 1, t, model.config.freqBins, 1])
+            return spec * gains
+        }
+
+        private func deepFilterAssign(
+            spec: MLXArray,
+            specMasked: MLXArray,
+            dfCoefs: MLXArray,
+            currentSpec: MLXArray
+        ) throws -> MLXArray {
+            appendWithLimit(&specPast, currentSpec, maxLen: dfOrder)
+            let left = dfOrder - dfLookahead - 1
+
+            let past = Array(specPast.dropLast())
+            let needPast = max(0, left - past.count)
+            var specWindow = [MLXArray]()
+            specWindow.reserveCapacity(dfOrder)
+            for _ in 0..<needPast {
+                specWindow.append(zeroSpecFrame)
+            }
+            if left > 0 {
+                specWindow.append(contentsOf: past.suffix(left))
+            }
+            specWindow.append(currentSpec)
+
+            let futureAvailable = min(dfLookahead, specQueue.count)
+            if futureAvailable > 0 {
+                specWindow.append(contentsOf: specQueue.prefix(futureAvailable))
+            }
+            for _ in futureAvailable..<dfLookahead {
+                specWindow.append(zeroSpecFrame)
+            }
+
+            let specHistory = MLX.stacked(specWindow, axis: 0)
+            let specLow = specHistory[0..., 0..<nbDf, 0...]
+            let coef = dfCoefs[0, 0..., 0, 0..<nbDf, 0...]
+
+            let sr = specLow[0..., 0..., 0]
+            let si = specLow[0..., 0..., 1]
+            let cr = coef[0..., 0..., 0]
+            let ci = coef[0..., 0..., 1]
+
+            let outReal = MLX.sum(sr * cr - si * ci, axis: 0)
+            let outImag = MLX.sum(sr * ci + si * cr, axis: 0)
+
+            let low = MLX.stacked([outReal, outImag], axis: -1)
+                .expandedDimensions(axis: 0)
+                .expandedDimensions(axis: 0)
+                .expandedDimensions(axis: 0)
+
+            if model.config.encConcat {
+                let high = specMasked[0..., 0..., 0..., nbDf..., 0...]
+                return MLX.concatenated([low, high], axis: 3)
+            }
+
+            let highUnmasked = spec[0..., 0..., 0..., nbDf..., 0...]
+            let specDf = MLX.concatenated([low, highUnmasked], axis: 3)
+            let lowAssigned = specDf[0..., 0..., 0..., 0..<nbDf, 0...]
+            let highMasked = specMasked[0..., 0..., 0..., nbDf..., 0...]
+            return MLX.concatenated([lowAssigned, highMasked], axis: 3)
+        }
+
+        private func appendWithLimit<T>(_ buffer: inout [T], _ value: T, maxLen: Int) {
+            buffer.append(value)
+            if buffer.count > maxLen {
+                buffer.removeFirst(buffer.count - maxLen)
+            }
+        }
+
+        // Materialize recurrent tensors each hop so MLX does not keep growing a long lazy graph.
+        private func materializeStreamingState(output: MLXArray) {
+            eval(output, analysisMem, synthMem, erbState, dfState)
+            if let encEmbState {
+                for x in encEmbState { eval(x) }
+            }
+            if let erbDecState {
+                for x in erbDecState { eval(x) }
+            }
+            if let dfDecState {
+                for x in dfDecState { eval(x) }
+            }
+        }
+
+        private static func linspace(start: Float, end: Float, count: Int) -> [Float] {
+            guard count > 1 else { return [start] }
+            let step = (end - start) / Float(count - 1)
+            return (0..<count).map { start + Float($0) * step }
+        }
     }
 
     // MARK: - Network Forward
@@ -693,54 +1408,46 @@ public final class DeepFilterNetModel: STSModel {
 
     private func bandMeanNorm(_ x: MLXArray) -> MLXArray {
         let frames = x.shape[0]
-        let bands = x.shape[1]
         let a = normAlpha()
         let oneMinusA = Float(1.0) - a
+        let time = MLXArray.arange(frames).asType(.float32)
+        let powers = MLX.pow(MLXArray(a), time) // [T]
+        let invPowers = MLXArray(Float(1.0)) / powers
 
-        let input = x.asArray(Float.self)
-        var state = Self.linspace(start: -60.0, end: -90.0, count: bands)
-        var out = [Float](repeating: 0, count: input.count)
+        let scaled = x * invPowers.expandedDimensions(axis: 1)
+        let accum = cumsum(scaled, axis: 0)
 
-        for t in 0..<frames {
-            let base = t * bands
-            for f in 0..<bands {
-                let idx = base + f
-                state[f] = input[idx] * oneMinusA + state[f] * a
-                out[idx] = (input[idx] - state[f]) / 40.0
-            }
-        }
-        return MLXArray(out, [frames, bands])
+        let initState = MLXArray(Self.linspace(start: -60.0, end: -90.0, count: x.shape[1]))
+            .expandedDimensions(axis: 0)
+        let state = powers.expandedDimensions(axis: 1) * (initState + MLXArray(oneMinusA) * accum)
+        return (x - state) / MLXArray(Float(40.0))
     }
 
     private func bandUnitNorm(real: MLXArray, imag: MLXArray) -> (MLXArray, MLXArray) {
         let frames = real.shape[0]
-        let bins = real.shape[1]
         let a = normAlpha()
         let oneMinusA = Float(1.0) - a
+        let time = MLXArray.arange(frames).asType(.float32)
+        let powers = MLX.pow(MLXArray(a), time) // [T]
+        let invPowers = MLXArray(Float(1.0)) / powers
 
-        let re = real.asArray(Float.self)
-        let im = imag.asArray(Float.self)
-        var state = Self.linspace(start: 0.001, end: 0.0001, count: bins)
-        var outRe = [Float](repeating: 0, count: re.count)
-        var outIm = [Float](repeating: 0, count: im.count)
+        let mag = MLX.sqrt(real.square() + imag.square())
+        let scaled = mag * invPowers.expandedDimensions(axis: 1)
+        let accum = cumsum(scaled, axis: 0)
 
-        for t in 0..<frames {
-            let base = t * bins
-            for f in 0..<bins {
-                let idx = base + f
-                let mag = sqrt(re[idx] * re[idx] + im[idx] * im[idx])
-                state[f] = mag * oneMinusA + state[f] * a
-                let denom = sqrt(max(state[f], 1e-12))
-                outRe[idx] = re[idx] / denom
-                outIm[idx] = im[idx] / denom
-            }
-        }
-
-        return (MLXArray(outRe, [frames, bins]), MLXArray(outIm, [frames, bins]))
+        let initState = MLXArray(Self.linspace(start: 0.001, end: 0.0001, count: real.shape[1]))
+            .expandedDimensions(axis: 0)
+        let state = powers.expandedDimensions(axis: 1) * (initState + MLXArray(oneMinusA) * accum)
+        let denom = MLX.sqrt(MLX.maximum(state, MLXArray(Float(1e-12))))
+        return (real / denom, imag / denom)
     }
 
     private func normAlpha() -> Float {
-        let aRaw = exp(-Float(config.hopSize) / Float(config.sampleRate))
+        normAlphaValue
+    }
+
+    private static func computeNormAlpha(hopSize: Int, sampleRate: Int) -> Float {
+        let aRaw = exp(-Float(hopSize) / Float(sampleRate))
         var precision = 3
         var a: Float = 1.0
         while a >= 1.0 {
