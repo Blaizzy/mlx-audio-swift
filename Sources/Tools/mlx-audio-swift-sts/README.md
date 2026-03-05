@@ -5,11 +5,19 @@ Command-line tool for Speech-to-Speech tasks using models from the `MLXAudioSTS`
 Supports two model families:
 - **LFM2.5-Audio**: Multimodal generation (text-to-text, text-to-speech, speech-to-text, speech-to-speech)
 - **SAM Audio**: Source separation
+- **MossFormer2-SE / DeepFilterNet**: Speech enhancement
 
 ## Build and Run
 
 ```bash
 swift run mlx-audio-swift-sts --help
+```
+
+For model inference on macOS, build with Xcode so `mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib`
+is generated and loaded:
+
+```bash
+xcodebuild build -scheme mlx-audio-swift-sts -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
 ```
 
 ## LFM2.5-Audio Examples
@@ -72,6 +80,15 @@ swift run mlx-audio-swift-sts \
   --overlap-seconds 3
 ```
 
+## DeepFilterNet Example
+
+```bash
+swift run mlx-audio-swift-sts \
+  --model /path/to/DeepFilterNet3 \
+  --audio /path/to/noisy.wav \
+  --output-target /tmp/deepfilternet.wav
+```
+
 ## Options
 
 ### LFM2.5-Audio
@@ -103,6 +120,11 @@ swift run mlx-audio-swift-sts \
 - `--step-size`: ODE step size
 - `--anchor`: Anchor rule (`+|-:start:end`), repeatable, `short` mode only
 - `--strict`: Strict weight loading
+
+### DeepFilterNet
+- `--model`: Local model directory (or HF repo) containing `config.json` and `model.safetensors`
+- `--audio`, `-i`: Input audio path (required)
+- `--output-target`, `-o`: Enhanced output wav path (default: `<input>.deepfilternet.wav`)
 
 ### Common
 - `--hf-token`: Hugging Face token (or use `HF_TOKEN` env var)

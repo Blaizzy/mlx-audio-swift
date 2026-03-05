@@ -72,6 +72,8 @@ enum App {
                 try await runSAMAudio(model: model, args: args)
             case .mossFormer2SE(let model):
                 try await runMossFormer2SE(model: model, args: args)
+            case .deepFilterNet(let model):
+                try await runDeepFilterNet(model: model, args: args)
             }
         } catch {
             fputs("Error: \(error)\n", stderr)
@@ -456,6 +458,47 @@ enum App {
         print(String(format: "Done. Elapsed: %.2fs", elapsed))
     }
 
+    // MARK: - DeepFilterNet Speech Enhancement
+
+    private static func runDeepFilterNet(model: DeepFilterNetModel, args: CLI) async throws {
+        guard let audioPath = args.audioPath else {
+            throw AppError.enhanceRequiresAudio
+        }
+
+        let inputURL = resolveURL(path: audioPath)
+        guard FileManager.default.fileExists(atPath: inputURL.path) else {
+            throw AppError.inputFileNotFound(inputURL.path)
+        }
+
+        let (inputSampleRate, rawAudio) = try loadAudioArray(from: inputURL)
+        let audioData = try resampleIfNeeded(rawAudio, from: inputSampleRate, to: model.sampleRate)
+
+        print("Enhancing audio with \(model.modelVersion)")
+        let started = CFAbsoluteTimeGetCurrent()
+
+        let enhanced = try model.enhance(audioData)
+        eval(enhanced)
+        let samples = enhanced.asArray(Float.self)
+
+        let duration = Double(samples.count) / Double(model.sampleRate)
+        print(String(format: "Enhanced %d samples (%.1fs at %dHz)", samples.count, duration, model.sampleRate))
+
+        let outputURL: URL
+        if let path = args.outputTargetPath {
+            outputURL = resolveURL(path: path)
+        } else {
+            let stem = inputURL.deletingPathExtension().lastPathComponent
+            outputURL = inputURL.deletingLastPathComponent()
+                .appendingPathComponent("\(stem).deepfilternet.wav")
+        }
+
+        try AudioUtils.writeWavFile(samples: samples, sampleRate: Double(model.sampleRate), fileURL: outputURL)
+        print("Wrote WAV to \(outputURL.path)")
+
+        let elapsed = CFAbsoluteTimeGetCurrent() - started
+        print(String(format: "Done. Elapsed: %.2fs", elapsed))
+    }
+
     // MARK: - Helpers
 
     private static func resolveURL(path: String) -> URL {
@@ -752,12 +795,14 @@ struct CLI {
                 - LFM2.5-Audio: multimodal generation (t2t, tts, stt, sts)
                 - SAM Audio: source separation
                 - MossFormer2-SE: speech enhancement
+                - DeepFilterNet: speech enhancement (local or HF model directory)
 
             Model Selection:
               --model <repo>               Model repo or local path (auto-detected).
                                            SAM Audio default: \(SAMAudio.defaultRepo)
                                            LFM example: mlx-community/LFM2.5-Audio-1.5B-6bit
                                            MossFormer2 example: starkdmi/MossFormer2-SE-fp16
+                                           DeepFilterNet local example: /path/to/DeepFilterNet3
 
             LFM2.5-Audio Options:
               --mode <t2t|tts|stt|sts>     LFM generation mode.
@@ -795,6 +840,12 @@ struct CLI {
             MossFormer2-SE Options:
               -i, --audio <path>           Input audio file (required)
               -o, --output-target <path>   Enhanced WAV output. Default: <input>.enhanced.wav
+
+            DeepFilterNet Options:
+              --model <path-or-repo>       Local model dir with config.json + model.safetensors,
+                                           or Hugging Face repo.
+              -i, --audio <path>           Input audio file (required)
+              -o, --output-target <path>   Enhanced WAV output. Default: <input>.deepfilternet.wav
 
             Common:
               --hf-token <token>           Hugging Face token (or set HF_TOKEN env var)

@@ -158,6 +158,91 @@ struct MossFormer2SEConfigTests {
     }
 }
 
+struct DeepFilterNetConfigTests {
+    @Test func deepFilterNetConfigDefaults() {
+        let config = DeepFilterNetConfig()
+
+        #expect(config.sampleRate == 48_000)
+        #expect(config.fftSize == 960)
+        #expect(config.hopSize == 480)
+        #expect(config.nbErb == 32)
+        #expect(config.nbDf == 96)
+        #expect(config.dfOrder == 5)
+        #expect(config.dfLookahead == 2)
+        #expect(config.modelType == "deepfilternet3")
+    }
+
+    @Test func deepFilterNetConfigDecoding() throws {
+        let json = """
+        {
+            "sample_rate": 48000,
+            "fft_size": 960,
+            "hop_size": 480,
+            "nb_erb": 32,
+            "nb_df": 96,
+            "df_order": 5,
+            "df_lookahead": 2,
+            "model_version": "DeepFilterNet3"
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let config = try decoder.decode(DeepFilterNetConfig.self, from: Data(json.utf8))
+        #expect(config.modelVersion == "DeepFilterNet3")
+        #expect(config.modelType == "deepfilternet3")
+        #expect(config.freqBins == 481)
+    }
+}
+
+struct DeepFilterNetLoadingTests {
+    @Test func deepFilterNetFromLocalRejectsMissingConfig() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("deepfilternet-empty-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        do {
+            _ = try DeepFilterNetModel.fromLocal(tempDir)
+            Issue.record("Expected fromLocal to throw for missing config.json")
+        } catch let error as DeepFilterNetError {
+            switch error {
+            case .missingConfig(let directory):
+                #expect(directory.path == tempDir.path)
+            default:
+                Issue.record("Expected missingConfig, got \(error)")
+            }
+        } catch {
+            Issue.record("Expected DeepFilterNetError, got \(error)")
+        }
+    }
+
+    @Test func deepFilterNetFromLocalRejectsMissingWeights() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("deepfilternet-noweights-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let configURL = tempDir.appendingPathComponent("config.json")
+        try """
+        { "model_version": "DeepFilterNet3" }
+        """.write(to: configURL, atomically: true, encoding: .utf8)
+
+        do {
+            _ = try DeepFilterNetModel.fromLocal(tempDir)
+            Issue.record("Expected fromLocal to throw for missing .safetensors")
+        } catch let error as DeepFilterNetError {
+            switch error {
+            case .missingWeights(let directory):
+                #expect(directory.path == tempDir.path)
+            default:
+                Issue.record("Expected missingWeights, got \(error)")
+            }
+        } catch {
+            Issue.record("Expected DeepFilterNetError, got \(error)")
+        }
+    }
+}
+
 struct MossFormer2SELayerTests {
 
     @Test func scaleNormShape() {
@@ -1456,3 +1541,4 @@ struct LFMAudioModuleSetupTests {
         #expect(depthformer.layersCount == config.layers)
     }
 }
+

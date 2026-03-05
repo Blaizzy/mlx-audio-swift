@@ -16,7 +16,10 @@ public enum ModelUtils {
         )
         let configJSON = try JSONSerialization.jsonObject(with: Data(contentsOf: modelURL.appendingPathComponent("config.json")))
         if let config = configJSON as? [String: Any] {
-            return (config["model_type"] as? String) ?? (config["architecture"] as? String) ?? modelNameComponents?.first?.lowercased()
+            return (config["model_type"] as? String)
+                ?? (config["architecture"] as? String)
+                ?? (config["model_version"] as? String)
+                ?? modelNameComponents?.first?.lowercased()
         }
         return nil
     }
