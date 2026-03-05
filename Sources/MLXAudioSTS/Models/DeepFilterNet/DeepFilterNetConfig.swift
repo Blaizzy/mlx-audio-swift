@@ -29,6 +29,7 @@ public struct DeepFilterNetConfig: Codable, Sendable {
     public var lsnrMax: Int = 35
     public var lsnrMin: Int = -15
     public var modelVersion: String = "DeepFilterNet3"
+    public var erbWidths: [Int]? = nil
 
     public var freqBins: Int { fftSize / 2 + 1 }
 
@@ -68,6 +69,7 @@ public struct DeepFilterNetConfig: Codable, Sendable {
         case lsnrMax
         case lsnrMin
         case modelVersion
+        case erbWidths
     }
 
     public init() {}
@@ -99,5 +101,6 @@ public struct DeepFilterNetConfig: Codable, Sendable {
         lsnrMax = try c.decodeIfPresent(Int.self, forKey: .lsnrMax) ?? lsnrMax
         lsnrMin = try c.decodeIfPresent(Int.self, forKey: .lsnrMin) ?? lsnrMin
         modelVersion = try c.decodeIfPresent(String.self, forKey: .modelVersion) ?? modelVersion
+        erbWidths = try c.decodeIfPresent([Int].self, forKey: .erbWidths) ?? erbWidths
     }
 }

@@ -63,7 +63,17 @@ public final class DeepFilterNetModel: STSModel {
         }
         self.erbFB = erbFB
         self.erbInvFB = erbInvFB
-        self.erbBandWidths = Self.computeErbBandWidths(erbFB: erbFB)
+        let widthsFromConfig = config.erbWidths
+        if let widthsFromConfig, widthsFromConfig.reduce(0, +) == config.freqBins {
+            self.erbBandWidths = widthsFromConfig
+        } else {
+            self.erbBandWidths = Self.libdfErbBandWidths(
+                sampleRate: config.sampleRate,
+                fftSize: config.fftSize,
+                nbBands: config.nbErb,
+                minNbFreqs: 1
+            )
+        }
         self.vorbisWindow = Self.vorbisWindow(size: config.fftSize)
         self.wnorm = 1.0 / Float(config.fftSize * config.fftSize) * Float(2 * config.hopSize)
     }
@@ -148,7 +158,7 @@ public final class DeepFilterNetModel: STSModel {
         let specIm = spec.imaginaryPart()
 
         let specMagSq = specRe.square() + specIm.square()
-        let erb = MLX.matmul(specMagSq, erbFB)
+        let erb = erbEnergies(specMagSq)
         let erbDB = MLXArray(Float(10.0)) * (erb + MLXArray(Float(1e-10))).log10()
         let featErb2D = bandMeanNorm(erbDB)
 
@@ -752,16 +762,70 @@ public final class DeepFilterNetModel: STSModel {
 
     // MARK: - Utility
 
-    private static func computeErbBandWidths(erbFB: MLXArray) -> [Int] {
-        let matrix = erbFB.asArray(Float.self)
-        let freq = erbFB.shape[0]
-        let bands = erbFB.shape[1]
-        var widths = [Int](repeating: 0, count: bands)
-        for f in 0..<freq {
-            let rowBase = f * bands
-            for b in 0..<bands where matrix[rowBase + b] > 0 {
-                widths[b] += 1
+    private func erbEnergies(_ specMagSq: MLXArray) -> MLXArray {
+        var bands = [MLXArray]()
+        bands.reserveCapacity(erbBandWidths.count)
+        var start = 0
+        for width in erbBandWidths {
+            let stop = min(start + width, config.freqBins)
+            if stop > start {
+                bands.append(MLX.mean(specMagSq[0..., start..<stop], axis: 1))
+            } else {
+                bands.append(MLXArray.zeros([specMagSq.shape[0]], type: Float.self))
             }
+            start = stop
+        }
+        return MLX.stacked(bands, axis: 1)
+    }
+
+    private static func libdfFreqToErb(_ freqHz: Float) -> Float {
+        9.265 * log1p(freqHz / (24.7 * 9.265))
+    }
+
+    private static func libdfErbToFreq(_ erb: Float) -> Float {
+        24.7 * 9.265 * (exp(erb / 9.265) - 1.0)
+    }
+
+    private static func libdfErbBandWidths(
+        sampleRate: Int,
+        fftSize: Int,
+        nbBands: Int,
+        minNbFreqs: Int
+    ) -> [Int] {
+        guard sampleRate > 0, fftSize > 0, nbBands > 0 else { return [] }
+
+        let nyq = sampleRate / 2
+        let freqWidth = Float(sampleRate) / Float(fftSize)
+        let erbLow = libdfFreqToErb(0)
+        let erbHigh = libdfFreqToErb(Float(nyq))
+        let step = (erbHigh - erbLow) / Float(nbBands)
+
+        var widths = [Int](repeating: 0, count: nbBands)
+        var prevFreq = 0
+        var freqOver = 0
+        let minBins = max(1, minNbFreqs)
+
+        for i in 1...nbBands {
+            let f = libdfErbToFreq(erbLow + Float(i) * step)
+            let fb = Int((f / freqWidth).rounded())
+            var nbFreqs = fb - prevFreq - freqOver
+            if nbFreqs < minBins {
+                freqOver = minBins - nbFreqs
+                nbFreqs = minBins
+            } else {
+                freqOver = 0
+            }
+            widths[i - 1] = max(1, nbFreqs)
+            prevFreq = fb
+        }
+
+        widths[nbBands - 1] += 1  // fft_size/2 + 1 bins
+        let target = fftSize / 2 + 1
+        let total = widths.reduce(0, +)
+        if total > target {
+            widths[nbBands - 1] -= (total - target)
+        } else if total < target {
+            widths[nbBands - 1] += (target - total)
         }
         return widths
     }
