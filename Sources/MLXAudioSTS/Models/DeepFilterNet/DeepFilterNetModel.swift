@@ -35,13 +35,25 @@ public enum DeepFilterNetError: Error, LocalizedError, CustomStringConvertible {
 public struct DeepFilterNetStreamingConfig: Sendable {
     public var padEndFrames: Int
     public var compensateDelay: Bool
+    public var enableStageSkipping: Bool
+    public var minDbThresh: Float
+    public var maxDbErbThresh: Float
+    public var maxDbDfThresh: Float
 
     public init(
         padEndFrames: Int = 3,
-        compensateDelay: Bool = true
+        compensateDelay: Bool = true,
+        enableStageSkipping: Bool = false,
+        minDbThresh: Float = -10.0,
+        maxDbErbThresh: Float = 30.0,
+        maxDbDfThresh: Float = 20.0
     ) {
         self.padEndFrames = padEndFrames
         self.compensateDelay = compensateDelay
+        self.enableStageSkipping = enableStageSkipping
+        self.minDbThresh = minDbThresh
+        self.maxDbErbThresh = maxDbErbThresh
+        self.maxDbDfThresh = maxDbDfThresh
     }
 }
 
@@ -347,8 +359,14 @@ public final class DeepFilterNetModel: STSModel {
         private let tenArray = MLXArray(Float(10.0))
         private let fortyArray = MLXArray(Float(40.0))
         private let zeroSpecFrame: MLXArray
+        private let zeroMaskFrame: MLXArray
         private let analysisMemCount: Int
         private let synthMemCount: Int
+        private let erbFBFrame: MLXArray?
+        private let lsnrWeight: MLXArray
+        private let lsnrBias: MLXArray
+        private let lsnrScale: MLXArray
+        private let lsnrOffset: MLXArray
 
         private var pendingSamples = MLXArray.zeros([0], type: Float.self)
         private var analysisMem: MLXArray
@@ -369,7 +387,7 @@ public final class DeepFilterNetModel: STSModel {
         private var dfDecState: [MLXArray]?
 
         private var delayDropped = 0
-        private var skipCounter = 0
+        private var hopsSinceMaterialize = 0
 
         public init(model: DeepFilterNetModel, config: DeepFilterNetStreamingConfig = DeepFilterNetStreamingConfig()) {
             self.model = model
@@ -394,6 +412,19 @@ public final class DeepFilterNetModel: STSModel {
             self.analysisMemCount = max(0, model.config.fftSize - model.config.hopSize)
             self.synthMemCount = max(0, model.config.fftSize - model.config.hopSize)
             self.zeroSpecFrame = MLXArray.zeros([model.config.freqBins, 2], type: Float.self)
+            self.zeroMaskFrame = MLXArray.zeros([1, 1, 1, model.config.nbErb], type: Float.self)
+            if model.erbFB.shape.count == 2,
+               model.erbFB.shape[0] == model.config.freqBins,
+               model.erbFB.shape[1] == model.config.nbErb
+            {
+                self.erbFBFrame = model.erbFB.asType(.float32)
+            } else {
+                self.erbFBFrame = nil
+            }
+            self.lsnrWeight = (try? model.w("enc.lsnr_fc.0.weight")) ?? MLXArray.zeros([1, model.config.embHiddenDim], type: Float.self)
+            self.lsnrBias = (try? model.w("enc.lsnr_fc.0.bias")) ?? MLXArray.zeros([1], type: Float.self)
+            self.lsnrScale = MLXArray(Float(model.config.lsnrMax - model.config.lsnrMin))
+            self.lsnrOffset = MLXArray(Float(model.config.lsnrMin))
 
             self.analysisMem = MLXArray.zeros([analysisMemCount], type: Float.self)
             self.synthMem = MLXArray.zeros([synthMemCount], type: Float.self)
@@ -417,7 +448,7 @@ public final class DeepFilterNetModel: STSModel {
             erbDecState = nil
             dfDecState = nil
             delayDropped = 0
-            skipCounter = 0
+            hopsSinceMaterialize = 0
         }
 
         public func processChunk(_ chunk: MLXArray, isLast: Bool = false) throws -> MLXArray {
@@ -494,16 +525,6 @@ public final class DeepFilterNetModel: STSModel {
         }
 
         private func processHop(_ hopTD: MLXArray) throws -> MLXArray? {
-            let rms = MLX.mean(hopTD * hopTD, axis: 0).asArray(Float.self).first ?? 0
-            if rms < 1e-7 {
-                skipCounter += 1
-            } else {
-                skipCounter = 0
-            }
-            if skipCounter > 5 {
-                return MLXArray.zeros([hopSize], type: Float.self)
-            }
-
             let spec = analysisFrame(hopTD)
             let (featErb, featDf) = featuresFrame(spec)
             specQueue.append(spec)
@@ -516,7 +537,11 @@ public final class DeepFilterNetModel: STSModel {
             let specT = specQueue.removeFirst()
             let specEnhanced = try inferFrame(spec: specT, featErb: featErb, featDf: featDf)
             let out = synthesisFrame(specEnhanced.asType(.float32))
-            materializeStreamingState(output: out)
+            hopsSinceMaterialize += 1
+            if hopsSinceMaterialize >= 8 {
+                materializeStreamingState(output: out)
+                hopsSinceMaterialize = 0
+            }
             return out
         }
 
@@ -578,19 +603,24 @@ public final class DeepFilterNetModel: STSModel {
             let im = spec[0..., 1]
             let magSq = re.square() + im.square()
 
-            var erbBands = [MLXArray]()
-            erbBands.reserveCapacity(nbErb)
-            var start = 0
-            for width in model.erbBandWidths {
-                let stop = min(start + width, freqBins)
-                if stop > start {
-                    erbBands.append(MLX.mean(magSq[start..<stop], axis: 0))
-                } else {
-                    erbBands.append(MLXArray.zeros([1], type: Float.self).squeezed())
+            let erb: MLXArray
+            if let erbFBFrame {
+                erb = MLX.matmul(magSq.expandedDimensions(axis: 0), erbFBFrame).squeezed()
+            } else {
+                var erbBands = [MLXArray]()
+                erbBands.reserveCapacity(nbErb)
+                var start = 0
+                for width in model.erbBandWidths {
+                    let stop = min(start + width, freqBins)
+                    if stop > start {
+                        erbBands.append(MLX.mean(magSq[start..<stop], axis: 0))
+                    } else {
+                        erbBands.append(MLXArray.zeros([1], type: Float.self).squeezed())
+                    }
+                    start = stop
                 }
-                start = stop
+                erb = MLX.stacked(erbBands, axis: 0)
             }
-            let erb = MLX.stacked(erbBands, axis: 0)
             let erbDB = tenArray * MLX.log10(erb + epsEnergy)
             erbState = erbDB * oneMinusAlphaArray + erbState * alphaArray
             let featErb = (erbDB - erbState) / fortyArray
@@ -628,6 +658,7 @@ public final class DeepFilterNetModel: STSModel {
             let featDfMX = featDf.asType(inferenceDType)
             appendWithLimit(&encErb0In, featErbMX, maxLen: 3)
             appendWithLimit(&encDf0In, featDfMX, maxLen: 3)
+            appendWithLimit(&specPast, spec, maxLen: dfOrder)
 
             let e0 = try applyConvLast(inputs: encErb0In, prefix: "enc.erb_conv0", main: 1, pointwise: nil, bn: 2, fstride: 1)
             let e1 = try applyConvLast(inputs: [e0], prefix: "enc.erb_conv1", main: 0, pointwise: 1, bn: 2, fstride: 2)
@@ -651,14 +682,52 @@ public final class DeepFilterNetModel: STSModel {
                 state: &encEmbState
             )
 
-            let mask = try erbDecoderStep(emb: emb, e3: e3, e2: e2, e1: e1, e0: e0)
+            let applyGains: Bool
+            let applyGainZeros: Bool
+            let applyDf: Bool
+            if config.enableStageSkipping {
+                let lsnr = sigmoid(model.linear(emb, weight: lsnrWeight, bias: lsnrBias)) * lsnrScale + lsnrOffset
+                let lsnrValue = lsnr.asArray(Float.self).first ?? Float(model.config.lsnrMin)
+                (applyGains, applyGainZeros, applyDf) = applyStages(lsnr: lsnrValue)
+            } else {
+                (applyGains, applyGainZeros, applyDf) = (true, false, true)
+            }
+
+            let mask: MLXArray
+            if applyGains {
+                mask = try erbDecoderStep(emb: emb, e3: e3, e2: e2, e1: e1, e0: e0)
+            } else if applyGainZeros {
+                mask = zeroMaskFrame.asType(inferenceDType)
+            } else {
+                return specMX[0, 0, 0, 0..., 0...]
+            }
             let specMasked = applyMask(spec: specMX, mask: mask)
+            if !applyDf {
+                return specMasked[0, 0, 0, 0..., 0...]
+            }
 
             var dfCoefs = try dfDecoderStep(emb: emb, c0: c0)
             dfCoefs = dfCoefs.reshaped([1, 1, nbDf, dfOrder, 2]).transposed(0, 3, 1, 2, 4)
 
             let specEnhanced = try deepFilterAssign(spec: specMX, specMasked: specMasked, dfCoefs: dfCoefs, currentSpec: spec)
             return specEnhanced[0, 0, 0, 0..., 0...]
+        }
+
+        private func applyStages(lsnr: Float) -> (Bool, Bool, Bool) {
+            if lsnr < config.minDbThresh {
+                // Only noise detected: apply zero ERB mask and skip DF.
+                return (false, true, false)
+            }
+            if lsnr > config.maxDbErbThresh {
+                // Clean speech detected: skip ERB and DF.
+                return (false, false, false)
+            }
+            if lsnr > config.maxDbDfThresh {
+                // Mild noise: apply ERB gains only.
+                return (true, false, false)
+            }
+            // Regular noisy speech: apply both stages.
+            return (true, false, true)
         }
 
         private func applyConvLast(
@@ -833,7 +902,6 @@ public final class DeepFilterNetModel: STSModel {
             dfCoefs: MLXArray,
             currentSpec: MLXArray
         ) throws -> MLXArray {
-            appendWithLimit(&specPast, currentSpec, maxLen: dfOrder)
             let left = dfOrder - dfLookahead - 1
 
             let past = Array(specPast.dropLast())
@@ -1292,25 +1360,7 @@ public final class DeepFilterNetModel: STSModel {
         strideW: Int,
         groups: Int
     ) throws -> MLXArray {
-        if groups <= 1 {
-            return MLX.conv2d(input, weight, stride: [1, strideW], padding: [0, 0], groups: 1)
-        }
-
-        let inPerGroup = weight.shape[3]
-        let outChannels = weight.shape[0]
-        let outPerGroup = max(1, outChannels / groups)
-        var ys = [MLXArray]()
-        ys.reserveCapacity(groups)
-        for g in 0..<groups {
-            let inStart = g * inPerGroup
-            let inEnd = inStart + inPerGroup
-            let outStart = g * outPerGroup
-            let outEnd = outStart + outPerGroup
-            let xg = input[0..., 0..., 0..., inStart..<inEnd]
-            let wg = weight[outStart..<outEnd, 0..., 0..., 0...]
-            ys.append(MLX.conv2d(xg, wg, stride: [1, strideW], padding: [0, 0], groups: 1))
-        }
-        return MLX.concatenated(ys, axis: 3)
+        MLX.conv2d(input, weight, stride: [1, strideW], padding: [0, 0], groups: groups)
     }
 
     private func batchNorm(_ x: MLXArray, prefix: String) throws -> MLXArray {
@@ -1319,10 +1369,11 @@ public final class DeepFilterNetModel: STSModel {
         let mean = try w("\(prefix).running_mean")
         let variance = try w("\(prefix).running_var")
 
-        var y = x.transposed(0, 2, 3, 1)
-        y = (y - mean) / MLX.sqrt(variance + MLXArray(Float(1e-5)))
-        y = y * gamma + beta
-        return y.transposed(0, 3, 1, 2)
+        let gammaR = gamma.reshaped([1, gamma.shape[0], 1, 1])
+        let betaR = beta.reshaped([1, beta.shape[0], 1, 1])
+        let meanR = mean.reshaped([1, mean.shape[0], 1, 1])
+        let varianceR = variance.reshaped([1, variance.shape[0], 1, 1])
+        return ((x - meanR) / MLX.sqrt(varianceR + MLXArray(Float(1e-5)))) * gammaR + betaR
     }
 
     private func squeezedGRU(
