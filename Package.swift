@@ -26,9 +26,10 @@ let package = Package(
         // SwiftUI components
         .library(name: "MLXAudioUI", targets: ["MLXAudioUI"]),
 
-        // Legacy combined library (for backwards compatibility)
+        // Legacy combined library kept under a distinct product name to avoid
+        // colliding with the primary MLXAudio product from mlx-swift-audio.
         .library(
-            name: "MLXAudio",
+            name: "MLXAudioLegacy",
             targets: ["MLXAudioCore", "MLXAudioCodecs", "MLXAudioTTS", "MLXAudioSTT", "MLXAudioVAD", "MLXAudioSTS", "MLXAudioUI"]
         ),
         .executable(
