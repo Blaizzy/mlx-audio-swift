@@ -72,6 +72,8 @@ public enum TTS {
             return try await KokoroModel.fromPretrained(
                 modelRepo, textProcessor: textProcessor
             )
+        case "echo_tts", "echo":
+            return try await EchoTTSModel.fromPretrained(modelRepo, cache: cache)
         default:
             throw TTSModelError.unsupportedModelType(modelType ?? resolvedType)
         }
@@ -109,6 +111,8 @@ public enum TTS {
         }
         if lower.contains("kokoro") {
             return "kokoro"
+        if lower.contains("echo_tts") || lower.contains("echo-tts") || lower.contains("echo") {
+            return "echo_tts"
         }
         return nil
     }

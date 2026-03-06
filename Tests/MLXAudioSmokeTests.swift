@@ -416,6 +416,78 @@ struct TTSSmokeTests {
         }
     }
 
+    @Test func echoTTSGenerate() async throws {
+        testHeader("echoTTSGenerate")
+        defer { testCleanup("echoTTSGenerate") }
+        print("\u{001B}[33mLoading Echo TTS model...\u{001B}[0m")
+        let model = try await EchoTTSModel.fromPretrained("mlx-community/echo-tts-base")
+        print("\u{001B}[32mEcho TTS model loaded!\u{001B}[0m")
+
+        #expect(model.sampleRate == 44100, "Sample rate should be 44100")
+
+        let text = "Hello, this is a test of the Echo text to speech model."
+        print("\u{001B}[33mGenerating audio for: \"\(text)\"...\u{001B}[0m")
+
+        let audio = try await model.generate(
+            text: text,
+            voice: nil,
+            refAudio: nil,
+            refText: nil,
+            language: nil,
+            generationParameters: model.defaultGenerationParameters
+        )
+
+        print("\u{001B}[32mGenerated audio shape: \(audio.shape)\u{001B}[0m")
+        #expect(audio.shape[0] > 0, "Audio should have samples")
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("echo_tts_test_output.wav")
+        try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+        print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
+    }
+
+    @Test func echoTTSGenerateStream() async throws {
+        testHeader("echoTTSGenerateStream")
+        defer { testCleanup("echoTTSGenerateStream") }
+        print("\u{001B}[33mLoading Echo TTS model...\u{001B}[0m")
+        let model = try await EchoTTSModel.fromPretrained("mlx-community/echo-tts-base")
+        print("\u{001B}[32mEcho TTS model loaded!\u{001B}[0m")
+
+        let text = "Streaming test for Echo TTS model."
+        print("\u{001B}[33mStreaming generation for: \"\(text)\"...\u{001B}[0m")
+
+        var finalAudio: MLXArray?
+        var generationInfo: AudioGenerationInfo?
+
+        for try await event in model.generateStream(
+            text: text, voice: nil, refAudio: nil, refText: nil, language: nil,
+            generationParameters: model.defaultGenerationParameters
+        ) {
+            switch event {
+            case .audio(let audio):
+                finalAudio = audio
+                print("\u{001B}[32mReceived final audio: \(audio.shape)\u{001B}[0m")
+            case .info(let info):
+                generationInfo = info
+                print("\u{001B}[36mGeneration info: generateTime=\(String(format: "%.2f", info.generateTime))s, peakMemory=\(String(format: "%.2f", info.peakMemoryUsage))GB\u{001B}[0m")
+            case .token(_):
+                break
+            }
+        }
+
+        #expect(finalAudio != nil, "Should have received final audio")
+        #expect(generationInfo != nil, "Should have received generation info")
+
+        if let audio = finalAudio {
+            #expect(audio.shape[0] > 0, "Audio should have samples")
+
+            let outputURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("echo_tts_stream_test_output.wav")
+            try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+            print("\u{001B}[32mSaved streamed audio to\u{001B}[0m: \(outputURL.path)")
+        }
+    }
+
     @Test func chatterboxTurboGenerate() async throws {
         testHeader("chatterboxTurboGenerate")
         defer { testCleanup("chatterboxTurboGenerate") }
