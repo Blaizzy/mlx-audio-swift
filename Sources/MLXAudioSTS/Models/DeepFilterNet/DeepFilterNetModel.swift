@@ -40,6 +40,7 @@ public struct DeepFilterNetStreamingConfig: Sendable {
     public var maxDbErbThresh: Float
     public var maxDbDfThresh: Float
     public var enableProfiling: Bool
+    public var profilingForceEvalPerStage: Bool
     public var materializeEveryHops: Int
 
     public init(
@@ -50,7 +51,8 @@ public struct DeepFilterNetStreamingConfig: Sendable {
         maxDbErbThresh: Float = 30.0,
         maxDbDfThresh: Float = 20.0,
         enableProfiling: Bool = false,
-        materializeEveryHops: Int = 32
+        profilingForceEvalPerStage: Bool = false,
+        materializeEveryHops: Int = 256
     ) {
         self.padEndFrames = padEndFrames
         self.compensateDelay = compensateDelay
@@ -59,6 +61,7 @@ public struct DeepFilterNetStreamingConfig: Sendable {
         self.maxDbErbThresh = maxDbErbThresh
         self.maxDbDfThresh = maxDbDfThresh
         self.enableProfiling = enableProfiling
+        self.profilingForceEvalPerStage = profilingForceEvalPerStage
         self.materializeEveryHops = materializeEveryHops
     }
 }
@@ -85,6 +88,11 @@ public final class DeepFilterNetModel: STSModel {
     private let wnorm: Float
     private let normAlphaValue: Float
     private let inferenceDType: DType
+    private let bnScale: [String: MLXArray]
+    private let bnBias: [String: MLXArray]
+    private let conv2dWeightsOHWI: [String: MLXArray]
+    private let convTransposeDenseWeights: [String: MLXArray]
+    private let convTransposeGroupWeights: [String: [MLXArray]]
     private let j: MLXArray = MLXArray(real: Float(0.0), imaginary: Float(1.0))
 
     private init(
@@ -117,6 +125,18 @@ public final class DeepFilterNetModel: STSModel {
         self.wnorm = 1.0 / Float(config.fftSize * config.fftSize) * Float(2 * config.hopSize)
         self.normAlphaValue = Self.computeNormAlpha(hopSize: config.hopSize, sampleRate: config.sampleRate)
         self.inferenceDType = weights["enc.erb_conv0.1.weight"]?.dtype ?? .float32
+        let (bnScale, bnBias) = Self.buildBatchNormAffine(weights: weights)
+        self.bnScale = bnScale
+        self.bnBias = bnBias
+        self.conv2dWeightsOHWI = Self.buildConv2dWeightCache(weights: weights)
+        self.convTransposeDenseWeights = Self.buildDenseTransposeWeights(
+            weights: weights,
+            groups: max(1, config.convCh)
+        )
+        self.convTransposeGroupWeights = Self.buildGroupedTransposeWeights(
+            weights: weights,
+            groups: max(1, config.convCh)
+        )
     }
 
     // MARK: - Loading
@@ -401,11 +421,13 @@ public final class DeepFilterNetModel: STSModel {
         private var profInferSeconds = 0.0
         private var profSynthesisSeconds = 0.0
         private var profMaterializeSeconds = 0.0
+        private let profilingForceEvalPerStage: Bool
 
         public init(model: DeepFilterNetModel, config: DeepFilterNetStreamingConfig = DeepFilterNetStreamingConfig()) {
             self.model = model
             self.config = config
             self.enableProfiling = config.enableProfiling
+            self.profilingForceEvalPerStage = config.profilingForceEvalPerStage
 
             self.fftSize = model.config.fftSize
             self.hopSize = model.config.hopSize
@@ -584,12 +606,18 @@ public final class DeepFilterNetModel: STSModel {
         private func processHop(_ hopTD: MLXArray) throws -> MLXArray? {
             let tAnalysis0 = enableProfiling ? CFAbsoluteTimeGetCurrent() : 0
             let spec = analysisFrame(hopTD)
+            if enableProfiling, profilingForceEvalPerStage {
+                eval(spec)
+            }
             if enableProfiling {
                 profAnalysisSeconds += CFAbsoluteTimeGetCurrent() - tAnalysis0
             }
 
             let tFeatures0 = enableProfiling ? CFAbsoluteTimeGetCurrent() : 0
             let (featErb, featDf) = featuresFrame(spec)
+            if enableProfiling, profilingForceEvalPerStage {
+                eval(featErb, featDf)
+            }
             if enableProfiling {
                 profFeaturesSeconds += CFAbsoluteTimeGetCurrent() - tFeatures0
             }
@@ -603,12 +631,18 @@ public final class DeepFilterNetModel: STSModel {
             let specT = specQueue.removeFirst()
             let tInfer0 = enableProfiling ? CFAbsoluteTimeGetCurrent() : 0
             let specEnhanced = try inferFrame(spec: specT, featErb: featErb, featDf: featDf)
+            if enableProfiling, profilingForceEvalPerStage {
+                eval(specEnhanced)
+            }
             if enableProfiling {
                 profInferSeconds += CFAbsoluteTimeGetCurrent() - tInfer0
             }
 
             let tSynth0 = enableProfiling ? CFAbsoluteTimeGetCurrent() : 0
             let out = synthesisFrame(specEnhanced.asType(.float32))
+            if enableProfiling, profilingForceEvalPerStage {
+                eval(out)
+            }
             if enableProfiling {
                 profSynthesisSeconds += CFAbsoluteTimeGetCurrent() - tSynth0
             }
@@ -820,10 +854,16 @@ public final class DeepFilterNetModel: STSModel {
             bn: Int,
             fstride: Int
         ) throws -> MLXArray {
-            var y = MLX.concatenated(inputs, axis: 2)
+            let merged: MLXArray
+            if inputs.count == 1, let only = inputs.first {
+                merged = only
+            } else {
+                merged = MLX.concatenated(inputs, axis: 2)
+            }
+            var y = merged
             y = try model.conv2dLayer(
                 y,
-                weight: model.w("\(prefix).\(main).weight"),
+                weightKey: "\(prefix).\(main).weight",
                 bias: nil,
                 fstride: fstride,
                 lookahead: 0
@@ -831,7 +871,7 @@ public final class DeepFilterNetModel: STSModel {
             if let pointwise {
                 y = try model.conv2dLayer(
                     y,
-                    weight: model.w("\(prefix).\(pointwise).weight"),
+                    weightKey: "\(prefix).\(pointwise).weight",
                     bias: nil,
                     fstride: 1,
                     lookahead: 0
@@ -944,17 +984,22 @@ public final class DeepFilterNetModel: STSModel {
             }
 
             appendWithLimit(&dfConvpIn, c0, maxLen: model.config.dfPathwayKernelSizeT)
-            let c0Seq = MLX.concatenated(dfConvpIn, axis: 2)
+            let c0Seq: MLXArray
+            if dfConvpIn.count == 1, let only = dfConvpIn.first {
+                c0Seq = only
+            } else {
+                c0Seq = MLX.concatenated(dfConvpIn, axis: 2)
+            }
             var c0p = try model.conv2dLayer(
                 c0Seq,
-                weight: model.w("df_dec.df_convp.1.weight"),
+                weightKey: "df_dec.df_convp.1.weight",
                 bias: nil,
                 fstride: 1,
                 lookahead: 0
             )
             c0p = try model.conv2dLayer(
                 c0p,
-                weight: model.w("df_dec.df_convp.2.weight"),
+                weightKey: "df_dec.df_convp.2.weight",
                 bias: nil,
                 fstride: 1,
                 lookahead: 0
@@ -986,15 +1031,21 @@ public final class DeepFilterNetModel: STSModel {
         ) throws -> MLXArray {
             let left = dfOrder - dfLookahead - 1
 
-            let past = Array(specPast.dropLast())
-            let needPast = max(0, left - past.count)
+            let pastCount = max(0, specPast.count - 1)
+            let needPast = max(0, left - pastCount)
             var specWindow = [MLXArray]()
             specWindow.reserveCapacity(dfOrder)
             for _ in 0..<needPast {
                 specWindow.append(zeroSpecFrame)
             }
             if left > 0 {
-                specWindow.append(contentsOf: past.suffix(left))
+                let copyCount = min(left, pastCount)
+                let start = pastCount - copyCount
+                if copyCount > 0 {
+                    for i in start..<pastCount {
+                        specWindow.append(specPast[i])
+                    }
+                }
             }
             specWindow.append(currentSpec)
 
@@ -1036,9 +1087,13 @@ public final class DeepFilterNetModel: STSModel {
         }
 
         private func appendWithLimit<T>(_ buffer: inout [T], _ value: T, maxLen: Int) {
+            guard maxLen > 0 else {
+                buffer.removeAll(keepingCapacity: true)
+                return
+            }
             buffer.append(value)
             if buffer.count > maxLen {
-                buffer.removeFirst(buffer.count - maxLen)
+                buffer.removeFirst()
             }
         }
 
@@ -1182,14 +1237,14 @@ public final class DeepFilterNetModel: STSModel {
 
         var c0p = try conv2dLayer(
             c0,
-            weight: try w("df_dec.df_convp.1.weight"),
+            weightKey: "df_dec.df_convp.1.weight",
             bias: nil,
             fstride: 1,
             lookahead: 0
         )
         c0p = try conv2dLayer(
             c0p,
-            weight: try w("df_dec.df_convp.2.weight"),
+            weightKey: "df_dec.df_convp.2.weight",
             bias: nil,
             fstride: 1,
             lookahead: 0
@@ -1264,7 +1319,7 @@ public final class DeepFilterNetModel: STSModel {
     ) throws -> MLXArray {
         var y = try conv2dLayer(
             x,
-            weight: w("\(prefix).\(main).weight"),
+            weightKey: "\(prefix).\(main).weight",
             bias: nil,
             fstride: fstride,
             lookahead: 0
@@ -1272,7 +1327,7 @@ public final class DeepFilterNetModel: STSModel {
         if let pointwise {
             y = try conv2dLayer(
                 y,
-                weight: w("\(prefix).\(pointwise).weight"),
+                weightKey: "\(prefix).\(pointwise).weight",
                 bias: nil,
                 fstride: 1,
                 lookahead: 0
@@ -1285,7 +1340,7 @@ public final class DeepFilterNetModel: STSModel {
     private func applyPathwayConv(_ x: MLXArray, prefix: String) throws -> MLXArray {
         var y = try conv2dLayer(
             x,
-            weight: w("\(prefix).0.weight"),
+            weightKey: "\(prefix).0.weight",
             bias: nil,
             fstride: 1,
             lookahead: 0
@@ -1297,13 +1352,13 @@ public final class DeepFilterNetModel: STSModel {
     private func applyTransposeBlock(_ x: MLXArray, prefix: String, fstride: Int) throws -> MLXArray {
         var y = try convTranspose2dLayer(
             x,
-            weight: w("\(prefix).0.weight"),
+            weightKey: "\(prefix).0.weight",
             fstride: fstride,
             groups: config.convCh
         )
         y = try conv2dLayer(
             y,
-            weight: w("\(prefix).1.weight"),
+            weightKey: "\(prefix).1.weight",
             bias: nil,
             fstride: 1,
             lookahead: 0
@@ -1314,14 +1369,14 @@ public final class DeepFilterNetModel: STSModel {
     private func applyRegularBlock(_ x: MLXArray, prefix: String) throws -> MLXArray {
         var y = try conv2dLayer(
             x,
-            weight: w("\(prefix).0.weight"),
+            weightKey: "\(prefix).0.weight",
             bias: nil,
             fstride: 1,
             lookahead: 0
         )
         y = try conv2dLayer(
             y,
-            weight: w("\(prefix).1.weight"),
+            weightKey: "\(prefix).1.weight",
             bias: nil,
             fstride: 1,
             lookahead: 0
@@ -1332,7 +1387,7 @@ public final class DeepFilterNetModel: STSModel {
     private func applyOutputConv(_ x: MLXArray, prefix: String) throws -> MLXArray {
         var y = try conv2dLayer(
             x,
-            weight: w("\(prefix).0.weight"),
+            weightKey: "\(prefix).0.weight",
             bias: nil,
             fstride: 1,
             lookahead: 0
@@ -1343,14 +1398,55 @@ public final class DeepFilterNetModel: STSModel {
 
     private func conv2dLayer(
         _ xBCHW: MLXArray,
+        weightKey: String,
+        bias: MLXArray?,
+        fstride: Int,
+        lookahead: Int
+    ) throws -> MLXArray {
+        if let wOHWI = conv2dWeightsOHWI[weightKey] {
+            return conv2dLayer(
+                xBCHW,
+                weightOHWI: wOHWI,
+                bias: bias,
+                fstride: fstride,
+                lookahead: lookahead
+            )
+        }
+        return try conv2dLayer(
+            xBCHW,
+            weight: w(weightKey),
+            bias: bias,
+            fstride: fstride,
+            lookahead: lookahead
+        )
+    }
+
+    private func conv2dLayer(
+        _ xBCHW: MLXArray,
         weight: MLXArray,
         bias: MLXArray?,
         fstride: Int,
         lookahead: Int
     ) throws -> MLXArray {
-        let kT = weight.shape[2]
-        let kF = weight.shape[3]
-        let inPerGroup = weight.shape[1]
+        conv2dLayer(
+            xBCHW,
+            weightOHWI: weight.transposed(0, 2, 3, 1),
+            bias: bias,
+            fstride: fstride,
+            lookahead: lookahead
+        )
+    }
+
+    private func conv2dLayer(
+        _ xBCHW: MLXArray,
+        weightOHWI: MLXArray,
+        bias: MLXArray?,
+        fstride: Int,
+        lookahead: Int
+    ) -> MLXArray {
+        let kT = weightOHWI.shape[1]
+        let kF = weightOHWI.shape[2]
+        let inPerGroup = weightOHWI.shape[3]
         let inChannels = xBCHW.shape[1]
         let groups = max(1, inChannels / max(1, inPerGroup))
 
@@ -1375,12 +1471,48 @@ public final class DeepFilterNetModel: STSModel {
             mode: .constant
         )
 
-        let wOHWI = weight.transposed(0, 2, 3, 1)
-        var y = try groupedConv2d(input: x, weight: wOHWI, strideW: fstride, groups: groups)
+        var y = MLX.conv2d(x, weightOHWI, stride: [1, fstride], padding: [0, 0], groups: groups)
         if let bias {
             y = y + bias.reshaped([1, 1, 1, bias.shape[0]])
         }
         return y.transposed(0, 3, 1, 2)
+    }
+
+    private func convTranspose2dLayer(
+        _ xBCHW: MLXArray,
+        weightKey: String,
+        fstride: Int,
+        groups: Int
+    ) throws -> MLXArray {
+        if groups > 1, let denseWeight = convTransposeDenseWeights[weightKey] {
+            var x = xBCHW.transposed(0, 2, 3, 1)  // NHWC
+            let kT = denseWeight.shape[1]
+            let kF = denseWeight.shape[2]
+            let padding = IntOrPair((kT - 1, kF / 2))
+            let outputPadding = IntOrPair((0, kF / 2))
+            x = MLX.convTransposed2d(
+                x,
+                denseWeight,
+                stride: [1, fstride],
+                padding: padding,
+                outputPadding: outputPadding,
+                groups: 1
+            )
+            return x.transposed(0, 3, 1, 2)
+        }
+        if groups > 1, let groupedWeights = convTransposeGroupWeights[weightKey], groupedWeights.count == groups {
+            return convTranspose2dLayer(
+                xBCHW,
+                groupedWeights: groupedWeights,
+                fstride: fstride
+            )
+        }
+        return try convTranspose2dLayer(
+            xBCHW,
+            weight: w(weightKey),
+            fstride: fstride,
+            groups: groups
+        )
     }
 
     private func convTranspose2dLayer(
@@ -1436,6 +1568,39 @@ public final class DeepFilterNetModel: STSModel {
         return y.transposed(0, 3, 1, 2)
     }
 
+    private func convTranspose2dLayer(
+        _ xBCHW: MLXArray,
+        groupedWeights: [MLXArray],
+        fstride: Int
+    ) -> MLXArray {
+        let groups = groupedWeights.count
+        var x = xBCHW.transposed(0, 2, 3, 1)  // NHWC
+        let kT = groupedWeights[0].shape[1]
+        let kF = groupedWeights[0].shape[2]
+        let padding = IntOrPair((kT - 1, kF / 2))
+        let outputPadding = IntOrPair((0, kF / 2))
+        let inPerGroup = max(1, x.shape[3] / groups)
+
+        var ys = [MLXArray]()
+        ys.reserveCapacity(groups)
+        for (g, wT) in groupedWeights.enumerated() {
+            let inStart = g * inPerGroup
+            let inEnd = inStart + inPerGroup
+            let xg = x[0..., 0..., 0..., inStart..<inEnd]
+            let yg = MLX.convTransposed2d(
+                xg,
+                wT,
+                stride: [1, fstride],
+                padding: padding,
+                outputPadding: outputPadding,
+                groups: 1
+            )
+            ys.append(yg)
+        }
+        x = MLX.concatenated(ys, axis: 3)
+        return x.transposed(0, 3, 1, 2)
+    }
+
     private func groupedConv2d(
         input: MLXArray,
         weight: MLXArray,
@@ -1446,16 +1611,19 @@ public final class DeepFilterNetModel: STSModel {
     }
 
     private func batchNorm(_ x: MLXArray, prefix: String) throws -> MLXArray {
+        if let scale = bnScale[prefix], let bias = bnBias[prefix] {
+            return x * scale + bias
+        }
+
         let gamma = try w("\(prefix).weight")
         let beta = try w("\(prefix).bias")
         let mean = try w("\(prefix).running_mean")
         let variance = try w("\(prefix).running_var")
-
-        let gammaR = gamma.reshaped([1, gamma.shape[0], 1, 1])
-        let betaR = beta.reshaped([1, beta.shape[0], 1, 1])
-        let meanR = mean.reshaped([1, mean.shape[0], 1, 1])
-        let varianceR = variance.reshaped([1, variance.shape[0], 1, 1])
-        return ((x - meanR) / MLX.sqrt(varianceR + MLXArray(Float(1e-5)))) * gammaR + betaR
+        let scale = (gamma / MLX.sqrt(variance + MLXArray(Float(1e-5))))
+            .reshaped([1, gamma.shape[0], 1, 1])
+        let shift = (beta - mean * (gamma / MLX.sqrt(variance + MLXArray(Float(1e-5)))))
+            .reshaped([1, beta.shape[0], 1, 1])
+        return x * scale + shift
     }
 
     private func squeezedGRU(
@@ -1684,6 +1852,88 @@ public final class DeepFilterNetModel: STSModel {
         guard count > 1 else { return [start] }
         let step = (end - start) / Float(count - 1)
         return (0..<count).map { start + Float($0) * step }
+    }
+
+    private static func buildBatchNormAffine(weights: [String: MLXArray]) -> ([String: MLXArray], [String: MLXArray]) {
+        var scaleByPrefix = [String: MLXArray]()
+        var biasByPrefix = [String: MLXArray]()
+
+        for (key, mean) in weights where key.hasSuffix(".running_mean") {
+            let prefix = String(key.dropLast(".running_mean".count))
+            guard let gamma = weights["\(prefix).weight"],
+                  let beta = weights["\(prefix).bias"],
+                  let variance = weights["\(prefix).running_var"]
+            else {
+                continue
+            }
+            let scale = gamma / MLX.sqrt(variance + MLXArray(Float(1e-5)))
+            let shift = beta - mean * scale
+            scaleByPrefix[prefix] = scale.reshaped([1, scale.shape[0], 1, 1])
+            biasByPrefix[prefix] = shift.reshaped([1, shift.shape[0], 1, 1])
+        }
+
+        return (scaleByPrefix, biasByPrefix)
+    }
+
+    private static func buildConv2dWeightCache(weights: [String: MLXArray]) -> [String: MLXArray] {
+        var cache = [String: MLXArray]()
+        for (key, weight) in weights where key.hasSuffix(".weight") && weight.ndim == 4 {
+            cache[key] = weight.transposed(0, 2, 3, 1)
+        }
+        return cache
+    }
+
+    private static func buildGroupedTransposeWeights(
+        weights: [String: MLXArray],
+        groups: Int
+    ) -> [String: [MLXArray]] {
+        guard groups > 1 else { return [:] }
+        var cache = [String: [MLXArray]]()
+        for (key, weight) in weights where key.hasSuffix(".0.weight") && weight.ndim == 4 {
+            guard weight.shape[0] % groups == 0 else { continue }
+            let inPerGroup = weight.shape[0] / groups
+            var grouped = [MLXArray]()
+            grouped.reserveCapacity(groups)
+            for g in 0..<groups {
+                let inStart = g * inPerGroup
+                let inEnd = inStart + inPerGroup
+                let wg = weight[inStart..<inEnd, 0..., 0..., 0...]
+                grouped.append(wg.transposed(1, 2, 3, 0))
+            }
+            cache[key] = grouped
+        }
+        return cache
+    }
+
+    private static func buildDenseTransposeWeights(
+        weights: [String: MLXArray],
+        groups: Int
+    ) -> [String: MLXArray] {
+        guard groups > 1 else { return [:] }
+        var cache = [String: MLXArray]()
+        for (key, weight) in weights where key.hasSuffix(".0.weight") && weight.ndim == 4 {
+            guard weight.shape[0] % groups == 0 else { continue }
+            let inPerGroup = weight.shape[0] / groups
+            let outPerGroup = weight.shape[1]
+            let kT = weight.shape[2]
+            let kF = weight.shape[3]
+            let totalIn = inPerGroup * groups
+
+            var outBlocks = [MLXArray]()
+            outBlocks.reserveCapacity(groups)
+            for g in 0..<groups {
+                let inStart = g * inPerGroup
+                let inEnd = inStart + inPerGroup
+                let wg = weight[inStart..<inEnd, 0..., 0..., 0...].transposed(1, 2, 3, 0)  // [out_pg, kT, kF, in_pg]
+                let leftChannels = g * inPerGroup
+                let rightChannels = totalIn - leftChannels - inPerGroup
+                let left = MLXArray.zeros([outPerGroup, kT, kF, leftChannels], type: Float.self)
+                let right = MLXArray.zeros([outPerGroup, kT, kF, rightChannels], type: Float.self)
+                outBlocks.append(MLX.concatenated([left, wg, right], axis: 3))
+            }
+            cache[key] = MLX.concatenated(outBlocks, axis: 0)  // [groups*out_pg, kT, kF, groups*in_pg]
+        }
+        return cache
     }
 
     private func w(_ key: String) throws -> MLXArray {

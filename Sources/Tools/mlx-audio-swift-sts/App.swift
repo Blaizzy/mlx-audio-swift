@@ -483,82 +483,127 @@ enum App {
         }
 
         let started = CFAbsoluteTimeGetCurrent()
+        let env = ProcessInfo.processInfo.environment
+        let forcedDevice = env["DFN_DEVICE"]?.lowercased()
+        if let forcedDevice {
+            print("Using MLX device override: \(forcedDevice)")
+        }
         switch args.mode {
         case .stream:
             print("Enhancing audio with \(model.modelVersion) (mode=stream)")
-            let streamProfiling = ProcessInfo.processInfo.environment["DFN_STREAM_PROFILE"] == "1"
-            let streamer = model.createStreamer(
-                config: DeepFilterNetStreamingConfig(
-                    padEndFrames: 3,
-                    compensateDelay: true,
-                    enableProfiling: streamProfiling
-                )
-            )
-            let writer = try StreamingWAVWriter(url: outputURL, sampleRate: Double(model.sampleRate))
-            let requestedChunkSamples = max(Int(Float(model.sampleRate) * args.chunkSeconds), model.config.hopSize)
-            let usingDefaultChunk = abs(args.chunkSeconds - 10.0) < 0.000_001
-            let chunkSamples = usingDefaultChunk ? model.config.hopSize : requestedChunkSamples
-            if usingDefaultChunk {
-                print("Using hop-by-hop streaming chunk (\(chunkSamples) samples) for low-latency mode")
-            }
+            let streamProfiling = env["DFN_STREAM_PROFILE"] == "1"
+            let forceStageEval = env["DFN_STREAM_PROFILE_STAGE_EVAL"] == "1"
+            let materializeEveryHops = max(Int(env["DFN_STREAM_MAT_EVERY"] ?? "") ?? 256, 0)
+            let enableStageSkipping = env["DFN_STREAM_STAGE_SKIP"] == "1"
+            let bypassModel = env["DFN_STREAM_BYPASS"] == "1"
 
-            var chunkCount = 0
-            var writtenSamples = 0
-            var processSeconds = 0.0
-            var emitSeconds = 0.0
-            var start = 0
-            let totalSamples = audioData.shape[0]
-            while start < totalSamples {
-                let end = min(start + chunkSamples, totalSamples)
-                let tProcess0 = CFAbsoluteTimeGetCurrent()
-                let outChunk = try streamer.processChunk(audioData[start..<end])
-                if streamProfiling, outChunk.shape[0] > 0 {
-                    eval(outChunk)
-                }
-                processSeconds += CFAbsoluteTimeGetCurrent() - tProcess0
-                if outChunk.shape[0] > 0 {
-                    let tEmit0 = CFAbsoluteTimeGetCurrent()
-                    try writer.writeChunk(outChunk)
-                    emitSeconds += CFAbsoluteTimeGetCurrent() - tEmit0
-                    writtenSamples += outChunk.shape[0]
-                    chunkCount += 1
-                }
-                start = end
-            }
-
-            let tTail0 = CFAbsoluteTimeGetCurrent()
-            let tail = try streamer.flushMLX()
-            if streamProfiling, tail.shape[0] > 0 {
-                eval(tail)
-            }
-            processSeconds += CFAbsoluteTimeGetCurrent() - tTail0
-            if tail.shape[0] > 0 {
-                let tTailEmit0 = CFAbsoluteTimeGetCurrent()
-                try writer.writeChunk(tail)
-                emitSeconds += CFAbsoluteTimeGetCurrent() - tTailEmit0
-                writtenSamples += tail.shape[0]
-                chunkCount += 1
-            }
-            _ = writer.finalize()
-            print("Wrote WAV to \(outputURL.path)")
-            print("Streamed \(chunkCount) chunk(s)")
-            let duration = Double(writtenSamples) / Double(model.sampleRate)
-            print(String(format: "Enhanced %d samples (%.1fs at %dHz)", writtenSamples, duration, model.sampleRate))
-            if streamProfiling {
-                let loopTotal = processSeconds + emitSeconds
-                print(
-                    String(
-                        format:
-                            "Stream loop profile: process=%.3fs (%.1f%%), emit(mlx->host+wav)=%.3fs (%.1f%%)",
-                        processSeconds,
-                        loopTotal > 0 ? (processSeconds / loopTotal) * 100.0 : 0.0,
-                        emitSeconds,
-                        loopTotal > 0 ? (emitSeconds / loopTotal) * 100.0 : 0.0
+            let runStream = {
+                let streamer = bypassModel
+                    ? nil
+                    : model.createStreamer(
+                        config: DeepFilterNetStreamingConfig(
+                            padEndFrames: 3,
+                            compensateDelay: true,
+                            enableStageSkipping: enableStageSkipping,
+                            enableProfiling: streamProfiling,
+                            profilingForceEvalPerStage: forceStageEval,
+                            materializeEveryHops: materializeEveryHops
+                        )
                     )
-                )
-                if let summary = streamer.profilingSummary() {
-                    print(summary)
+                let writer = try StreamingWAVWriter(url: outputURL, sampleRate: Double(model.sampleRate))
+                let requestedChunkSamples = max(Int(Float(model.sampleRate) * args.chunkSeconds), model.config.hopSize)
+                let usingDefaultChunk = abs(args.chunkSeconds - 10.0) < 0.000_001
+                let chunkSamples = usingDefaultChunk ? model.config.hopSize : requestedChunkSamples
+                if usingDefaultChunk {
+                    print("Using hop-by-hop streaming chunk (\(chunkSamples) samples) for low-latency mode")
                 }
+                if bypassModel {
+                    print("Bypass mode enabled: measuring stream harness overhead only")
+                }
+                if streamProfiling {
+                    print(
+                        "Stream profiling enabled (stageEval=\(forceStageEval), materializeEveryHops=\(materializeEveryHops), stageSkip=\(enableStageSkipping))"
+                    )
+                }
+
+                var chunkCount = 0
+                var writtenSamples = 0
+                var processSeconds = 0.0
+                var emitSeconds = 0.0
+                var start = 0
+                let totalSamples = audioData.shape[0]
+                while start < totalSamples {
+                    let end = min(start + chunkSamples, totalSamples)
+                    let tProcess0 = CFAbsoluteTimeGetCurrent()
+                    let outChunk: MLXArray
+                    if let streamer {
+                        outChunk = try streamer.processChunk(audioData[start..<end])
+                    } else {
+                        outChunk = audioData[start..<end]
+                    }
+                    if streamProfiling, outChunk.shape[0] > 0 {
+                        eval(outChunk)
+                    }
+                    processSeconds += CFAbsoluteTimeGetCurrent() - tProcess0
+                    if outChunk.shape[0] > 0 {
+                        let tEmit0 = CFAbsoluteTimeGetCurrent()
+                        try writer.writeChunk(outChunk)
+                        emitSeconds += CFAbsoluteTimeGetCurrent() - tEmit0
+                        writtenSamples += outChunk.shape[0]
+                        chunkCount += 1
+                    }
+                    start = end
+                }
+
+                if let streamer {
+                    let tTail0 = CFAbsoluteTimeGetCurrent()
+                    let tail = try streamer.flushMLX()
+                    if streamProfiling, tail.shape[0] > 0 {
+                        eval(tail)
+                    }
+                    processSeconds += CFAbsoluteTimeGetCurrent() - tTail0
+                    if tail.shape[0] > 0 {
+                        let tTailEmit0 = CFAbsoluteTimeGetCurrent()
+                        try writer.writeChunk(tail)
+                        emitSeconds += CFAbsoluteTimeGetCurrent() - tTailEmit0
+                        writtenSamples += tail.shape[0]
+                        chunkCount += 1
+                    }
+                }
+                _ = writer.finalize()
+                print("Wrote WAV to \(outputURL.path)")
+                print("Streamed \(chunkCount) chunk(s)")
+                let duration = Double(writtenSamples) / Double(model.sampleRate)
+                print(String(format: "Enhanced %d samples (%.1fs at %dHz)", writtenSamples, duration, model.sampleRate))
+                if streamProfiling {
+                    let loopTotal = processSeconds + emitSeconds
+                    print(
+                        String(
+                            format:
+                                "Stream loop profile: process=%.3fs (%.1f%%), emit(mlx->host+wav)=%.3fs (%.1f%%)",
+                            processSeconds,
+                            loopTotal > 0 ? (processSeconds / loopTotal) * 100.0 : 0.0,
+                            emitSeconds,
+                            loopTotal > 0 ? (emitSeconds / loopTotal) * 100.0 : 0.0
+                        )
+                    )
+                    if let streamer, let summary = streamer.profilingSummary() {
+                        print(summary)
+                    }
+                }
+            }
+
+            switch forcedDevice {
+            case "cpu":
+                try Device.withDefaultDevice(.cpu) {
+                    try runStream()
+                }
+            case "gpu":
+                try Device.withDefaultDevice(.gpu) {
+                    try runStream()
+                }
+            default:
+                try runStream()
             }
 
         case .short, .long:
