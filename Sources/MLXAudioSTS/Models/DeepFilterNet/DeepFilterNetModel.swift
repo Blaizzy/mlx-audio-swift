@@ -93,6 +93,7 @@ public final class DeepFilterNetModel: STSModel {
     private let conv2dWeightsOHWI: [String: MLXArray]
     private let convTransposeDenseWeights: [String: MLXArray]
     private let convTransposeGroupWeights: [String: [MLXArray]]
+    private let gruTransposedWeights: [String: MLXArray]
     private let j: MLXArray = MLXArray(real: Float(0.0), imaginary: Float(1.0))
 
     private init(
@@ -137,6 +138,7 @@ public final class DeepFilterNetModel: STSModel {
             weights: weights,
             groups: max(1, config.convCh)
         )
+        self.gruTransposedWeights = Self.buildGRUTransposedWeightCache(weights: weights)
     }
 
     // MARK: - Loading
@@ -362,6 +364,19 @@ public final class DeepFilterNetModel: STSModel {
     // MARK: - Streaming
 
     public final class DeepFilterNetStreamer {
+        private struct StreamGRULayer {
+            let wihT: MLXArray
+            let whhT: MLXArray
+            let bih: MLXArray
+            let bhh: MLXArray
+        }
+
+        private struct StreamGRU {
+            let linearInWeight: MLXArray
+            let layers: [StreamGRULayer]
+            let linearOutWeight: MLXArray?
+        }
+
         private let model: DeepFilterNetModel
         public let config: DeepFilterNetStreamingConfig
 
@@ -393,6 +408,12 @@ public final class DeepFilterNetModel: STSModel {
         private let lsnrBias: MLXArray
         private let lsnrScale: MLXArray
         private let lsnrOffset: MLXArray
+        private let encDfFcEmbWeight: MLXArray
+        private let dfDecSkipWeight: MLXArray?
+        private let dfDecOutWeight: MLXArray
+        private let encEmbGRU: StreamGRU
+        private let erbDecEmbGRU: StreamGRU
+        private let dfDecGRU: StreamGRU
 
         private var pendingSamples = MLXArray.zeros([0], type: Float.self)
         private var analysisMem: MLXArray
@@ -419,6 +440,10 @@ public final class DeepFilterNetModel: STSModel {
         private var profAnalysisSeconds = 0.0
         private var profFeaturesSeconds = 0.0
         private var profInferSeconds = 0.0
+        private var profInferEncodeSeconds = 0.0
+        private var profInferEmbSeconds = 0.0
+        private var profInferErbSeconds = 0.0
+        private var profInferDfSeconds = 0.0
         private var profSynthesisSeconds = 0.0
         private var profMaterializeSeconds = 0.0
         private let profilingForceEvalPerStage: Bool
@@ -461,11 +486,44 @@ public final class DeepFilterNetModel: STSModel {
             self.lsnrBias = (try? model.w("enc.lsnr_fc.0.bias")) ?? MLXArray.zeros([1], type: Float.self)
             self.lsnrScale = MLXArray(Float(model.config.lsnrMax - model.config.lsnrMin))
             self.lsnrOffset = MLXArray(Float(model.config.lsnrMin))
+            self.encDfFcEmbWeight = Self.requireWeight(model, key: "enc.df_fc_emb.0.weight")
+            self.dfDecSkipWeight = model.weights["df_dec.df_skip.weight"]
+            self.dfDecOutWeight = Self.requireWeight(model, key: "df_dec.df_out.0.weight")
+            self.encEmbGRU = Self.buildStreamGRU(model: model, prefix: "enc.emb_gru")
+            self.erbDecEmbGRU = Self.buildStreamGRU(model: model, prefix: "erb_dec.emb_gru")
+            self.dfDecGRU = Self.buildStreamGRU(model: model, prefix: "df_dec.df_gru")
 
             self.analysisMem = MLXArray.zeros([analysisMemCount], type: Float.self)
             self.synthMem = MLXArray.zeros([synthMemCount], type: Float.self)
             self.erbState = MLXArray(Self.linspace(start: -60.0, end: -90.0, count: model.config.nbErb))
             self.dfState = MLXArray(Self.linspace(start: 0.001, end: 0.0001, count: model.config.nbDf))
+        }
+
+        private static func requireWeight(_ model: DeepFilterNetModel, key: String) -> MLXArray {
+            guard let weight = model.weights[key] else {
+                preconditionFailure("Missing required DeepFilterNet weight: \(key)")
+            }
+            return weight
+        }
+
+        private static func buildStreamGRU(model: DeepFilterNetModel, prefix: String) -> StreamGRU {
+            let linearIn = requireWeight(model, key: "\(prefix).linear_in.0.weight")
+            let linearOut = model.weights["\(prefix).linear_out.0.weight"]
+
+            var layers = [StreamGRULayer]()
+            var layer = 0
+            while model.weights["\(prefix).gru.weight_ih_l\(layer)"] != nil {
+                let wihKey = "\(prefix).gru.weight_ih_l\(layer)"
+                let whhKey = "\(prefix).gru.weight_hh_l\(layer)"
+                let wihT = model.gruTransposedWeights[wihKey] ?? requireWeight(model, key: wihKey).transposed()
+                let whhT = model.gruTransposedWeights[whhKey] ?? requireWeight(model, key: whhKey).transposed()
+                let bih = requireWeight(model, key: "\(prefix).gru.bias_ih_l\(layer)")
+                let bhh = requireWeight(model, key: "\(prefix).gru.bias_hh_l\(layer)")
+                layers.append(StreamGRULayer(wihT: wihT, whhT: whhT, bih: bih, bhh: bhh))
+                layer += 1
+            }
+
+            return StreamGRU(linearInWeight: linearIn, layers: layers, linearOutWeight: linearOut)
         }
 
         public func reset() {
@@ -489,6 +547,10 @@ public final class DeepFilterNetModel: STSModel {
             profAnalysisSeconds = 0.0
             profFeaturesSeconds = 0.0
             profInferSeconds = 0.0
+            profInferEncodeSeconds = 0.0
+            profInferEmbSeconds = 0.0
+            profInferErbSeconds = 0.0
+            profInferDfSeconds = 0.0
             profSynthesisSeconds = 0.0
             profMaterializeSeconds = 0.0
         }
@@ -498,6 +560,22 @@ public final class DeepFilterNetModel: STSModel {
                 throw DeepFilterNetError.invalidAudioShape(chunk.shape)
             }
             let chunkF32 = chunk.asType(.float32)
+            if !isLast, pendingSamples.shape[0] == 0, chunkF32.shape[0] == hopSize {
+                if var out = try processHop(chunkF32) {
+                    if config.compensateDelay {
+                        let totalDelay = fftSize - hopSize
+                        if delayDropped < totalDelay {
+                            let toDrop = min(totalDelay - delayDropped, out.shape[0])
+                            if toDrop > 0 {
+                                out = out[toDrop..<out.shape[0]]
+                                delayDropped += toDrop
+                            }
+                        }
+                    }
+                    return out
+                }
+                return MLXArray.zeros([0], type: Float.self)
+            }
             if chunkF32.shape[0] > 0 {
                 if pendingSamples.shape[0] == 0 {
                     pendingSamples = chunkF32
@@ -589,6 +667,10 @@ public final class DeepFilterNetModel: STSModel {
                       analysis:    %.3fs (%.1f%%)
                       features:    %.3fs (%.1f%%)
                       infer:       %.3fs (%.1f%%)
+                        infer.enc: %.3fs (%.1f%% infer)
+                        infer.emb: %.3fs (%.1f%% infer)
+                        infer.erb: %.3fs (%.1f%% infer)
+                        infer.df:  %.3fs (%.1f%% infer)
                       synthesis:   %.3fs (%.1f%%)
                       materialize: %.3fs (%.1f%%)
                     """,
@@ -598,6 +680,10 @@ public final class DeepFilterNetModel: STSModel {
                 profAnalysisSeconds, pct(profAnalysisSeconds),
                 profFeaturesSeconds, pct(profFeaturesSeconds),
                 profInferSeconds, pct(profInferSeconds),
+                profInferEncodeSeconds, profInferSeconds > 0 ? (profInferEncodeSeconds / profInferSeconds) * 100.0 : 0.0,
+                profInferEmbSeconds, profInferSeconds > 0 ? (profInferEmbSeconds / profInferSeconds) * 100.0 : 0.0,
+                profInferErbSeconds, profInferSeconds > 0 ? (profInferErbSeconds / profInferSeconds) * 100.0 : 0.0,
+                profInferDfSeconds, profInferSeconds > 0 ? (profInferDfSeconds / profInferSeconds) * 100.0 : 0.0,
                 profSynthesisSeconds, pct(profSynthesisSeconds),
                 profMaterializeSeconds, pct(profMaterializeSeconds)
             )
@@ -765,6 +851,7 @@ public final class DeepFilterNetModel: STSModel {
             featErb: MLXArray,
             featDf: MLXArray
         ) throws -> MLXArray {
+            let tEncode0 = enableProfiling ? CFAbsoluteTimeGetCurrent() : 0
             let specMX = spec
                 .expandedDimensions(axis: 0)
                 .expandedDimensions(axis: 0)
@@ -785,16 +872,22 @@ public final class DeepFilterNetModel: STSModel {
             let c1 = try applyConvLast(inputs: [c0], prefix: "enc.df_conv1", main: 0, pointwise: 1, bn: 2, fstride: 2)
 
             var cemb = c1.transposed(0, 2, 3, 1).reshaped([1, 1, -1])
-            cemb = relu(model.groupedLinear(cemb, weight: try model.w("enc.df_fc_emb.0.weight")))
+            cemb = relu(model.groupedLinear(cemb, weight: encDfFcEmbWeight))
 
             var emb = e3.transposed(0, 2, 3, 1).reshaped([1, 1, -1])
             emb = model.config.encConcat ? MLX.concatenated([emb, cemb], axis: -1) : (emb + cemb)
+            if enableProfiling, profilingForceEvalPerStage {
+                eval(e3, c1, emb)
+            }
+            if enableProfiling {
+                profInferEncodeSeconds += CFAbsoluteTimeGetCurrent() - tEncode0
+            }
 
-            emb = try squeezedGRUStep(
+            let tEmb0 = enableProfiling ? CFAbsoluteTimeGetCurrent() : 0
+            emb = squeezedGRUStep(
                 emb,
-                prefix: "enc.emb_gru",
+                gru: encEmbGRU,
                 hiddenSize: model.config.embHiddenDim,
-                linearOut: true,
                 state: &encEmbState
             )
 
@@ -808,8 +901,15 @@ public final class DeepFilterNetModel: STSModel {
             } else {
                 (applyGains, applyGainZeros, applyDf) = (true, false, true)
             }
+            if enableProfiling, profilingForceEvalPerStage {
+                eval(emb)
+            }
+            if enableProfiling {
+                profInferEmbSeconds += CFAbsoluteTimeGetCurrent() - tEmb0
+            }
 
             let mask: MLXArray
+            let tErb0 = enableProfiling ? CFAbsoluteTimeGetCurrent() : 0
             if applyGains {
                 mask = try erbDecoderStep(emb: emb, e3: e3, e2: e2, e1: e1, e0: e0)
             } else if applyGainZeros {
@@ -818,14 +918,27 @@ public final class DeepFilterNetModel: STSModel {
                 return specMX[0, 0, 0, 0..., 0...]
             }
             let specMasked = applyMask(spec: specMX, mask: mask)
+            if enableProfiling, profilingForceEvalPerStage {
+                eval(mask, specMasked)
+            }
+            if enableProfiling {
+                profInferErbSeconds += CFAbsoluteTimeGetCurrent() - tErb0
+            }
             if !applyDf {
                 return specMasked[0, 0, 0, 0..., 0...]
             }
 
+            let tDf0 = enableProfiling ? CFAbsoluteTimeGetCurrent() : 0
             var dfCoefs = try dfDecoderStep(emb: emb, c0: c0)
             dfCoefs = dfCoefs.reshaped([1, 1, nbDf, dfOrder, 2]).transposed(0, 3, 1, 2, 4)
 
             let specEnhanced = try deepFilterAssign(spec: specMX, specMasked: specMasked, dfCoefs: dfCoefs, currentSpec: spec)
+            if enableProfiling, profilingForceEvalPerStage {
+                eval(dfCoefs, specEnhanced)
+            }
+            if enableProfiling {
+                profInferDfSeconds += CFAbsoluteTimeGetCurrent() - tDf0
+            }
             return specEnhanced[0, 0, 0, 0..., 0...]
         }
 
@@ -885,50 +998,41 @@ public final class DeepFilterNetModel: STSModel {
 
         private func squeezedGRUStep(
             _ x: MLXArray,
-            prefix: String,
+            gru: StreamGRU,
             hiddenSize: Int,
-            linearOut: Bool,
             state: inout [MLXArray]?
-        ) throws -> MLXArray {
-            var y = relu(model.groupedLinear(x, weight: try model.w("\(prefix).linear_in.0.weight")))
+        ) -> MLXArray {
+            var y = relu(model.groupedLinear(x, weight: gru.linearInWeight))
             var nextState = [MLXArray]()
-            var layer = 0
-
-            while model.weights["\(prefix).gru.weight_ih_l\(layer)"] != nil {
+            nextState.reserveCapacity(gru.layers.count)
+            for (layer, layerDef) in gru.layers.enumerated() {
                 let prevState: MLXArray
                 if let state, layer < state.count {
                     prevState = state[layer]
                 } else {
                     prevState = MLXArray.zeros([y.shape[0], hiddenSize], type: Float.self)
                 }
-                let h = try gruLayerStep(y, prefix: "\(prefix).gru", layer: layer, hiddenSize: hiddenSize, prevState: prevState)
+                let h = gruLayerStep(y, layer: layerDef, hiddenSize: hiddenSize, prevState: prevState)
                 nextState.append(h)
                 y = h.expandedDimensions(axis: 1)
-                layer += 1
             }
 
             state = nextState
-            if linearOut, model.weights["\(prefix).linear_out.0.weight"] != nil {
-                y = relu(model.groupedLinear(y, weight: try model.w("\(prefix).linear_out.0.weight")))
+            if let linearOut = gru.linearOutWeight {
+                y = relu(model.groupedLinear(y, weight: linearOut))
             }
             return y
         }
 
         private func gruLayerStep(
             _ x: MLXArray,
-            prefix: String,
-            layer: Int,
+            layer: StreamGRULayer,
             hiddenSize: Int,
             prevState: MLXArray
-        ) throws -> MLXArray {
-            let wih = try model.w("\(prefix).weight_ih_l\(layer)")
-            let whh = try model.w("\(prefix).weight_hh_l\(layer)")
-            let bih = try model.w("\(prefix).bias_ih_l\(layer)")
-            let bhh = try model.w("\(prefix).bias_hh_l\(layer)")
-
+        ) -> MLXArray {
             let xt = x[0..., 0, 0...]
-            let gx = MLX.addMM(bih, xt, wih.transposed())
-            let gh = MLX.addMM(bhh, prevState, whh.transposed())
+            let gx = MLX.addMM(layer.bih, xt, layer.wihT)
+            let gh = MLX.addMM(layer.bhh, prevState, layer.whhT)
 
             let xr = gx[0..., 0..<hiddenSize]
             let xz = gx[0..., hiddenSize..<(2 * hiddenSize)]
@@ -950,11 +1054,10 @@ public final class DeepFilterNetModel: STSModel {
             e1: MLXArray,
             e0: MLXArray
         ) throws -> MLXArray {
-            var embDec = try squeezedGRUStep(
+            var embDec = squeezedGRUStep(
                 emb,
-                prefix: "erb_dec.emb_gru",
+                gru: erbDecEmbGRU,
                 hiddenSize: model.config.embHiddenDim,
-                linearOut: true,
                 state: &erbDecState
             )
             let f8 = e3.shape[3]
@@ -972,15 +1075,14 @@ public final class DeepFilterNetModel: STSModel {
         }
 
         private func dfDecoderStep(emb: MLXArray, c0: MLXArray) throws -> MLXArray {
-            var c = try squeezedGRUStep(
+            var c = squeezedGRUStep(
                 emb,
-                prefix: "df_dec.df_gru",
+                gru: dfDecGRU,
                 hiddenSize: model.config.dfHiddenDim,
-                linearOut: false,
                 state: &dfDecState
             )
-            if model.weights["df_dec.df_skip.weight"] != nil {
-                c = c + model.groupedLinear(emb, weight: try model.w("df_dec.df_skip.weight"))
+            if let dfDecSkipWeight {
+                c = c + model.groupedLinear(emb, weight: dfDecSkipWeight)
             }
 
             appendWithLimit(&dfConvpIn, c0, maxLen: model.config.dfPathwayKernelSizeT)
@@ -1009,7 +1111,7 @@ public final class DeepFilterNetModel: STSModel {
             c0p = c0p[0..., 0..., (t - 1)..<t, 0...]
             c0p = c0p.transposed(0, 2, 3, 1)
 
-            let dfOut = tanh(model.groupedLinear(c, weight: try model.w("df_dec.df_out.0.weight")))
+            let dfOut = tanh(model.groupedLinear(c, weight: dfDecOutWeight))
                 .reshaped([1, 1, nbDf, dfOrder * 2])
             return dfOut + c0p
         }
@@ -1663,8 +1765,20 @@ public final class DeepFilterNetModel: STSModel {
         layer: Int,
         hiddenSize: Int
     ) throws -> MLXArray {
-        let wih = try w("\(prefix).weight_ih_l\(layer)")
-        let whh = try w("\(prefix).weight_hh_l\(layer)")
+        let wihKey = "\(prefix).weight_ih_l\(layer)"
+        let whhKey = "\(prefix).weight_hh_l\(layer)"
+        let wihT: MLXArray
+        if let cached = gruTransposedWeights[wihKey] {
+            wihT = cached
+        } else {
+            wihT = try w(wihKey).transposed()
+        }
+        let whhT: MLXArray
+        if let cached = gruTransposedWeights[whhKey] {
+            whhT = cached
+        } else {
+            whhT = try w(whhKey).transposed()
+        }
         let bih = try w("\(prefix).bias_ih_l\(layer)")
         let bhh = try w("\(prefix).bias_hh_l\(layer)")
 
@@ -1677,8 +1791,8 @@ public final class DeepFilterNetModel: STSModel {
 
         for i in 0..<t {
             let xt = x[0..., i, 0...]
-            let gx = MLX.addMM(bih, xt, wih.transposed())
-            let gh = MLX.addMM(bhh, h, whh.transposed())
+            let gx = MLX.addMM(bih, xt, wihT)
+            let gh = MLX.addMM(bhh, h, whhT)
 
             let xr = gx[0..., 0..<hiddenSize]
             let xz = gx[0..., hiddenSize..<(2 * hiddenSize)]
@@ -1879,6 +1993,15 @@ public final class DeepFilterNetModel: STSModel {
         var cache = [String: MLXArray]()
         for (key, weight) in weights where key.hasSuffix(".weight") && weight.ndim == 4 {
             cache[key] = weight.transposed(0, 2, 3, 1)
+        }
+        return cache
+    }
+
+    private static func buildGRUTransposedWeightCache(weights: [String: MLXArray]) -> [String: MLXArray] {
+        var cache = [String: MLXArray]()
+        cache.reserveCapacity(24)
+        for (key, weight) in weights where key.contains(".gru.weight_") && weight.ndim == 2 {
+            cache[key] = weight.transposed()
         }
         return cache
     }
