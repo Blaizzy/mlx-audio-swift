@@ -189,10 +189,10 @@ enum App {
                 print("  TTFB: n/a")
             }
             if benchmarkMetrics.audioDuration > 0 {
-                let rtf = benchmarkMetrics.elapsed / benchmarkMetrics.audioDuration
-                print(String(format: "  RTF: %.3f", rtf))
+                let rtf = benchmarkMetrics.audioDuration / benchmarkMetrics.elapsed
+                print(String(format: "  RTFx: %.3f", rtf))
             } else {
-                print("  RTF: n/a")
+                print("  RTFx: n/a")
             }
             if let info = benchmarkMetrics.generationInfo {
                 print(String(format: "  Tokens/s: %.2f", info.tokensPerSecond))
