@@ -52,7 +52,7 @@ public struct DeepFilterNetStreamingConfig: Sendable {
         maxDbDfThresh: Float = 20.0,
         enableProfiling: Bool = false,
         profilingForceEvalPerStage: Bool = false,
-        materializeEveryHops: Int = 256
+        materializeEveryHops: Int = 512
     ) {
         self.padEndFrames = padEndFrames
         self.compensateDelay = compensateDelay
@@ -377,6 +377,43 @@ public final class DeepFilterNetModel: STSModel {
             let linearOutWeight: MLXArray?
         }
 
+        private struct StaticRing {
+            private(set) var values: [MLXArray]
+            private(set) var totalWritten: Int = 0
+
+            var capacity: Int { values.count }
+            var count: Int { min(totalWritten, capacity) }
+            var oldestAbsoluteIndex: Int { max(0, totalWritten - capacity) }
+
+            init(capacity: Int, initial: MLXArray) {
+                precondition(capacity > 0, "StaticRing capacity must be > 0")
+                values = Array(repeating: initial, count: capacity)
+            }
+
+            mutating func reset() {
+                totalWritten = 0
+            }
+
+            mutating func push(_ value: MLXArray) {
+                values[totalWritten % capacity] = value
+                totalWritten += 1
+            }
+
+            func get(absoluteIndex: Int) -> MLXArray? {
+                guard absoluteIndex >= oldestAbsoluteIndex, absoluteIndex < totalWritten else {
+                    return nil
+                }
+                return values[absoluteIndex % capacity]
+            }
+
+            func orderedLast(_ n: Int) -> [MLXArray] {
+                let k = min(max(0, n), totalWritten)
+                guard k > 0 else { return [] }
+                let start = totalWritten - k
+                return (start..<(start + k)).compactMap { get(absoluteIndex: $0) }
+            }
+        }
+
         private let model: DeepFilterNetModel
         public let config: DeepFilterNetStreamingConfig
 
@@ -400,7 +437,14 @@ public final class DeepFilterNetModel: STSModel {
         private let tenArray = MLXArray(Float(10.0))
         private let fortyArray = MLXArray(Float(40.0))
         private let zeroSpecFrame: MLXArray
+        private let zeroSpecLowFrame: MLXArray
         private let zeroMaskFrame: MLXArray
+        private let zeroEncErbFrame: MLXArray
+        private let zeroEncDfFrame: MLXArray
+        private let zeroDfConvpFrame: MLXArray
+        private let specRingCapacity: Int
+        private let dfConvpKernelSizeT: Int
+        private let dfSpecLeft: Int
         private let analysisMemCount: Int
         private let synthMemCount: Int
         private let erbFBFrame: MLXArray?
@@ -421,13 +465,12 @@ public final class DeepFilterNetModel: STSModel {
         private var erbState: MLXArray
         private var dfState: MLXArray
 
-        private var specQueue: [MLXArray] = []
-        private var specPast: [MLXArray] = []
-        private var frameCount = 0
-
-        private var encErb0In: [MLXArray] = []
-        private var encDf0In: [MLXArray] = []
-        private var dfConvpIn: [MLXArray] = []
+        private var specRing: StaticRing
+        private var encErbHistory: MLXArray
+        private var encDfHistory: MLXArray
+        private var dfConvpHistory: MLXArray
+        private var dfSpecHistory: MLXArray
+        private var dfSpecHistoryInitialized = false
 
         private var encEmbState: [MLXArray]?
         private var erbDecState: [MLXArray]?
@@ -473,7 +516,15 @@ public final class DeepFilterNetModel: STSModel {
             self.analysisMemCount = max(0, model.config.fftSize - model.config.hopSize)
             self.synthMemCount = max(0, model.config.fftSize - model.config.hopSize)
             self.zeroSpecFrame = MLXArray.zeros([model.config.freqBins, 2], type: Float.self)
+            self.zeroSpecLowFrame = zeroSpecFrame[0..<model.config.nbDf, 0...]
             self.zeroMaskFrame = MLXArray.zeros([1, 1, 1, model.config.nbErb], type: Float.self)
+            self.zeroEncErbFrame = MLXArray.zeros([1, 1, 1, model.config.nbErb], type: Float.self).asType(model.inferenceDType)
+            self.zeroEncDfFrame = MLXArray.zeros([1, 2, 1, model.config.nbDf], type: Float.self).asType(model.inferenceDType)
+            self.zeroDfConvpFrame = MLXArray.zeros([1, model.config.convCh, 1, model.config.nbDf], type: Float.self).asType(model.inferenceDType)
+            self.dfConvpKernelSizeT = max(1, model.config.dfPathwayKernelSizeT)
+            let leftHistory = max(0, model.config.dfOrder - model.config.dfLookahead - 1)
+            self.dfSpecLeft = leftHistory
+            self.specRingCapacity = max(8, leftHistory + model.config.convLookahead + model.config.dfLookahead + 4)
             if model.erbFB.shape.count == 2,
                model.erbFB.shape[0] == model.config.freqBins,
                model.erbFB.shape[1] == model.config.nbErb
@@ -497,6 +548,11 @@ public final class DeepFilterNetModel: STSModel {
             self.synthMem = MLXArray.zeros([synthMemCount], type: Float.self)
             self.erbState = MLXArray(Self.linspace(start: -60.0, end: -90.0, count: model.config.nbErb))
             self.dfState = MLXArray(Self.linspace(start: 0.001, end: 0.0001, count: model.config.nbDf))
+            self.specRing = StaticRing(capacity: specRingCapacity, initial: zeroSpecFrame)
+            self.encErbHistory = MLX.repeated(zeroEncErbFrame, count: 3, axis: 2)
+            self.encDfHistory = MLX.repeated(zeroEncDfFrame, count: 3, axis: 2)
+            self.dfConvpHistory = MLX.repeated(zeroDfConvpFrame, count: dfConvpKernelSizeT, axis: 2)
+            self.dfSpecHistory = MLX.repeated(zeroSpecLowFrame.expandedDimensions(axis: 0), count: model.config.dfOrder, axis: 0)
         }
 
         private static func requireWeight(_ model: DeepFilterNetModel, key: String) -> MLXArray {
@@ -532,12 +588,12 @@ public final class DeepFilterNetModel: STSModel {
             synthMem = MLXArray.zeros([synthMemCount], type: Float.self)
             erbState = MLXArray(Self.linspace(start: -60.0, end: -90.0, count: nbErb))
             dfState = MLXArray(Self.linspace(start: 0.001, end: 0.0001, count: nbDf))
-            specQueue.removeAll(keepingCapacity: true)
-            specPast.removeAll(keepingCapacity: true)
-            frameCount = 0
-            encErb0In.removeAll(keepingCapacity: true)
-            encDf0In.removeAll(keepingCapacity: true)
-            dfConvpIn.removeAll(keepingCapacity: true)
+            specRing.reset()
+            encErbHistory = MLX.repeated(zeroEncErbFrame, count: 3, axis: 2)
+            encDfHistory = MLX.repeated(zeroEncDfFrame, count: 3, axis: 2)
+            dfConvpHistory = MLX.repeated(zeroDfConvpFrame, count: dfConvpKernelSizeT, axis: 2)
+            dfSpecHistory = MLX.repeated(zeroSpecLowFrame.expandedDimensions(axis: 0), count: dfOrder, axis: 0)
+            dfSpecHistoryInitialized = false
             encEmbState = nil
             erbDecState = nil
             dfDecState = nil
@@ -707,16 +763,20 @@ public final class DeepFilterNetModel: STSModel {
             if enableProfiling {
                 profFeaturesSeconds += CFAbsoluteTimeGetCurrent() - tFeatures0
             }
-            specQueue.append(spec)
-            frameCount += 1
+            specRing.push(spec)
+            encErbHistory = appendHistoryFrame(encErbHistory, frame: featErb.asType(inferenceDType))
+            encDfHistory = appendHistoryFrame(encDfHistory, frame: featDf.asType(inferenceDType))
 
-            if frameCount <= convLookahead {
+            if specRing.totalWritten <= convLookahead {
                 return nil
             }
-
-            let specT = specQueue.removeFirst()
+            let targetFrameIndex = specRing.totalWritten - 1 - convLookahead
+            guard let specT = specRing.get(absoluteIndex: targetFrameIndex) else {
+                return nil
+            }
+            updateDfSpecHistory(targetFrameIndex: targetFrameIndex)
             let tInfer0 = enableProfiling ? CFAbsoluteTimeGetCurrent() : 0
-            let specEnhanced = try inferFrame(spec: specT, featErb: featErb, featDf: featDf)
+            let specEnhanced = try inferFrame(spec: specT, targetFrameIndex: targetFrameIndex)
             if enableProfiling, profilingForceEvalPerStage {
                 eval(specEnhanced)
             }
@@ -848,8 +908,7 @@ public final class DeepFilterNetModel: STSModel {
 
         private func inferFrame(
             spec: MLXArray,
-            featErb: MLXArray,
-            featDf: MLXArray
+            targetFrameIndex: Int
         ) throws -> MLXArray {
             let tEncode0 = enableProfiling ? CFAbsoluteTimeGetCurrent() : 0
             let specMX = spec
@@ -857,19 +916,17 @@ public final class DeepFilterNetModel: STSModel {
                 .expandedDimensions(axis: 0)
                 .expandedDimensions(axis: 0)
                 .asType(inferenceDType)
-            let featErbMX = featErb.asType(inferenceDType)
-            let featDfMX = featDf.asType(inferenceDType)
-            appendWithLimit(&encErb0In, featErbMX, maxLen: 3)
-            appendWithLimit(&encDf0In, featDfMX, maxLen: 3)
-            appendWithLimit(&specPast, spec, maxLen: dfOrder)
 
-            let e0 = try applyConvLast(inputs: encErb0In, prefix: "enc.erb_conv0", main: 1, pointwise: nil, bn: 2, fstride: 1)
-            let e1 = try applyConvLast(inputs: [e0], prefix: "enc.erb_conv1", main: 0, pointwise: 1, bn: 2, fstride: 2)
-            let e2 = try applyConvLast(inputs: [e1], prefix: "enc.erb_conv2", main: 0, pointwise: 1, bn: 2, fstride: 2)
-            let e3 = try applyConvLast(inputs: [e2], prefix: "enc.erb_conv3", main: 0, pointwise: 1, bn: 2, fstride: 1)
+            let encErbSeq = encErbHistory
+            let encDfSeq = encDfHistory
 
-            let c0 = try applyConvLast(inputs: encDf0In, prefix: "enc.df_conv0", main: 1, pointwise: 2, bn: 3, fstride: 1)
-            let c1 = try applyConvLast(inputs: [c0], prefix: "enc.df_conv1", main: 0, pointwise: 1, bn: 2, fstride: 2)
+            let e0 = try applyConvLast(input: encErbSeq, prefix: "enc.erb_conv0", main: 1, pointwise: nil, bn: 2, fstride: 1)
+            let e1 = try applyConvLast(input: e0, prefix: "enc.erb_conv1", main: 0, pointwise: 1, bn: 2, fstride: 2)
+            let e2 = try applyConvLast(input: e1, prefix: "enc.erb_conv2", main: 0, pointwise: 1, bn: 2, fstride: 2)
+            let e3 = try applyConvLast(input: e2, prefix: "enc.erb_conv3", main: 0, pointwise: 1, bn: 2, fstride: 1)
+
+            let c0 = try applyConvLast(input: encDfSeq, prefix: "enc.df_conv0", main: 1, pointwise: 2, bn: 3, fstride: 1)
+            let c1 = try applyConvLast(input: c0, prefix: "enc.df_conv1", main: 0, pointwise: 1, bn: 2, fstride: 2)
 
             var cemb = c1.transposed(0, 2, 3, 1).reshaped([1, 1, -1])
             cemb = relu(model.groupedLinear(cemb, weight: encDfFcEmbWeight))
@@ -932,7 +989,12 @@ public final class DeepFilterNetModel: STSModel {
             var dfCoefs = try dfDecoderStep(emb: emb, c0: c0)
             dfCoefs = dfCoefs.reshaped([1, 1, nbDf, dfOrder, 2]).transposed(0, 3, 1, 2, 4)
 
-            let specEnhanced = try deepFilterAssign(spec: specMX, specMasked: specMasked, dfCoefs: dfCoefs, currentSpec: spec)
+            let specEnhanced = try deepFilterAssign(
+                spec: specMX,
+                specMasked: specMasked,
+                dfCoefs: dfCoefs,
+                targetFrameIndex: targetFrameIndex
+            )
             if enableProfiling, profilingForceEvalPerStage {
                 eval(dfCoefs, specEnhanced)
             }
@@ -960,20 +1022,14 @@ public final class DeepFilterNetModel: STSModel {
         }
 
         private func applyConvLast(
-            inputs: [MLXArray],
+            input: MLXArray,
             prefix: String,
             main: Int,
             pointwise: Int?,
             bn: Int,
             fstride: Int
         ) throws -> MLXArray {
-            let merged: MLXArray
-            if inputs.count == 1, let only = inputs.first {
-                merged = only
-            } else {
-                merged = MLX.concatenated(inputs, axis: 2)
-            }
-            var y = merged
+            var y = input
             y = try model.conv2dLayer(
                 y,
                 weightKey: "\(prefix).\(main).weight",
@@ -1085,13 +1141,8 @@ public final class DeepFilterNetModel: STSModel {
                 c = c + model.groupedLinear(emb, weight: dfDecSkipWeight)
             }
 
-            appendWithLimit(&dfConvpIn, c0, maxLen: model.config.dfPathwayKernelSizeT)
-            let c0Seq: MLXArray
-            if dfConvpIn.count == 1, let only = dfConvpIn.first {
-                c0Seq = only
-            } else {
-                c0Seq = MLX.concatenated(dfConvpIn, axis: 2)
-            }
+            dfConvpHistory = appendHistoryFrame(dfConvpHistory, frame: c0)
+            let c0Seq = dfConvpHistory
             var c0p = try model.conv2dLayer(
                 c0Seq,
                 weightKey: "df_dec.df_convp.1.weight",
@@ -1129,38 +1180,9 @@ public final class DeepFilterNetModel: STSModel {
             spec: MLXArray,
             specMasked: MLXArray,
             dfCoefs: MLXArray,
-            currentSpec: MLXArray
+            targetFrameIndex _: Int
         ) throws -> MLXArray {
-            let left = dfOrder - dfLookahead - 1
-
-            let pastCount = max(0, specPast.count - 1)
-            let needPast = max(0, left - pastCount)
-            var specWindow = [MLXArray]()
-            specWindow.reserveCapacity(dfOrder)
-            for _ in 0..<needPast {
-                specWindow.append(zeroSpecFrame)
-            }
-            if left > 0 {
-                let copyCount = min(left, pastCount)
-                let start = pastCount - copyCount
-                if copyCount > 0 {
-                    for i in start..<pastCount {
-                        specWindow.append(specPast[i])
-                    }
-                }
-            }
-            specWindow.append(currentSpec)
-
-            let futureAvailable = min(dfLookahead, specQueue.count)
-            if futureAvailable > 0 {
-                specWindow.append(contentsOf: specQueue.prefix(futureAvailable))
-            }
-            for _ in futureAvailable..<dfLookahead {
-                specWindow.append(zeroSpecFrame)
-            }
-
-            let specHistory = MLX.stacked(specWindow, axis: 0)
-            let specLow = specHistory[0..., 0..<nbDf, 0...]
+            let specLow = dfSpecHistory
             let coef = dfCoefs[0, 0..., 0, 0..<nbDf, 0...]
 
             let sr = specLow[0..., 0..., 0]
@@ -1188,15 +1210,36 @@ public final class DeepFilterNetModel: STSModel {
             return MLX.concatenated([lowAssigned, highMasked], axis: 3)
         }
 
-        private func appendWithLimit<T>(_ buffer: inout [T], _ value: T, maxLen: Int) {
-            guard maxLen > 0 else {
-                buffer.removeAll(keepingCapacity: true)
+        private func appendHistoryFrame(_ history: MLXArray, frame: MLXArray) -> MLXArray {
+            let t = history.shape[2]
+            guard t > 1 else { return frame }
+            return MLX.concatenated([history[0..., 0..., 1..<t, 0...], frame], axis: 2)
+        }
+
+        private func updateDfSpecHistory(targetFrameIndex: Int) {
+            if !dfSpecHistoryInitialized {
+                var frames = [MLXArray]()
+                frames.reserveCapacity(dfOrder)
+                for k in 0..<dfOrder {
+                    let absoluteIndex = targetFrameIndex - dfSpecLeft + k
+                    if let frame = specRing.get(absoluteIndex: absoluteIndex) {
+                        frames.append(frame[0..<nbDf, 0...])
+                    } else {
+                        frames.append(zeroSpecLowFrame)
+                    }
+                }
+                dfSpecHistory = MLX.stacked(frames, axis: 0)
+                dfSpecHistoryInitialized = true
                 return
             }
-            buffer.append(value)
-            if buffer.count > maxLen {
-                buffer.removeFirst()
+            let newRightIndex = targetFrameIndex - dfSpecLeft + dfOrder - 1
+            let nextLow: MLXArray
+            if let frame = specRing.get(absoluteIndex: newRightIndex) {
+                nextLow = frame[0..<nbDf, 0...]
+            } else {
+                nextLow = zeroSpecLowFrame
             }
+            dfSpecHistory = MLX.concatenated([dfSpecHistory[1..<dfOrder, 0..., 0...], nextLow.expandedDimensions(axis: 0)], axis: 0)
         }
 
         // Materialize recurrent tensors each hop so MLX does not keep growing a long lazy graph.

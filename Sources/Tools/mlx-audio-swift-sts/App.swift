@@ -493,7 +493,7 @@ enum App {
             print("Enhancing audio with \(model.modelVersion) (mode=stream)")
             let streamProfiling = env["DFN_STREAM_PROFILE"] == "1"
             let forceStageEval = env["DFN_STREAM_PROFILE_STAGE_EVAL"] == "1"
-            let materializeEveryHops = max(Int(env["DFN_STREAM_MAT_EVERY"] ?? "") ?? 256, 0)
+            let materializeEveryHops = max(Int(env["DFN_STREAM_MAT_EVERY"] ?? "") ?? 512, 0)
             let enableStageSkipping = env["DFN_STREAM_STAGE_SKIP"] == "1"
             let bypassModel = env["DFN_STREAM_BYPASS"] == "1"
 
