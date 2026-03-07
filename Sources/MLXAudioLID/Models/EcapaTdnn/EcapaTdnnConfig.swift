@@ -1,4 +1,5 @@
 import Foundation
+import MLXAudioCodecs
 
 /// Configuration for the ECAPA-TDNN language identification model.
 ///
@@ -31,7 +32,7 @@ public struct EcapaTdnnConfig: Codable, Sendable {
         case id2label = "id2label"
     }
 
-    public init(from decoder: Decoder) throws {
+    public init(from decoder: Swift.Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         nMels = try c.decodeIfPresent(Int.self, forKey: .nMels) ?? 60
         channels = try c.decodeIfPresent(Int.self, forKey: .channels) ?? 1024
@@ -70,5 +71,19 @@ public struct EcapaTdnnConfig: Codable, Sendable {
         self.classifierHiddenDim = classifierHiddenDim
         self.numClasses = numClasses
         self.id2label = id2label
+    }
+
+    var sharedBackboneConfig: MLXAudioCodecs.EcapaTdnnConfig {
+        MLXAudioCodecs.EcapaTdnnConfig(
+            inputSize: nMels,
+            channels: channels,
+            embedDim: embeddingDim,
+            kernelSizes: kernelSizes,
+            dilations: dilations,
+            attentionChannels: attentionChannels,
+            res2netScale: res2netScale,
+            seChannels: seChannels,
+            globalContext: true
+        )
     }
 }

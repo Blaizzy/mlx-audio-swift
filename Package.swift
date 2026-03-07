@@ -136,6 +136,7 @@ let package = Package(
             name: "MLXAudioLID",
             dependencies: [
                 "MLXAudioCore",
+                "MLXAudioCodecs",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),

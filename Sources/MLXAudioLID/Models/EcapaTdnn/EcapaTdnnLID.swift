@@ -2,6 +2,7 @@ import Foundation
 import MLX
 import MLXNN
 import MLXAudioCore
+import MLXAudioCodecs
 import HuggingFace
 
 /// ECAPA-TDNN model for spoken language identification (107 languages).
@@ -13,7 +14,7 @@ public class EcapaTdnn: Module {
     public let config: EcapaTdnnConfig
     public let id2label: [Int: String]
 
-    @ModuleInfo(key: "embedding_model") var embeddingModel: EcapaTdnnEmbedding
+    @ModuleInfo(key: "embedding_model") var embeddingModel: EcapaTdnnBackbone
     @ModuleInfo var classifier: EcapaClassifier
 
     public init(config: EcapaTdnnConfig) {
@@ -31,7 +32,7 @@ public class EcapaTdnn: Module {
         }
         self.id2label = labels
 
-        _embeddingModel.wrappedValue = EcapaTdnnEmbedding(config: config)
+        _embeddingModel.wrappedValue = EcapaTdnnBackbone(config: config.sharedBackboneConfig)
         _classifier.wrappedValue = EcapaClassifier(config: config)
     }
 
