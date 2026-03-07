@@ -36,6 +36,7 @@ public struct DeepFilterNetStreamingConfig: Sendable {
     public var padEndFrames: Int
     public var compensateDelay: Bool
     public var enableStageSkipping: Bool
+    public var enableCompiledInfer: Bool
     public var minDbThresh: Float
     public var maxDbErbThresh: Float
     public var maxDbDfThresh: Float
@@ -47,6 +48,7 @@ public struct DeepFilterNetStreamingConfig: Sendable {
         padEndFrames: Int = 3,
         compensateDelay: Bool = true,
         enableStageSkipping: Bool = false,
+        enableCompiledInfer: Bool = false,
         minDbThresh: Float = -10.0,
         maxDbErbThresh: Float = 30.0,
         maxDbDfThresh: Float = 20.0,
@@ -57,6 +59,7 @@ public struct DeepFilterNetStreamingConfig: Sendable {
         self.padEndFrames = padEndFrames
         self.compensateDelay = compensateDelay
         self.enableStageSkipping = enableStageSkipping
+        self.enableCompiledInfer = enableCompiledInfer
         self.minDbThresh = minDbThresh
         self.maxDbErbThresh = maxDbErbThresh
         self.maxDbDfThresh = maxDbDfThresh
@@ -73,6 +76,11 @@ public struct DeepFilterNetStreamingChunk: @unchecked Sendable {
 }
 
 public final class DeepFilterNetModel: STSModel {
+    private struct FoldedConv2D {
+        let weightOHWI: MLXArray
+        let bias: MLXArray
+    }
+
     public static let defaultRepo = "kylehowells/DeepFilterNet3-MLX"
 
     public let config: DeepFilterNetConfig
@@ -91,6 +99,7 @@ public final class DeepFilterNetModel: STSModel {
     private let bnScale: [String: MLXArray]
     private let bnBias: [String: MLXArray]
     private let conv2dWeightsOHWI: [String: MLXArray]
+    private let conv2dBnFoldedOHWIBias: [String: FoldedConv2D]
     private let convTransposeDenseWeights: [String: MLXArray]
     private let convTransposeGroupWeights: [String: [MLXArray]]
     private let gruTransposedWeights: [String: MLXArray]
@@ -130,6 +139,11 @@ public final class DeepFilterNetModel: STSModel {
         self.bnScale = bnScale
         self.bnBias = bnBias
         self.conv2dWeightsOHWI = Self.buildConv2dWeightCache(weights: weights)
+        self.conv2dBnFoldedOHWIBias = Self.buildConv2dBatchNormFoldCache(
+            weights: weights,
+            bnScale: bnScale,
+            bnBias: bnBias
+        )
         self.convTransposeDenseWeights = Self.buildDenseTransposeWeights(
             weights: weights,
             groups: max(1, config.convCh)
@@ -428,6 +442,7 @@ public final class DeepFilterNetModel: STSModel {
         private var encErb0In: [MLXArray] = []
         private var encDf0In: [MLXArray] = []
         private var dfConvpIn: [MLXArray] = []
+        private var dfConvpPast: MLXArray
 
         private var encEmbState: [MLXArray]?
         private var erbDecState: [MLXArray]?
@@ -447,12 +462,16 @@ public final class DeepFilterNetModel: STSModel {
         private var profSynthesisSeconds = 0.0
         private var profMaterializeSeconds = 0.0
         private let profilingForceEvalPerStage: Bool
+        private let enableCompiledInfer: Bool
+        private let dfConvpPastLen: Int
+        private let dfConvpChannels: Int
 
         public init(model: DeepFilterNetModel, config: DeepFilterNetStreamingConfig = DeepFilterNetStreamingConfig()) {
             self.model = model
             self.config = config
             self.enableProfiling = config.enableProfiling
             self.profilingForceEvalPerStage = config.profilingForceEvalPerStage
+            self.enableCompiledInfer = config.enableCompiledInfer && !config.enableStageSkipping
 
             self.fftSize = model.config.fftSize
             self.hopSize = model.config.hopSize
@@ -489,6 +508,8 @@ public final class DeepFilterNetModel: STSModel {
             self.encDfFcEmbWeight = Self.requireWeight(model, key: "enc.df_fc_emb.0.weight")
             self.dfDecSkipWeight = model.weights["df_dec.df_skip.weight"]
             self.dfDecOutWeight = Self.requireWeight(model, key: "df_dec.df_out.0.weight")
+            self.dfConvpChannels = Self.requireWeight(model, key: "enc.df_conv0.2.weight").shape[0]
+            self.dfConvpPastLen = max(0, model.config.dfPathwayKernelSizeT - 1)
             self.encEmbGRU = Self.buildStreamGRU(model: model, prefix: "enc.emb_gru")
             self.erbDecEmbGRU = Self.buildStreamGRU(model: model, prefix: "erb_dec.emb_gru")
             self.dfDecGRU = Self.buildStreamGRU(model: model, prefix: "df_dec.df_gru")
@@ -497,6 +518,10 @@ public final class DeepFilterNetModel: STSModel {
             self.synthMem = MLXArray.zeros([synthMemCount], type: Float.self)
             self.erbState = MLXArray(Self.linspace(start: -60.0, end: -90.0, count: model.config.nbErb))
             self.dfState = MLXArray(Self.linspace(start: 0.001, end: 0.0001, count: model.config.nbDf))
+            self.dfConvpPast = MLXArray.zeros(
+                [1, dfConvpChannels, max(1, dfConvpPastLen), nbDf],
+                type: Float.self
+            )
         }
 
         private static func requireWeight(_ model: DeepFilterNetModel, key: String) -> MLXArray {
@@ -526,6 +551,89 @@ public final class DeepFilterNetModel: STSModel {
             return StreamGRU(linearInWeight: linearIn, layers: layers, linearOutWeight: linearOut)
         }
 
+        private lazy var compiledInferNoSkip: (([MLXArray]) -> [MLXArray])? = {
+            guard enableCompiledInfer else { return nil }
+            let encStateCount = encEmbGRU.layers.count
+            let erbStateCount = erbDecEmbGRU.layers.count
+            let dfStateCount = dfDecGRU.layers.count
+            return compile(shapeless: false) { inputs in
+                let encErbSeq = inputs[0]
+                let encDfSeq = inputs[1]
+                let specMX = inputs[2]
+                let specLowHistory = inputs[3]
+                let c0Past = inputs[4]
+
+                var index = 5
+                let encPrev = Array(inputs[index..<(index + encStateCount)])
+                index += encStateCount
+                let erbPrev = Array(inputs[index..<(index + erbStateCount)])
+                index += erbStateCount
+                let dfPrev = Array(inputs[index..<(index + dfStateCount)])
+
+                let e0 = try! self.applyConvLast(
+                    inputs: [encErbSeq],
+                    prefix: "enc.erb_conv0",
+                    main: 1,
+                    pointwise: nil,
+                    bn: 2,
+                    fstride: 1
+                )
+                let e1 = try! self.applyConvLast(inputs: [e0], prefix: "enc.erb_conv1", main: 0, pointwise: 1, bn: 2, fstride: 2)
+                let e2 = try! self.applyConvLast(inputs: [e1], prefix: "enc.erb_conv2", main: 0, pointwise: 1, bn: 2, fstride: 2)
+                let e3 = try! self.applyConvLast(inputs: [e2], prefix: "enc.erb_conv3", main: 0, pointwise: 1, bn: 2, fstride: 1)
+
+                let c0 = try! self.applyConvLast(inputs: [encDfSeq], prefix: "enc.df_conv0", main: 1, pointwise: 2, bn: 3, fstride: 1)
+                let c1 = try! self.applyConvLast(inputs: [c0], prefix: "enc.df_conv1", main: 0, pointwise: 1, bn: 2, fstride: 2)
+
+                var cemb = c1.transposed(0, 2, 3, 1).reshaped([1, 1, -1])
+                cemb = relu(self.model.groupedLinear(cemb, weight: self.encDfFcEmbWeight))
+
+                var emb = e3.transposed(0, 2, 3, 1).reshaped([1, 1, -1])
+                emb = self.model.config.encConcat ? MLX.concatenated([emb, cemb], axis: -1) : (emb + cemb)
+
+                let (embNext, encNext) = self.squeezedGRUStepPure(
+                    emb,
+                    gru: self.encEmbGRU,
+                    hiddenSize: self.model.config.embHiddenDim,
+                    prevState: encPrev
+                )
+                let (mask, erbNext) = try! self.erbDecoderStepPure(
+                    emb: embNext,
+                    e3: e3,
+                    e2: e2,
+                    e1: e1,
+                    e0: e0,
+                    prevState: erbPrev
+                )
+                let specMasked = self.applyMask(spec: specMX, mask: mask)
+
+                let (dfCoefsRaw, dfNext, c0PastNext) = try! self.dfDecoderStepPure(
+                    emb: embNext,
+                    c0: c0,
+                    prevState: dfPrev,
+                    c0Past: c0Past
+                )
+                let dfCoefs = dfCoefsRaw
+                    .reshaped([1, 1, self.nbDf, self.dfOrder, 2])
+                    .transposed(0, 3, 1, 2, 4)
+                let specEnhanced = self.deepFilterAssign(
+                    spec: specMX,
+                    specMasked: specMasked,
+                    dfCoefs: dfCoefs,
+                    specLowHistory: specLowHistory
+                )
+
+                var outputs = [MLXArray]()
+                outputs.reserveCapacity(2 + encNext.count + erbNext.count + dfNext.count)
+                outputs.append(specEnhanced)
+                outputs.append(c0PastNext)
+                outputs.append(contentsOf: encNext)
+                outputs.append(contentsOf: erbNext)
+                outputs.append(contentsOf: dfNext)
+                return outputs
+            }
+        }()
+
         public func reset() {
             pendingSamples = MLXArray.zeros([0], type: Float.self)
             analysisMem = MLXArray.zeros([analysisMemCount], type: Float.self)
@@ -538,6 +646,10 @@ public final class DeepFilterNetModel: STSModel {
             encErb0In.removeAll(keepingCapacity: true)
             encDf0In.removeAll(keepingCapacity: true)
             dfConvpIn.removeAll(keepingCapacity: true)
+            dfConvpPast = MLXArray.zeros(
+                [1, dfConvpChannels, max(1, dfConvpPastLen), nbDf],
+                type: Float.self
+            )
             encEmbState = nil
             erbDecState = nil
             dfDecState = nil
@@ -863,6 +975,51 @@ public final class DeepFilterNetModel: STSModel {
             appendWithLimit(&encDf0In, featDfMX, maxLen: 3)
             appendWithLimit(&specPast, spec, maxLen: dfOrder)
 
+            if !config.enableStageSkipping, let compiledInferNoSkip {
+                let encErbSeq = mergeSequence(encErb0In)
+                let encDfSeq = mergeSequence(encDf0In)
+                let specLowHistory = buildSpecLowHistory(currentSpec: spec)
+                let encPrev = normalizedState(
+                    encEmbState,
+                    count: encEmbGRU.layers.count,
+                    hiddenSize: model.config.embHiddenDim
+                )
+                let erbPrev = normalizedState(
+                    erbDecState,
+                    count: erbDecEmbGRU.layers.count,
+                    hiddenSize: model.config.embHiddenDim
+                )
+                let dfPrev = normalizedState(
+                    dfDecState,
+                    count: dfDecGRU.layers.count,
+                    hiddenSize: model.config.dfHiddenDim
+                )
+
+                var compiledInputs = [MLXArray]()
+                compiledInputs.reserveCapacity(5 + encPrev.count + erbPrev.count + dfPrev.count)
+                compiledInputs.append(encErbSeq)
+                compiledInputs.append(encDfSeq)
+                compiledInputs.append(specMX)
+                compiledInputs.append(specLowHistory)
+                compiledInputs.append(dfConvpPast)
+                compiledInputs.append(contentsOf: encPrev)
+                compiledInputs.append(contentsOf: erbPrev)
+                compiledInputs.append(contentsOf: dfPrev)
+
+                let compiledOut = compiledInferNoSkip(compiledInputs)
+                var outIndex = 0
+                let specEnhanced = compiledOut[outIndex]
+                outIndex += 1
+                dfConvpPast = compiledOut[outIndex]
+                outIndex += 1
+                encEmbState = Array(compiledOut[outIndex..<(outIndex + encEmbGRU.layers.count)])
+                outIndex += encEmbGRU.layers.count
+                erbDecState = Array(compiledOut[outIndex..<(outIndex + erbDecEmbGRU.layers.count)])
+                outIndex += erbDecEmbGRU.layers.count
+                dfDecState = Array(compiledOut[outIndex..<(outIndex + dfDecGRU.layers.count)])
+                return specEnhanced[0, 0, 0, 0..., 0...]
+            }
+
             let e0 = try applyConvLast(inputs: encErb0In, prefix: "enc.erb_conv0", main: 1, pointwise: nil, bn: 2, fstride: 1)
             let e1 = try applyConvLast(inputs: [e0], prefix: "enc.erb_conv1", main: 0, pointwise: 1, bn: 2, fstride: 2)
             let e2 = try applyConvLast(inputs: [e1], prefix: "enc.erb_conv2", main: 0, pointwise: 1, bn: 2, fstride: 2)
@@ -973,27 +1130,84 @@ public final class DeepFilterNetModel: STSModel {
             } else {
                 merged = MLX.concatenated(inputs, axis: 2)
             }
-            var y = merged
-            y = try model.conv2dLayer(
-                y,
-                weightKey: "\(prefix).\(main).weight",
-                bias: nil,
-                fstride: fstride,
-                lookahead: 0
-            )
+            let bnPrefix = "\(prefix).\(bn)"
+            var y: MLXArray
             if let pointwise {
                 y = try model.conv2dLayer(
+                    merged,
+                    weightKey: "\(prefix).\(main).weight",
+                    bias: nil,
+                    fstride: fstride,
+                    lookahead: 0
+                )
+                y = try model.conv2dThenBatchNorm(
                     y,
                     weightKey: "\(prefix).\(pointwise).weight",
-                    bias: nil,
+                    bnPrefix: bnPrefix,
                     fstride: 1,
                     lookahead: 0
                 )
+            } else {
+                y = try model.conv2dThenBatchNorm(
+                    merged,
+                    weightKey: "\(prefix).\(main).weight",
+                    bnPrefix: bnPrefix,
+                    fstride: fstride,
+                    lookahead: 0
+                )
             }
-            y = try model.batchNorm(y, prefix: "\(prefix).\(bn)")
             y = relu(y)
             let t = y.shape[2]
             return y[0..., 0..., (t - 1)..<t, 0...]
+        }
+
+        private func mergeSequence(_ inputs: [MLXArray]) -> MLXArray {
+            if inputs.count == 1, let only = inputs.first {
+                return only
+            }
+            return MLX.concatenated(inputs, axis: 2)
+        }
+
+        private func normalizedState(_ state: [MLXArray]?, count: Int, hiddenSize: Int) -> [MLXArray] {
+            if let state, state.count == count {
+                return state
+            }
+            return (0..<count).map { _ in
+                MLXArray.zeros([1, hiddenSize], type: Float.self).asType(inferenceDType)
+            }
+        }
+
+        private func buildSpecLowHistory(currentSpec: MLXArray) -> MLXArray {
+            let left = dfOrder - dfLookahead - 1
+            let pastCount = max(0, specPast.count - 1)
+            let needPast = max(0, left - pastCount)
+
+            var specWindow = [MLXArray]()
+            specWindow.reserveCapacity(dfOrder)
+            for _ in 0..<needPast {
+                specWindow.append(zeroSpecFrame)
+            }
+            if left > 0 {
+                let copyCount = min(left, pastCount)
+                if copyCount > 0 {
+                    let start = pastCount - copyCount
+                    for i in start..<pastCount {
+                        specWindow.append(specPast[i])
+                    }
+                }
+            }
+            specWindow.append(currentSpec)
+
+            let futureAvailable = min(dfLookahead, specQueue.count)
+            if futureAvailable > 0 {
+                specWindow.append(contentsOf: specQueue.prefix(futureAvailable))
+            }
+            for _ in futureAvailable..<dfLookahead {
+                specWindow.append(zeroSpecFrame)
+            }
+
+            let specHistory = MLX.stacked(specWindow, axis: 0)
+            return specHistory[0..., 0..<nbDf, 0...]
         }
 
         private func squeezedGRUStep(
@@ -1022,6 +1236,29 @@ public final class DeepFilterNetModel: STSModel {
                 y = relu(model.groupedLinear(y, weight: linearOut))
             }
             return y
+        }
+
+        private func squeezedGRUStepPure(
+            _ x: MLXArray,
+            gru: StreamGRU,
+            hiddenSize: Int,
+            prevState: [MLXArray]
+        ) -> (MLXArray, [MLXArray]) {
+            var y = relu(model.groupedLinear(x, weight: gru.linearInWeight))
+            var nextState = [MLXArray]()
+            nextState.reserveCapacity(gru.layers.count)
+            for (layer, layerDef) in gru.layers.enumerated() {
+                let prev = layer < prevState.count
+                    ? prevState[layer]
+                    : MLXArray.zeros([1, hiddenSize], type: Float.self).asType(inferenceDType)
+                let h = gruLayerStep(y, layer: layerDef, hiddenSize: hiddenSize, prevState: prev)
+                nextState.append(h)
+                y = h.expandedDimensions(axis: 1)
+            }
+            if let linearOut = gru.linearOutWeight {
+                y = relu(model.groupedLinear(y, weight: linearOut))
+            }
+            return (y, nextState)
         }
 
         private func gruLayerStep(
@@ -1074,6 +1311,34 @@ public final class DeepFilterNetModel: STSModel {
             return sigmoid(out)
         }
 
+        private func erbDecoderStepPure(
+            emb: MLXArray,
+            e3: MLXArray,
+            e2: MLXArray,
+            e1: MLXArray,
+            e0: MLXArray,
+            prevState: [MLXArray]
+        ) throws -> (MLXArray, [MLXArray]) {
+            var (embDec, nextState) = squeezedGRUStepPure(
+                emb,
+                gru: erbDecEmbGRU,
+                hiddenSize: model.config.embHiddenDim,
+                prevState: prevState
+            )
+            let f8 = e3.shape[3]
+            embDec = embDec.reshaped([1, 1, f8, -1]).transposed(0, 3, 1, 2)
+
+            var d3 = relu(try model.applyPathwayConv(e3, prefix: "erb_dec.conv3p")) + embDec
+            d3 = relu(try model.applyRegularBlock(d3, prefix: "erb_dec.convt3"))
+            var d2 = relu(try model.applyPathwayConv(e2, prefix: "erb_dec.conv2p")) + d3
+            d2 = relu(try model.applyTransposeBlock(d2, prefix: "erb_dec.convt2", fstride: 2))
+            var d1 = relu(try model.applyPathwayConv(e1, prefix: "erb_dec.conv1p")) + d2
+            d1 = relu(try model.applyTransposeBlock(d1, prefix: "erb_dec.convt1", fstride: 2))
+            let d0 = relu(try model.applyPathwayConv(e0, prefix: "erb_dec.conv0p")) + d1
+            let out = try model.applyOutputConv(d0, prefix: "erb_dec.conv0_out")
+            return (sigmoid(out), nextState)
+        }
+
         private func dfDecoderStep(emb: MLXArray, c0: MLXArray) throws -> MLXArray {
             var c = squeezedGRUStep(
                 emb,
@@ -1099,14 +1364,13 @@ public final class DeepFilterNetModel: STSModel {
                 fstride: 1,
                 lookahead: 0
             )
-            c0p = try model.conv2dLayer(
+            c0p = relu(try model.conv2dThenBatchNorm(
                 c0p,
                 weightKey: "df_dec.df_convp.2.weight",
-                bias: nil,
+                bnPrefix: "df_dec.df_convp.3",
                 fstride: 1,
                 lookahead: 0
-            )
-            c0p = relu(try model.batchNorm(c0p, prefix: "df_dec.df_convp.3"))
+            ))
             let t = c0p.shape[2]
             c0p = c0p[0..., 0..., (t - 1)..<t, 0...]
             c0p = c0p.transposed(0, 2, 3, 1)
@@ -1114,6 +1378,56 @@ public final class DeepFilterNetModel: STSModel {
             let dfOut = tanh(model.groupedLinear(c, weight: dfDecOutWeight))
                 .reshaped([1, 1, nbDf, dfOrder * 2])
             return dfOut + c0p
+        }
+
+        private func dfDecoderStepPure(
+            emb: MLXArray,
+            c0: MLXArray,
+            prevState: [MLXArray],
+            c0Past: MLXArray
+        ) throws -> (MLXArray, [MLXArray], MLXArray) {
+            var (c, nextState) = squeezedGRUStepPure(
+                emb,
+                gru: dfDecGRU,
+                hiddenSize: model.config.dfHiddenDim,
+                prevState: prevState
+            )
+            if let dfDecSkipWeight {
+                c = c + model.groupedLinear(emb, weight: dfDecSkipWeight)
+            }
+
+            let c0Seq: MLXArray
+            let nextPast: MLXArray
+            if dfConvpPastLen > 0 {
+                let pastSlice = c0Past[0..., 0..., 0..<dfConvpPastLen, 0...]
+                c0Seq = MLX.concatenated([pastSlice, c0], axis: 2)
+                nextPast = c0Seq[0..., 0..., 1..., 0...]
+            } else {
+                c0Seq = c0
+                nextPast = c0Past
+            }
+
+            var c0p = try model.conv2dLayer(
+                c0Seq,
+                weightKey: "df_dec.df_convp.1.weight",
+                bias: nil,
+                fstride: 1,
+                lookahead: 0
+            )
+            c0p = relu(try model.conv2dThenBatchNorm(
+                c0p,
+                weightKey: "df_dec.df_convp.2.weight",
+                bnPrefix: "df_dec.df_convp.3",
+                fstride: 1,
+                lookahead: 0
+            ))
+            let t = c0p.shape[2]
+            c0p = c0p[0..., 0..., (t - 1)..<t, 0...]
+            c0p = c0p.transposed(0, 2, 3, 1)
+
+            let dfOut = tanh(model.groupedLinear(c, weight: dfDecOutWeight))
+                .reshaped([1, 1, nbDf, dfOrder * 2])
+            return (dfOut + c0p, nextState, nextPast)
         }
 
         private func applyMask(spec: MLXArray, mask: MLXArray) -> MLXArray {
@@ -1131,45 +1445,33 @@ public final class DeepFilterNetModel: STSModel {
             dfCoefs: MLXArray,
             currentSpec: MLXArray
         ) throws -> MLXArray {
-            let left = dfOrder - dfLookahead - 1
+            let specLow = buildSpecLowHistory(currentSpec: currentSpec)
+            return deepFilterAssign(
+                spec: spec,
+                specMasked: specMasked,
+                dfCoefs: dfCoefs,
+                specLowHistory: specLow
+            )
+        }
 
-            let pastCount = max(0, specPast.count - 1)
-            let needPast = max(0, left - pastCount)
-            var specWindow = [MLXArray]()
-            specWindow.reserveCapacity(dfOrder)
-            for _ in 0..<needPast {
-                specWindow.append(zeroSpecFrame)
-            }
-            if left > 0 {
-                let copyCount = min(left, pastCount)
-                let start = pastCount - copyCount
-                if copyCount > 0 {
-                    for i in start..<pastCount {
-                        specWindow.append(specPast[i])
-                    }
-                }
-            }
-            specWindow.append(currentSpec)
-
-            let futureAvailable = min(dfLookahead, specQueue.count)
-            if futureAvailable > 0 {
-                specWindow.append(contentsOf: specQueue.prefix(futureAvailable))
-            }
-            for _ in futureAvailable..<dfLookahead {
-                specWindow.append(zeroSpecFrame)
-            }
-
-            let specHistory = MLX.stacked(specWindow, axis: 0)
-            let specLow = specHistory[0..., 0..<nbDf, 0...]
+        private func deepFilterAssign(
+            spec: MLXArray,
+            specMasked: MLXArray,
+            dfCoefs: MLXArray,
+            specLowHistory: MLXArray
+        ) -> MLXArray {
+            let specLow = specLowHistory
             let coef = dfCoefs[0, 0..., 0, 0..<nbDf, 0...]
 
             let sr = specLow[0..., 0..., 0]
             let si = specLow[0..., 0..., 1]
             let cr = coef[0..., 0..., 0]
             let ci = coef[0..., 0..., 1]
-
-            let outReal = MLX.sum(sr * cr - si * ci, axis: 0)
-            let outImag = MLX.sum(sr * ci + si * cr, axis: 0)
+            let specComplex = sr + model.j * si
+            let coefComplex = cr + model.j * ci
+            let outComplex = MLX.sum(specComplex * coefComplex, axis: 0)
+            let outReal = outComplex.realPart()
+            let outImag = outComplex.imaginaryPart()
 
             let low = MLX.stacked([outReal, outImag], axis: -1)
                 .expandedDimensions(axis: 0)
@@ -1344,14 +1646,13 @@ public final class DeepFilterNetModel: STSModel {
             fstride: 1,
             lookahead: 0
         )
-        c0p = try conv2dLayer(
+        c0p = relu(try conv2dThenBatchNorm(
             c0p,
             weightKey: "df_dec.df_convp.2.weight",
-            bias: nil,
+            bnPrefix: "df_dec.df_convp.3",
             fstride: 1,
             lookahead: 0
-        )
-        c0p = relu(try batchNorm(c0p, prefix: "df_dec.df_convp.3"))
+        ))
         c0p = c0p.transposed(0, 2, 3, 1)
 
         let b = c.shape[0]
@@ -1397,9 +1698,11 @@ public final class DeepFilterNetModel: STSModel {
             let si = window[0..., 0..., 0..., 1]
             let cr = coef[0..., 0..., 0..., 0]
             let ci = coef[0..., 0..., 0..., 1]
-
-            let outR = MLX.sum(sr * cr - si * ci, axis: 1)
-            let outI = MLX.sum(sr * ci + si * cr, axis: 1)
+            let specComplex = sr + j * si
+            let coefComplex = cr + j * ci
+            let outComplex = MLX.sum(specComplex * coefComplex, axis: 1)
+            let outR = outComplex.realPart()
+            let outI = outComplex.imaginaryPart()
             outFrames.append(MLX.stacked([outR, outI], axis: -1))
         }
 
@@ -1419,35 +1722,43 @@ public final class DeepFilterNetModel: STSModel {
         bn: Int,
         fstride: Int
     ) throws -> MLXArray {
-        var y = try conv2dLayer(
-            x,
-            weightKey: "\(prefix).\(main).weight",
-            bias: nil,
-            fstride: fstride,
-            lookahead: 0
-        )
+        let bnPrefix = "\(prefix).\(bn)"
+        var y: MLXArray
         if let pointwise {
             y = try conv2dLayer(
+                x,
+                weightKey: "\(prefix).\(main).weight",
+                bias: nil,
+                fstride: fstride,
+                lookahead: 0
+            )
+            y = try conv2dThenBatchNorm(
                 y,
                 weightKey: "\(prefix).\(pointwise).weight",
-                bias: nil,
+                bnPrefix: bnPrefix,
                 fstride: 1,
                 lookahead: 0
             )
+        } else {
+            y = try conv2dThenBatchNorm(
+                x,
+                weightKey: "\(prefix).\(main).weight",
+                bnPrefix: bnPrefix,
+                fstride: fstride,
+                lookahead: 0
+            )
         }
-        y = try batchNorm(y, prefix: "\(prefix).\(bn)")
         return relu(y)
     }
 
     private func applyPathwayConv(_ x: MLXArray, prefix: String) throws -> MLXArray {
-        var y = try conv2dLayer(
+        let y = try conv2dThenBatchNorm(
             x,
             weightKey: "\(prefix).0.weight",
-            bias: nil,
+            bnPrefix: "\(prefix).1",
             fstride: 1,
             lookahead: 0
         )
-        y = try batchNorm(y, prefix: "\(prefix).1")
         return relu(y)
     }
 
@@ -1458,14 +1769,14 @@ public final class DeepFilterNetModel: STSModel {
             fstride: fstride,
             groups: config.convCh
         )
-        y = try conv2dLayer(
+        y = try conv2dThenBatchNorm(
             y,
             weightKey: "\(prefix).1.weight",
-            bias: nil,
+            bnPrefix: "\(prefix).2",
             fstride: 1,
             lookahead: 0
         )
-        return try batchNorm(y, prefix: "\(prefix).2")
+        return y
     }
 
     private func applyRegularBlock(_ x: MLXArray, prefix: String) throws -> MLXArray {
@@ -1476,25 +1787,24 @@ public final class DeepFilterNetModel: STSModel {
             fstride: 1,
             lookahead: 0
         )
-        y = try conv2dLayer(
+        y = try conv2dThenBatchNorm(
             y,
             weightKey: "\(prefix).1.weight",
-            bias: nil,
+            bnPrefix: "\(prefix).2",
             fstride: 1,
             lookahead: 0
         )
-        return try batchNorm(y, prefix: "\(prefix).2")
+        return y
     }
 
     private func applyOutputConv(_ x: MLXArray, prefix: String) throws -> MLXArray {
-        var y = try conv2dLayer(
+        let y = try conv2dThenBatchNorm(
             x,
             weightKey: "\(prefix).0.weight",
-            bias: nil,
+            bnPrefix: "\(prefix).1",
             fstride: 1,
             lookahead: 0
         )
-        y = try batchNorm(y, prefix: "\(prefix).1")
         return y
     }
 
@@ -1710,6 +2020,33 @@ public final class DeepFilterNetModel: STSModel {
         groups: Int
     ) throws -> MLXArray {
         MLX.conv2d(input, weight, stride: [1, strideW], padding: [0, 0], groups: groups)
+    }
+
+    private func conv2dThenBatchNorm(
+        _ xBCHW: MLXArray,
+        weightKey: String,
+        bnPrefix: String,
+        fstride: Int,
+        lookahead: Int
+    ) throws -> MLXArray {
+        let cacheKey = "\(weightKey)|\(bnPrefix)"
+        if let folded = conv2dBnFoldedOHWIBias[cacheKey] {
+            return conv2dLayer(
+                xBCHW,
+                weightOHWI: folded.weightOHWI,
+                bias: folded.bias,
+                fstride: fstride,
+                lookahead: lookahead
+            )
+        }
+        let y = try conv2dLayer(
+            xBCHW,
+            weightKey: weightKey,
+            bias: nil,
+            fstride: fstride,
+            lookahead: lookahead
+        )
+        return try batchNorm(y, prefix: bnPrefix)
     }
 
     private func batchNorm(_ x: MLXArray, prefix: String) throws -> MLXArray {
@@ -1993,6 +2330,37 @@ public final class DeepFilterNetModel: STSModel {
         var cache = [String: MLXArray]()
         for (key, weight) in weights where key.hasSuffix(".weight") && weight.ndim == 4 {
             cache[key] = weight.transposed(0, 2, 3, 1)
+        }
+        return cache
+    }
+
+    private static func buildConv2dBatchNormFoldCache(
+        weights: [String: MLXArray],
+        bnScale: [String: MLXArray],
+        bnBias: [String: MLXArray]
+    ) -> [String: FoldedConv2D] {
+        var cache = [String: FoldedConv2D]()
+        cache.reserveCapacity(48)
+
+        for (bnPrefix, scale4D) in bnScale {
+            guard let shift4D = bnBias[bnPrefix] else { continue }
+            let parts = bnPrefix.split(separator: ".")
+            guard let lastPart = parts.last, let bnIndex = Int(lastPart), bnIndex > 0 else { continue }
+            let base = parts.dropLast().joined(separator: ".")
+            let weightKey = "\(base).\(bnIndex - 1).weight"
+            guard let weightOIHW = weights[weightKey], weightOIHW.ndim == 4 else { continue }
+
+            let outChannels = weightOIHW.shape[0]
+            let scale = scale4D.reshaped([outChannels])
+            let shift = shift4D.reshaped([outChannels])
+
+            let foldedOIHW = weightOIHW * scale.reshaped([outChannels, 1, 1, 1])
+            let foldedOHWI = foldedOIHW.transposed(0, 2, 3, 1)
+
+            cache["\(weightKey)|\(bnPrefix)"] = FoldedConv2D(
+                weightOHWI: foldedOHWI,
+                bias: shift
+            )
         }
         return cache
     }
