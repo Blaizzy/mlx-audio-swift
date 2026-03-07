@@ -863,14 +863,22 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             }
         }
 
-        // Flush GPU state after generation completes.
-        // The KV cache (`cache`) is function-scoped but Metal buffers can linger
-        // in the GPU allocator pool, causing stale state to bleed into subsequent
-        // generation calls and produce inconsistent audio quality.
-        Stream.defaultStream(.gpu).synchronize()
-        Memory.clearCache()
-
         return generatedCodes
+    }
+
+    /// Flush GPU state between generation calls to prevent Metal memory pool
+    /// fragmentation from corrupting subsequent generations.
+    ///
+    /// Only clears the cache when recyclable memory exceeds a threshold,
+    /// avoiding unnecessary flushes for short generations.
+    func flushGPUState() {
+        Stream.defaultStream(.gpu).synchronize()
+        let cachedBytes = Memory.cacheMemory
+        // 256 MB threshold — typical Qwen3-TTS generation allocates 500MB+ in KV cache
+        // and speech decoder intermediates. Below this threshold, the pool is healthy.
+        if cachedBytes > 256 * 1024 * 1024 {
+            Memory.clearCache()
+        }
     }
 
     // MARK: - VoiceDesign Generation
@@ -946,6 +954,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         }
 
         eval(audio)
+        flushGPUState()
         return audio
     }
 
@@ -1028,6 +1037,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         }
 
         eval(audio)
+        flushGPUState()
         return audio
     }
 
@@ -1120,6 +1130,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         }
 
         eval(audio)
+        flushGPUState()
         return audio
     }
 
@@ -1169,11 +1180,10 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
         // Step 2: Cap max tokens based on text length
         let targetTokenCount = tokenizer.encode(text: text).count
-        let effectiveMaxTokens = min(maxTokens, max(75, targetTokenCount * 6))
+        let effectiveMaxTokens = min(maxTokens, max(200, targetTokenCount * 12))
 
-        // Step 3: Apply minimum repetition penalty of 1.5 for ICL
-        // Prevents code degeneration with long reference prefills
-        let effectiveRepPenalty = max(repetitionPenalty, 1.5)
+        // Step 3: Use caller's repetition penalty
+        let effectiveRepPenalty = repetitionPenalty
 
         // Step 4: Run shared autoregressive generation loop
         let generatedCodes = generateFromEmbeddings(
@@ -1216,6 +1226,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
         // Step 10: Evaluate and return
         eval(audioOut)
+        flushGPUState()
         return audioOut
     }
 
