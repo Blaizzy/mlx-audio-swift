@@ -1,5 +1,7 @@
 .build
 .swiftpm
+.scratch
+.xcodebuild
 .DS_Store
 .xcbkptlist
 .claude
