@@ -1431,23 +1431,23 @@ public final class DeepFilterNetModel: STSModel {
             mode: .constant
         )
 
-        var outFrames = [MLXArray]()
-        outFrames.reserveCapacity(t)
-        for i in 0..<t {
-            let window = padded[0..., i..<(i + config.dfOrder), 0..., 0...]
-            let coef = coefs[0..., 0..., i, 0..., 0...]
+        let b = spec.shape[0]
+        var outR = MLXArray.zeros([b, t, config.nbDf], dtype: spec.dtype)
+        var outI = MLXArray.zeros([b, t, config.nbDf], dtype: spec.dtype)
+        for k in 0..<config.dfOrder {
+            let window = padded[0..., k..<(k + t), 0..., 0...]  // [B, T, F_df, 2]
+            let coef = coefs[0..., k, 0..., 0..., 0...]  // [B, T, F_df, 2]
             let sr = window[0..., 0..., 0..., 0]
             let si = window[0..., 0..., 0..., 1]
             let cr = coef[0..., 0..., 0..., 0]
             let ci = coef[0..., 0..., 0..., 1]
 
-            let outR = MLX.sum(sr * cr - si * ci, axis: 1)
-            let outI = MLX.sum(sr * ci + si * cr, axis: 1)
-            outFrames.append(MLX.stacked([outR, outI], axis: -1))
+            outR = outR + (sr * cr - si * ci)
+            outI = outI + (sr * ci + si * cr)
         }
 
+        let low = MLX.stacked([outR, outI], axis: -1).expandedDimensions(axis: 1)
         // Stack over time to get [B, 1, T, F_df, 2], matching spec layout.
-        let low = MLX.stacked(outFrames, axis: 1).expandedDimensions(axis: 1)
         let high = spec[0..., 0..., 0..., config.nbDf..., 0...]
         return MLX.concatenated([low, high], axis: 3)
     }
@@ -1928,6 +1928,14 @@ public final class DeepFilterNetModel: STSModel {
     // MARK: - Utility
 
     private func erbEnergies(_ specMagSq: MLXArray) -> MLXArray {
+        if erbFB.shape.count == 2,
+           erbFB.shape[0] == config.freqBins,
+           erbFB.shape[1] == config.nbErb
+        {
+            // Use learned ERB filterbank projection (same operation as streaming path).
+            return MLX.matmul(specMagSq, erbFB.asType(specMagSq.dtype))
+        }
+
         var bands = [MLXArray]()
         bands.reserveCapacity(erbBandWidths.count)
         var start = 0
