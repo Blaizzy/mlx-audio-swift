@@ -189,6 +189,7 @@ public class Wav2Vec2ForSequenceClassification: Module {
         try model.update(
             parameters: ModuleParameters.unflattened(sanitized), verify: [.all]
         )
+        model.train(false)
         eval(model)
 
         return model

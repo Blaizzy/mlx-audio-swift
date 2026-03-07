@@ -74,7 +74,17 @@ public class EcapaTdnnBackbone: Module {
         out = aspBn(out)
         out = expandedDimensions(out, axis: 1)
         out = fc(out)
-        return out.squeezed(axis: 1)
+
+        if out.ndim == 3 {
+            if out.dim(1) == 1 {
+                return out.squeezed(axis: 1)
+            }
+            if out.dim(2) == 1 {
+                return out.squeezed(axis: 2)
+            }
+        }
+
+        return out
     }
 }
 

@@ -6,6 +6,7 @@ import MLXAudioLID
 enum AppError: Error, LocalizedError, CustomStringConvertible {
     case inputFileNotFound(String)
     case unsupportedModelRepo(String)
+    case mlxRuntimeNotConfigured(String)
 
     var errorDescription: String? { description }
 
@@ -15,6 +16,8 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
             "Input audio file not found: \(path)"
         case .unsupportedModelRepo(let repo):
             "Unsupported LID model repo: \(repo). Expected a repo containing mms, wav2vec2, ecapa, or voxlingua."
+        case .mlxRuntimeNotConfigured(let detail):
+            "MLX command-line runtime is not configured: \(detail)"
         }
     }
 }
@@ -187,6 +190,8 @@ enum App {
             throw AppError.inputFileNotFound(inputURL.path)
         }
 
+        try ensureMLXRuntimeReadyForShell()
+
         print("Loading LID model (\(modelRepo))")
         let model = try await AnyLIDModel.load(from: modelRepo)
 
@@ -225,5 +230,62 @@ enum App {
         }
         return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(path)
+    }
+
+    static func ensureMLXRuntimeReadyForShell(
+        executableURL: URL? = CommandLine.arguments.first.map { URL(fileURLWithPath: $0) },
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws {
+        let searchRoots = runtimeSearchRoots(executableURL: executableURL, environment: environment)
+        let candidatePaths = metallibCandidates(searchRoots: searchRoots)
+
+        if candidatePaths.contains(where: { FileManager.default.fileExists(atPath: $0.path) }) {
+            return
+        }
+
+        let searchedPaths = candidatePaths.map(\.path).joined(separator: ", ")
+        throw AppError.mlxRuntimeNotConfigured(
+            """
+            could not find MLX metal resources near the executable or on DYLD_FRAMEWORK_PATH. \
+            Searched: \(searchedPaths). Run the tool from Xcode, or export DYLD_FRAMEWORK_PATH \
+            to the SwiftPM build directory before invoking the CLI.
+            """
+        )
+    }
+
+    private static func runtimeSearchRoots(
+        executableURL: URL?,
+        environment: [String: String]
+    ) -> [URL] {
+        var roots: [URL] = []
+
+        if let executableURL {
+            roots.append(executableURL.deletingLastPathComponent())
+        }
+
+        if let frameworkPath = environment["DYLD_FRAMEWORK_PATH"] {
+            for rawPath in frameworkPath.split(separator: ":") where !rawPath.isEmpty {
+                roots.append(URL(fileURLWithPath: String(rawPath)))
+            }
+        }
+
+        return roots
+    }
+
+    private static func metallibCandidates(searchRoots: [URL]) -> [URL] {
+        let suffixes = [
+            "default.metallib",
+            "mlx.metallib",
+            "Resources/default.metallib",
+            "Resources/mlx.metallib",
+            "mlx-swift_Cmlx.bundle/default.metallib",
+            "mlx-swift_Cmlx.bundle/mlx.metallib",
+            "mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib",
+            "mlx-swift_Cmlx.bundle/Contents/Resources/mlx.metallib",
+        ]
+
+        return searchRoots.flatMap { root in
+            suffixes.map { root.appendingPathComponent($0) }
+        }
     }
 }

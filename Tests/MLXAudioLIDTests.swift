@@ -136,6 +136,41 @@ struct LIDCLITests {
             try CLI.parse([])
         }
     }
+
+    @Test func cliRuntimePreflightFailsWithActionableErrorWhenMetalResourcesAreMissing() throws {
+        let executableURL = URL(fileURLWithPath: "/tmp/mlx-audio-swift-lid")
+
+        do {
+            try App.ensureMLXRuntimeReadyForShell(
+                executableURL: executableURL,
+                environment: [:]
+            )
+            Issue.record("Expected runtime preflight to fail without metallib resources")
+        } catch let error as AppError {
+            #expect(
+                error.localizedDescription.contains("DYLD_FRAMEWORK_PATH")
+            )
+        } catch {
+            Issue.record("Expected AppError, got \(error)")
+        }
+    }
+
+    @Test func cliRuntimePreflightAcceptsColocatedMetallib() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let metallibURL = tempDir.appendingPathComponent("default.metallib")
+        try Data().write(to: metallibURL)
+
+        let executableURL = tempDir.appendingPathComponent("mlx-audio-swift-lid")
+
+        try App.ensureMLXRuntimeReadyForShell(
+            executableURL: executableURL,
+            environment: [:]
+        )
+    }
 }
 
 // MARK: - Sanitize Tests
@@ -419,7 +454,7 @@ struct EcapaTdnnSanitizeTests {
         ]
         let sanitized = EcapaTdnn.sanitize(weights: weights)
         #expect(sanitized.count == 1)
-        #expect(sanitized["embedding_model.blocks.block0.conv.weight"] != nil)
+        #expect(sanitized["embedding_model.block0.conv.weight"] != nil)
     }
 
     @Test func sanitizeRemapsBlockIndices() {
@@ -431,10 +466,10 @@ struct EcapaTdnnSanitizeTests {
         ]
         let sanitized = EcapaTdnn.sanitize(weights: weights)
 
-        #expect(sanitized["embedding_model.blocks.block0.conv.weight"] != nil)
-        #expect(sanitized["embedding_model.blocks.block1.tdnn1.conv.weight"] != nil)
-        #expect(sanitized["embedding_model.blocks.block2.tdnn1.conv.weight"] != nil)
-        #expect(sanitized["embedding_model.blocks.block3.tdnn1.conv.weight"] != nil)
+        #expect(sanitized["embedding_model.block0.conv.weight"] != nil)
+        #expect(sanitized["embedding_model.block1.tdnn1.conv.weight"] != nil)
+        #expect(sanitized["embedding_model.block2.tdnn1.conv.weight"] != nil)
+        #expect(sanitized["embedding_model.block3.tdnn1.conv.weight"] != nil)
     }
 
     @Test func sanitizeFlattensDoubleNesting() {
@@ -446,10 +481,10 @@ struct EcapaTdnnSanitizeTests {
         ]
         let sanitized = EcapaTdnn.sanitize(weights: weights)
 
-        #expect(sanitized["embedding_model.blocks.block0.conv.weight"] != nil)
-        #expect(sanitized["embedding_model.blocks.block0.conv.bias"] != nil)
-        #expect(sanitized["embedding_model.blocks.block0.norm.weight"] != nil)
-        #expect(sanitized["embedding_model.blocks.block0.norm.bias"] != nil)
+        #expect(sanitized["embedding_model.block0.conv.weight"] != nil)
+        #expect(sanitized["embedding_model.block0.conv.bias"] != nil)
+        #expect(sanitized["embedding_model.block0.norm.weight"] != nil)
+        #expect(sanitized["embedding_model.block0.norm.bias"] != nil)
     }
 
     @Test func sanitizeFlattensSEBlockConv() {
@@ -459,8 +494,8 @@ struct EcapaTdnnSanitizeTests {
         ]
         let sanitized = EcapaTdnn.sanitize(weights: weights)
 
-        #expect(sanitized["embedding_model.blocks.block1.se_block.conv1.weight"] != nil)
-        #expect(sanitized["embedding_model.blocks.block1.se_block.conv2.weight"] != nil)
+        #expect(sanitized["embedding_model.block1.se_block.conv1.weight"] != nil)
+        #expect(sanitized["embedding_model.block1.se_block.conv2.weight"] != nil)
     }
 
     @Test func sanitizeFlattensAspBnAndFc() {
@@ -481,8 +516,8 @@ struct EcapaTdnnSanitizeTests {
         ]
         let sanitized = EcapaTdnn.sanitize(weights: weights)
 
-        #expect(sanitized["embedding_model.blocks.block1.res2net_block.blocks.0.conv.weight"] != nil)
-        #expect(sanitized["embedding_model.blocks.block1.res2net_block.blocks.1.conv.weight"] != nil)
+        #expect(sanitized["embedding_model.block1.res2net_block.blocks.0.conv.weight"] != nil)
+        #expect(sanitized["embedding_model.block1.res2net_block.blocks.1.conv.weight"] != nil)
     }
 }
 

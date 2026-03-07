@@ -25,7 +25,7 @@ class DNNBlock: Module {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        relu(norm(linear(x)))
+        norm(leakyRelu(linear(x)))
     }
 }
 
@@ -61,7 +61,15 @@ class EcapaClassifier: Module {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        var out = x.squeezed(axis: 1)
+        var out = x
+        if out.ndim == 3 {
+            if out.dim(1) == 1 {
+                out = out.squeezed(axis: 1)
+            } else if out.dim(2) == 1 {
+                out = out.squeezed(axis: 2)
+            }
+        }
+        out = leakyRelu(out)
         out = norm(out)
         out = dnn(out)
         out = self.out(out)

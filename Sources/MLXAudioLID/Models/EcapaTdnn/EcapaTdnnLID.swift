@@ -40,7 +40,8 @@ public class EcapaTdnn: Module {
     /// - Parameter melFeatures: `[batch, time, nMels]` mel spectrogram
     /// - Returns: Log-probabilities `[batch, numClasses]`
     public func callAsFunction(_ melFeatures: MLXArray) -> MLXArray {
-        let embeddings = embeddingModel(melFeatures)
+        let normalizedMelFeatures = Self.sentenceMeanNormalize(melFeatures)
+        let embeddings = embeddingModel(normalizedMelFeatures)
         return classifier(embeddings)
     }
 
@@ -79,13 +80,18 @@ public class EcapaTdnn: Module {
         )
     }
 
+    /// Mirror SpeechBrain's sentence-level InputNormalization with mean-only normalization.
+    static func sentenceMeanNormalize(_ melFeatures: MLXArray) -> MLXArray {
+        melFeatures - mean(melFeatures, axis: 1, keepDims: true)
+    }
+
     // MARK: - Weight Sanitization
 
     /// Remap SpeechBrain checkpoint keys to MLX model structure.
     ///
     /// Handles:
     /// - Dropping `num_batches_tracked` keys
-    /// - Remapping top-level block indices: `blocks.0.` → `blocks.block0.`
+    /// - Remapping top-level block indices: `blocks.0.` → `block0.`
     /// - Flattening SpeechBrain double-nesting: `.conv.conv.` → `.conv.`
     /// - SE block conv wrappers, ASP BN norm, FC conv flattening
     /// - Parameter weights: Raw weights loaded from `.safetensors` files
@@ -99,10 +105,10 @@ public class EcapaTdnn: Module {
             var k = key
 
             // Remap top-level block indices (NOT res2net_block.blocks which is a real array)
-            k = k.replacingOccurrences(of: "embedding_model.blocks.0.", with: "embedding_model.blocks.block0.")
-            k = k.replacingOccurrences(of: "embedding_model.blocks.1.", with: "embedding_model.blocks.block1.")
-            k = k.replacingOccurrences(of: "embedding_model.blocks.2.", with: "embedding_model.blocks.block2.")
-            k = k.replacingOccurrences(of: "embedding_model.blocks.3.", with: "embedding_model.blocks.block3.")
+            k = k.replacingOccurrences(of: "embedding_model.blocks.0.", with: "embedding_model.block0.")
+            k = k.replacingOccurrences(of: "embedding_model.blocks.1.", with: "embedding_model.block1.")
+            k = k.replacingOccurrences(of: "embedding_model.blocks.2.", with: "embedding_model.block2.")
+            k = k.replacingOccurrences(of: "embedding_model.blocks.3.", with: "embedding_model.block3.")
 
             // Flatten SpeechBrain double-nesting
             k = k.replacingOccurrences(of: ".conv.conv.", with: ".conv.")
@@ -177,6 +183,7 @@ public class EcapaTdnn: Module {
         try model.update(
             parameters: ModuleParameters.unflattened(sanitized), verify: [.all]
         )
+        model.train(false)
         eval(model)
 
         return model

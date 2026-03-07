@@ -254,6 +254,51 @@ struct SharedEcapaTdnnTests {
         #expect(config.globalContext)
     }
 
+    @Test func ecapaTdnnConfigPadsShortKernelAndDilationLists() {
+        let config = MLXAudioCodecs.EcapaTdnnConfig(
+            inputSize: 60,
+            channels: 64,
+            embedDim: 32,
+            kernelSizes: [7],
+            dilations: [2],
+            attentionChannels: 16,
+            res2netScale: 8,
+            seChannels: 16,
+            globalContext: true
+        )
+
+        #expect(config.kernelSizes.count >= 5)
+        #expect(config.dilations.count >= 5)
+        #expect(config.kernelSizes[0] == 7)
+        #expect(config.dilations[0] == 2)
+    }
+
+    @Test func ecapaTdnnConfigDecodingPadsShortKernelAndDilationLists() throws {
+        let json = """
+        {
+            "inputSize": 60,
+            "channels": 64,
+            "embedDim": 32,
+            "kernelSizes": [7],
+            "dilations": [2],
+            "attentionChannels": 16,
+            "res2netScale": 8,
+            "seChannels": 16,
+            "globalContext": true
+        }
+        """
+
+        let config = try JSONDecoder().decode(
+            MLXAudioCodecs.EcapaTdnnConfig.self,
+            from: Data(json.utf8)
+        )
+
+        #expect(config.kernelSizes.count >= 5)
+        #expect(config.dilations.count >= 5)
+        #expect(config.kernelSizes[0] == 7)
+        #expect(config.dilations[0] == 2)
+    }
+
     @Test func ecapaTdnnBackboneProducesEmbeddingVectors() {
         Device.withDefaultDevice(.cpu) {
             let config = MLXAudioCodecs.EcapaTdnnConfig(
