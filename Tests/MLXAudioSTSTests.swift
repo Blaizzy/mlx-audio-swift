@@ -244,6 +244,98 @@ struct DeepFilterNetLoadingTests {
             Issue.record("Expected DeepFilterNetError, got \(error)")
         }
     }
+
+    @Test func deepFilterNetDenoiseMatchesGoldenSpectrogram() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let modelDir = env["MLXAUDIO_DFN_MODEL_DIR"], !modelDir.isEmpty else {
+            print("Skipping DeepFilterNet golden test. Set MLXAUDIO_DFN_MODEL_DIR to enable.")
+            return
+        }
+
+        let noisyURL = Bundle.module.url(
+            forResource: "noisy_audio",
+            withExtension: "wav",
+            subdirectory: "media"
+        )!
+        let targetURL = Bundle.module.url(
+            forResource: "noisy_audio_target",
+            withExtension: "wav",
+            subdirectory: "media"
+        )!
+
+        let (noisySR, noisyAudio) = try loadAudioArray(from: noisyURL, sampleRate: 48_000)
+        let (targetSR, targetAudio) = try loadAudioArray(from: targetURL, sampleRate: 48_000)
+        #expect(noisySR == 48_000)
+        #expect(targetSR == 48_000)
+
+        let model = try DeepFilterNetModel.fromLocal(URL(fileURLWithPath: modelDir))
+        let enhanced = try model.enhance(noisyAudio)
+
+        let minLen = min(enhanced.shape[0], targetAudio.shape[0])
+        let enhancedTrim = enhanced[0..<minLen]
+        let targetTrim = targetAudio[0..<minLen]
+
+        let corr = Self.waveformCorrelation(lhs: enhancedTrim, rhs: targetTrim)
+        let specMae = Self.logSpectrogramMAE(lhs: enhancedTrim, rhs: targetTrim, fftLen: 960, hopLen: 480)
+
+        #expect(corr > 0.96, "Expected waveform correlation > 0.96, got \(corr)")
+        #expect(specMae < 4.0, "Expected log-spectrogram MAE < 4.0 dB, got \(specMae)")
+    }
+
+    private static func waveformCorrelation(lhs: MLXArray, rhs: MLXArray) -> Float {
+        let x = lhs.asArray(Float.self)
+        let y = rhs.asArray(Float.self)
+        let n = min(x.count, y.count)
+        if n == 0 { return 0 }
+
+        let xn = Array(x.prefix(n))
+        let yn = Array(y.prefix(n))
+        let meanX = xn.reduce(0, +) / Float(n)
+        let meanY = yn.reduce(0, +) / Float(n)
+
+        var num: Float = 0
+        var denX: Float = 0
+        var denY: Float = 0
+        for i in 0..<n {
+            let dx = xn[i] - meanX
+            let dy = yn[i] - meanY
+            num += dx * dy
+            denX += dx * dx
+            denY += dy * dy
+        }
+        let den = sqrt(max(denX * denY, 1e-20))
+        return num / den
+    }
+
+    private static func logSpectrogramMAE(lhs: MLXArray, rhs: MLXArray, fftLen: Int, hopLen: Int) -> Float {
+        let window = MossFormer2DSP.hammingWindow(size: fftLen, periodic: false)
+        let lhsSpec = MossFormer2DSP.stft(
+            audio: lhs,
+            fftLen: fftLen,
+            hopLength: hopLen,
+            winLen: fftLen,
+            window: window,
+            center: false
+        )
+        let rhsSpec = MossFormer2DSP.stft(
+            audio: rhs,
+            fftLen: fftLen,
+            hopLength: hopLen,
+            winLen: fftLen,
+            window: window,
+            center: false
+        )
+
+        let eps = MLXArray(Float(1e-10))
+        let lhsPow = lhsSpec.realPart().square() + lhsSpec.imaginaryPart().square()
+        let rhsPow = rhsSpec.realPart().square() + rhsSpec.imaginaryPart().square()
+        let lhsDb = MLXArray(Float(10.0)) * (lhsPow + eps).log10()
+        let rhsDb = MLXArray(Float(10.0)) * (rhsPow + eps).log10()
+
+        let delta = MLX.abs(lhsDb - rhsDb).asArray(Float.self)
+        guard !delta.isEmpty else { return .infinity }
+        return delta.reduce(0, +) / Float(delta.count)
+    }
 }
 
 struct MossFormer2SELayerTests {
