@@ -15,6 +15,34 @@ import Foundation
 @testable import MLXAudioCodecs
 @testable import MLXAudioLID
 
+struct SharedDSPTests {
+
+    @Test func hammingWindowSupportsPeriodicAndSymmetricVariants() {
+        let periodic = hammingWindow(size: 4).asArray(Float.self)
+        let symmetric = hammingWindow(size: 4, periodic: false).asArray(Float.self)
+
+        #expect(periodic.count == 4)
+        #expect(symmetric.count == 4)
+
+        #expect(abs(periodic[0] - 0.08) < 1e-3)
+        #expect(abs(periodic[1] - 0.54) < 1e-3)
+        #expect(abs(periodic[3] - 0.54) < 1e-3)
+
+        #expect(abs(symmetric[0] - 0.08) < 1e-3)
+        #expect(abs(symmetric[3] - 0.08) < 1e-3)
+        #expect(abs(symmetric[1] - symmetric[2]) < 1e-3)
+    }
+
+    @Test func powerToDBAppliesTopDBClipping() {
+        let spectrogram = MLXArray([Float(1e-10), Float(1e-5), Float(1.0)])
+        let clipped = powerToDB(spectrogram, topDB: 80).asArray(Float.self)
+
+        #expect(abs(clipped[0] + 80) < 1e-2)
+        #expect(abs(clipped[1] + 50) < 1e-2)
+        #expect(abs(clipped[2]) < 1e-3)
+    }
+}
+
 
 // MARK: - Vocos Tests
 // Run Vocos tests with:  xcodebuild test \
