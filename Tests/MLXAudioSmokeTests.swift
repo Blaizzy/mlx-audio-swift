@@ -417,6 +417,171 @@ struct TTSSmokeTests {
             print("\u{001B}[32mSaved streamed audio to\u{001B}[0m: \(outputURL.path)")
         }
     }
+
+    @Test func chatterboxTurboGenerate() async throws {
+        testHeader("chatterboxTurboGenerate")
+        defer { testCleanup("chatterboxTurboGenerate") }
+        print("\u{001B}[33mLoading Chatterbox Turbo model...\u{001B}[0m")
+        let model = try await ChatterboxModel.fromPretrained("mlx-community/chatterbox-turbo-fp16")
+        print("\u{001B}[32mChatterbox Turbo model loaded!\u{001B}[0m")
+
+        // Verify model state
+        #expect(model.tokenizer != nil, "Tokenizer should be loaded")
+        #expect(model.defaultConditioning != nil, "Default conditioning should be loaded from conds.safetensors")
+        #expect(model.sampleRate == 24000, "Sample rate should be 24kHz")
+
+        let text = "Hello, this is a test of the Chatterbox Turbo model."
+        print("\u{001B}[33mGenerating audio for: \"\(text)\"...\u{001B}[0m")
+
+        let audio = try await model.generate(
+            text: text,
+            voice: nil,
+            refAudio: nil,
+            refText: nil,
+            language: nil,
+            generationParameters: GenerateParameters(temperature: 0.8)
+        )
+
+        print("\u{001B}[32mGenerated audio shape: \(audio.shape)\u{001B}[0m")
+        #expect(audio.shape[0] > 0, "Audio should have samples")
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chatterbox_turbo_test_output.wav")
+        try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+        print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
+    }
+
+    @Test func chatterboxTurboGenerateStream() async throws {
+        testHeader("chatterboxTurboGenerateStream")
+        defer { testCleanup("chatterboxTurboGenerateStream") }
+        print("\u{001B}[33mLoading Chatterbox Turbo model...\u{001B}[0m")
+        let model = try await ChatterboxModel.fromPretrained("mlx-community/chatterbox-turbo-fp16")
+        print("\u{001B}[32mChatterbox Turbo model loaded!\u{001B}[0m")
+
+        let text = "Streaming test for Chatterbox Turbo."
+        print("\u{001B}[33mStreaming generation for: \"\(text)\"...\u{001B}[0m")
+
+        var finalAudio: MLXArray?
+        var generationInfo: AudioGenerationInfo?
+
+        for try await event in model.generateStream(
+            text: text, voice: nil, refAudio: nil, refText: nil, language: nil,
+            generationParameters: GenerateParameters(temperature: 0.8)
+        ) {
+            switch event {
+            case .audio(let audio):
+                finalAudio = audio
+                print("\u{001B}[32mReceived final audio: \(audio.shape)\u{001B}[0m")
+            case .info(let info):
+                generationInfo = info
+                print("\u{001B}[36mGeneration info: generateTime=\(info.generateTime)s\u{001B}[0m")
+            case .token(_):
+                break
+            }
+        }
+
+        #expect(finalAudio != nil, "Should have received final audio")
+        #expect(generationInfo != nil, "Should have received generation info")
+
+        if let audio = finalAudio {
+            #expect(audio.shape[0] > 0, "Audio should have samples")
+
+            let outputURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("chatterbox_turbo_stream_test_output.wav")
+            try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+            print("\u{001B}[32mSaved streamed audio to\u{001B}[0m: \(outputURL.path)")
+        }
+    }
+
+    @Test func chatterboxRegularGenerate() async throws {
+        testHeader("chatterboxRegularGenerate")
+        defer { testCleanup("chatterboxRegularGenerate") }
+
+        // Load reference audio for voice cloning (Regular model's primary use case)
+        guard let audioURL = Bundle.module.url(
+            forResource: "conversational_a", withExtension: "wav", subdirectory: "media"
+        ) else {
+            Issue.record("Test audio file 'conversational_a.wav' not found in bundle")
+            return
+        }
+        let (_, refAudio) = try loadAudioArray(from: audioURL)
+        print("\u{001B}[36mLoaded reference audio: \(refAudio.shape)\u{001B}[0m")
+
+        print("\u{001B}[33mLoading Chatterbox Regular (LLaMA) model...\u{001B}[0m")
+        let model = try await ChatterboxModel.fromPretrained("mlx-community/Chatterbox-TTS-fp16")
+        print("\u{001B}[32mChatterbox Regular model loaded!\u{001B}[0m")
+
+        #expect(model.tokenizer != nil, "Tokenizer should be loaded")
+        #expect(model.sampleRate == 24000, "Sample rate should be 24kHz")
+
+        let text = "Hello, this is a test of the Chatterbox model."
+        print("\u{001B}[33mGenerating audio for: \"\(text)\"...\u{001B}[0m")
+
+        let audio = try await model.generate(
+            text: text, voice: nil, refAudio: refAudio, refText: nil, language: nil,
+            generationParameters: GenerateParameters(temperature: 0.8)
+        )
+
+        print("\u{001B}[32mGenerated audio shape: \(audio.shape)\u{001B}[0m")
+        let sampleCount = audio.shape[audio.ndim - 1]
+        #expect(sampleCount > 0, "Audio should have samples")
+        let duration = Float(sampleCount) / Float(model.sampleRate)
+        print("\u{001B}[32mGenerated \(String(format: "%.2f", duration))s of audio\u{001B}[0m")
+        #expect(duration > 0.1, "Audio duration should be > 0.1s")
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chatterbox_regular_test_output.wav")
+        try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+        print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
+    }
+
+    @Test func chatterboxRegularGenerateStream() async throws {
+        testHeader("chatterboxRegularGenerateStream")
+        defer { testCleanup("chatterboxRegularGenerateStream") }
+
+        // Load reference audio for voice cloning
+        guard let audioURL = Bundle.module.url(
+            forResource: "conversational_a", withExtension: "wav", subdirectory: "media"
+        ) else {
+            Issue.record("Test audio file 'conversational_a.wav' not found in bundle")
+            return
+        }
+        let (_, refAudio) = try loadAudioArray(from: audioURL)
+
+        print("\u{001B}[33mLoading Chatterbox Regular (LLaMA) model...\u{001B}[0m")
+        let model = try await ChatterboxModel.fromPretrained("mlx-community/Chatterbox-TTS-fp16")
+        print("\u{001B}[32mChatterbox Regular model loaded!\u{001B}[0m")
+
+        let text = "Streaming test for Chatterbox Regular."
+        print("\u{001B}[33mStreaming audio for: \"\(text)\"...\u{001B}[0m")
+
+        var finalAudio: MLXArray?
+        for try await event in model.generateStream(
+            text: text, voice: nil, refAudio: refAudio, refText: nil, language: nil,
+            generationParameters: GenerateParameters(temperature: 0.8)
+        ) {
+            switch event {
+            case .audio(let audio):
+                finalAudio = audio
+                print("\u{001B}[32mReceived audio chunk: \(audio.shape)\u{001B}[0m")
+            case .info(let info):
+                print("\u{001B}[36mGeneration info: \(String(format: "%.2f", info.generateTime))s\u{001B}[0m")
+            case .token(_):
+                break
+            }
+        }
+
+        #expect(finalAudio != nil, "Should receive audio from stream")
+        if let audio = finalAudio {
+            let sampleCount = audio.shape[audio.ndim - 1]
+            #expect(sampleCount > 0, "Audio should have samples")
+
+            let outputURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("chatterbox_regular_stream_test_output.wav")
+            try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+            print("\u{001B}[32mSaved streamed audio to\u{001B}[0m: \(outputURL.path)")
+        }
+    }
 }
 
 
