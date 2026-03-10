@@ -192,6 +192,29 @@ struct DeepFilterNetConfigTests {
         #expect(config.modelType == "deepfilternet3")
         #expect(config.freqBins == 481)
     }
+
+    @Test func deepFilterNetConfigVersionMapping() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+        let v1 = try decoder.decode(
+            DeepFilterNetConfig.self,
+            from: Data(#"{ "model_version": "DeepFilterNet" }"#.utf8)
+        )
+        #expect(v1.modelType == "deepfilternet")
+
+        let v2 = try decoder.decode(
+            DeepFilterNetConfig.self,
+            from: Data(#"{ "model_version": "DeepFilterNet2" }"#.utf8)
+        )
+        #expect(v2.modelType == "deepfilternet2")
+
+        let v3 = try decoder.decode(
+            DeepFilterNetConfig.self,
+            from: Data(#"{ "model_version": "DeepFilterNet3" }"#.utf8)
+        )
+        #expect(v3.modelType == "deepfilternet3")
+    }
 }
 
 struct DeepFilterNetStreamingConfigTests {

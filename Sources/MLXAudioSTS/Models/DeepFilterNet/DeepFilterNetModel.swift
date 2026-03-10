@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 import HuggingFace
 import MLX
@@ -11,6 +12,7 @@ public enum DeepFilterNetError: Error, LocalizedError, CustomStringConvertible {
     case missingWeights(URL)
     case missingWeightKey(String)
     case invalidAudioShape([Int])
+    case streamingNotSupportedForModelVersion(String)
 
     public var errorDescription: String? { description }
 
@@ -28,6 +30,8 @@ public enum DeepFilterNetError: Error, LocalizedError, CustomStringConvertible {
             return "Missing DeepFilterNet weight key: \(key)"
         case .invalidAudioShape(let shape):
             return "Expected mono 1D audio array, got shape: \(shape)"
+        case .streamingNotSupportedForModelVersion(let version):
+            return "Streaming is not supported for model version \(version). Use offline enhancement instead."
         }
     }
 }
@@ -73,11 +77,13 @@ public struct DeepFilterNetStreamingChunk: @unchecked Sendable {
 }
 
 public final class DeepFilterNetModel: STSModel {
-    public static let defaultRepo = "kylehowells/DeepFilterNet3-MLX"
+    public static let defaultRepo = "iky1e/DeepFilterNet3-MLX"
 
     public let config: DeepFilterNetConfig
     public let modelDirectory: URL
     public let modelVersion: String
+    public var isV1: Bool { modelVersion.lowercased() == "deepfilternet" }
+    public var supportsStreaming: Bool { !isV1 }
     public var sampleRate: Int { config.sampleRate }
 
     private let weights: [String: MLXArray]
@@ -94,6 +100,27 @@ public final class DeepFilterNetModel: STSModel {
     private let convTransposeDenseWeights: [String: MLXArray]
     private let convTransposeGroupWeights: [String: [MLXArray]]
     private let gruTransposedWeights: [String: MLXArray]
+    private struct V1GroupedLinearPack {
+        let weightGIO: MLXArray  // [G, I, O]
+        let biasGO: MLXArray  // [G, O]
+        let groups: Int
+        let inputPerGroup: Int
+        let outputPerGroup: Int
+    }
+    private struct V1GroupedGRULayerPack {
+        let weightIHGI3H: MLXArray  // [G, I, 3H]
+        let weightHHGH3H: MLXArray  // [G, H, 3H]
+        let biasIHG3H: MLXArray  // [G, 3H]
+        let biasHHG3H: MLXArray  // [G, 3H]
+        let inputPerGroup: Int
+        let hiddenPerGroup: Int
+    }
+    private struct V1GroupedGRUPack {
+        let groups: Int
+        let layers: [V1GroupedGRULayerPack]
+    }
+    private let v1GroupedLinearPacks: [String: V1GroupedLinearPack]
+    private let v1GroupedGRUPacks: [String: V1GroupedGRUPack]
     private let j: MLXArray = MLXArray(real: Float(0.0), imaginary: Float(1.0))
 
     private init(
@@ -106,10 +133,10 @@ public final class DeepFilterNetModel: STSModel {
         self.modelVersion = config.modelVersion
         self.weights = weights
 
-        guard let erbFB = weights["erb_fb"], let erbInvFB = weights["mask.erb_inv_fb"] else {
-            throw DeepFilterNetError.missingWeightKey("erb_fb / mask.erb_inv_fb")
+        guard let erbInvFB = weights["mask.erb_inv_fb"] else {
+            throw DeepFilterNetError.missingWeightKey("mask.erb_inv_fb")
         }
-        self.erbFB = erbFB
+        self.erbFB = weights["erb_fb"] ?? MLXArray.zeros([1, 1], type: Float.self)
         self.erbInvFB = erbInvFB
         let widthsFromConfig = config.erbWidths
         if let widthsFromConfig, widthsFromConfig.reduce(0, +) == config.freqBins {
@@ -119,13 +146,17 @@ public final class DeepFilterNetModel: STSModel {
                 sampleRate: config.sampleRate,
                 fftSize: config.fftSize,
                 nbBands: config.nbErb,
-                minNbFreqs: 1
+                minNbFreqs: max(1, config.minNbErbFreqs)
             )
         }
         self.vorbisWindow = Self.vorbisWindow(size: config.fftSize)
         self.wnorm = 1.0 / Float(config.fftSize * config.fftSize) * Float(2 * config.hopSize)
         self.normAlphaValue = Self.computeNormAlpha(hopSize: config.hopSize, sampleRate: config.sampleRate)
-        self.inferenceDType = weights["enc.erb_conv0.1.weight"]?.dtype ?? .float32
+        self.inferenceDType =
+            weights["enc.erb_conv0.1.weight"]?.dtype
+            ?? weights["enc.erb_conv0.sconv.weight"]?.dtype
+            ?? weights.values.first?.dtype
+            ?? .float32
         let (bnScale, bnBias) = Self.buildBatchNormAffine(weights: weights)
         self.bnScale = bnScale
         self.bnBias = bnBias
@@ -139,6 +170,18 @@ public final class DeepFilterNetModel: STSModel {
             groups: max(1, config.convCh)
         )
         self.gruTransposedWeights = Self.buildGRUTransposedWeightCache(weights: weights)
+        self.v1GroupedLinearPacks = Self.buildV1GroupedLinearPacks(
+            weights: weights,
+            groups: max(1, config.linearGroups)
+        )
+        self.v1GroupedGRUPacks = Self.buildV1GroupedGRUPacks(
+            weights: weights,
+            groups: max(1, config.gruGroups),
+            prefixes: [
+                "enc.emb_gru.grus",
+                "clc_dec.clc_gru.grus",
+            ]
+        )
     }
 
     // MARK: - Loading
@@ -223,11 +266,13 @@ public final class DeepFilterNetModel: STSModel {
         let specMagSq = specRe.square() + specIm.square()
         let erb = erbEnergies(specMagSq)
         let erbDB = MLXArray(Float(10.0)) * (erb + MLXArray(Float(1e-10))).log10()
-        let featErb2D = bandMeanNorm(erbDB)
+        let featErb2D = isV1 ? bandMeanNormExact(erbDB) : bandMeanNorm(erbDB)
 
         let dfRe = specRe[0..., 0..<config.nbDf]
         let dfIm = specIm[0..., 0..<config.nbDf]
-        let (dfFeatRe, dfFeatIm) = bandUnitNorm(real: dfRe, imag: dfIm)
+        let (dfFeatRe, dfFeatIm) = isV1
+            ? bandUnitNormExact(real: dfRe, imag: dfIm)
+            : bandUnitNorm(real: dfRe, imag: dfIm)
 
         let featErb = featErb2D.expandedDimensions(axis: 0).expandedDimensions(axis: 0)
         let featDf = MLX.stacked([dfFeatRe, dfFeatIm], axis: -1)
@@ -237,16 +282,44 @@ public final class DeepFilterNetModel: STSModel {
             .expandedDimensions(axis: 0)
             .expandedDimensions(axis: 0)
 
-        let (specEnhanced, _, _, _) = try forward(
-            spec: specIn.asType(inferenceDType),
-            featErb: featErb.asType(inferenceDType),
-            featSpec5D: featDf.asType(inferenceDType)
-        )
-        var enh = specEnhanced[0, 0, 0..., 0..., 0] + j * specEnhanced[0, 0, 0..., 0..., 1]
+        let forwardOut: (MLXArray, MLXArray, MLXArray, MLXArray)
+        if isV1 {
+            forwardOut = try forwardV1(
+                spec: specIn.asType(inferenceDType),
+                featErb: featErb.asType(inferenceDType),
+                featSpec5D: featDf.asType(inferenceDType)
+            )
+        } else {
+            forwardOut = try forward(
+                spec: specIn.asType(inferenceDType),
+                featErb: featErb.asType(inferenceDType),
+                featSpec5D: featDf.asType(inferenceDType)
+            )
+        }
+        let specEnhanced = forwardOut.0
+        // Keep shape handling robust across MLX indexing semantics:
+        // expected post-squeeze shape is [T, F, 2] before ISTFT layout conversion.
+        var enhTF2 = specEnhanced
+            .squeezed(axis: 0)
+            .squeezed(axis: 0)
+        if enhTF2.ndim == 4, enhTF2.shape[0] == 1 {
+            enhTF2 = enhTF2.squeezed(axis: 0)
+        }
+        var enh = enhTF2[0..., 0..., 0] + j * enhTF2[0..., 0..., 1]
         enh = enh / MLXArray(wnorm)
 
-        let enhReal = enh.realPart().transposed(1, 0).expandedDimensions(axis: 0)
-        let enhImag = enh.imaginaryPart().transposed(1, 0).expandedDimensions(axis: 0)
+        var enhReal2D = enh.realPart().squeezed()
+        var enhImag2D = enh.imaginaryPart().squeezed()
+        if enhReal2D.ndim != 2 || enhImag2D.ndim != 2 {
+            // Fallback for unexpected singleton-preserving index behavior.
+            // Expected semantic shape is [T, F], so collapse leading dims to recover it.
+            let t = spec.shape[2]
+            let f = config.freqBins
+            enhReal2D = enhReal2D.reshaped([t, f])
+            enhImag2D = enhImag2D.reshaped([t, f])
+        }
+        let enhReal = enhReal2D.transposed(1, 0).expandedDimensions(axis: 0)
+        let enhImag = enhImag2D.transposed(1, 0).expandedDimensions(axis: 0)
 
         var audioOut = MossFormer2DSP.istft(
             real: enhReal,
@@ -268,7 +341,11 @@ public final class DeepFilterNetModel: STSModel {
     public func createStreamer(
         config: DeepFilterNetStreamingConfig = DeepFilterNetStreamingConfig()
     ) -> DeepFilterNetStreamer {
-        DeepFilterNetStreamer(model: self, config: config)
+        precondition(
+            supportsStreaming,
+            "DeepFilterNet v1 streaming is not supported in Swift yet. Use enhance(_:) for offline."
+        )
+        return DeepFilterNetStreamer(model: self, config: config)
     }
 
     public func enhanceStreaming(
@@ -276,6 +353,9 @@ public final class DeepFilterNetModel: STSModel {
         chunkSamples: Int? = nil,
         config: DeepFilterNetStreamingConfig = DeepFilterNetStreamingConfig()
     ) throws -> MLXArray {
+        guard supportsStreaming else {
+            throw DeepFilterNetError.streamingNotSupportedForModelVersion(modelVersion)
+        }
         guard audioInput.ndim == 1 else {
             throw DeepFilterNetError.invalidAudioShape(audioInput.shape)
         }
@@ -317,6 +397,9 @@ public final class DeepFilterNetModel: STSModel {
     ) -> AsyncThrowingStream<DeepFilterNetStreamingChunk, Error> {
         AsyncThrowingStream { continuation in
             do {
+                guard supportsStreaming else {
+                    throw DeepFilterNetError.streamingNotSupportedForModelVersion(modelVersion)
+                }
                 guard audioInput.ndim == 1 else {
                     throw DeepFilterNetError.invalidAudioShape(audioInput.shape)
                 }
@@ -1302,6 +1385,182 @@ public final class DeepFilterNetModel: STSModel {
         return (specEnhanced, mask, lsnr, dfCoefs5)
     }
 
+    private func forwardV1(
+        spec: MLXArray,
+        featErb: MLXArray,
+        featSpec5D: MLXArray
+    ) throws -> (MLXArray, MLXArray, MLXArray, MLXArray) {
+        let featSpec = featSpec5D
+            .squeezed(axis: 1)
+            .transposed(0, 3, 1, 2)
+
+        let (e0, e1, e2, e3, emb, c0, lsnr) = try encodeV1(featErb: featErb, featSpec: featSpec)
+        eval(emb, c0, lsnr)
+
+        var mask = try decodeErbV1(emb: emb, e3: e3, e2: e2, e1: e1, e0: e0)
+        mask = alignTimeAxis(mask, target: spec.shape[2], fillValue: 1.0, axis: 2)
+        let specMasked = applyMask(spec: spec, mask: mask)
+        eval(mask, specMasked)
+
+        var (dfCoefsBTOF2, dfAlpha) = try decodeDfV1(emb: emb, c0: c0)
+        dfCoefsBTOF2 = alignTimeAxis(dfCoefsBTOF2, target: spec.shape[2], fillValue: 0.0, axis: 1)
+        dfAlpha = alignTimeAxis(dfAlpha, target: spec.shape[2], fillValue: 0.0, axis: 1)
+        let dfCoefs5 = dfCoefsBTOF2.transposed(0, 2, 1, 3, 4)
+        eval(dfCoefs5, dfAlpha)
+
+        let specEnhanced = deepFilter(spec: specMasked, coefs: dfCoefs5, alpha: dfAlpha)
+        return (specEnhanced, mask, lsnr, dfCoefs5)
+    }
+
+    private func encodeV1(featErb: MLXArray, featSpec: MLXArray)
+        throws -> (MLXArray, MLXArray, MLXArray, MLXArray, MLXArray, MLXArray, MLXArray)
+    {
+        let e0 = try applyV1ConvKxF(
+            featErb,
+            prefix: "enc.erb_conv0",
+            fstride: 1,
+            lookahead: config.convLookahead > 0 ? 1 : 0,
+            activation: .relu
+        )
+        let e1 = try applyV1ConvKxF(
+            e0,
+            prefix: "enc.erb_conv1",
+            fstride: 2,
+            lookahead: config.convLookahead > 1 ? 1 : 0,
+            activation: .relu
+        )
+        let e2 = try applyV1ConvKxF(
+            e1,
+            prefix: "enc.erb_conv2",
+            fstride: 2,
+            lookahead: config.convLookahead > 2 ? 1 : 0,
+            activation: .relu
+        )
+        let e3 = try applyV1ConvKxF(
+            e2,
+            prefix: "enc.erb_conv3",
+            fstride: 1,
+            lookahead: 0,
+            activation: .relu
+        )
+
+        let c0 = try applyV1ConvKxF(
+            featSpec,
+            prefix: "enc.clc_conv0",
+            fstride: 1,
+            lookahead: config.convLookahead,
+            activation: .relu
+        )
+        let c1 = try applyV1ConvKxF(
+            c0,
+            prefix: "enc.clc_conv1",
+            fstride: 2,
+            lookahead: 0,
+            activation: .relu
+        )
+
+        let t = c1.shape[2]
+        let b = c1.shape[0]
+        var cemb = c1.transposed(2, 0, 1, 3).reshaped([t, b, -1])
+        cemb = relu(try groupedLinearV1(cemb, prefix: "enc.clc_fc_emb.layers"))
+
+        var emb = e3.transposed(2, 0, 1, 3).reshaped([t, b, -1])
+        emb = emb + cemb
+        emb = try groupedGRUV1(
+            emb,
+            prefix: "enc.emb_gru.grus",
+            numLayers: config.embNumLayers,
+            addOutputs: true,
+            shuffleBetweenLayers: config.groupShuffle
+        )
+        let embBT = emb.transposed(1, 0, 2)
+
+        let lsnr = sigmoid(linear(
+            embBT,
+            weight: try w("enc.lsnr_fc.0.weight"),
+            bias: try w("enc.lsnr_fc.0.bias")
+        )) * MLXArray(Float(config.lsnrMax - config.lsnrMin)) + MLXArray(Float(config.lsnrMin))
+
+        return (e0, e1, e2, e3, embBT, c0, lsnr)
+    }
+
+    private func decodeErbV1(
+        emb: MLXArray,
+        e3: MLXArray,
+        e2: MLXArray,
+        e1: MLXArray,
+        e0: MLXArray
+    ) throws -> MLXArray {
+        let b = emb.shape[0]
+        let t = emb.shape[1]
+        let f8 = e3.shape[3]
+
+        var embProj = relu(try groupedLinearV1(emb, prefix: "erb_dec.fc_emb.0.layers"))
+        embProj = embProj.reshaped([b, t, -1, f8]).transposed(0, 2, 1, 3)
+
+        let p3 = try applyV1ConvKxF(e3, prefix: "erb_dec.conv3p", fstride: 1, lookahead: 0, activation: .relu)
+        var d3 = alignAndAdd(p3, embProj)
+        d3 = try applyV1ConvKxF(d3, prefix: "erb_dec.convt3", fstride: 1, lookahead: 0, activation: .relu)
+
+        let p2 = try applyV1ConvKxF(e2, prefix: "erb_dec.conv2p", fstride: 1, lookahead: 0, activation: .relu)
+        var d2 = alignAndAdd(p2, d3)
+        d2 = try applyV1ConvKxF(d2, prefix: "erb_dec.convt2", fstride: 2, lookahead: 0, activation: .relu)
+
+        let p1 = try applyV1ConvKxF(e1, prefix: "erb_dec.conv1p", fstride: 1, lookahead: 0, activation: .relu)
+        var d1 = alignAndAdd(p1, d2)
+        d1 = try applyV1ConvKxF(d1, prefix: "erb_dec.convt1", fstride: 2, lookahead: 0, activation: .relu)
+
+        let p0 = try applyV1ConvKxF(e0, prefix: "erb_dec.conv0p", fstride: 1, lookahead: 0, activation: .relu)
+        let d0 = alignAndAdd(p0, d1)
+
+        return try applyV1ConvKxF(
+            d0,
+            prefix: "erb_dec.conv0_out",
+            fstride: 1,
+            lookahead: 0,
+            activation: .sigmoid,
+            applyBatchNorm: false,
+            allowBias: true
+        )
+    }
+
+    private func decodeDfV1(emb: MLXArray, c0: MLXArray) throws -> (MLXArray, MLXArray) {
+        let cTBI = try groupedGRUV1(
+            emb.transposed(1, 0, 2),
+            prefix: "clc_dec.clc_gru.grus",
+            numLayers: config.dfNumLayers,
+            addOutputs: true,
+            shuffleBetweenLayers: config.groupShuffle
+        )
+        let c = cTBI.transposed(1, 0, 2)
+
+        var c0p = try applyV1ConvKxF(
+            c0,
+            prefix: "clc_dec.clc_convp",
+            fstride: 1,
+            lookahead: 0,
+            activation: .relu
+        )
+        c0p = c0p.transposed(0, 2, 1, 3)  // [B, T, O*2, F]
+
+        let b = c.shape[0]
+        let t = c.shape[1]
+        let alpha = sigmoid(linear(
+            c,
+            weight: try w("clc_dec.clc_fc_a.0.weight"),
+            bias: try w("clc_dec.clc_fc_a.0.bias")
+        ))
+
+        var coefs = tanh(linear(
+            c,
+            weight: try w("clc_dec.clc_fc_out.0.weight"),
+            bias: try w("clc_dec.clc_fc_out.0.bias")
+        ))
+        coefs = coefs.reshaped([b, t, config.dfOrder * 2, config.nbDf]) + c0p
+        coefs = coefs.reshaped([b, t, config.dfOrder, 2, config.nbDf]).transposed(0, 1, 2, 4, 3)
+        return (coefs, alpha)
+    }
+
     private func encode(featErb: MLXArray, featSpec: MLXArray)
         throws -> (MLXArray, MLXArray, MLXArray, MLXArray, MLXArray, MLXArray, MLXArray)
     {
@@ -1414,7 +1673,7 @@ public final class DeepFilterNetModel: STSModel {
         return spec * gains
     }
 
-    private func deepFilter(spec: MLXArray, coefs: MLXArray) -> MLXArray {
+    private func deepFilter(spec: MLXArray, coefs: MLXArray, alpha: MLXArray? = nil) -> MLXArray {
         let t = spec.shape[2]
         let padLeft = config.dfOrder - 1 - config.dfLookahead
         let padRight = config.dfLookahead
@@ -1446,10 +1705,409 @@ public final class DeepFilterNetModel: STSModel {
             outI = outI + (sr * ci + si * cr)
         }
 
-        let low = MLX.stacked([outR, outI], axis: -1).expandedDimensions(axis: 1)
-        // Stack over time to get [B, 1, T, F_df, 2], matching spec layout.
+        var low = MLX.stacked([outR, outI], axis: -1).expandedDimensions(axis: 1)
+        if let alpha {
+            let b = spec.shape[0]
+            let a = alpha.reshaped([b, 1, t, 1, 1])
+            let origLow = spec[0..., 0..., 0..., 0..<config.nbDf, 0...]
+            low = low * a + origLow * (MLXArray(Float(1.0)) - a)
+        }
         let high = spec[0..., 0..., 0..., config.nbDf..., 0...]
         return MLX.concatenated([low, high], axis: 3)
+    }
+
+    private enum V1Activation {
+        case none
+        case relu
+        case sigmoid
+    }
+
+    private func applyV1ConvKxF(
+        _ x: MLXArray,
+        prefix: String,
+        fstride: Int,
+        lookahead: Int,
+        activation: V1Activation,
+        applyBatchNorm: Bool = true,
+        allowBias: Bool = false
+    ) throws -> MLXArray {
+        let mainKey: String
+        let transposed: Bool
+        if weights["\(prefix).sconvt.weight"] != nil {
+            mainKey = "\(prefix).sconvt.weight"
+            transposed = true
+        } else {
+            mainKey = "\(prefix).sconv.weight"
+            transposed = false
+        }
+
+        let mainWeight = try w(mainKey)
+        var y: MLXArray
+        if transposed {
+            let groups = max(1, mainWeight.shape[0] / max(1, mainWeight.shape[1]))
+            y = try convTranspose2dLayer(
+                x,
+                weight: mainWeight,
+                fstride: fstride,
+                groups: groups
+            )
+        } else {
+            let bias = allowBias ? weights["\(prefix).sconv.bias"] : nil
+            y = try conv2dLayer(
+                x,
+                weight: mainWeight,
+                bias: bias,
+                fstride: fstride,
+                lookahead: lookahead
+            )
+        }
+
+        if weights["\(prefix).1x1conv.weight"] != nil {
+            y = try conv2dLayer(
+                y,
+                weightKey: "\(prefix).1x1conv.weight",
+                bias: nil,
+                fstride: 1,
+                lookahead: 0
+            )
+        }
+
+        if applyBatchNorm, weights["\(prefix).norm.running_mean"] != nil {
+            y = try batchNorm(y, prefix: "\(prefix).norm")
+        }
+
+        switch activation {
+        case .none:
+            return y
+        case .relu:
+            return relu(y)
+        case .sigmoid:
+            return sigmoid(y)
+        }
+    }
+
+    private func groupedLinearV1(
+        _ x: MLXArray,
+        prefix: String
+    ) throws -> MLXArray {
+        if let pack = v1GroupedLinearPacks[prefix] {
+            let b = x.shape[0]
+            let t = x.shape[1]
+            var y = MLX.einsum(
+                "btgi,gio->btgo",
+                x.reshaped([b, t, pack.groups, pack.inputPerGroup]),
+                pack.weightGIO
+            ) + pack.biasGO.reshaped([1, 1, pack.groups, pack.outputPerGroup])
+            y = y.reshaped([b, t, pack.groups * pack.outputPerGroup])
+            if config.groupShuffle, pack.groups > 1 {
+                let hiddenPerGroup = y.shape[2] / pack.groups
+                y = y
+                    .reshaped([y.shape[0], y.shape[1], hiddenPerGroup, pack.groups])
+                    .transposed(0, 1, 3, 2)
+                    .reshaped([y.shape[0], y.shape[1], -1])
+            }
+            return y
+        }
+
+        let groups = max(1, config.linearGroups)
+        var ys = [MLXArray]()
+        ys.reserveCapacity(groups)
+        for g in 0..<groups {
+            let wg = try w("\(prefix).\(g).weight")
+            let bg = try w("\(prefix).\(g).bias")
+            let inPerGroup = wg.shape[1]
+            let start = g * inPerGroup
+            let stop = start + inPerGroup
+            let xg = x[0..., 0..., start..<stop]
+            let x2 = xg.reshaped([-1, inPerGroup])
+            let y2 = MLX.addMM(bg, x2, wg.transposed())
+            ys.append(y2.reshaped([x.shape[0], x.shape[1], wg.shape[0]]))
+        }
+        var y = MLX.concatenated(ys, axis: 2)
+        if config.groupShuffle, groups > 1 {
+            let hiddenPerGroup = y.shape[2] / groups
+            y = y
+                .reshaped([y.shape[0], y.shape[1], hiddenPerGroup, groups])
+                .transposed(0, 1, 3, 2)
+                .reshaped([y.shape[0], y.shape[1], -1])
+        }
+        return y
+    }
+
+    private func groupedGRUV1(
+        _ xTBI: MLXArray,
+        prefix: String,
+        numLayers: Int,
+        addOutputs: Bool,
+        shuffleBetweenLayers: Bool
+    ) throws -> MLXArray {
+        if let pack = v1GroupedGRUPacks[prefix], pack.layers.count >= numLayers {
+            return groupedGRUV1Packed(
+                xTBI,
+                pack: pack,
+                numLayers: numLayers,
+                addOutputs: addOutputs,
+                shuffleBetweenLayers: shuffleBetweenLayers
+            )
+        }
+
+        let groups = max(1, config.gruGroups)
+        var cur = xTBI
+        var out = xTBI
+
+        for layer in 0..<numLayers {
+            let base = "\(prefix).\(layer).layers"
+            let w0 = try w("\(base).0.weight_ih_l0")
+            let inPerGroup = w0.shape[1]
+            let hiddenPerGroup = w0.shape[0] / 3
+            var ys = [MLXArray]()
+            ys.reserveCapacity(groups)
+            for g in 0..<groups {
+                let start = g * inPerGroup
+                let stop = start + inPerGroup
+                let xg = cur[0..., 0..., start..<stop]
+                let yg = try gruCellSequenceV1(
+                    xg,
+                    weightIH: w("\(base).\(g).weight_ih_l0"),
+                    weightHH: w("\(base).\(g).weight_hh_l0"),
+                    biasIH: w("\(base).\(g).bias_ih_l0"),
+                    biasHH: w("\(base).\(g).bias_hh_l0"),
+                    hiddenSize: hiddenPerGroup
+                )
+                ys.append(yg)
+            }
+
+            var layerOut = MLX.concatenated(ys, axis: 2)
+            if shuffleBetweenLayers && layer < numLayers - 1 && groups > 1 {
+                let hidden = layerOut.shape[2] / groups
+                layerOut = layerOut
+                    .reshaped([layerOut.shape[0], layerOut.shape[1], hidden, groups])
+                    .transposed(0, 1, 3, 2)
+                    .reshaped([layerOut.shape[0], layerOut.shape[1], -1])
+            }
+
+            if addOutputs {
+                out = (layer == 0) ? layerOut : (out + layerOut)
+            } else {
+                out = layerOut
+            }
+            cur = layerOut
+        }
+
+        return out
+    }
+
+    private func groupedGRUV1Packed(
+        _ xTBI: MLXArray,
+        pack: V1GroupedGRUPack,
+        numLayers: Int,
+        addOutputs: Bool,
+        shuffleBetweenLayers: Bool
+    ) -> MLXArray {
+        let groups = pack.groups
+        let t = xTBI.shape[0]
+        let b = xTBI.shape[1]
+
+        var curMLX = xTBI
+        var outFlat: [Float]? = nil
+
+        for layer in 0..<numLayers {
+            let p = pack.layers[layer]
+            let h = p.hiddenPerGroup
+            let inpg = p.inputPerGroup
+            let h3 = 3 * h
+            let totalH = groups * h
+
+            // Batch input projection on GPU: [T, B, G, I] @ [G, I, 3H] -> [T, B, G, 3H]
+            let x4 = curMLX.reshaped([t, b, groups, inpg])
+            let gxAllMLX = MLX.einsum("tbgi,gio->tbgo", x4, p.weightIHGI3H)
+                + p.biasIHG3H.reshaped([1, 1, groups, h3])
+            eval(gxAllMLX)
+
+            // Extract to CPU: gxAll is [T, B, G, 3H] contiguous
+            let gxAll = gxAllMLX.asType(.float32).reshaped([-1]).asArray(Float.self)
+
+            // Extract hidden weights to CPU: wHH [G, H, 3H], bHH [G, 3H]
+            let wHH = p.weightHHGH3H.asType(.float32).reshaped([-1]).asArray(Float.self)
+            let bHH = p.biasHHG3H.asType(.float32).reshaped([-1]).asArray(Float.self)
+
+            var output = Array<Float>(repeating: 0, count: t * b * totalH)
+            var state = Array<Float>(repeating: 0, count: b * totalH)
+            var gh = Array<Float>(repeating: 0, count: h3)
+
+            for ti in 0..<t {
+                for bi in 0..<b {
+                    for g in 0..<groups {
+                        let stOff = bi * totalH + g * h
+                        let gxOff = ((ti * b + bi) * groups + g) * h3
+                        let wHHOff = g * h * h3
+                        let bHHOff = g * h3
+
+                        // gh = state[stOff:stOff+h] @ wHH[g]
+                        // wHH[g] is [H, 3H] row-major; we want gh[o] = sum_h state[h] * wHH[h,o]
+                        // C[1,3H] = A[1,H] × B[H,3H]
+                        state.withUnsafeBufferPointer { sBuf in
+                            wHH.withUnsafeBufferPointer { wBuf in
+                                gh.withUnsafeMutableBufferPointer { gBuf in
+                                    vDSP_mmul(
+                                        sBuf.baseAddress! + stOff, 1,
+                                        wBuf.baseAddress! + wHHOff, 1,
+                                        gBuf.baseAddress!, 1,
+                                        vDSP_Length(1), vDSP_Length(h3), vDSP_Length(h)
+                                    )
+                                }
+                            }
+                        }
+
+                        // GRU gates
+                        for k in 0..<h {
+                            let xr = gxAll[gxOff + k]
+                            let xz = gxAll[gxOff + h + k]
+                            let xn = gxAll[gxOff + 2 * h + k]
+                            let hr = gh[k] + bHH[bHHOff + k]
+                            let hz = gh[h + k] + bHH[bHHOff + h + k]
+                            let hn = gh[2 * h + k] + bHH[bHHOff + 2 * h + k]
+
+                            let r = 1.0 / (1.0 + expf(-(xr + hr)))
+                            let z = 1.0 / (1.0 + expf(-(xz + hz)))
+                            let n = tanhf(xn + r * hn)
+                            let prev = state[stOff + k]
+                            state[stOff + k] = n + z * (prev - n)
+                        }
+
+                        // Copy state to output
+                        let outOff = (ti * b + bi) * totalH + g * h
+                        output.replaceSubrange(outOff..<(outOff + h), with: state[stOff..<(stOff + h)])
+                    }
+                }
+
+            }
+
+            // Group shuffle between layers (not last layer)
+            // Matches: reshape([H, G]).transpose(G, H).reshape(-1)
+            // Mapping: source flat index i → dest ((i % G) * H + (i / G))
+            if shuffleBetweenLayers && layer < numLayers - 1 && groups > 1 {
+                var shuffled = Array<Float>(repeating: 0, count: output.count)
+                for ti in 0..<t {
+                    for bi in 0..<b {
+                        let base = (ti * b + bi) * totalH
+                        for i in 0..<totalH {
+                            let dest = (i % groups) * h + (i / groups)
+                            shuffled[base + dest] = output[base + i]
+                        }
+                    }
+                }
+                output = shuffled
+            }
+
+            // Accumulate outputs
+            if addOutputs {
+                if layer == 0 {
+                    outFlat = output
+                } else {
+                    for i in 0..<output.count {
+                        outFlat![i] += output[i]
+                    }
+                }
+            } else {
+                outFlat = output
+            }
+
+            // For next layer, convert back to MLXArray
+            if layer < numLayers - 1 {
+                curMLX = MLXArray(output).reshaped([t, b, totalH])
+            }
+        }
+
+        return MLXArray(outFlat!).reshaped([t, b, groups * pack.layers[0].hiddenPerGroup])
+    }
+
+    private func gruCellSequenceV1(
+        _ xTBI: MLXArray,
+        weightIH: @autoclosure () throws -> MLXArray,
+        weightHH: @autoclosure () throws -> MLXArray,
+        biasIH: @autoclosure () throws -> MLXArray,
+        biasHH: @autoclosure () throws -> MLXArray,
+        hiddenSize: Int
+    ) throws -> MLXArray {
+        let wihT = try weightIH().transposed()
+        let whhT = try weightHH().transposed()
+        let bih = try biasIH()
+        let bhh = try biasHH()
+
+        var h = MLXArray.zeros([xTBI.shape[1], hiddenSize], type: Float.self)
+        var states = [MLXArray]()
+        states.reserveCapacity(xTBI.shape[0])
+
+        for i in 0..<xTBI.shape[0] {
+            let xt = xTBI[i, 0..., 0...]
+            let gx = MLX.addMM(bih, xt, wihT)
+            let gh = MLX.addMM(bhh, h, whhT)
+
+            let xr = gx[0..., 0..<hiddenSize]
+            let xz = gx[0..., hiddenSize..<(2 * hiddenSize)]
+            let xn = gx[0..., (2 * hiddenSize)...]
+            let hr = gh[0..., 0..<hiddenSize]
+            let hz = gh[0..., hiddenSize..<(2 * hiddenSize)]
+            let hn = gh[0..., (2 * hiddenSize)...]
+
+            let r = sigmoid(xr + hr)
+            let z = sigmoid(xz + hz)
+            let n = tanh(xn + r * hn)
+            h = n + z * (h - n)
+            states.append(h)
+        }
+        return MLX.stacked(states, axis: 0)
+    }
+
+    private func alignAndAdd(_ a: MLXArray, _ b: MLXArray) -> MLXArray {
+        let t = min(a.shape[2], b.shape[2])
+        let f = min(a.shape[3], b.shape[3])
+        return a[0..., 0..., 0..<t, 0..<f] + b[0..., 0..., 0..<t, 0..<f]
+    }
+
+    private func alignTimeAxis(
+        _ x: MLXArray,
+        target: Int,
+        fillValue: Float,
+        axis: Int
+    ) -> MLXArray {
+        let t = x.shape[axis]
+        if t == target { return x }
+        if t > target {
+            switch axis {
+            case 1:
+                if x.ndim == 3 {
+                    return x[0..., 0..<target, 0...]
+                }
+                return x[0..., 0..<target, 0..., 0..., 0...]
+            case 2:
+                if x.ndim == 4 {
+                    return x[0..., 0..., 0..<target, 0...]
+                }
+                return x[0..., 0..., 0..<target, 0..., 0...]
+            default:
+                return x
+            }
+        }
+        switch axis {
+        case 1:
+            if x.ndim == 3 {
+                let pad = MLX.full([x.shape[0], target - t, x.shape[2]], values: fillValue)
+                return MLX.concatenated([x, pad], axis: 1)
+            }
+            let pad = MLX.full([x.shape[0], target - t, x.shape[2], x.shape[3], x.shape[4]], values: fillValue)
+            return MLX.concatenated([x, pad], axis: 1)
+        case 2:
+            if x.ndim == 4 {
+                let pad = MLX.full([x.shape[0], x.shape[1], target - t, x.shape[3]], values: fillValue)
+                return MLX.concatenated([x, pad], axis: 2)
+            }
+            let pad = MLX.full([x.shape[0], x.shape[1], target - t, x.shape[3], x.shape[4]], values: fillValue)
+            return MLX.concatenated([x, pad], axis: 2)
+        default:
+            return x
+        }
     }
 
     // MARK: - Layer Helpers
@@ -1900,6 +2558,62 @@ public final class DeepFilterNetModel: STSModel {
         return (real / denom, imag / denom)
     }
 
+    // Exact sequential EMA path (libDF-style), primarily for DF1 parity.
+    private func bandMeanNormExact(_ x: MLXArray) -> MLXArray {
+        let frames = x.shape[0]
+        let bands = x.shape[1]
+        let a = normAlpha()
+        let oneMinusA = Float(1.0) - a
+
+        let xVals = x.asArray(Float.self)
+        var out = Array<Float>(repeating: 0, count: xVals.count)
+        var state = Self.linspace(start: -60.0, end: -90.0, count: bands)
+
+        for t in 0..<frames {
+            let base = t * bands
+            for e in 0..<bands {
+                let idx = base + e
+                let xv = xVals[idx]
+                state[e] = xv * oneMinusA + state[e] * a
+                out[idx] = (xv - state[e]) / 40.0
+            }
+        }
+        return MLXArray(out).reshaped([frames, bands])
+    }
+
+    // Exact sequential complex unit-norm path (libDF-style), primarily for DF1 parity.
+    private func bandUnitNormExact(real: MLXArray, imag: MLXArray) -> (MLXArray, MLXArray) {
+        let frames = real.shape[0]
+        let freqs = real.shape[1]
+        let a = normAlpha()
+        let oneMinusA = Float(1.0) - a
+
+        let rVals = real.asArray(Float.self)
+        let iVals = imag.asArray(Float.self)
+        var outR = Array<Float>(repeating: 0, count: rVals.count)
+        var outI = Array<Float>(repeating: 0, count: iVals.count)
+        var state = Self.linspace(start: 0.001, end: 0.0001, count: freqs)
+
+        for t in 0..<frames {
+            let base = t * freqs
+            for f in 0..<freqs {
+                let idx = base + f
+                let rr = rVals[idx]
+                let ii = iVals[idx]
+                let mag = (rr * rr + ii * ii).squareRoot()
+                state[f] = mag * oneMinusA + state[f] * a
+                let den = state[f].squareRoot()
+                outR[idx] = rr / den
+                outI[idx] = ii / den
+            }
+        }
+
+        return (
+            MLXArray(outR).reshaped([frames, freqs]),
+            MLXArray(outI).reshaped([frames, freqs])
+        )
+    }
+
     private func normAlpha() -> Float {
         normAlphaValue
     }
@@ -2055,6 +2769,120 @@ public final class DeepFilterNetModel: STSModel {
             cache[key] = weight.transposed()
         }
         return cache
+    }
+
+    private static func buildV1GroupedLinearPacks(
+        weights: [String: MLXArray],
+        groups: Int
+    ) -> [String: V1GroupedLinearPack] {
+        guard groups > 1 else { return [:] }
+        var groupedKeys = [String: [Int]]()
+        for key in weights.keys where key.hasSuffix(".weight") {
+            let parts = key.split(separator: ".")
+            guard parts.count >= 3, let idx = Int(parts[parts.count - 2]) else { continue }
+            let prefix = parts.dropLast(2).joined(separator: ".")
+            groupedKeys[prefix, default: []].append(idx)
+        }
+
+        var packs = [String: V1GroupedLinearPack]()
+        for (prefix, idxs) in groupedKeys {
+            let unique = Array(Set(idxs)).sorted()
+            guard unique.count == groups, unique.first == 0, unique.last == groups - 1 else { continue }
+
+            var weightSlices = [MLXArray]()
+            var biasSlices = [MLXArray]()
+            weightSlices.reserveCapacity(groups)
+            biasSlices.reserveCapacity(groups)
+            var valid = true
+            for g in 0..<groups {
+                guard let wg = weights["\(prefix).\(g).weight"],
+                      let bg = weights["\(prefix).\(g).bias"],
+                      wg.ndim == 2, bg.ndim == 1
+                else {
+                    valid = false
+                    break
+                }
+                weightSlices.append(wg.transposed())  // [I, O]
+                biasSlices.append(bg)
+            }
+            guard valid else { continue }
+
+            let weightGIO = MLX.stacked(weightSlices, axis: 0)
+            let biasGO = MLX.stacked(biasSlices, axis: 0)
+            packs[prefix] = V1GroupedLinearPack(
+                weightGIO: weightGIO,
+                biasGO: biasGO,
+                groups: groups,
+                inputPerGroup: weightGIO.shape[1],
+                outputPerGroup: weightGIO.shape[2]
+            )
+        }
+        return packs
+    }
+
+    private static func buildV1GroupedGRUPacks(
+        weights: [String: MLXArray],
+        groups: Int,
+        prefixes: [String]
+    ) -> [String: V1GroupedGRUPack] {
+        guard groups > 1 else { return [:] }
+        var packs = [String: V1GroupedGRUPack]()
+
+        for prefix in prefixes {
+            var layers = [V1GroupedGRULayerPack]()
+            var layerIndex = 0
+            while true {
+                var wih = [MLXArray]()
+                var whh = [MLXArray]()
+                var bih = [MLXArray]()
+                var bhh = [MLXArray]()
+                wih.reserveCapacity(groups)
+                whh.reserveCapacity(groups)
+                bih.reserveCapacity(groups)
+                bhh.reserveCapacity(groups)
+
+                var hasLayer = true
+                for g in 0..<groups {
+                    let base = "\(prefix).\(layerIndex).layers.\(g)"
+                    guard let wihG = weights["\(base).weight_ih_l0"],
+                          let whhG = weights["\(base).weight_hh_l0"],
+                          let bihG = weights["\(base).bias_ih_l0"],
+                          let bhhG = weights["\(base).bias_hh_l0"],
+                          wihG.ndim == 2, whhG.ndim == 2, bihG.ndim == 1, bhhG.ndim == 1
+                    else {
+                        hasLayer = false
+                        break
+                    }
+                    wih.append(wihG.transposed())  // [I, 3H]
+                    whh.append(whhG.transposed())  // [H, 3H]
+                    bih.append(bihG)
+                    bhh.append(bhhG)
+                }
+                guard hasLayer else { break }
+
+                let wihGI3H = MLX.stacked(wih, axis: 0)
+                let whhGH3H = MLX.stacked(whh, axis: 0)
+                let bihG3H = MLX.stacked(bih, axis: 0)
+                let bhhG3H = MLX.stacked(bhh, axis: 0)
+                layers.append(
+                    V1GroupedGRULayerPack(
+                        weightIHGI3H: wihGI3H,
+                        weightHHGH3H: whhGH3H,
+                        biasIHG3H: bihG3H,
+                        biasHHG3H: bhhG3H,
+                        inputPerGroup: wihGI3H.shape[1],
+                        hiddenPerGroup: wihGI3H.shape[2] / 3
+                    )
+                )
+                layerIndex += 1
+            }
+
+            if !layers.isEmpty {
+                packs[prefix] = V1GroupedGRUPack(groups: groups, layers: layers)
+            }
+        }
+
+        return packs
     }
 
     private static func buildGroupedTransposeWeights(
