@@ -12,6 +12,7 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
     case lfmRequiresText
     case lfmRequiresAudioForMode(LFMMode)
     case enhanceRequiresAudio
+    case streamingUnsupportedForModelVersion(String)
 
     var errorDescription: String? { description }
 
@@ -31,6 +32,8 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
             "--audio is required for LFM \(mode.rawValue) mode."
         case .enhanceRequiresAudio:
             "--audio is required for speech enhancement."
+        case .streamingUnsupportedForModelVersion(let version):
+            "Streaming mode is not supported for model version \(version). Use --mode short."
         }
     }
 }
@@ -490,6 +493,9 @@ enum App {
         }
         switch args.mode {
         case .stream:
+            guard model.supportsStreaming else {
+                throw AppError.streamingUnsupportedForModelVersion(model.modelVersion)
+            }
             print("Enhancing audio with \(model.modelVersion) (mode=stream)")
             let streamProfiling = env["DFN_STREAM_PROFILE"] == "1"
             let forceStageEval = env["DFN_STREAM_PROFILE_STAGE_EVAL"] == "1"
