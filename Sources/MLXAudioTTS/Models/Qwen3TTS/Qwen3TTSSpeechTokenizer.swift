@@ -138,6 +138,7 @@ final class CausalConv1d: Module {
     let effectiveKernelSize: Int
     let dilation: Int
     let paddingAmount: Int
+    var streamBuffer: MLXArray?
 
     // Use either regular conv or depthwise weight
     @ModuleInfo var conv: Module
@@ -193,6 +194,41 @@ final class CausalConv1d: Module {
             return out + dwConv.bias.reshaped(1, channels, 1)
         }
     }
+
+    /// Incremental decode path that only consumes new time steps.
+    func step(_ x: MLXArray) -> MLXArray {
+        // x: [batch, channels, new_time] (NCL format)
+        var result = x
+        if paddingAmount > 0 {
+            if let streamBuffer {
+                result = concatenated([streamBuffer, result], axis: -1)
+            } else {
+                result = padded(result, widths: [.init(0), .init(0), .init((paddingAmount, 0))])
+            }
+            let start = max(0, result.dim(2) - paddingAmount)
+            streamBuffer = result[0..., 0..., start...]
+        }
+
+        if groups == 1 {
+            result = result.transposed(0, 2, 1)
+            result = (conv as! MLXNN.Conv1d)(result)
+            return result.transposed(0, 2, 1)
+        } else {
+            let dwConv = conv as! DepthwiseConvWeight
+            let (_, channels, time) = (result.dim(0), result.dim(1), result.dim(2))
+            let kSize = dwConv.weight.dim(1)
+            let outputTime = max(0, time - kSize + 1)
+
+            let windows = stacked((0 ..< kSize).map { i in result[0..., 0..., i ..< (i + outputTime)] }, axis: -1)
+            let w = dwConv.weight.squeezed(axis: -1)
+            let out = (windows * w.reshaped(1, channels, 1, kSize)).sum(axis: -1)
+            return out + dwConv.bias.reshaped(1, channels, 1)
+        }
+    }
+
+    func resetState() {
+        streamBuffer = nil
+    }
 }
 
 // MARK: - SnakeBeta activation
@@ -242,6 +278,21 @@ final class ConvNeXtBlock: Module {
         h = gamma * pwconv2(h)
         h = h.transposed(0, 2, 1) // [B, C, T]
         return residual + h
+    }
+
+    func step(_ x: MLXArray) -> MLXArray {
+        let residual = x
+        var h = dwconv.step(x)
+        h = h.transposed(0, 2, 1)
+        h = norm(h)
+        h = gelu(pwconv1(h))
+        h = gamma * pwconv2(h)
+        h = h.transposed(0, 2, 1)
+        return residual + h
+    }
+
+    func resetState() {
+        dwconv.resetState()
     }
 }
 
@@ -430,7 +481,12 @@ final class DecoderTransformer: Module {
 
         var causalMask = mask
         if causalMask == nil, seqLen > 1 {
-            causalMask = MultiHeadAttention.createAdditiveCausalMask(seqLen).asType(x.dtype)
+            let totalLen = offset + seqLen
+            var fullMask = MultiHeadAttention.createAdditiveCausalMask(totalLen).asType(x.dtype)
+            if totalLen > seqLen {
+                fullMask = fullMask[(totalLen - seqLen) ..< totalLen, 0...]
+            }
+            causalMask = fullMask
         }
 
         for (i, layer) in layers.enumerated() {
@@ -462,12 +518,22 @@ final class DecoderResidualUnit: Module {
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         x + conv2(act2(conv1(act1(x))))
     }
+
+    func step(_ x: MLXArray) -> MLXArray {
+        x + conv2.step(act2(conv1.step(act1(x))))
+    }
+
+    func resetState() {
+        conv1.resetState()
+        conv2.resetState()
+    }
 }
 
 /// Upsample conv wrapper matching PyTorch key structure: block.1.conv.*
 final class DecoderBlockUpsample: Module {
     @ModuleInfo var conv: ConvTransposed1d
     let trimRight: Int
+    var overflow: MLXArray?
 
     init(inDim: Int, outDim: Int, upsampleRate: Int) {
         let kernelSize = 2 * upsampleRate
@@ -482,6 +548,35 @@ final class DecoderBlockUpsample: Module {
             h = h[0..., 0..., ..<(-trimRight)]
         }
         return h
+    }
+
+    func step(_ x: MLXArray) -> MLXArray {
+        var h = conv(x.transposed(0, 2, 1)).transposed(0, 2, 1)
+
+        if let overflow {
+            let overlapLen = overflow.dim(2)
+            let overlap = h[0..., 0..., ..<overlapLen] + overflow
+            let tailStart = min(overlapLen, h.dim(2))
+            if tailStart < h.dim(2) {
+                let tail = h[0..., 0..., tailStart...]
+                h = concatenated([overlap, tail], axis: -1)
+            } else {
+                h = overlap
+            }
+        }
+
+        if trimRight > 0 {
+            let split = max(0, h.dim(2) - trimRight)
+            overflow = h[0..., 0..., split...]
+            h = h[0..., 0..., ..<split]
+        } else {
+            overflow = nil
+        }
+        return h
+    }
+
+    func resetState() {
+        overflow = nil
     }
 }
 
@@ -511,12 +606,40 @@ final class DecoderBlock: Module {
         }
         return h
     }
+
+    func step(_ x: MLXArray) -> MLXArray {
+        var h = x
+        if let snake = block[0] as? SnakeBeta {
+            h = snake(h)
+        }
+        if let upsample = block[1] as? DecoderBlockUpsample {
+            h = upsample.step(h)
+        }
+        for layer in block.dropFirst(2) {
+            if let resUnit = layer as? DecoderResidualUnit {
+                h = resUnit.step(h)
+            }
+        }
+        return h
+    }
+
+    func resetState() {
+        if let upsample = block[1] as? DecoderBlockUpsample {
+            upsample.resetState()
+        }
+        for layer in block.dropFirst(2) {
+            if let resUnit = layer as? DecoderResidualUnit {
+                resUnit.resetState()
+            }
+        }
+    }
 }
 
 /// Initial conv: decoder.decoder.0.conv.*
 final class DecoderInitialConv: Module {
     @ModuleInfo var conv: MLXNN.Conv1d
     let kernelSize: Int
+    var streamBuffer: MLXArray?
 
     init(latentDim: Int, decoderDim: Int, kernelSize: Int = 7) {
         _conv.wrappedValue = MLXNN.Conv1d(inputChannels: latentDim, outputChannels: decoderDim, kernelSize: kernelSize, padding: 0)
@@ -527,6 +650,25 @@ final class DecoderInitialConv: Module {
         // x: NCL, left-pad for causal
         let h = padded(x, widths: [.init(0), .init(0), .init((kernelSize - 1, 0))])
         return conv(h.transposed(0, 2, 1)).transposed(0, 2, 1)
+    }
+
+    func step(_ x: MLXArray) -> MLXArray {
+        var h = x
+        let padding = kernelSize - 1
+        if padding > 0 {
+            if let streamBuffer {
+                h = concatenated([streamBuffer, h], axis: -1)
+            } else {
+                h = padded(h, widths: [.init(0), .init(0), .init((padding, 0))])
+            }
+            let start = max(0, h.dim(2) - padding)
+            streamBuffer = h[0..., 0..., start...]
+        }
+        return conv(h.transposed(0, 2, 1)).transposed(0, 2, 1)
+    }
+
+    func resetState() {
+        streamBuffer = nil
     }
 }
 
@@ -553,6 +695,7 @@ final class DecoderOutputSnake: Module {
 final class DecoderOutputConv: Module {
     @ModuleInfo var conv: MLXNN.Conv1d
     let kernelSize: Int
+    var streamBuffer: MLXArray?
 
     init(channels: Int, kernelSize: Int = 7) {
         _conv.wrappedValue = MLXNN.Conv1d(inputChannels: channels, outputChannels: 1, kernelSize: kernelSize, padding: 0)
@@ -562,6 +705,25 @@ final class DecoderOutputConv: Module {
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         let h = padded(x, widths: [.init(0), .init(0), .init((kernelSize - 1, 0))])
         return conv(h.transposed(0, 2, 1)).transposed(0, 2, 1)
+    }
+
+    func step(_ x: MLXArray) -> MLXArray {
+        var h = x
+        let padding = kernelSize - 1
+        if padding > 0 {
+            if let streamBuffer {
+                h = concatenated([streamBuffer, h], axis: -1)
+            } else {
+                h = padded(h, widths: [.init(0), .init(0), .init((padding, 0))])
+            }
+            let start = max(0, h.dim(2) - padding)
+            streamBuffer = h[0..., 0..., start...]
+        }
+        return conv(h.transposed(0, 2, 1)).transposed(0, 2, 1)
+    }
+
+    func resetState() {
+        streamBuffer = nil
     }
 }
 
@@ -605,6 +767,23 @@ final class UpsampleLayer: Module {
             else if let cn = layer as? ConvNeXtBlock { h = cn(h) }
         }
         return h
+    }
+
+    func step(_ x: MLXArray) -> MLXArray {
+        var h = x
+        for layer in layers {
+            if let ct = layer as? CausalTransposeConv1d { h = ct(h) }
+            else if let cn = layer as? ConvNeXtBlock { h = cn.step(h) }
+        }
+        return h
+    }
+
+    func resetState() {
+        for layer in layers {
+            if let cn = layer as? ConvNeXtBlock {
+                cn.resetState()
+            }
+        }
     }
 }
 
@@ -709,6 +888,7 @@ final class Qwen3TTSSpeechTokenizerEncoder: Module {
 final class Qwen3TTSSpeechTokenizerDecoder: Module {
     let config: Qwen3TTSTokenizerDecoderConfig
     let totalUpsample: Int
+    var transformerCache: [any KVCache]?
 
     @ModuleInfo(key: "pre_transformer") var preTransformer: DecoderTransformer
     @ModuleInfo var quantizer: SplitResidualVectorQuantizer
@@ -762,6 +942,66 @@ final class Qwen3TTSSpeechTokenizerDecoder: Module {
             else if let snake = layer as? DecoderOutputSnake { wav = snake(wav) }
             else if let outConv = layer as? DecoderOutputConv { wav = outConv(wav) }
         }
+        return clip(wav, min: -1, max: 1)
+    }
+
+    func resetStreamingState() {
+        transformerCache = nil
+        preConv.resetState()
+        for layer in upsample {
+            layer.resetState()
+        }
+
+        if let initConv = decoder.first as? DecoderInitialConv {
+            initConv.resetState()
+        }
+        if decoder.count > 2 {
+            for layer in decoder[1 ..< (decoder.count - 2)] {
+                if let block = layer as? DecoderBlock {
+                    block.resetState()
+                }
+            }
+        }
+        if let outConv = decoder.last as? DecoderOutputConv {
+            outConv.resetState()
+        }
+    }
+
+    /// Incrementally decode only new codec tokens.
+    func streamingStep(_ codes: MLXArray) -> MLXArray {
+        if transformerCache == nil {
+            transformerCache = preTransformer.makeCache()
+        }
+
+        var hidden = quantizer.decode(codes) // [batch, codebook_dim, time]
+        hidden = preConv.step(hidden) // [batch, latent_dim, time]
+        hidden = hidden.transposed(0, 2, 1) // [batch, time, latent_dim]
+
+        hidden = preTransformer(hidden, cache: transformerCache)
+        hidden = hidden.transposed(0, 2, 1) // [batch, latent_dim, time]
+
+        for layer in upsample {
+            hidden = layer.step(hidden)
+        }
+
+        var wav = hidden
+        if let initConv = decoder.first as? DecoderInitialConv {
+            wav = initConv.step(wav)
+        }
+        if decoder.count > 2 {
+            for layer in decoder[1 ..< (decoder.count - 2)] {
+                if let block = layer as? DecoderBlock {
+                    wav = block.step(wav)
+                }
+            }
+        }
+        if decoder.count >= 2, let snake = decoder[decoder.count - 2] as? DecoderOutputSnake {
+            wav = snake(wav)
+        }
+        if let outConv = decoder.last as? DecoderOutputConv {
+            wav = outConv.step(wav)
+        }
+
         return clip(wav, min: -1, max: 1)
     }
 
@@ -830,22 +1070,23 @@ final class Qwen3TTSSpeechTokenizer: Module {
     func streamingDecode(_ audioCodes: MLXArray, chunkTokens: Int = 100) -> [MLXArray] {
         let codes = audioCodes.transposed(0, 2, 1)
         let totalTokens = codes.dim(-1)
-        let leftContextSize = 25
         var chunks = [MLXArray]()
+
+        decoder.resetStreamingState()
 
         var startIndex = 0
         while startIndex < totalTokens {
             let endIndex = min(startIndex + chunkTokens, totalTokens)
-            let contextSize = startIndex - leftContextSize > 0 ? leftContextSize : startIndex
-            let chunk = codes[0..., 0..., (startIndex - contextSize) ..< endIndex]
-            var wavChunk = decoder(chunk)
-            wavChunk = wavChunk[0..., 0..., (contextSize * decoder.totalUpsample)...]
+            let chunk = codes[0..., 0..., startIndex ..< endIndex]
+            var wavChunk = decoder.streamingStep(chunk)
             wavChunk = wavChunk.squeezed(axis: 1)
             eval(wavChunk)
             chunks.append(wavChunk)
             Memory.clearCache()
             startIndex = endIndex
         }
+
+        decoder.resetStreamingState()
         return chunks
     }
 

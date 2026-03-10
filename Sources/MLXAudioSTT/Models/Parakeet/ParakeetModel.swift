@@ -259,6 +259,7 @@ public final class ParakeetModel: Module, STTGenerationModel {
                 )
 
                 let jointOut = joint(frame, pred)
+                eval(jointOut)
                 let tokenLogits = jointOut[0, 0, 0, ..<(blankToken + 1)]
                 let durationLogits = jointOut[0, 0, 0, (blankToken + 1)...]
                 let token = tokenLogits.argMax(axis: -1).item(Int.self)
@@ -342,6 +343,7 @@ public final class ParakeetModel: Module, STTGenerationModel {
                 )
 
                 let jointOut = joint(frame, pred)
+                eval(jointOut)
                 let token = jointOut.argMax(axis: -1).item(Int.self)
                 let step = ParakeetDecodingLogic.rnntStep(
                     predictedToken: token,

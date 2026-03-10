@@ -6,6 +6,7 @@ Parakeet speech-to-text model support for `MLXAudioSTT`.
 
 - [mlx-community/parakeet-tdt-1.1b](https://huggingface.co/mlx-community/parakeet-tdt-1.1b)
 - [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3)
+- [mlx-community/parakeet-tdt-0.6b-v2](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v2)
 - [mlx-community/parakeet-tdt_ctc-1.1b](https://huggingface.co/mlx-community/parakeet-tdt-1.1b)
 - [mlx-community/parakeet-ctc-0.6b](https://huggingface.co/mlx-community/parakeet-ctc-0.6b)
 - [mlx-community/parakeet-ctc-1.1b](https://huggingface.co/mlx-community/parakeet-ctc-1.1b)

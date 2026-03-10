@@ -20,6 +20,9 @@ let package = Package(
         // Voice Activity Detection / Speaker Diarization
         .library(name: "MLXAudioVAD", targets: ["MLXAudioVAD"]),
 
+        // Language Identification
+        .library(name: "MLXAudioLID", targets: ["MLXAudioLID"]),
+
         // Speech-to-Speech
         .library(name: "MLXAudioSTS", targets: ["MLXAudioSTS"]),
 
@@ -29,7 +32,7 @@ let package = Package(
         // Legacy combined library (for backwards compatibility)
         .library(
             name: "MLXAudio",
-            targets: ["MLXAudioCore", "MLXAudioCodecs", "MLXAudioTTS", "MLXAudioSTT", "MLXAudioVAD", "MLXAudioSTS", "MLXAudioUI"]
+            targets: ["MLXAudioCore", "MLXAudioCodecs", "MLXAudioTTS", "MLXAudioSTT", "MLXAudioVAD", "MLXAudioLID", "MLXAudioSTS", "MLXAudioUI"]
         ),
         .executable(
             name: "mlx-audio-swift-tts",
@@ -47,13 +50,17 @@ let package = Package(
             name: "mlx-audio-swift-stt",
             targets: ["mlx-audio-swift-stt"],
         ),
+        .executable(
+            name: "mlx-audio-swift-lid",
+            targets: ["mlx-audio-swift-lid"],
+        ),
 
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMajor(from: "0.30.6")),
         .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", .upToNextMajor(from: "2.30.3")),
         .package(url: "https://github.com/huggingface/swift-transformers.git", .upToNextMajor(from: "1.1.6")),
-        .package(url: "https://github.com/huggingface/swift-huggingface.git", .upToNextMajor(from: "0.6.0"))
+        .package(url: "https://github.com/huggingface/swift-huggingface.git", .upToNextMajor(from: "0.8.1"))
     ],
     targets: [
         // MARK: - MLXAudioCore
@@ -128,6 +135,19 @@ let package = Package(
             path: "Sources/MLXAudioVAD"
         ),
 
+        // MARK: - MLXAudioLID
+        .target(
+            name: "MLXAudioLID",
+            dependencies: [
+                "MLXAudioCore",
+                "MLXAudioCodecs",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "HuggingFace", package: "swift-huggingface"),
+            ],
+            path: "Sources/MLXAudioLID"
+        ),
+
         // MARK: - MLXAudioSTS
         .target(
             name: "MLXAudioSTS",
@@ -178,6 +198,11 @@ let package = Package(
             dependencies: ["MLXAudioCore", "MLXAudioSTT"],
             path: "Sources/Tools/mlx-audio-swift-stt"
         ),
+        .executableTarget(
+            name: "mlx-audio-swift-lid",
+            dependencies: ["MLXAudioCore", "MLXAudioLID"],
+            path: "Sources/Tools/mlx-audio-swift-lid"
+        ),
 
         // MARK: - Tests
         .testTarget(
@@ -189,6 +214,8 @@ let package = Package(
                 "MLXAudioSTT",
                 "MLXAudioVAD",
                 "MLXAudioSTS",
+                "MLXAudioLID",
+                "mlx-audio-swift-lid",
             ],
             path: "Tests",
             resources: [

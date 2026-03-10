@@ -1354,6 +1354,28 @@ struct Qwen3ASRHelperTests {
         // At boundary of 100, should get 13 tokens from the chunk
         #expect(result == 13)
     }
+
+    @Test func computeChunkedEncoderWindowLengthsMatchesChunkedOutputs() {
+        let windowLengths = computeChunkedEncoderWindowLengths(
+            chunkFeatureLengthsAfterCnn: Array(repeating: 13, count: 21) + [8],
+            chunkCountsPerInput: [22],
+            chunksPerWindow: 8
+        )
+
+        #expect(windowLengths == [104, 104, 73])
+    }
+
+    @Test func computeChunkedEncoderWindowLengthsPreservesSplitFixtureShape() {
+        let windowLengths = computeChunkedEncoderWindowLengths(
+            chunkFeatureLengthsAfterCnn: Array(repeating: 13, count: 21) + [8]
+                + Array(repeating: 13, count: 8) + [5],
+            chunkCountsPerInput: [22, 9],
+            chunksPerWindow: 8
+        )
+
+        #expect(windowLengths == [104, 104, 73, 104, 5])
+        #expect(windowLengths.reduce(0, +) == 390)
+    }
 }
 
 // MARK: - Audio Chunking Tests

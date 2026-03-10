@@ -76,6 +76,39 @@ func getFeatExtractOutputLengths(_ inputLengths: MLXArray) -> MLXArray {
     return outputLengths
 }
 
+func computeChunkedEncoderWindowLengths(
+    chunkFeatureLengthsAfterCnn: [Int],
+    chunkCountsPerInput: [Int],
+    chunksPerWindow: Int
+) -> [Int] {
+    let clampedChunksPerWindow = max(1, chunksPerWindow)
+    var windowLengths: [Int] = []
+    var chunkOffset = 0
+
+    for chunkCount in chunkCountsPerInput {
+        var remaining = chunkCount
+        while remaining > 0 {
+            let take = min(clampedChunksPerWindow, remaining)
+            let end = min(chunkOffset + take, chunkFeatureLengthsAfterCnn.count)
+            guard chunkOffset < end else { break }
+
+            let windowLen = chunkFeatureLengthsAfterCnn[chunkOffset..<end].reduce(0, +)
+            if windowLen > 0 {
+                windowLengths.append(windowLen)
+            }
+
+            chunkOffset = end
+            remaining -= take
+        }
+    }
+
+    if chunkOffset < chunkFeatureLengthsAfterCnn.count {
+        windowLengths.append(chunkFeatureLengthsAfterCnn[chunkOffset...].reduce(0, +))
+    }
+
+    return windowLengths
+}
+
 // MARK: - Audio Chunking
 
 /// Split long audio into chunks at low-energy boundaries.
@@ -419,18 +452,18 @@ public class Qwen3ASRAudioEncoder: Module {
             featureLens = [Int](repeating: nFrames, count: batchSize)
         }
 
-        let featureLensArray = MLXArray(featureLens.map { Int32($0) })
-        let aftercnnLens = getFeatExtractOutputLengths(featureLensArray)
         let chunkSize = nWindow * 2
 
         // Split features into chunks
         var chunkLengths: [Int] = []
         var chunks: [MLXArray] = []
+        var chunkCountsPerInput: [Int] = []
 
         for i in 0..<batchSize {
             let featLen = featureLens[i]
             let numChunks = Int(ceil(Double(featLen) / Double(chunkSize)))
             let feat = inputFeatures[i]  // [n_mels, n_frames]
+            chunkCountsPerInput.append(numChunks)
 
             var pos = 0
             for j in 0..<numChunks {
@@ -469,7 +502,6 @@ public class Qwen3ASRAudioEncoder: Module {
         let featureLensAfterCnnValues = (0..<chunkLengths.count).map {
             Int(featureLensAfterCnn[$0].item(Int32.self))
         }
-        let maxLenAfterCnn = featureLensAfterCnnValues.max() ?? 0
 
         // Process Conv2d layers in batches
         let convBatchSize = 128
@@ -511,36 +543,32 @@ public class Qwen3ASRAudioEncoder: Module {
         var hiddenStates = MLX.concatenated(hiddenList, axis: 0)  // [totalValidLen, d_model]
 
         // Process transformer layers per-window instead of building dense O(seqLen²) mask.
-        // Block attention makes each window self-contained, so we batch windows
-        // independently — O(numWindows × windowLen²) instead of O(seqLen²).
-        let aftercnnLensValues = (0..<batchSize).map {
-            Int(aftercnnLens[$0].item(Int32.self))
-        }
-        let windowAftercnn = maxLenAfterCnn * (nWindowInfer / (nWindow * 2))
-
-        // Compute per-window lengths
-        var windowLengths: [Int] = []
-        for cnnLen in aftercnnLensValues {
-            let numFullWindows = cnnLen / windowAftercnn
-            for _ in 0..<numFullWindows {
-                windowLengths.append(windowAftercnn)
-            }
-            let remainder = cnnLen % windowAftercnn
-            if remainder != 0 {
-                windowLengths.append(remainder)
-            }
-        }
+        // Derive window lengths from the actual per-conv output lengths so the final
+        // window plan always matches the hidden state sequence we just constructed.
+        let chunksPerWindow = max(1, nWindowInfer / chunkSize)
+        let windowLengths = computeChunkedEncoderWindowLengths(
+            chunkFeatureLengthsAfterCnn: featureLensAfterCnnValues,
+            chunkCountsPerInput: chunkCountsPerInput,
+            chunksPerWindow: chunksPerWindow
+        )
 
         // Extract windows and group by length for batched processing
         let seqLen = hiddenStates.dim(0)
         var windowsByLen: [Int: [(index: Int, data: MLXArray)]] = [:]
         var windowOffset = 0
-        for (i, winLen) in windowLengths.enumerated() {
+        var windowIndex = 0
+        for winLen in windowLengths {
             let end = min(windowOffset + winLen, seqLen)
             guard windowOffset < end else { continue }
             let window = hiddenStates[windowOffset..<end]
-            windowsByLen[winLen, default: []].append((index: i, data: window))
+            let actualLen = end - windowOffset
+            windowsByLen[actualLen, default: []].append((index: windowIndex, data: window))
             windowOffset = end
+            windowIndex += 1
+        }
+        if windowOffset < seqLen {
+            let window = hiddenStates[windowOffset..<seqLen]
+            windowsByLen[seqLen - windowOffset, default: []].append((index: windowIndex, data: window))
         }
 
         // Process each size-group through all transformer layers

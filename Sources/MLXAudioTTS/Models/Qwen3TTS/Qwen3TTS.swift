@@ -82,6 +82,26 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         language: String?,
         generationParameters: GenerateParameters
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        generateStream(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: language,
+            generationParameters: generationParameters,
+            streamingInterval: 2.0
+        )
+    }
+
+    public func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        streamingInterval: Double
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
         Task { @Sendable [weak self] in
             guard let self else { return }
@@ -113,6 +133,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                     repetitionPenalty: repPenalty,
                     minP: 0.0,
                     maxTokens: maxTokens,
+                    streamingInterval: streamingInterval,
                     onToken: { tokenId in
                         continuation.yield(.token(tokenId))
                     },
@@ -138,7 +159,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     ///   - codes: Codec codes [1, time, numCodeGroups]
     ///   - chunkTokens: Tokens per decode chunk (controls decode granularity)
     /// - Returns: Decoded audio waveform (1D)
-    private func decodeChunk(_ codes: MLXArray, chunkTokens: Int = 100) -> MLXArray {
+    private func decodeChunk(_ codes: MLXArray, chunkTokens: Int = 300) -> MLXArray {
         guard let speechTokenizer else { return MLXArray.zeros([1]) }
 
         var audioChunks = [MLXArray]()
@@ -171,6 +192,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         repetitionPenalty: Float,
         minP: Float,
         maxTokens: Int,
+        streamingInterval: Double = 2.0,
         onToken: ((Int) -> Void)? = nil,
         onInfo: ((AudioGenerationInfo) -> Void)? = nil,
         onAudioChunk: ((MLXArray) -> Void)? = nil
@@ -226,12 +248,23 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             .filter { $0 != eosTokenId }
 
         // Streaming decode state
-        let streamingChunkSize = 25  // ~2s at 12.5Hz codec rate
-        let contextSize = 25        // Overlap tokens for smooth audio transitions
+        let codecTokenRateHz = 12.5
+        let streamingChunkSize = max(1, Int(streamingInterval * codecTokenRateHz))
         var decodedTokens = 0
 
         var trailingIdx = 0
         var inputEmbeds = inputEmbedsInit
+        let eosTokenArray = MLXArray([Int32(eosTokenId)]).reshaped(1, 1)
+        let codeCache = talker.codePredictor.makeCache()
+
+        if onAudioChunk != nil {
+            speechTokenizer.decoder.resetStreamingState()
+        }
+        defer {
+            if onAudioChunk != nil {
+                speechTokenizer.decoder.resetStreamingState()
+            }
+        }
 
         for step in 0 ..< effectiveMaxTokens {
             // Forward pass through talker
@@ -250,16 +283,15 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                 minP: minP
             )
 
-            // Check EOS
-            let tokenId = Int(nextToken[0, 0].item(Int32.self))
-            onToken?(tokenId)
-            if tokenId == eosTokenId { break }
-            generatedCodebookTokens.append(tokenId)
+            // Defer sync to the eval boundary with inputEmbeds.
+            let isEOS = nextToken .== eosTokenArray
 
             // Generate remaining codebook tokens with code predictor
             var codeTokens = [nextToken]
             let codeHidden = hidden[0..., (-1)..., 0...]
-            var codeCache: [any KVCache]? = talker.codePredictor.makeCache()
+            for layerCache in codeCache {
+                _ = layerCache.trim(layerCache.offset)
+            }
 
             for codeIdx in 0 ..< talkerConfig.numCodeGroups - 1 {
                 let codeInput: MLXArray
@@ -270,10 +302,9 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                     codeInput = talker.codePredictor.codecEmbedding[codeIdx - 1](codeTokens.last!)
                 }
 
-                let (codeLogits, newCache, _) = talker.codePredictor(
+                let (codeLogits, _, _) = talker.codePredictor(
                     codeInput, cache: codeCache, generationStep: codeIdx
                 )
-                codeCache = newCache
 
                 let nextCode = sampleToken(
                     codeLogits,
@@ -286,34 +317,6 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             }
 
             let allCodes = concatenated(codeTokens, axis: 1) // [1, num_code_groups]
-            generatedCodes.append(allCodes)
-
-            codeCache = nil
-            Memory.clearCache()
-
-            // Streaming: decode and yield audio chunks during generation
-            if let onAudioChunk {
-                let newTokens = generatedCodes.count - decodedTokens
-                if newTokens >= streamingChunkSize {
-                    let startIdx = max(0, decodedTokens - contextSize)
-                    let codesChunk = stacked(Array(generatedCodes[startIdx...]), axis: 1)
-                    eval(codesChunk)
-
-                    var audioChunk = decodeChunk(codesChunk, chunkTokens: streamingChunkSize)
-
-                    // Trim overlap audio from previous chunk
-                    if decodedTokens > 0, startIdx < decodedTokens {
-                        let contextTokens = decodedTokens - startIdx
-                        let trimSamples = contextTokens * speechTokenizer.decodeUpsampleRate
-                        if trimSamples < audioChunk.dim(0) {
-                            audioChunk = audioChunk[trimSamples ..< audioChunk.dim(0)]
-                        }
-                    }
-
-                    decodedTokens = generatedCodes.count
-                    onAudioChunk(audioChunk)
-                }
-            }
 
             // Prepare next input
             let textEmbed: MLXArray
@@ -331,7 +334,31 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             }
 
             inputEmbeds = textEmbed + codecEmbed
-            eval(inputEmbeds)
+            eval(inputEmbeds, isEOS)
+
+            let tokenId = Int(nextToken[0, 0].item(Int32.self))
+            onToken?(tokenId)
+            if isEOS.item(Bool.self) {
+                break
+            }
+            generatedCodebookTokens.append(tokenId)
+            generatedCodes.append(allCodes)
+
+            // Streaming: decode and yield audio chunks during generation
+            if let onAudioChunk {
+                let newTokens = generatedCodes.count - decodedTokens
+                if newTokens >= streamingChunkSize {
+                    let codesChunk = stacked(Array(generatedCodes[decodedTokens...]), axis: 1)
+                    let codesForDecoder = codesChunk.transposed(0, 2, 1)
+                    eval(codesForDecoder)
+                    let decoded = speechTokenizer.decoder.streamingStep(codesForDecoder).squeezed(axis: 1)
+                    let audioChunk = decoded[0]
+                    eval(audioChunk)
+
+                    decodedTokens = generatedCodes.count
+                    onAudioChunk(audioChunk)
+                }
+            }
 
             if step > 0, step % 50 == 0 {
                 Memory.clearCache()
@@ -358,21 +385,12 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         // Streaming path: yield remaining tokens and return early
         if let onAudioChunk {
             if generatedCodes.count > decodedTokens {
-                let startIdx = max(0, decodedTokens - contextSize)
-                let codesChunk = stacked(Array(generatedCodes[startIdx...]), axis: 1)
-                eval(codesChunk)
-
-                var audioChunk = decodeChunk(codesChunk, chunkTokens: streamingChunkSize)
-
-                // Trim overlap audio from previous chunk
-                if decodedTokens > 0, startIdx < decodedTokens {
-                    let contextTokens = decodedTokens - startIdx
-                    let trimSamples = contextTokens * speechTokenizer.decodeUpsampleRate
-                    if trimSamples < audioChunk.dim(0) {
-                        audioChunk = audioChunk[trimSamples ..< audioChunk.dim(0)]
-                    }
-                }
-
+                let codesChunk = stacked(Array(generatedCodes[decodedTokens...]), axis: 1)
+                let codesForDecoder = codesChunk.transposed(0, 2, 1)
+                eval(codesForDecoder)
+                let decoded = speechTokenizer.decoder.streamingStep(codesForDecoder).squeezed(axis: 1)
+                let audioChunk = decoded[0]
+                eval(audioChunk)
                 onAudioChunk(audioChunk)
             }
             // Streaming chunks already yielded; return empty (caller uses chunks)
@@ -388,7 +406,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             decodeCodes = concatenated([refCodesT, codes], axis: 1)
         }
 
-        var audio = decodeChunk(decodeCodes, chunkTokens: 100)
+        var audio = decodeChunk(decodeCodes)
 
         if let refCodes {
             let refLen = refCodes.dim(2)

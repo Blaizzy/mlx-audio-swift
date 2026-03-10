@@ -582,6 +582,26 @@ extension MarvisTTSModel: SpeechGenerationModel, @unchecked Sendable {
         language: String?,
         generationParameters: GenerateParameters
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        generateStream(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: language,
+            generationParameters: generationParameters,
+            streamingInterval: 2.0
+        )
+    }
+
+    public func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        streamingInterval: Double
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
         
         Task { @Sendable [weak self, continuation] in
@@ -597,7 +617,7 @@ extension MarvisTTSModel: SpeechGenerationModel, @unchecked Sendable {
                     qualityLevel: .maximum,
                     refAudio: refAudio,
                     refText: refText,
-                    streamingInterval: 0.5
+                    streamingInterval: streamingInterval
                 ) {
                     continuation.yield(.audio(MLXArray(chunk.audio)))
                 }

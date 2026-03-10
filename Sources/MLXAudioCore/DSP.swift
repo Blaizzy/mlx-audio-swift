@@ -21,6 +21,26 @@ public func hanningWindow(size: Int) -> MLXArray {
     return MLXArray(window)
 }
 
+/// Create a Hamming window of given size.
+public func hammingWindow(size: Int, periodic: Bool = true) -> MLXArray {
+    guard size > 0 else { return MLXArray.zeros([0], type: Float.self) }
+    if size == 1 { return MLXArray([Float(1.0)]) }
+
+    let effectiveSize = periodic ? size + 1 : size
+    let denom = Float(effectiveSize - 1)
+
+    var values = [Float](repeating: 0, count: effectiveSize)
+    for n in 0..<effectiveSize {
+        let phase = 2.0 * Float.pi * Float(n) / denom
+        values[n] = 0.54 - 0.46 * cos(phase)
+    }
+
+    if periodic {
+        return MLXArray(Array(values.prefix(size)))
+    }
+    return MLXArray(values)
+}
+
 /// Mel scale variants for filterbank computation.
 public enum MelScale {
     /// HTK formula: mel = 2595 * log10(1 + f/700)
@@ -35,6 +55,21 @@ public enum PadMode {
     case reflect
     /// Zero (constant) padding (used by NeMo/Sortformer)
     case constant
+}
+
+/// Convert a power spectrogram to decibels with optional dynamic range clipping.
+public func powerToDB(
+    _ spectrogram: MLXArray,
+    amin: Float = 1e-10,
+    topDB: Float? = nil
+) -> MLXArray {
+    var db = 10.0 * MLX.log10(MLX.maximum(spectrogram, MLXArray(amin)))
+
+    if let topDB {
+        db = MLX.maximum(db, db.max() - MLXArray(topDB))
+    }
+
+    return db
 }
 
 /// Create mel filterbank matrix.
