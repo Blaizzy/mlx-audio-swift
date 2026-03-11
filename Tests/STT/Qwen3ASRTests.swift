@@ -1,10 +1,3 @@
-//
-//  MLXAudioSTTTests.swift
-//  MLXAudioTests
-//
-//  Created by Prince Canuma on 04/01/2026.
-//
-
 import Foundation
 import Testing
 import MLX
@@ -12,416 +5,6 @@ import MLXNN
 
 @testable import MLXAudioCore
 @testable import MLXAudioSTT
-
-
-struct GLMASRModuleSetupTests {
-
-    // MARK: - Configuration Tests
-
-    @Test func whisperConfigDefaults() {
-        let config = WhisperConfig()
-
-        #expect(config.modelType == "whisper")
-        #expect(config.activationFunction == "gelu")
-        #expect(config.dModel == 1280)
-        #expect(config.encoderAttentionHeads == 20)
-        #expect(config.encoderFfnDim == 5120)
-        #expect(config.encoderLayers == 32)
-        #expect(config.numMelBins == 128)
-        #expect(config.maxSourcePositions == 1500)
-        #expect(config.ropeTraditional)
-    }
-
-    @Test func whisperConfigCustom() {
-        let config = WhisperConfig(
-            dModel: 512,
-            encoderAttentionHeads: 8,
-            encoderLayers: 6,
-            numMelBins: 80
-        )
-
-        #expect(config.dModel == 512)
-        #expect(config.encoderAttentionHeads == 8)
-        #expect(config.encoderLayers == 6)
-        #expect(config.numMelBins == 80)
-    }
-
-    @Test func llamaConfigDefaults() {
-        let config = LlamaConfig()
-
-        #expect(config.modelType == "llama")
-        #expect(config.vocabSize == 59264)
-        #expect(config.hiddenSize == 2048)
-        #expect(config.intermediateSize == 6144)
-        #expect(config.numHiddenLayers == 28)
-        #expect(config.numAttentionHeads == 16)
-        #expect(config.numKeyValueHeads == 4)
-        #expect(config.hiddenAct == "silu")
-        #expect(config.eosTokenId == [59246, 59253, 59255])
-    }
-
-    @Test func llamaConfigCustom() {
-        let config = LlamaConfig(
-            vocabSize: 32000,
-            hiddenSize: 1024,
-            numHiddenLayers: 12
-        )
-
-        #expect(config.vocabSize == 32000)
-        #expect(config.hiddenSize == 1024)
-        #expect(config.numHiddenLayers == 12)
-    }
-
-    @Test func glmASRModelConfigDefaults() {
-        let config = GLMASRModelConfig()
-
-        #expect(config.modelType == "glmasr")
-        #expect(config.adapterType == "mlp")
-        #expect(config.mergeFactor == 4)
-        #expect(config.useRope)
-        #expect(config.maxWhisperLength == 1500)
-    }
-
-    @Test func glmASRModelConfigWithNestedConfigs() {
-        let whisperConfig = WhisperConfig(dModel: 512, encoderLayers: 6)
-        let llamaConfig = LlamaConfig(hiddenSize: 1024, numHiddenLayers: 12)
-
-        let config = GLMASRModelConfig(
-            whisperConfig: whisperConfig,
-            lmConfig: llamaConfig,
-            mergeFactor: 2
-        )
-
-        #expect(config.whisperConfig.dModel == 512)
-        #expect(config.whisperConfig.encoderLayers == 6)
-        #expect(config.lmConfig.hiddenSize == 1024)
-        #expect(config.lmConfig.numHiddenLayers == 12)
-        #expect(config.mergeFactor == 2)
-    }
-
-    // MARK: - Layer Tests
-
-    @Test func whisperAttentionShape() {
-        let config = WhisperConfig(
-            dModel: 256,
-            encoderAttentionHeads: 4,
-            encoderLayers: 2
-        )
-
-        let attention = WhisperAttention(config: config, useRope: false)
-
-        let batchSize = 2
-        let seqLen = 10
-        let hiddenStates = MLXArray.ones([batchSize, seqLen, config.dModel])
-
-        let output = attention(hiddenStates)
-
-        #expect(output.shape == [batchSize, seqLen, config.dModel])
-    }
-
-    @Test func whisperAttentionWithRoPE() {
-        let config = WhisperConfig(
-            dModel: 256,
-            encoderAttentionHeads: 4,
-            encoderLayers: 2,
-            ropeTraditional: true
-        )
-
-        let attention = WhisperAttention(config: config, useRope: true)
-
-        let batchSize = 2
-        let seqLen = 10
-        let hiddenStates = MLXArray.ones([batchSize, seqLen, config.dModel])
-
-        let output = attention(hiddenStates)
-
-        #expect(output.shape == [batchSize, seqLen, config.dModel])
-    }
-
-    @Test func whisperEncoderLayerShape() {
-        let config = WhisperConfig(
-            dModel: 256,
-            encoderAttentionHeads: 4,
-            encoderFfnDim: 1024,
-            encoderLayers: 1
-        )
-
-        let layer = WhisperEncoderLayer(config: config, useRope: false)
-
-        let batchSize = 2
-        let seqLen = 10
-        let hiddenStates = MLXArray.ones([batchSize, seqLen, config.dModel])
-
-        let output = layer(hiddenStates)
-
-        #expect(output.shape == [batchSize, seqLen, config.dModel])
-    }
-
-    @Test func whisperEncoderShape() {
-        let config = WhisperConfig(
-            dModel: 256,
-            encoderAttentionHeads: 4,
-            encoderFfnDim: 1024,
-            encoderLayers: 2,
-            numMelBins: 80,
-            maxSourcePositions: 100
-        )
-
-        let encoder = WhisperEncoder(config: config, useRope: false)
-
-        let batchSize = 2
-        let seqLen = 100
-        let inputFeatures = MLXArray.ones([batchSize, seqLen, config.numMelBins])
-
-        let output = encoder(inputFeatures)
-
-        // After conv2 with stride 2, sequence length is halved
-        let expectedSeqLen = seqLen / 2
-        #expect(output.shape[0] == batchSize)
-        #expect(output.shape[1] == expectedSeqLen)
-        #expect(output.shape[2] == config.dModel)
-    }
-
-    @Test func adaptingMLPShape() {
-        let inputDim = 512
-        let intermediateDim = 1024
-        let outputDim = 256
-
-        let mlp = AdaptingMLP(inputDim: inputDim, intermediateDim: intermediateDim, outputDim: outputDim)
-
-        let batchSize = 2
-        let seqLen = 10
-        let input = MLXArray.ones([batchSize, seqLen, inputDim])
-
-        let output = mlp(input)
-
-        #expect(output.shape == [batchSize, seqLen, outputDim])
-    }
-
-    @Test func audioEncoderShape() {
-        let whisperConfig = WhisperConfig(
-            dModel: 256,
-            encoderAttentionHeads: 4,
-            encoderFfnDim: 1024,
-            encoderLayers: 2,
-            numMelBins: 80,
-            maxSourcePositions: 100
-        )
-
-        let llamaConfig = LlamaConfig(
-            hiddenSize: 512,
-            numHiddenLayers: 2
-        )
-
-        let config = GLMASRModelConfig(
-            whisperConfig: whisperConfig,
-            lmConfig: llamaConfig,
-            mergeFactor: 4,
-            maxWhisperLength: 100
-        )
-
-        let audioEncoder = AudioEncoder(config: config)
-
-        let batchSize = 2
-        let seqLen = 100
-        let inputFeatures = MLXArray.ones([batchSize, seqLen, whisperConfig.numMelBins])
-
-        let (output, audioLen) = audioEncoder(inputFeatures)
-
-        #expect(output.shape[0] == batchSize)
-        #expect(output.shape[2] == llamaConfig.hiddenSize)
-        #expect(audioLen > 0)
-    }
-
-    @Test func audioEncoderBoaEoaTokens() {
-        let whisperConfig = WhisperConfig(dModel: 256, encoderAttentionHeads: 4, encoderLayers: 1)
-        let llamaConfig = LlamaConfig(hiddenSize: 512)
-        let config = GLMASRModelConfig(whisperConfig: whisperConfig, lmConfig: llamaConfig)
-
-        let audioEncoder = AudioEncoder(config: config)
-
-        let (boa, eoa) = audioEncoder.getBoaEoaTokens()
-
-        #expect(boa.shape == [1, llamaConfig.hiddenSize])
-        #expect(eoa.shape == [1, llamaConfig.hiddenSize])
-    }
-
-    // MARK: - STTOutput Tests
-
-    @Test func sttOutputCreation() {
-        let output = STTOutput(
-            text: "Hello world",
-            promptTokens: 100,
-            generationTokens: 50,
-            totalTokens: 150,
-            promptTps: 100.0,
-            generationTps: 50.0,
-            totalTime: 1.5
-        )
-
-        #expect(output.text == "Hello world")
-        #expect(output.promptTokens == 100)
-        #expect(output.generationTokens == 50)
-        #expect(output.totalTokens == 150)
-        #expect(output.promptTps == 100.0)
-        #expect(output.generationTps == 50.0)
-        #expect(output.totalTime == 1.5)
-    }
-
-    @Test func sttOutputDefaults() {
-        let output = STTOutput(text: "Test")
-
-        #expect(output.text == "Test")
-        #expect(output.segments == nil)
-        #expect(output.language == nil)
-        #expect(output.promptTokens == 0)
-        #expect(output.generationTokens == 0)
-        #expect(output.totalTokens == 0)
-    }
-
-    @Test func sttOutputDescription() {
-        let output = STTOutput(
-            text: "Test transcription",
-            language: "en",
-            promptTokens: 50,
-            generationTokens: 25,
-            totalTokens: 75,
-            totalTime: 0.5
-        )
-
-        let description = output.description
-
-        #expect(description.contains("Test transcription"))
-        #expect(description.contains("en"))
-        #expect(description.contains("50"))
-        #expect(description.contains("25"))
-        #expect(description.contains("75"))
-    }
-
-    // MARK: - Config Decoding Tests
-
-    @Test func whisperConfigDecoding() throws {
-        let json = """
-        {
-            "model_type": "whisper",
-            "d_model": 512,
-            "encoder_attention_heads": 8,
-            "encoder_layers": 6,
-            "num_mel_bins": 80
-        }
-        """
-
-        let data = json.data(using: .utf8)!
-        let config = try JSONDecoder().decode(WhisperConfig.self, from: data)
-
-        #expect(config.modelType == "whisper")
-        #expect(config.dModel == 512)
-        #expect(config.encoderAttentionHeads == 8)
-        #expect(config.encoderLayers == 6)
-        #expect(config.numMelBins == 80)
-    }
-
-    @Test func llamaConfigDecoding() throws {
-        let json = """
-        {
-            "model_type": "llama",
-            "vocab_size": 32000,
-            "hidden_size": 1024,
-            "num_hidden_layers": 12,
-            "eos_token_id": [1, 2, 3]
-        }
-        """
-
-        let data = json.data(using: .utf8)!
-        let config = try JSONDecoder().decode(LlamaConfig.self, from: data)
-
-        #expect(config.modelType == "llama")
-        #expect(config.vocabSize == 32000)
-        #expect(config.hiddenSize == 1024)
-        #expect(config.numHiddenLayers == 12)
-        #expect(config.eosTokenId == [1, 2, 3])
-    }
-
-    @Test func glmASRModelConfigDecoding() throws {
-        let json = """
-        {
-            "model_type": "glmasr",
-            "adapter_type": "mlp",
-            "merge_factor": 2,
-            "use_rope": true,
-            "whisper_config": {
-                "d_model": 512,
-                "encoder_layers": 6
-            },
-            "lm_config": {
-                "hidden_size": 1024,
-                "num_hidden_layers": 12
-            }
-        }
-        """
-
-        let data = json.data(using: .utf8)!
-        let config = try JSONDecoder().decode(GLMASRModelConfig.self, from: data)
-
-        #expect(config.modelType == "glmasr")
-        #expect(config.adapterType == "mlp")
-        #expect(config.mergeFactor == 2)
-        #expect(config.useRope)
-        #expect(config.whisperConfig.dModel == 512)
-        #expect(config.whisperConfig.encoderLayers == 6)
-        #expect(config.lmConfig.hiddenSize == 1024)
-        #expect(config.lmConfig.numHiddenLayers == 12)
-    }
-
-    // MARK: - AnyCodable Tests
-
-    @Test func anyCodableWithInt() throws {
-        let json = """
-        {"value": 42}
-        """
-
-        struct Container: Codable {
-            let value: AnyCodable
-        }
-
-        let data = json.data(using: .utf8)!
-        let container = try JSONDecoder().decode(Container.self, from: data)
-
-        #expect(container.value.value as? Int == 42)
-    }
-
-    @Test func anyCodableWithString() throws {
-        let json = """
-        {"value": "hello"}
-        """
-
-        struct Container: Codable {
-            let value: AnyCodable
-        }
-
-        let data = json.data(using: .utf8)!
-        let container = try JSONDecoder().decode(Container.self, from: data)
-
-        #expect(container.value.value as? String == "hello")
-    }
-
-    @Test func anyCodableWithArray() throws {
-        let json = """
-        {"value": [1, 2, 3]}
-        """
-
-        struct Container: Codable {
-            let value: AnyCodable
-        }
-
-        let data = json.data(using: .utf8)!
-        let container = try JSONDecoder().decode(Container.self, from: data)
-
-        let array = container.value.value as? [Any]
-        #expect(array?.count == 3)
-    }
-}
-
 
 // MARK: - Qwen3 ASR Module Setup Tests
 
@@ -1522,508 +1105,108 @@ struct SplitAudioIntoChunksTests {
         #expect(totalChunkSamples >= totalSamples, "Chunks should cover all audio samples")
     }
 }
-struct ParakeetSTTTests {
 
-    @Test func variantResolutionAndTypedParsing() throws {
-        let tdtJSON = """
-        {
-          "target": "nemo.collections.asr.models.rnnt_bpe_models.EncDecRNNTBPEModel",
-          "model_defaults": {"tdt_durations": [0, 1, 2]},
-          "preprocessor": {
-            "sample_rate": 16000,
-            "normalize": "per_feature",
-            "window_size": 0.02,
-            "window_stride": 0.01,
-            "window": "hann",
-            "features": 80,
-            "n_fft": 512,
-            "dither": 0.0
-          },
-          "encoder": {
-            "feat_in": 80,
-            "n_layers": 2,
-            "d_model": 32,
-            "n_heads": 4,
-            "ff_expansion_factor": 2,
-            "subsampling_factor": 4,
-            "self_attention_model": "rel_pos",
-            "subsampling": "dw_striding",
-            "conv_kernel_size": 15,
-            "subsampling_conv_channels": 32,
-            "pos_emb_max_len": 512
-          },
-          "decoder": {
-            "blank_as_pad": true,
-            "vocab_size": 4,
-            "prednet": {
-              "pred_hidden": 32,
-              "pred_rnn_layers": 1
+extension SmokeTests.STTTests {
+
+    @Suite("Qwen3 ASR Tests", .serialized)
+    struct Qwen3ASRTests {
+
+        @Test func qwen3ASRTranscribe() async throws {
+            testHeader("qwen3ASRTranscribe")
+            defer { testCleanup("qwen3ASRTranscribe") }
+            let audioURL = Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media")!
+            let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
+            print("\u{001B}[33mLoaded audio: \(audioData.shape), sample rate: \(sampleRate)\u{001B}[0m")
+
+            print("\u{001B}[33mLoading Qwen3 ASR model...\u{001B}[0m")
+            let model = try await Qwen3ASRModel.fromPretrained("mlx-community/Qwen3-ASR-0.6B-4bit")
+            print("\u{001B}[32mQwen3 ASR model loaded!\u{001B}[0m")
+
+            let output = model.generate(audio: audioData)
+            print("\u{001B}[32m Qwen3 ASR Transcription: \(output.text)\u{001B}[0m")
+            print("\u{001B}[32m Qwen3 ASR Generation Stats: \(output)\u{001B}[0m")
+
+            #expect(!output.text.isEmpty, "Transcription text should not be empty")
+            #expect(output.generationTokens > 0, "Generation tokens should be greater than 0")
+        }
+
+        @Test func qwen3ASRTranscribeStream() async throws {
+            testHeader("qwen3ASRTranscribeStream")
+            defer { testCleanup("qwen3ASRTranscribeStream") }
+            let audioURL = Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media")!
+            let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
+            print("\u{001B}[33mLoaded audio: \(audioData.shape), sample rate: \(sampleRate)\u{001B}[0m")
+
+            print("\u{001B}[33mLoading Qwen3 ASR model...\u{001B}[0m")
+            let model = try await Qwen3ASRModel.fromPretrained("mlx-community/Qwen3-ASR-0.6B-4bit")
+            print("\u{001B}[32mQwen3 ASR model loaded!\u{001B}[0m")
+
+            print("\u{001B}[33mStreaming transcription ...\u{001B}[0m")
+
+            var tokenCount = 0
+            var transcribedText = ""
+            var finalOutput: STTOutput?
+            var generationInfo: STTGenerationInfo?
+
+            for try await event in model.generateStream(audio: audioData) {
+                switch event {
+                case .token(let token):
+                    tokenCount += 1
+                    transcribedText += token
+                case .info(let info):
+                    generationInfo = info
+                    print("\n\u{001B}[36m\(info.summary)\u{001B}[0m")
+                case .result(let output):
+                    finalOutput = output
+                    print("\u{001B}[32m Qwen3 ASR Streaming Transcription: \(output.text)\u{001B}[0m")
+                    print("\u{001B}[32m Qwen3 ASR Streaming Stats: \(output)\u{001B}[0m")
+                }
             }
-          },
-          "joint": {
-            "num_classes": 4,
-            "vocabulary": ["▁", "a", "b", "."],
-            "jointnet": {
-              "joint_hidden": 32,
-              "activation": "relu",
-              "encoder_hidden": 32,
-              "pred_hidden": 32
+
+            #expect(tokenCount > 0, "Should have generated tokens")
+            #expect(finalOutput != nil, "Should have received final output")
+            #expect(generationInfo != nil, "Should have received generation info")
+
+            if let output = finalOutput {
+                #expect(!output.text.isEmpty, "Transcription text should not be empty")
+                #expect(output.generationTokens > 0, "Generation tokens should be greater than 0")
+                print("\u{001B}[32m\(output)\u{001B}[0m")
             }
-          },
-          "decoding": {
-            "model_type": "tdt",
-            "durations": [0, 1, 2],
-            "greedy": {"max_symbols": 10}
-          }
         }
-        """
 
-        let raw = try JSONDecoder().decode(ParakeetRawConfig.self, from: Data(tdtJSON.utf8))
-        let variant = try ParakeetVariantResolver.resolve(raw)
-        #expect(variant == .tdt)
+        @Test func qwen3ForcedAlignerAlign() async throws {
+            testHeader("qwen3ForcedAlignerAlign")
+            defer { testCleanup("qwen3ForcedAlignerAlign") }
+            let audioURL = Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media")!
+            let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
+            print("\u{001B}[33mLoaded audio: \(audioData.shape), sample rate: \(sampleRate)\u{001B}[0m")
 
-        let typed = try ParakeetConfigParser.parseTDT(raw)
-        #expect(typed.preprocessor.sampleRate == 16000)
-        #expect(typed.encoder.subsampling == "dw_striding")
-        #expect(typed.decoding.durations == [0, 1, 2])
-        #expect(typed.decoding.greedy?.maxSymbols == 10)
-    }
+            print("\u{001B}[33mLoading Qwen3 ForcedAligner model...\u{001B}[0m")
+            let model = try await Qwen3ForcedAlignerModel.fromPretrained("mlx-community/Qwen3-ForcedAligner-0.6B-4bit")
+            print("\u{001B}[32mQwen3 ForcedAligner model loaded!\u{001B}[0m")
 
-    @Test func ctcVariantResolution() throws {
-        let ctcJSON = """
-        {
-          "target": "nemo.collections.asr.models.ctc_bpe_models.EncDecCTCModelBPE",
-          "preprocessor": {
-            "sample_rate": 16000,
-            "normalize": "per_feature",
-            "window_size": 0.02,
-            "window_stride": 0.01,
-            "window": "hann",
-            "features": 80,
-            "n_fft": 512,
-            "dither": 0.0
-          },
-          "encoder": {
-            "feat_in": 80,
-            "n_layers": 2,
-            "d_model": 32,
-            "n_heads": 4,
-            "ff_expansion_factor": 2,
-            "subsampling_factor": 4,
-            "self_attention_model": "rel_pos",
-            "subsampling": "dw_striding",
-            "conv_kernel_size": 15,
-            "subsampling_conv_channels": 32,
-            "pos_emb_max_len": 512
-          },
-          "decoder": {
-            "feat_in": 32,
-            "num_classes": 4,
-            "vocabulary": ["▁", "a", "b", "."]
-          },
-          "decoding": {"greedy": {"max_symbols": 8}}
-        }
-        """
+            let transcript = "Coffee's story likely begins in Ethiopia, where legend tells of a goat herder named Kaldi, who notices goats became energetic after eating red berries from a particular bush. Curious, he tried them himself and felt invigorated."
 
-        let raw = try JSONDecoder().decode(ParakeetRawConfig.self, from: Data(ctcJSON.utf8))
-        #expect(try ParakeetVariantResolver.resolve(raw) == .ctc)
-        let typed = try ParakeetConfigParser.parseCTC(raw)
-        #expect(typed.decoder.featIn == 32)
-        #expect(typed.decoder.vocabulary.count == 4)
-    }
+            print("\u{001B}[33mRunning forced alignment...\u{001B}[0m")
+            let result = model.generate(audio: audioData, text: transcript, language: "English")
 
-    @Test func tokenizerDecodesSentencePieceMarker() {
-        let vocab = ["▁", "h", "e", "l", "o", "."]
-        let text = ParakeetTokenizer.decode(tokens: [0, 1, 2, 3, 3, 4, 5], vocabulary: vocab)
-        #expect(text == " hello.")
-    }
-
-    @Test func alignmentSentenceAndMergeUtilities() throws {
-        let tokens: [ParakeetAlignedToken] = [
-            .init(id: 1, text: "Hi", start: 0.0, duration: 0.2),
-            .init(id: 2, text: ".", start: 0.2, duration: 0.1),
-            .init(id: 3, text: " Next", start: 0.5, duration: 0.2),
-            .init(id: 4, text: "!", start: 0.7, duration: 0.1),
-        ]
-        let sentences = ParakeetAlignment.tokensToSentences(tokens)
-        #expect(sentences.count == 2)
-        #expect(sentences[0].text == "Hi.")
-        #expect(sentences[1].text == " Next!")
-
-        let a: [ParakeetAlignedToken] = [
-            .init(id: 1, text: " a", start: 0.0, duration: 0.2),
-            .init(id: 2, text: " b", start: 0.2, duration: 0.2),
-            .init(id: 3, text: " c", start: 0.4, duration: 0.2),
-        ]
-        let b: [ParakeetAlignedToken] = [
-            .init(id: 2, text: " b", start: 0.21, duration: 0.2),
-            .init(id: 3, text: " c", start: 0.41, duration: 0.2),
-            .init(id: 4, text: " d", start: 0.61, duration: 0.2),
-        ]
-        let mergedContiguous = try ParakeetAlignment.mergeLongestContiguous(a, b, overlapDuration: 0.6)
-        #expect(mergedContiguous.map(\.id) == [1, 2, 3, 4])
-
-        let mergedLCS = ParakeetAlignment.mergeLongestCommonSubsequence(a, b, overlapDuration: 0.6)
-        #expect(mergedLCS.map(\.id) == [1, 2, 3, 4])
-    }
-
-    @Test func melPreprocessingProducesExpectedShape() {
-        let config = ParakeetPreprocessConfig(
-            sampleRate: 16000,
-            normalize: "per_feature",
-            windowSize: 0.02,
-            windowStride: 0.01,
-            window: "hann",
-            features: 80,
-            nFft: 512,
-            dither: 0,
-            padTo: 0,
-            padValue: 0,
-            preemph: 0.97
-        )
-
-        let audio = MLXArray(Array(repeating: Float(0.0), count: 16000))
-        let mel = ParakeetAudio.logMelSpectrogram(audio, config: config)
-
-        #expect(mel.ndim == 3)
-        #expect(mel.shape[0] == 1)
-        #expect(mel.shape[2] == 80)
-        #expect(mel.shape[1] > 0)
-    }
-
-    @Test func deterministicRNNTAndTDTControlFlow() {
-        let rnntBlank = 10
-        let rnntStep1 = ParakeetDecodingLogic.rnntStep(
-            predictedToken: rnntBlank,
-            blankToken: rnntBlank,
-            time: 5,
-            newSymbols: 2,
-            maxSymbols: 4
-        )
-        #expect(rnntStep1.nextTime == 6)
-        #expect(rnntStep1.nextNewSymbols == 0)
-        #expect(rnntStep1.emittedToken == false)
-
-        let rnntStep2 = ParakeetDecodingLogic.rnntStep(
-            predictedToken: 2,
-            blankToken: rnntBlank,
-            time: 8,
-            newSymbols: 3,
-            maxSymbols: 4
-        )
-        #expect(rnntStep2.nextTime == 9)
-        #expect(rnntStep2.nextNewSymbols == 0)
-        #expect(rnntStep2.emittedToken == true)
-
-        let tdtStep1 = ParakeetDecodingLogic.tdtStep(
-            predictedToken: 1,
-            blankToken: 5,
-            decisionIndex: 1,
-            durations: [0, 2, 4],
-            time: 10,
-            newSymbols: 0,
-            maxSymbols: 4
-        )
-        #expect(tdtStep1.nextTime == 12)
-        #expect(tdtStep1.nextNewSymbols == 0)
-        #expect(tdtStep1.jump == 2)
-        #expect(tdtStep1.emittedToken == true)
-
-        let tdtStep2 = ParakeetDecodingLogic.tdtStep(
-            predictedToken: 1,
-            blankToken: 5,
-            decisionIndex: 0,
-            durations: [0, 2, 4],
-            time: 3,
-            newSymbols: 3,
-            maxSymbols: 4
-        )
-        #expect(tdtStep2.nextTime == 4)  // zero-duration + max_symbols fallback
-        #expect(tdtStep2.nextNewSymbols == 0)
-        #expect(tdtStep2.jump == 0)
-    }
-
-    @Test func deterministicCTCCollapseSpans() {
-        let spans = ParakeetDecodingLogic.ctcSpans(
-            bestTokens: [5, 5, 9, 2, 2, 9, 2, 3, 3],
-            blankToken: 9
-        )
-        #expect(spans == [
-            .init(token: 5, startFrame: 0, endFrame: 2),
-            .init(token: 2, startFrame: 3, endFrame: 5),
-            .init(token: 2, startFrame: 6, endFrame: 7),
-            .init(token: 3, startFrame: 7, endFrame: 9),
-        ])
-    }
-
-    @Test func fromDirectorySmokeTestWithFixtureConfigAndWeights() async throws {
-        let fixtureDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("parakeet-fixture-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
-
-        defer { try? FileManager.default.removeItem(at: fixtureDir) }
-
-        let configJSON = """
-        {
-          "target": "nemo.collections.asr.models.ctc_bpe_models.EncDecCTCModelBPE",
-          "preprocessor": {
-            "sample_rate": 16000,
-            "normalize": "per_feature",
-            "window_size": 0.02,
-            "window_stride": 0.01,
-            "window": "hann",
-            "features": 80,
-            "n_fft": 512,
-            "dither": 0.0
-          },
-          "encoder": {
-            "feat_in": 80,
-            "n_layers": 0,
-            "d_model": 16,
-            "n_heads": 4,
-            "ff_expansion_factor": 2,
-            "subsampling_factor": 2,
-            "self_attention_model": "abs_pos",
-            "subsampling": "dw_striding",
-            "conv_kernel_size": 15,
-            "subsampling_conv_channels": 16,
-            "pos_emb_max_len": 128
-          },
-          "decoder": {
-            "feat_in": 16,
-            "num_classes": 4,
-            "vocabulary": ["▁", "a", "b", "."]
-          },
-          "decoding": {"greedy": {"max_symbols": 8}}
-        }
-        """
-        try configJSON.write(
-            to: fixtureDir.appendingPathComponent("config.json"),
-            atomically: true,
-            encoding: .utf8
-        )
-
-        let weights: [String: MLXArray] = [
-            "encoder.pre_encode.conv0.weight": MLXArray.zeros([16, 3, 3, 1], type: Float.self),
-            "encoder.pre_encode.conv0.bias": MLXArray.zeros([16], type: Float.self),
-            "encoder.pre_encode.out.weight": MLXArray.zeros([16, 640], type: Float.self),
-            "encoder.pre_encode.out.bias": MLXArray.zeros([16], type: Float.self),
-            "decoder.decoder_layers.0.weight": MLXArray.zeros([5, 1, 16], type: Float.self),
-            "decoder.decoder_layers.0.bias": MLXArray.zeros([5], type: Float.self),
-        ]
-        try MLX.save(arrays: weights, url: fixtureDir.appendingPathComponent("model.safetensors"))
-
-        let model = try ParakeetModel.fromDirectory(fixtureDir)
-        let audio = MLXArray(Array(repeating: Float(0), count: 3200))
-        let output = model.generate(audio: audio)
-
-        #expect(model.variant == .ctc)
-        #expect(model.vocabulary.count == 4)
-        #expect(output.text.count >= 0)
-    }
-}
-
-struct VoxtralRealtimeSTTTests {
-    @Test func configDecodesNestedAudioEncodingArgs() throws {
-        let json = """
-        {
-          "model_type": "voxtral_realtime",
-          "encoder_args": {
-            "dim": 1280,
-            "audio_encoding_args": {
-              "sampling_rate": 16000,
-              "num_mel_bins": 128,
-              "window_size": 400,
-              "hop_length": 160,
-              "global_log_mel_max": 1.5
+            print("\u{001B}[32m Qwen3 ForcedAligner Result:\u{001B}[0m")
+            for item in result.items {
+                print("\u{001B}[32m  [\(String(format: "%.3f", item.startTime))s - \(String(format: "%.3f", item.endTime))s] \(item.text)\u{001B}[0m")
             }
-          },
-          "decoder": {
-            "dim": 3072,
-            "n_layers": 2,
-            "n_heads": 32,
-            "n_kv_heads": 8,
-            "head_dim": 128,
-            "hidden_dim": 9216,
-            "vocab_size": 131072
-          }
+
+            #expect(!result.items.isEmpty, "Alignment should produce items")
+            #expect(!result.text.isEmpty, "Alignment text should not be empty")
+
+            for item in result.items {
+                #expect(item.startTime >= 0, "Start time should be non-negative")
+                #expect(item.endTime >= item.startTime, "End time should be >= start time")
+            }
+            print("\u{001B}[32m Qwen3 ForcedAligner Summary:\u{001B}[0m")
+            print("\u{001B}[32m  Text: \(result.text)\u{001B}[0m")
+            print("\u{001B}[32m  Prompt Tokens: \(result.promptTokens)\u{001B}[0m")
+            print("\u{001B}[32m  Total Time: \(String(format: "%.3f", result.totalTime))s\u{001B}[0m")
+            print("\u{001B}[32m  Peak Memory: \(String(format: "%.2f", result.peakMemoryUsage))GB\u{001B}[0m")
         }
-        """
-
-        let config = try JSONDecoder().decode(VoxtralRealtimeConfig.self, from: Data(json.utf8))
-        #expect(config.modelType == "voxtral_realtime")
-        #expect(config.audioEncodingArgs.numMelBins == 128)
-        #expect(config.decoder.dim == 3072)
-        #expect(config.vocabSize == 131072)
-    }
-
-    @Test func tokenizerDecodeSkipsSpecialTokens() throws {
-        let fixtureDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("voxtral-tekken-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: fixtureDir) }
-
-        let tekkenJSON = """
-        {
-          "vocab": [
-            {"token_bytes": "aGVs"},
-            {"token_bytes": "bG8="}
-          ],
-          "config": {"default_num_special_tokens": 1000},
-          "special_tokens": [{"rank": 2}, {"rank": 32}]
-        }
-        """
-        try tekkenJSON.write(
-            to: fixtureDir.appendingPathComponent("tekken.json"),
-            atomically: true,
-            encoding: .utf8
-        )
-
-        let tokenizer = try VoxtralRealtimeTokenizer.fromModelDirectory(fixtureDir)
-        let text = tokenizer.decode(tokenIds: [1, 1000, 1001, 2, 32])
-        #expect(text == "hello")
-    }
-
-    @Test func audioMelProducesExpectedShape() {
-        let audio = MLXArray(Array(repeating: Float(0), count: 16000))
-        let filters = VoxtralRealtimeAudio.computeMelFilters()
-        let mel = VoxtralRealtimeAudio.computeMelSpectrogram(
-            audio: audio,
-            melFilters: filters,
-            windowSize: 400,
-            hopLength: 160,
-            globalLogMelMax: 1.5
-        )
-
-        #expect(mel.ndim == 2)
-        #expect(mel.shape[0] == 128)
-        #expect(mel.shape[1] > 0)
-    }
-
-    @Test func sanitizeRemapsAndTransposesConvWeights() {
-        let convWeight = MLXArray.zeros([8, 4, 3], type: Float.self)
-        let weights: [String: MLXArray] = [
-            "mm_streams_embeddings.embedding_module.whisper_encoder.conv_layers.0.conv.weight": convWeight,
-            "mm_streams_embeddings.embedding_module.tok_embeddings.weight": MLXArray.zeros([32, 16], type: Float.self),
-            "layers.0.feed_forward.w1.weight": MLXArray.zeros([4, 4], type: Float.self),
-            "layers.0.ada_rms_norm_t_cond.0.weight": MLXArray.zeros([4, 4], type: Float.self),
-        ]
-
-        let sanitized = VoxtralRealtimeModel.sanitize(weights: weights)
-
-        let mappedConv = sanitized["encoder.conv_layers_0_conv.conv.weight"]
-        #expect(mappedConv != nil)
-        #expect(mappedConv?.shape == [8, 3, 4])
-        #expect(sanitized["decoder.tok_embeddings.weight"] != nil)
-        #expect(sanitized["decoder.layers.0.feed_forward_w1.weight"] != nil)
-        #expect(sanitized["decoder.layers.0.ada_rms_norm_t_cond.ada_down.weight"] != nil)
-    }
-
-    @Test func fromDirectoryAndGenerateEOSSmoke() throws {
-        let fixtureDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("voxtral-fixture-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: fixtureDir) }
-
-        let configJSON = """
-        {
-          "model_type": "voxtral_realtime",
-          "encoder_args": {
-            "dim": 16,
-            "n_layers": 0,
-            "n_heads": 2,
-            "head_dim": 8,
-            "hidden_dim": 32,
-            "n_kv_heads": 2,
-            "norm_eps": 1e-5,
-            "rope_theta": 1000000,
-            "sliding_window": 64,
-            "causal": true,
-            "use_biases": true,
-            "downsample_factor": 4
-          },
-          "decoder": {
-            "dim": 16,
-            "n_layers": 0,
-            "n_heads": 2,
-            "n_kv_heads": 2,
-            "head_dim": 8,
-            "hidden_dim": 32,
-            "vocab_size": 8,
-            "norm_eps": 1e-5,
-            "rope_theta": 1000000,
-            "sliding_window": 64,
-            "tied_embeddings": true,
-            "ada_rms_norm_t_cond": false,
-            "ada_rms_norm_t_cond_dim": 4
-          },
-          "audio_encoding_args": {
-            "sampling_rate": 16000,
-            "frame_rate": 12.5,
-            "num_mel_bins": 128,
-            "hop_length": 160,
-            "window_size": 400,
-            "global_log_mel_max": 1.5
-          },
-          "transcription_delay_ms": 0,
-          "bos_token_id": 1,
-          "eos_token_id": 0,
-          "streaming_pad_token_id": 2,
-          "n_left_pad_tokens": 1
-        }
-        """
-        try configJSON.write(
-            to: fixtureDir.appendingPathComponent("config.json"),
-            atomically: true,
-            encoding: .utf8
-        )
-
-        let tekkenJSON = """
-        {
-          "vocab": [
-            {"token_bytes":"YQ=="},
-            {"token_bytes":"Yg=="},
-            {"token_bytes":"Yw=="},
-            {"token_bytes":"ZA=="},
-            {"token_bytes":"ZQ=="},
-            {"token_bytes":"Zg=="},
-            {"token_bytes":"Zw=="},
-            {"token_bytes":"aA=="}
-          ],
-          "config":{"default_num_special_tokens":0},
-          "special_tokens":[]
-        }
-        """
-        try tekkenJSON.write(
-            to: fixtureDir.appendingPathComponent("tekken.json"),
-            atomically: true,
-            encoding: .utf8
-        )
-
-        // All-zero embeddings force argmax token 0 immediately, matching EOS id above.
-        let weights: [String: MLXArray] = [
-            "encoder.conv_layers_0_conv.conv.weight": MLXArray.zeros([16, 3, 128], type: Float.self),
-            "encoder.conv_layers_0_conv.conv.bias": MLXArray.zeros([16], type: Float.self),
-            "encoder.conv_layers_1_conv.conv.weight": MLXArray.zeros([16, 3, 16], type: Float.self),
-            "encoder.conv_layers_1_conv.conv.bias": MLXArray.zeros([16], type: Float.self),
-            "encoder.transformer_norm.weight": MLXArray.ones([16], type: Float.self),
-            "encoder.audio_language_projection_0.weight": MLXArray.zeros([16, 64], type: Float.self),
-            "encoder.audio_language_projection_2.weight": MLXArray.zeros([16, 16], type: Float.self),
-            "decoder.tok_embeddings.weight": MLXArray.zeros([8, 16], type: Float.self),
-            "decoder.norm.weight": MLXArray.ones([16], type: Float.self),
-        ]
-        try MLX.save(arrays: weights, url: fixtureDir.appendingPathComponent("model.safetensors"))
-
-        let model = try VoxtralRealtimeModel.fromDirectory(fixtureDir)
-        let audio = MLXArray(Array(repeating: Float(0), count: 16000))
-        let output = model.generate(
-            audio: audio,
-            generationParameters: STTGenerateParameters(maxTokens: 4, temperature: 0.0)
-        )
-
-        #expect(output.promptTokens > 0)
-        #expect(output.generationTokens == 0)
-        #expect(output.totalTokens == output.promptTokens)
-        #expect(output.text == "")
     }
 }
