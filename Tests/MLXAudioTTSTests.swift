@@ -1,9 +1,19 @@
+//  Run the TTS suites in this file:
+//    xcodebuild test \
+//      -scheme MLXAudio-Package \
+//      -destination 'platform=macOS' \
+//      -parallel-testing-enabled NO \
+//      -only-testing:MLXAudioTests/SopranoTextCleaningTests \
+//      CODE_SIGNING_ALLOWED=NO
 //
-//  MLXAudioTTSTests.swift
-//  MLXAudioTests
+//  Run a single category:
+//    -only-testing:'MLXAudioTests/SopranoTextCleaningTests'
 //
-//  Created by Prince Canuma on 31/12/2025.
+//  Run a single test (note the trailing parentheses for Swift Testing):
+//    -only-testing:'MLXAudioTests/SopranoTextCleaningTests/testTextCleaning()'
 //
+//  Filter test results:
+//    2>&1 | grep --color=never -E '(Suite.*started|Test test.*started|passed after|failed after|TEST SUCCEEDED|TEST FAILED|Suite.*passed|Test run)'
 
 import Testing
 import MLX

@@ -1,10 +1,27 @@
+//  Run the codec suites in this file:
+//    xcodebuild test \
+//      -scheme MLXAudio-Package \
+//      -destination 'platform=macOS' \
+//      -parallel-testing-enabled NO \
+//      -only-testing:MLXAudioTests/SharedDSPTests \
+//      -only-testing:MLXAudioTests/VocosTests \
+//      -only-testing:MLXAudioTests/SharedEcapaTdnnTests \
+//      -only-testing:MLXAudioTests/EncodecTests \
+//      -only-testing:MLXAudioTests/DACVAETests \
+//      CODE_SIGNING_ALLOWED=NO
 //
-//  MLXAudioCodecsTests.swift
-//  MLXAudioTests
+//  Run a single category:
+//    -only-testing:'MLXAudioTests/SharedDSPTests'
+//    -only-testing:'MLXAudioTests/VocosTests'
+//    -only-testing:'MLXAudioTests/SharedEcapaTdnnTests'
+//    -only-testing:'MLXAudioTests/EncodecTests'
+//    -only-testing:'MLXAudioTests/DACVAETests'
 //
-//  Created by Ben Harraway on 14/04/2025.
+//  Run a single test (note the trailing parentheses for Swift Testing):
+//    -only-testing:'MLXAudioTests/EncodecTests/testEncodecConfig()'
 //
-
+//  Filter test results:
+//    2>&1 | grep --color=never -E '(Suite.*started|Test test.*started|passed after|failed after|TEST SUCCEEDED|TEST FAILED|Suite.*passed|Test run)'
 
 import Testing
 import MLX
@@ -48,6 +65,7 @@ struct SharedDSPTests {
 // Run Vocos tests with:  xcodebuild test \
 // -scheme MLXAudio-Package \
 // -destination 'platform=macOS' \
+// -parallel-testing-enabled NO \
 // -only-testing:MLXAudioTests/VocosTests \
 // 2>&1 | grep -E "(Suite.*started|Test test.*started|passed after|failed after|TEST SUCCEEDED|TEST FAILED|Suite.*passed|Test run)"
 
@@ -380,6 +398,7 @@ struct SharedEcapaTdnnTests {
 // Run Encodec tests with:  xcodebuild test \
 // -scheme MLXAudio-Package \
 // -destination 'platform=macOS' \
+// -parallel-testing-enabled NO \
 // -only-testing:MLXAudioTests/EncodecTests \
 // 2>&1 | grep -E "(Suite.*started|Test test.*started|passed after|failed after|TEST SUCCEEDED|TEST FAILED|Suite.*passed|Test run)"
 
@@ -520,6 +539,7 @@ struct EncodecTests {
 // Run DACVAE tests with:  xcodebuild test \
 // -scheme MLXAudio-Package \
 // -destination 'platform=macOS' \
+// -parallel-testing-enabled NO \
 // -only-testing:MLXAudioTests/DACVAETests \
 // 2>&1 | grep -E "(Suite.*started|Test test.*started|passed after|failed after|TEST SUCCEEDED|TEST FAILED|Suite.*passed|Test run)"
 

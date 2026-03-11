@@ -1,7 +1,3 @@
-//
-//  MLXAudioSmokeTests.swift
-//  MLXAudioTests
-//
 //  End-to-end inference smoke tests that download models from HuggingFace and run generation.
 //  These are intentionally separated from the fast unit tests so CI can skip them easily.
 //
@@ -9,6 +5,7 @@
 //    xcodebuild test \
 //      -scheme MLXAudio-Package \
 //      -destination 'platform=macOS' \
+//      -parallel-testing-enabled NO \
 //      -only-testing:MLXAudioTests/Smoke \
 //      CODE_SIGNING_ALLOWED=NO
 //
@@ -57,6 +54,17 @@ private func testCleanup(_ name: String) {
     print("\u{001B}[1;35m\(delimiter) \(name) done (peak: \(String(format: "%.2f", peak)) GB)\u{001B}[0m\n")
 }
 
+private func makeTemporaryArtifactDirectory(prefix: String) throws -> URL {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    return directory
+}
+
+private func cleanupTemporaryArtifactDirectory(_ directory: URL) {
+    try? FileManager.default.removeItem(at: directory)
+}
+
 // MARK: - Top-level serialized wrapper (all suites run sequentially)
 
 @Suite("SmokeTests", .serialized)
@@ -70,6 +78,8 @@ struct CodecsSmokeTests {
     @Test func snacEncodeDecodeCycle() async throws {
         testHeader("snacEncodeDecodeCycle")
         defer { testCleanup("snacEncodeDecodeCycle") }
+        let outputDir = try makeTemporaryArtifactDirectory(prefix: "snac-smoke")
+        defer { cleanupTemporaryArtifactDirectory(outputDir) }
         let audioURL = Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media")!
         let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
         print("Loaded audio: \(audioData.shape), sample rate: \(sampleRate)")
@@ -92,7 +102,7 @@ struct CodecsSmokeTests {
         let reconstructed = snac.decode(codes)
         print("Reconstructed audio shape: \(reconstructed.shape)")
 
-        let outputURL = audioURL.deletingLastPathComponent().appendingPathComponent("intention_snac_reconstructed.wav")
+        let outputURL = outputDir.appendingPathComponent("intention_snac_reconstructed.wav")
         let outputAudio = reconstructed.squeezed()
         try saveAudioArray(outputAudio, sampleRate: Double(snac.samplingRate), to: outputURL)
         print("\u{001B}[32mSaved reconstructed audio to\u{001B}[0m: \(outputURL.path)")
@@ -103,6 +113,8 @@ struct CodecsSmokeTests {
     @Test func mimiEncodeDecodeCycle() async throws {
         testHeader("mimiEncodeDecodeCycle")
         defer { testCleanup("mimiEncodeDecodeCycle") }
+        let outputDir = try makeTemporaryArtifactDirectory(prefix: "mimi-smoke")
+        defer { cleanupTemporaryArtifactDirectory(outputDir) }
         let audioURL = Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media")!
         let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
         print("Loaded audio: \(audioData.shape), sample rate: \(sampleRate)")
@@ -127,7 +139,7 @@ struct CodecsSmokeTests {
         let reconstructed = mimi.decode(codes)
         print("Reconstructed audio shape: \(reconstructed.shape)")
 
-        let outputURL = audioURL.deletingLastPathComponent().appendingPathComponent("intention_mimi_reconstructed.wav")
+        let outputURL = outputDir.appendingPathComponent("intention_mimi_reconstructed.wav")
         let outputAudio = reconstructed.squeezed()
         try saveAudioArray(outputAudio, sampleRate: mimi.sampleRate, to: outputURL)
         print("\u{001B}[32mSaved reconstructed audio to\u{001B}[0m: \(outputURL.path)")
@@ -145,6 +157,8 @@ struct TTSSmokeTests {
     @Test func qwen3Generate() async throws {
         testHeader("qwen3Generate")
         defer { testCleanup("qwen3Generate") }
+        let outputDir = try makeTemporaryArtifactDirectory(prefix: "qwen3-generate")
+        defer { cleanupTemporaryArtifactDirectory(outputDir) }
         print("\u{001B}[33mLoading Qwen3 TTS model...\u{001B}[0m")
         let model = try await Qwen3Model.fromPretrained("mlx-community/VyvoTTS-EN-Beta-4bit")
         print("\u{001B}[32mQwen3 model loaded!\u{001B}[0m")
@@ -169,8 +183,7 @@ struct TTSSmokeTests {
         print("\u{001B}[32mGenerated audio shape: \(audio.shape)\u{001B}[0m")
         #expect(audio.shape[0] > 0, "Audio should have samples")
 
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("qwen3_test_output.wav")
+        let outputURL = outputDir.appendingPathComponent("qwen3_test_output.wav")
         try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
         print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
     }
@@ -178,6 +191,8 @@ struct TTSSmokeTests {
     @Test func qwen3GenerateStream() async throws {
         testHeader("qwen3GenerateStream")
         defer { testCleanup("qwen3GenerateStream") }
+        let outputDir = try makeTemporaryArtifactDirectory(prefix: "qwen3-stream")
+        defer { cleanupTemporaryArtifactDirectory(outputDir) }
         print("\u{001B}[33mLoading Qwen3 TTS model...\u{001B}[0m")
         let model = try await Qwen3Model.fromPretrained("mlx-community/VyvoTTS-EN-Beta-4bit")
         print("\u{001B}[32mQwen3 model loaded!\u{001B}[0m")
@@ -220,8 +235,7 @@ struct TTSSmokeTests {
         if let audio = finalAudio {
             #expect(audio.shape[0] > 0, "Audio should have samples")
 
-            let outputURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("qwen3_stream_test_output.wav")
+            let outputURL = outputDir.appendingPathComponent("qwen3_stream_test_output.wav")
             try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
             print("\u{001B}[32mSaved streamed audio to\u{001B}[0m: \(outputURL.path)")
         }
@@ -230,6 +244,8 @@ struct TTSSmokeTests {
     @Test func llamaTTSGenerate() async throws {
         testHeader("llamaTTSGenerate")
         defer { testCleanup("llamaTTSGenerate") }
+        let outputDir = try makeTemporaryArtifactDirectory(prefix: "llama-tts-generate")
+        defer { cleanupTemporaryArtifactDirectory(outputDir) }
         print("\u{001B}[33mLoading LlamaTTS (Orpheus) model...\u{001B}[0m")
         let model = try await LlamaTTSModel.fromPretrained("mlx-community/orpheus-3b-0.1-ft-bf16")
         print("\u{001B}[32mLlamaTTS model loaded!\u{001B}[0m")
@@ -254,8 +270,7 @@ struct TTSSmokeTests {
         print("\u{001B}[32mGenerated audio shape: \(audio.shape)\u{001B}[0m")
         #expect(audio.shape[0] > 0, "Audio should have samples")
 
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("llama_tts_test_output.wav")
+        let outputURL = outputDir.appendingPathComponent("llama_tts_test_output.wav")
         try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
         print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
     }
@@ -263,6 +278,8 @@ struct TTSSmokeTests {
     @Test func llamaTTSGenerateStream() async throws {
         testHeader("llamaTTSGenerateStream")
         defer { testCleanup("llamaTTSGenerateStream") }
+        let outputDir = try makeTemporaryArtifactDirectory(prefix: "llama-tts-stream")
+        defer { cleanupTemporaryArtifactDirectory(outputDir) }
         print("\u{001B}[33mLoading LlamaTTS (Orpheus) model...\u{001B}[0m")
         let model = try await LlamaTTSModel.fromPretrained("mlx-community/orpheus-3b-0.1-ft-bf16")
         print("\u{001B}[32mLlamaTTS model loaded!\u{001B}[0m")
@@ -305,8 +322,7 @@ struct TTSSmokeTests {
         if let audio = finalAudio {
             #expect(audio.shape[0] > 0, "Audio should have samples")
 
-            let outputURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("llama_tts_stream_test_output.wav")
+            let outputURL = outputDir.appendingPathComponent("llama_tts_stream_test_output.wav")
             try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
             print("\u{001B}[32mSaved streamed audio to\u{001B}[0m: \(outputURL.path)")
         }
@@ -315,6 +331,8 @@ struct TTSSmokeTests {
     @Test func pocketTTSGenerate() async throws {
         testHeader("pocketTTSGenerate")
         defer { testCleanup("pocketTTSGenerate") }
+        let outputDir = try makeTemporaryArtifactDirectory(prefix: "pocket-tts-generate")
+        defer { cleanupTemporaryArtifactDirectory(outputDir) }
         print("\u{001B}[33mLoading PocketTTS model...\u{001B}[0m")
         let model = try await PocketTTSModel.fromPretrained("mlx-community/pocket-tts")
         print("\u{001B}[32mPocketTTS model loaded!\u{001B}[0m")
@@ -331,8 +349,7 @@ struct TTSSmokeTests {
         print("\u{001B}[32mGenerated audio shape: \(audio.shape)\u{001B}[0m")
         #expect(audio.shape[0] > 0, "Audio should have samples")
 
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("pocket_tts_test_output.wav")
+        let outputURL = outputDir.appendingPathComponent("pocket_tts_test_output.wav")
         try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
         print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
     }
@@ -340,6 +357,8 @@ struct TTSSmokeTests {
     @Test func sopranoGenerate() async throws {
         testHeader("sopranoGenerate")
         defer { testCleanup("sopranoGenerate") }
+        let outputDir = try makeTemporaryArtifactDirectory(prefix: "soprano-generate")
+        defer { cleanupTemporaryArtifactDirectory(outputDir) }
         print("\u{001B}[33mLoading Soprano TTS model...\u{001B}[0m")
         let model = try await SopranoModel.fromPretrained("mlx-community/Soprano-1.1-80M-bf16")
         print("\u{001B}[32mSoprano model loaded!\u{001B}[0m")
@@ -362,8 +381,7 @@ struct TTSSmokeTests {
         print("\u{001B}[32mGenerated audio shape: \(audio.shape)\u{001B}[0m")
         #expect(audio.shape[0] > 0, "Audio should have samples")
 
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("soprano_test_output.wav")
+        let outputURL = outputDir.appendingPathComponent("soprano_test_output.wav")
         try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
         print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
     }
@@ -371,6 +389,8 @@ struct TTSSmokeTests {
     @Test func sopranoGenerateStream() async throws {
         testHeader("sopranoGenerateStream")
         defer { testCleanup("sopranoGenerateStream") }
+        let outputDir = try makeTemporaryArtifactDirectory(prefix: "soprano-stream")
+        defer { cleanupTemporaryArtifactDirectory(outputDir) }
         print("\u{001B}[33mLoading Soprano TTS model...\u{001B}[0m")
         let model = try await SopranoModel.fromPretrained("mlx-community/Soprano-80M-bf16")
         print("\u{001B}[32mSoprano model loaded!\u{001B}[0m")
@@ -411,8 +431,7 @@ struct TTSSmokeTests {
         if let audio = finalAudio {
             #expect(audio.shape[0] > 0, "Audio should have samples")
 
-            let outputURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("soprano_stream_test_output.wav")
+            let outputURL = outputDir.appendingPathComponent("soprano_stream_test_output.wav")
             try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
             print("\u{001B}[32mSaved streamed audio to\u{001B}[0m: \(outputURL.path)")
         }
@@ -593,7 +612,7 @@ struct VADSmokeTests {
 
     private static func saveSegmentsJSON(
         _ segments: [DiarizationSegment],
-        to path: String,
+        to outputURL: URL,
         mode: String,
         audioDuration: Float,
         processingTime: Double
@@ -617,13 +636,15 @@ struct VADSmokeTests {
         ]
 
         let data = try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
-        try data.write(to: URL(fileURLWithPath: path))
-        print("\u{001B}[32mSaved results to \(path)\u{001B}[0m")
+        try data.write(to: outputURL)
+        print("\u{001B}[32mSaved results to \(outputURL.path)\u{001B}[0m")
     }
 
     @Test func sortformerOfflineInference() async throws {
         testHeader("sortformerOfflineInference")
         defer { testCleanup("sortformerOfflineInference") }
+        let outputDir = try makeTemporaryArtifactDirectory(prefix: "sortformer-offline")
+        defer { cleanupTemporaryArtifactDirectory(outputDir) }
         let audioURL = Bundle.module.url(forResource: "multi_speaker", withExtension: "wav", subdirectory: "media")!
         let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
         let audioDuration = Float(audioData.dim(0)) / Float(sampleRate)
@@ -640,9 +661,9 @@ struct VADSmokeTests {
         print("\u{001B}[32mFound \(output.numSpeakers) speakers, \(output.segments.count) segments\u{001B}[0m")
         print("\u{001B}[32mProcessing time: \(String(format: "%.2f", output.totalTime))s\u{001B}[0m")
 
-        let outputPath = "/tmp/sortformer_offline_results.json"
+        let outputURL = outputDir.appendingPathComponent("sortformer_offline_results.json")
         try Self.saveSegmentsJSON(
-            output.segments, to: outputPath, mode: "offline",
+            output.segments, to: outputURL, mode: "offline",
             audioDuration: audioDuration, processingTime: output.totalTime
         )
 
@@ -659,6 +680,8 @@ struct VADSmokeTests {
     @Test func sortformerStreamingInference() async throws {
         testHeader("sortformerStreamingInference")
         defer { testCleanup("sortformerStreamingInference") }
+        let outputDir = try makeTemporaryArtifactDirectory(prefix: "sortformer-streaming")
+        defer { cleanupTemporaryArtifactDirectory(outputDir) }
         let audioURL = Bundle.module.url(forResource: "multi_speaker", withExtension: "wav", subdirectory: "media")!
         let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
         let audioDuration = Float(audioData.dim(0)) / Float(sampleRate)
@@ -684,9 +707,9 @@ struct VADSmokeTests {
         let elapsed = CFAbsoluteTimeGetCurrent() - startTime
         print("\u{001B}[32mStreaming complete: \(chunkCount) chunks, \(allSegments.count) total segments in \(String(format: "%.2f", elapsed))s\u{001B}[0m")
 
-        let outputPath = "/tmp/sortformer_streaming_results.json"
+        let outputURL = outputDir.appendingPathComponent("sortformer_streaming_results.json")
         try Self.saveSegmentsJSON(
-            allSegments, to: outputPath, mode: "streaming",
+            allSegments, to: outputURL, mode: "streaming",
             audioDuration: audioDuration, processingTime: elapsed
         )
 
@@ -746,11 +769,6 @@ struct LIDSmokeTests {
     @Test func mmsLid256LoadAndPredict() async throws {
         testHeader("mmsLid256LoadAndPredict")
         defer { testCleanup("mmsLid256LoadAndPredict") }
-        let env = ProcessInfo.processInfo.environment
-        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
-            print("Skipping network MMS-LID-256 smoke test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
-            return
-        }
 
         let audioURL = Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media")!
         let (_, audioData) = try loadAudioArray(from: audioURL)
@@ -831,6 +849,8 @@ struct STSSmokeTests {
     @Test func lfm2TextToSpeech() async throws {
         testHeader("lfm2TextToSpeech")
         defer { testCleanup("lfm2TextToSpeech") }
+        let outputDir = try makeTemporaryArtifactDirectory(prefix: "lfm-tts")
+        defer { cleanupTemporaryArtifactDirectory(outputDir) }
 
         print("\u{001B}[33mLoading LFM2.5-Audio model...\u{001B}[0m")
         let model = try await LFM2AudioModel.fromPretrained(Self.modelName)
@@ -891,8 +911,7 @@ struct STSSmokeTests {
         let samples = waveform[0].asArray(Float.self)
         print("\u{001B}[32mDecoded \(samples.count) audio samples (\(String(format: "%.1f", Double(samples.count) / 24000.0))s at 24kHz)\u{001B}[0m")
 
-        let outputURL = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Desktop/lfm_tts_output.wav")
+        let outputURL = outputDir.appendingPathComponent("lfm_tts_output.wav")
         try AudioUtils.writeWavFile(samples: samples, sampleRate: 24000, fileURL: outputURL)
         print("\u{001B}[32mSaved WAV to: \(outputURL.path)\u{001B}[0m")
     }
@@ -950,6 +969,8 @@ struct STSSmokeTests {
     @Test func lfm2SpeechToSpeech() async throws {
         testHeader("lfm2SpeechToSpeech")
         defer { testCleanup("lfm2SpeechToSpeech") }
+        let outputDir = try makeTemporaryArtifactDirectory(prefix: "lfm-sts")
+        defer { cleanupTemporaryArtifactDirectory(outputDir) }
 
         let audioURL = Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media")!
         let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
@@ -1016,8 +1037,7 @@ struct STSSmokeTests {
             let samples = waveform[0].asArray(Float.self)
             print("\u{001B}[32mDecoded \(samples.count) audio samples (\(String(format: "%.1f", Double(samples.count) / 24000.0))s at 24kHz)\u{001B}[0m")
 
-            let outputURL = URL(fileURLWithPath: NSHomeDirectory())
-                .appendingPathComponent("Desktop/lfm_sts_output.wav")
+            let outputURL = outputDir.appendingPathComponent("lfm_sts_output.wav")
             try AudioUtils.writeWavFile(samples: samples, sampleRate: 24000, fileURL: outputURL)
             print("\u{001B}[32mSaved WAV to: \(outputURL.path)\u{001B}[0m")
         }

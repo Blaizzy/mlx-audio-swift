@@ -1,9 +1,49 @@
+//  To enable downloading models, run with MLXAUDIO_ENABLE_NETWORK_TESTS=1
 //
-//  MLXAudioSTSTests.swift
-//  MLXAudioTests
+//  Run the STS suites in this file:
+//    xcodebuild test \
+//      -scheme MLXAudio-Package \
+//      -destination 'platform=macOS' \
+//      -parallel-testing-enabled NO \
+//      -only-testing:MLXAudioTests/MossFormer2SEConfigTests \
+//      -only-testing:MLXAudioTests/MossFormer2SELayerTests \
+//      -only-testing:MLXAudioTests/MossFormer2SEDSPTests \
+//      -only-testing:MLXAudioTests/MossFormer2SEModelTests \
+//      -only-testing:MLXAudioTests/MossFormer2SESanitizeTests \
+//      -only-testing:MLXAudioTests/MossFormer2SEIntegrationTests \
+//      -only-testing:MLXAudioTests/SAMAudioConfigTests \
+//      -only-testing:MLXAudioTests/SAMAudioBuildingBlockTests \
+//      -only-testing:MLXAudioTests/SAMAudioTransformerTests \
+//      -only-testing:MLXAudioTests/SAMAudioTextEncoderTests \
+//      -only-testing:MLXAudioTests/SAMAudioProcessorTests \
+//      -only-testing:MLXAudioTests/SAMAudioModelTests \
+//      -only-testing:MLXAudioTests/SAMAudioWeightsTests \
+//      -only-testing:MLXAudioTests/LFMAudioConfigTests \
+//      -only-testing:MLXAudioTests/LFMAudioModuleSetupTests \
+//      CODE_SIGNING_ALLOWED=NO
 //
-//  Created by Claude on 17/02/2026.
+//  Run a single category:
+//    -only-testing:'MLXAudioTests/MossFormer2SEConfigTests'
+//    -only-testing:'MLXAudioTests/MossFormer2SELayerTests'
+//    -only-testing:'MLXAudioTests/MossFormer2SEDSPTests'
+//    -only-testing:'MLXAudioTests/MossFormer2SEModelTests'
+//    -only-testing:'MLXAudioTests/MossFormer2SESanitizeTests'
+//    -only-testing:'MLXAudioTests/MossFormer2SEIntegrationTests'
+//    -only-testing:'MLXAudioTests/SAMAudioConfigTests'
+//    -only-testing:'MLXAudioTests/SAMAudioBuildingBlockTests'
+//    -only-testing:'MLXAudioTests/SAMAudioTransformerTests'
+//    -only-testing:'MLXAudioTests/SAMAudioTextEncoderTests'
+//    -only-testing:'MLXAudioTests/SAMAudioProcessorTests'
+//    -only-testing:'MLXAudioTests/SAMAudioModelTests'
+//    -only-testing:'MLXAudioTests/SAMAudioWeightsTests'
+//    -only-testing:'MLXAudioTests/LFMAudioConfigTests'
+//    -only-testing:'MLXAudioTests/LFMAudioModuleSetupTests'
 //
+//  Run a single test (note the trailing parentheses for Swift Testing):
+//    -only-testing:'MLXAudioTests/MossFormer2SEConfigTests/mossFormer2SEConfigDefaults()'
+//
+//  Filter test results:
+//    2>&1 | grep --color=never -E '(Suite.*started|Test test.*started|passed after|failed after|TEST SUCCEEDED|TEST FAILED|Suite.*passed|Test run)'
 
 import Foundation
 import Testing
@@ -643,6 +683,12 @@ struct MossFormer2SEIntegrationTests {
     }
 
     @Test func mossFormer2SEEnhance() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network MossFormer2SE test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
         let audioURL = Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media")!
         let (_, audioData) = try loadAudioArray(from: audioURL)
 
@@ -1410,5 +1456,3 @@ struct LFMAudioModuleSetupTests {
         #expect(depthformer.layersCount == config.layers)
     }
 }
-
-
