@@ -602,6 +602,68 @@ struct STTSmokeTests {
             print("\u{001B}[32m\(output)\u{001B}[0m")
         }
     }
+    @Test func graniteSpeechTranscribe() async throws {
+        testHeader("graniteSpeechTranscribe")
+        defer { testCleanup("graniteSpeechTranscribe") }
+        let audioURL = Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media")!
+        let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
+        print("\u{001B}[33mLoaded audio: \(audioData.shape), sample rate: \(sampleRate)\u{001B}[0m")
+
+        print("\u{001B}[33mLoading Granite Speech model...\u{001B}[0m")
+        let model = try await GraniteSpeechModel.fromPretrained("mlx-community/granite-4.0-1b-speech-5bit")
+        print("\u{001B}[32mGranite Speech model loaded!\u{001B}[0m")
+
+        let output = model.generate(audio: audioData)
+        print("\u{001B}[32m Granite Speech Transcription: \(output.text)\u{001B}[0m")
+        print("\u{001B}[32m Granite Speech Generation Stats: \(output)\u{001B}[0m")
+
+        #expect(!output.text.isEmpty, "Transcription text should not be empty")
+        #expect(output.generationTokens > 0, "Generation tokens should be greater than 0")
+    }
+
+    @Test func graniteSpeechTranscribeStream() async throws {
+        testHeader("graniteSpeechTranscribeStream")
+        defer { testCleanup("graniteSpeechTranscribeStream") }
+        let audioURL = Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media")!
+        let (sampleRate, audioData) = try loadAudioArray(from: audioURL)
+        print("\u{001B}[33mLoaded audio: \(audioData.shape), sample rate: \(sampleRate)\u{001B}[0m")
+
+        print("\u{001B}[33mLoading Granite Speech model...\u{001B}[0m")
+        let model = try await GraniteSpeechModel.fromPretrained("mlx-community/granite-4.0-1b-speech-5bit")
+        print("\u{001B}[32mGranite Speech model loaded!\u{001B}[0m")
+
+        print("\u{001B}[33mStreaming transcription ...\u{001B}[0m")
+
+        var tokenCount = 0
+        var transcribedText = ""
+        var finalOutput: STTOutput?
+        var generationInfo: STTGenerationInfo?
+
+        for try await event in model.generateStream(audio: audioData) {
+            switch event {
+            case .token(let token):
+                tokenCount += 1
+                transcribedText += token
+            case .info(let info):
+                generationInfo = info
+                print("\n\u{001B}[36m\(info.summary)\u{001B}[0m")
+            case .result(let output):
+                finalOutput = output
+                print("\u{001B}[32m Granite Speech Streaming Transcription: \(output.text)\u{001B}[0m")
+                print("\u{001B}[32m Granite Speech Streaming Stats: \(output)\u{001B}[0m")
+            }
+        }
+
+        #expect(tokenCount > 0, "Should have generated tokens")
+        #expect(finalOutput != nil, "Should have received final output")
+        #expect(generationInfo != nil, "Should have received generation info")
+
+        if let output = finalOutput {
+            #expect(!output.text.isEmpty, "Transcription text should not be empty")
+            #expect(output.generationTokens > 0, "Generation tokens should be greater than 0")
+            print("\u{001B}[32m\(output)\u{001B}[0m")
+        }
+    }
 }
 
 
