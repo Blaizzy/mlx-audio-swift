@@ -1105,7 +1105,7 @@ public class GraniteSpeechModel: Module {
 
         try model.update(
             parameters: ModuleParameters.unflattened(sanitizedWeights),
-            verify: .noUnusedKeys
+            verify: .all
         )
 
         eval(model)
