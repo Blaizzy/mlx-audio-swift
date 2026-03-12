@@ -2171,19 +2171,5 @@ struct GraniteSpeechModuleTests {
         #expect(output.shape[2] == 2048)
     }
 
-    @Test func graniteSpeechEndToEnd() async throws {
-        let model = try await GraniteSpeechModel.fromPretrained(
-            "mlx-community/granite-4.0-1b-speech-5bit"
-        )
 
-        // Load test audio
-        let audioURL = URL(fileURLWithPath: "/Users/prince_canuma/Downloads/conversational_a.wav")
-        let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: 16000)
-
-        let output = model.generate(audio: audio, verbose: true)
-        print("Transcription: \(output.text)")
-        print(output)
-        #expect(!output.text.isEmpty)
-        #expect(output.generationTokens > 0)
-    }
 }
