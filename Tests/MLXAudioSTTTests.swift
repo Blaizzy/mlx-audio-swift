@@ -2051,3 +2051,125 @@ struct VoxtralRealtimeSTTTests {
         #expect(output.text == "")
     }
 }
+
+// MARK: - Granite Speech Tests
+
+struct GraniteSpeechConfigTests {
+
+    @Test func encoderConfigDefaults() throws {
+        let json = """
+        {}
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(GraniteSpeechEncoderConfig.self, from: json)
+
+        #expect(config.inputDim == 160)
+        #expect(config.numLayers == 10)
+        #expect(config.hiddenDim == 1024)
+        #expect(config.feedforwardMult == 4)
+        #expect(config.numHeads == 8)
+        #expect(config.dimHead == 128)
+        #expect(config.outputDim == 42)
+        #expect(config.contextSize == 200)
+        #expect(config.maxPosEmb == 512)
+        #expect(config.convKernelSize == 15)
+        #expect(config.convExpansionFactor == 2)
+    }
+
+    @Test func projectorConfigDefaults() throws {
+        let json = """
+        {}
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(GraniteSpeechProjectorConfig.self, from: json)
+
+        #expect(config.hiddenSize == 1024)
+        #expect(config.numHiddenLayers == 2)
+        #expect(config.numAttentionHeads == 16)
+        #expect(config.intermediateSize == 4096)
+        #expect(config.hiddenAct == "gelu")
+        #expect(config.encoderHiddenSize == 1024)
+    }
+
+    @Test func textConfigDefaults() throws {
+        let json = """
+        {}
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(GraniteSpeechTextConfig.self, from: json)
+
+        #expect(config.vocabSize == 100353)
+        #expect(config.hiddenSize == 2048)
+        #expect(config.numHiddenLayers == 40)
+        #expect(config.numAttentionHeads == 16)
+        #expect(config.numKeyValueHeads == 4)
+        #expect(config.attentionMultiplier == 0.0078125)
+        #expect(config.embeddingMultiplier == 12.0)
+        #expect(config.residualMultiplier == 0.22)
+        #expect(config.logitsScaling == 8.0)
+        #expect(config.tieWordEmbeddings == false)
+    }
+
+    @Test func modelConfigParsing() throws {
+        let json = """
+        {
+            "model_type": "granite_speech",
+            "audio_token_index": 100352,
+            "downsample_rate": 5,
+            "window_size": 15,
+            "encoder_config": {"input_dim": 160, "num_layers": 10},
+            "projector_config": {"hidden_size": 1024},
+            "text_config": {"vocab_size": 100353, "hidden_size": 2048}
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(GraniteSpeechModelConfig.self, from: json)
+
+        #expect(config.modelType == "granite_speech")
+        #expect(config.audioTokenIndex == 100352)
+        #expect(config.downsampleRate == 5)
+        #expect(config.windowSize == 15)
+        #expect(config.encoderConfig.inputDim == 160)
+        #expect(config.encoderConfig.numLayers == 10)
+        #expect(config.projectorConfig.hiddenSize == 1024)
+        #expect(config.textConfig.vocabSize == 100353)
+    }
+}
+
+struct GraniteSpeechModuleTests {
+
+    @Test func ctcEncoderCreation() {
+        let config = try! JSONDecoder().decode(
+            GraniteSpeechEncoderConfig.self,
+            from: "{}".data(using: .utf8)!
+        )
+        let encoder = GraniteSpeechCTCEncoder(config)
+        #expect(encoder.numLayers == 10)
+
+        // Verify forward pass with small input
+        let input = MLXArray.zeros([1, 10, 160])
+        let output = encoder(input)
+        #expect(output.shape[0] == 1)
+        #expect(output.shape[1] == 10)
+        #expect(output.shape[2] == 1024)
+    }
+
+    @Test func encoderProjectorCreation() throws {
+        let json = """
+        {
+            "encoder_config": {},
+            "projector_config": {"hidden_size": 1024},
+            "text_config": {"hidden_size": 2048}
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(GraniteSpeechModelConfig.self, from: json)
+        let projector = GraniteSpeechEncoderProjector(config)
+
+        #expect(projector.numQueries == 3)  // window_size(15) / downsample_rate(5)
+
+        let input = MLXArray.zeros([1, 30, 1024])
+        let output = projector(input)
+        // 30 frames / window_size(15) = 2 blocks, 2 * 3 queries = 6 tokens
+        #expect(output.shape[0] == 1)
+        #expect(output.shape[1] == 6)
+        #expect(output.shape[2] == 2048)
+    }
+
+
+}
