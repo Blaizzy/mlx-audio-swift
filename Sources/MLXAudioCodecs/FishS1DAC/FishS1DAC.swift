@@ -451,6 +451,18 @@ public final class FishS1DAC: Module {
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+        func normalizedComponent(_ component: String) -> String {
+            guard component.contains("_") else { return component }
+            if component == "weight_g" || component == "weight_v" {
+                return component
+            }
+            let parts = component.split(separator: "_")
+            guard let head = parts.first else { return component }
+            return String(head) + parts.dropFirst().map {
+                $0.prefix(1).uppercased() + $0.dropFirst()
+            }.joined()
+        }
+
         let wnPrefixes = Set(weights.keys.compactMap { key -> String? in
             let marker = ".conv.parametrizations.weight.original0"
             guard let range = key.range(of: marker) else { return nil }
@@ -460,6 +472,9 @@ public final class FishS1DAC: Module {
         var out: [String: MLXArray] = [:]
         for (key, value) in weights {
             var sanitizedKey = key
+            if sanitizedKey.hasSuffix(".causal_mask") || sanitizedKey.hasSuffix(".causalMask") {
+                continue
+            }
             if sanitizedKey.contains(".conv.parametrizations.weight.original0") {
                 sanitizedKey = sanitizedKey.replacingOccurrences(
                     of: ".conv.parametrizations.weight.original0",
@@ -485,6 +500,27 @@ public final class FishS1DAC: Module {
                     of: ".parametrizations.weight.original1",
                     with: ".weight_v"
                 )
+            }
+            sanitizedKey = sanitizedKey
+                .split(separator: ".")
+                .map { part -> String in
+                    let component = String(part)
+                    return Int(component) == nil ? normalizedComponent(component) : component
+                }
+                .joined(separator: ".")
+
+            var pathParts = sanitizedKey.split(separator: ".").map(String.init)
+            if pathParts.count > 4,
+               pathParts[0] == "quantizer",
+               (pathParts[1] == "downsample" || pathParts[1] == "upsample"),
+               Int(pathParts[2]) != nil
+            {
+                if pathParts[3] == "0" {
+                    pathParts[3] = "conv"
+                } else if pathParts[3] == "1" {
+                    pathParts[3] = "block"
+                }
+                sanitizedKey = pathParts.joined(separator: ".")
             }
             out[sanitizedKey] = value
         }
@@ -524,11 +560,14 @@ public final class FishS1DAC: Module {
 
         let codecWeightsURL = modelURL.appendingPathComponent("codec.safetensors")
         let modelWeightsURL = modelURL.appendingPathComponent("model.safetensors")
+        let pytorchWeightsURL = modelURL.appendingPathComponent("pytorch_model.safetensors")
         let weightsURL: URL
         if FileManager.default.fileExists(atPath: codecWeightsURL.path) {
             weightsURL = codecWeightsURL
         } else if FileManager.default.fileExists(atPath: modelWeightsURL.path) {
             weightsURL = modelWeightsURL
+        } else if FileManager.default.fileExists(atPath: pytorchWeightsURL.path) {
+            weightsURL = pytorchWeightsURL
         } else {
             throw NSError(
                 domain: "FishS1DAC",
