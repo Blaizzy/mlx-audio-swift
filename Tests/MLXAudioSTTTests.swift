@@ -9,6 +9,8 @@
 //      -only-testing:MLXAudioTests/ForcedAlignResultTests \
 //      -only-testing:MLXAudioTests/Qwen3ASRHelperTests \
 //      -only-testing:MLXAudioTests/SplitAudioIntoChunksTests \
+//      -only-testing:MLXAudioTests/FireRedASR2Tests \
+//      -only-testing:MLXAudioTests/FireRedASR2NetworkTests \
 //      -only-testing:MLXAudioTests/ParakeetSTTTests \
 //      -only-testing:MLXAudioTests/VoxtralRealtimeSTTTests \
 //      CODE_SIGNING_ALLOWED=NO
@@ -20,6 +22,8 @@
 //    -only-testing:'MLXAudioTests/ForcedAlignResultTests'
 //    -only-testing:'MLXAudioTests/Qwen3ASRHelperTests'
 //    -only-testing:'MLXAudioTests/SplitAudioIntoChunksTests'
+//    -only-testing:'MLXAudioTests/FireRedASR2Tests'
+//    -only-testing:'MLXAudioTests/FireRedASR2NetworkTests'
 //    -only-testing:'MLXAudioTests/ParakeetSTTTests'
 //    -only-testing:'MLXAudioTests/VoxtralRealtimeSTTTests'
 //
@@ -36,6 +40,20 @@ import MLXNN
 
 @testable import MLXAudioCore
 @testable import MLXAudioSTT
+
+private func loadSTTNetworkFixture(sampleRate: Int, maxSamples: Int? = nil) throws -> MLXArray {
+    let audioURL = Bundle.module.url(
+        forResource: "intention",
+        withExtension: "wav",
+        subdirectory: "media"
+    )!
+    let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: sampleRate)
+    if let maxSamples {
+        let sampleCount = min(audio.shape[0], maxSamples)
+        return audio[0..<sampleCount]
+    }
+    return audio
+}
 
 
 struct GLMASRModuleSetupTests {
@@ -2049,6 +2067,233 @@ struct VoxtralRealtimeSTTTests {
         #expect(output.generationTokens == 0)
         #expect(output.totalTokens == output.promptTokens)
         #expect(output.text == "")
+    }
+}
+
+@Suite("FireRed ASR 2 Tests", .serialized)
+struct FireRedASR2Tests {
+
+    @Test func configDefaultsAndDecoding() throws {
+        let defaults = FireRedASR2Config()
+        #expect(defaults.modelType == "fireredasr2")
+        #expect(defaults.idim == 80)
+        #expect(defaults.odim == 8667)
+        #expect(defaults.sosID == 3)
+        #expect(defaults.eosID == 4)
+        #expect(defaults.encoder.nLayers == 16)
+        #expect(defaults.decoder.nHead == 20)
+
+        let json = """
+        {
+          "model_type": "fireredasr2",
+          "idim": 80,
+          "odim": 32,
+          "sos_id": 7,
+          "eos_id": 8,
+          "encoder": {
+            "n_layers": 2,
+            "n_head": 4,
+            "d_model": 32,
+            "kernel_size": 15,
+            "pe_maxlen": 256
+          },
+          "decoder": {
+            "n_layers": 3,
+            "n_head": 4,
+            "d_model": 32,
+            "pe_maxlen": 512
+          }
+        }
+        """
+        let decoded = try JSONDecoder().decode(FireRedASR2Config.self, from: Data(json.utf8))
+        #expect(decoded.odim == 32)
+        #expect(decoded.sosID == 7)
+        #expect(decoded.eosID == 8)
+        #expect(decoded.encoder.nLayers == 2)
+        #expect(decoded.encoder.kernelSize == 15)
+        #expect(decoded.decoder.nLayers == 3)
+        #expect(decoded.decoder.peMaxlen == 512)
+    }
+
+    @Test func fbankExtractionShape() {
+        let audio = MLXArray(Array(repeating: Float(0), count: 16000))
+        let fbank = FireRedASR2Audio.extractFbank(audio)
+
+        #expect(fbank.ndim == 2)
+        #expect(fbank.shape[0] == 98)
+        #expect(fbank.shape[1] == 80)
+    }
+
+    @Test func tokenizerCleanup() {
+        let tokenizer = FireRedASR2Tokenizer(vocabulary: ["<blank>", "\u{2581}Hello", "<sil>", "World"])
+        let text = tokenizer.decode(tokenIds: [0, 1, 2, 3])
+        #expect(text == "helloworld")
+    }
+
+    @Test func encoderAndDecoderShapes() {
+        let config = FireRedASR2Config(
+            odim: 16,
+            dModel: 16,
+            encoder: FireRedASR2EncoderConfig(
+                nLayers: 1,
+                nHead: 4,
+                dModel: 16,
+                kernelSize: 15,
+                peMaxlen: 128
+            ),
+            decoder: FireRedASR2DecoderConfig(
+                nLayers: 1,
+                nHead: 4,
+                dModel: 16,
+                peMaxlen: 128
+            )
+        )
+        let model = FireRedASR2Model(config)
+
+        let features = MLXArray.zeros([1, 12, 80], type: Float.self)
+        let encoderOutput = model.encode(features)
+        #expect(encoderOutput.shape == [1, 3, 16])
+
+        let tokens = MLXArray([Int32(config.sosID), 1]).reshaped([1, 2])
+        let (logits, cache) = model.decodeOneStep(tokens, encoderOutput: encoderOutput)
+        #expect(logits.shape == [1, config.odim])
+        #expect(cache.count == config.decoder.nLayers)
+        #expect(cache[0]?.shape == [1, 2, 16])
+    }
+
+    @Test func sanitizeRemapsAndTransposesWeights() {
+        let weights: [String: MLXArray] = [
+            "encoder.input_preprocessor.conv.0.weight": MLXArray.zeros([8, 1, 3, 3], type: Float.self),
+            "encoder.layer_stack.0.ffn1.net.1.weight": MLXArray.zeros([16, 8], type: Float.self),
+            "encoder.layer_stack.0.conv.pointwise_conv1.weight": MLXArray.zeros([8, 4, 3], type: Float.self),
+            "decoder.tgt_word_emb.weight": MLXArray.zeros([6, 8], type: Float.self),
+        ]
+
+        let sanitized = FireRedASR2Model.sanitize(weights: weights)
+        #expect(sanitized["encoder.input_preprocessor.conv1.weight"]?.shape == [8, 3, 3, 1])
+        #expect(sanitized["encoder.layer_stack.0.ffn1.net_1.weight"] != nil)
+        #expect(sanitized["encoder.layer_stack.0.conv.pointwise_conv1.weight"]?.shape == [8, 3, 4])
+        #expect(sanitized["decoder.tgt_word_prj.weight"]?.shape == [6, 8])
+    }
+
+    @Test func fromDirectoryFixtureSmokeTest() throws {
+        let fixtureDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("firered-fixture-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtureDir) }
+
+        let configJSON = """
+        {
+          "model_type": "fireredasr2",
+          "idim": 80,
+          "odim": 6,
+          "d_model": 8,
+          "sos_id": 3,
+          "eos_id": 4,
+          "pad_id": 2,
+          "blank_id": 0,
+          "encoder": {
+            "n_layers": 0,
+            "n_head": 2,
+            "d_model": 8,
+            "kernel_size": 15,
+            "pe_maxlen": 64
+          },
+          "decoder": {
+            "n_layers": 0,
+            "n_head": 2,
+            "d_model": 8,
+            "pe_maxlen": 64
+          }
+        }
+        """
+        try configJSON.write(
+            to: fixtureDir.appendingPathComponent("config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let cmvnJSON = """
+        {
+          "means": \(Array(repeating: 0.0, count: 80)),
+          "istd": \(Array(repeating: 1.0, count: 80))
+        }
+        """
+        try cmvnJSON.write(
+            to: fixtureDir.appendingPathComponent("cmvn.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let dict = """
+        <blank> 0
+        ▁a 1
+        ▁b 2
+        <sos/eos> 3
+        <eos> 4
+        ▁c 5
+        """
+        try dict.write(
+            to: fixtureDir.appendingPathComponent("dict.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let weights: [String: MLXArray] = [
+            "encoder.input_preprocessor.conv1.weight": MLXArray.zeros([32, 1, 3, 3], type: Float.self),
+            "encoder.input_preprocessor.conv1.bias": MLXArray.zeros([32], type: Float.self),
+            "encoder.input_preprocessor.conv2.weight": MLXArray.zeros([32, 32, 3, 3], type: Float.self),
+            "encoder.input_preprocessor.conv2.bias": MLXArray.zeros([32], type: Float.self),
+            "encoder.input_preprocessor.out.weight": MLXArray.zeros([8, 608], type: Float.self),
+            "encoder.input_preprocessor.out.bias": MLXArray.zeros([8], type: Float.self),
+            "decoder.tgt_word_emb.weight": MLXArray.zeros([6, 8], type: Float.self),
+            "decoder.layer_norm_out.weight": MLXArray.ones([8], type: Float.self),
+            "decoder.layer_norm_out.bias": MLXArray.zeros([8], type: Float.self),
+        ]
+        try MLX.save(arrays: weights, url: fixtureDir.appendingPathComponent("model.safetensors"))
+
+        let model = try FireRedASR2Model.fromDirectory(fixtureDir)
+        let audio = MLXArray(Array(repeating: Float(0), count: 16000))
+        let output = model.generate(
+            audio: audio,
+            generationParameters: STTGenerateParameters(maxTokens: 2, temperature: 0.0)
+        )
+
+        #expect(model.vocabulary.count == 6)
+        #expect(output.generationTokens >= 0)
+        #expect(output.totalTime >= 0)
+    }
+}
+
+@Suite("FireRed ASR 2 Network Tests", .serialized)
+struct FireRedASR2NetworkTests {
+
+    @Test func fireredFromPretrainedLoadsRealWeightsAndTranscribesAudio() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network FireRed test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
+        let repo = env["MLXAUDIO_FIRERED_REPO"] ?? "mlx-community/FireRedASR2-AED-mlx"
+        let model = try await FireRedASR2Model.fromPretrained(repo)
+        let audio = try loadSTTNetworkFixture(sampleRate: 16000)
+        let output = model.generate(
+            audio: audio,
+            beamSize: 3,
+            softmaxSmoothing: 1.25,
+            lengthPenalty: 0.6,
+            eosPenalty: 1.0,
+            maxLen: 128,
+            language: "English"
+        )
+
+        #expect(model.config.modelType == "fireredasr2")
+        #expect(model.cmvnMeans != nil)
+        #expect(model.cmvnIstd != nil)
+        #expect(!model.vocabulary.isEmpty)
+        #expect(!output.text.isEmpty)
+        #expect(output.generationTokens > 0)
     }
 }
 
