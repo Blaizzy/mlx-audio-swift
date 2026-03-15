@@ -1,6 +1,7 @@
 import Foundation
 @preconcurrency import MLX
 import MLXNN
+import MLXAudioCore
 public struct TokenizedText {
     public let tokens: MLXArray
 }
@@ -18,8 +19,7 @@ public final class SentencePieceTokenizer {
                 userInfo: [NSLocalizedDescriptionKey: "Missing tokenizer.json in \(modelFolder.path)"]
             )
         }
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        self.tokenizer = try UnigramTokenizer(tokenizerJSON: json)
+        self.tokenizer = try UnigramTokenizer(tokenizerJSONData: data)
     }
 
     public func callAsFunction(_ text: String) -> TokenizedText {

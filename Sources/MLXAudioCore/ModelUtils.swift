@@ -30,6 +30,7 @@ public enum ModelUtils {
     public static func resolveOrDownloadModel(
         repoID: Repo.ID,
         requiredExtension: String,
+        additionalMatchingPatterns: [String] = [],
         hfToken: String? = nil,
         cache: HubCache = .default
     ) async throws -> URL {
@@ -45,7 +46,8 @@ public enum ModelUtils {
             client: client,
             cache: resolvedCache,
             repoID: repoID,
-            requiredExtension: requiredExtension
+            requiredExtension: requiredExtension,
+            additionalMatchingPatterns: additionalMatchingPatterns
         )
     }
 
@@ -60,7 +62,8 @@ public enum ModelUtils {
         client: HubClient,
         cache: HubCache = .default,
         repoID: Repo.ID,
-        requiredExtension: String
+        requiredExtension: String,
+        additionalMatchingPatterns: [String] = []
     ) async throws -> URL {
         let normalizedRequiredExtension = requiredExtension.hasPrefix(".")
             ? String(requiredExtension.dropFirst())
@@ -103,7 +106,14 @@ public enum ModelUtils {
         // Create directory if needed
         try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
 
-        let allowedExtensions: Set<String> = ["*.\(normalizedRequiredExtension)", "*.safetensors", "*.json", "*.txt", "*.wav"]
+        var allowedExtensions: Set<String> = [
+            "*.\(normalizedRequiredExtension)",
+            "*.safetensors",
+            "*.json",
+            "*.txt",
+            "*.wav",
+        ]
+        allowedExtensions.formUnion(additionalMatchingPatterns)
 
         print("Downloading model \(repoID)...")
         _ = try await client.downloadSnapshot(

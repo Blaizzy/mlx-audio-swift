@@ -11,6 +11,8 @@
 //      -only-testing:MLXAudioTests/SplitAudioIntoChunksTests \
 //      -only-testing:MLXAudioTests/FireRedASR2Tests \
 //      -only-testing:MLXAudioTests/FireRedASR2NetworkTests \
+//      -only-testing:MLXAudioTests/SenseVoiceTests \
+//      -only-testing:MLXAudioTests/SenseVoiceNetworkTests \
 //      -only-testing:MLXAudioTests/ParakeetSTTTests \
 //      -only-testing:MLXAudioTests/VoxtralRealtimeSTTTests \
 //      CODE_SIGNING_ALLOWED=NO
@@ -24,6 +26,8 @@
 //    -only-testing:'MLXAudioTests/SplitAudioIntoChunksTests'
 //    -only-testing:'MLXAudioTests/FireRedASR2Tests'
 //    -only-testing:'MLXAudioTests/FireRedASR2NetworkTests'
+//    -only-testing:'MLXAudioTests/SenseVoiceTests'
+//    -only-testing:'MLXAudioTests/SenseVoiceNetworkTests'
 //    -only-testing:'MLXAudioTests/ParakeetSTTTests'
 //    -only-testing:'MLXAudioTests/VoxtralRealtimeSTTTests'
 //
@@ -53,6 +57,46 @@ private func loadSTTNetworkFixture(sampleRate: Int, maxSamples: Int? = nil) thro
         return audio[0..<sampleCount]
     }
     return audio
+}
+
+private func encodeProtobufVarint(_ value: UInt64) -> [UInt8] {
+    var value = value
+    var bytes: [UInt8] = []
+    repeat {
+        var byte = UInt8(value & 0x7f)
+        value >>= 7
+        if value != 0 {
+            byte |= 0x80
+        }
+        bytes.append(byte)
+    } while value != 0
+    return bytes
+}
+
+private func makeSentencePieceModelData(_ pieces: [(token: String, score: Float, type: Int)]) -> Data {
+    var data = Data()
+    for piece in pieces {
+        var pieceData = Data()
+        let tokenData = Data(piece.token.utf8)
+        pieceData.append(contentsOf: encodeProtobufVarint(UInt64((1 << 3) | 2)))
+        pieceData.append(contentsOf: encodeProtobufVarint(UInt64(tokenData.count)))
+        pieceData.append(tokenData)
+
+        let scoreBits = piece.score.bitPattern.littleEndian
+        pieceData.append(contentsOf: encodeProtobufVarint(UInt64((2 << 3) | 5)))
+        pieceData.append(UInt8(truncatingIfNeeded: scoreBits))
+        pieceData.append(UInt8(truncatingIfNeeded: scoreBits >> 8))
+        pieceData.append(UInt8(truncatingIfNeeded: scoreBits >> 16))
+        pieceData.append(UInt8(truncatingIfNeeded: scoreBits >> 24))
+
+        pieceData.append(contentsOf: encodeProtobufVarint(UInt64(3 << 3)))
+        pieceData.append(contentsOf: encodeProtobufVarint(UInt64(piece.type)))
+
+        data.append(contentsOf: encodeProtobufVarint(UInt64((1 << 3) | 2)))
+        data.append(contentsOf: encodeProtobufVarint(UInt64(pieceData.count)))
+        data.append(pieceData)
+    }
+    return data
 }
 
 
@@ -2294,6 +2338,232 @@ struct FireRedASR2NetworkTests {
         #expect(!model.vocabulary.isEmpty)
         #expect(!output.text.isEmpty)
         #expect(output.generationTokens > 0)
+    }
+}
+
+@Suite("SenseVoice Tests", .serialized)
+struct SenseVoiceTests {
+
+    @Test func configDefaultsAndTypoDecoding() throws {
+        let defaults = SenseVoiceConfig()
+        #expect(defaults.modelType == "sensevoice")
+        #expect(defaults.vocabSize == 25055)
+        #expect(defaults.inputSize == 560)
+        #expect(defaults.encoderConf.outputSize == 512)
+        #expect(defaults.encoderConf.numBlocks == 50)
+        #expect(defaults.frontendConf.lfrM == 7)
+        #expect(defaults.frontendConf.lfrN == 6)
+
+        let json = """
+        {
+          "model_type": "sensevoice",
+          "vocab_size": 100,
+          "input_size": 560,
+          "encoder_conf": {
+            "output_size": 64,
+            "attention_heads": 2,
+            "linear_units": 128,
+            "num_blocks": 3,
+            "tp_blocks": 2,
+            "kernel_size": 5,
+            "sanm_shfit": 2
+          },
+          "frontend_conf": {
+            "fs": 16000,
+            "n_mels": 80,
+            "lfr_m": 7,
+            "lfr_n": 6
+          }
+        }
+        """
+        let decoded = try JSONDecoder().decode(SenseVoiceConfig.self, from: Data(json.utf8))
+        #expect(decoded.vocabSize == 100)
+        #expect(decoded.encoderConf.outputSize == 64)
+        #expect(decoded.encoderConf.sanmShift == 2)
+        #expect(decoded.frontendConf.nMels == 80)
+    }
+
+    @Test func lfrAndCMVNBehaveLikeReference() {
+        let feats = MLXArray((0..<20).map(Float.init)).reshaped([20, 1])
+        let lfr = SenseVoiceAudio.applyLFR(feats, lfrM: 7, lfrN: 6)
+
+        #expect(lfr.shape == [4, 7])
+        let firstFrame = lfr[0].asArray(Float.self)
+        #expect(firstFrame == [0, 0, 0, 0, 1, 2, 3])
+
+        let cmvn = SenseVoiceAudio.applyCMVN(
+            MLXArray([1.0, 2.0] as [Float]).reshaped([1, 2]),
+            means: MLXArray([0.5, -1.0] as [Float]),
+            istd: MLXArray([2.0, 4.0] as [Float])
+        )
+        #expect(cmvn.asArray(Float.self) == [3.0, 4.0])
+    }
+
+    @Test func parseAMMVNAndSentencePieceTokenizer() throws {
+        let fixtureDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sensevoice-tokenizer-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtureDir) }
+
+        let mvn = """
+        <AddShift> 80 80
+        <LearnRateCoef> 1 [ -1.0 0.5 ]
+        <Rescale> 80 80
+        <LearnRateCoef> 1 [ 2.0 4.0 ]
+        """
+        try mvn.write(
+            to: fixtureDir.appendingPathComponent("am.mvn"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let modelData = makeSentencePieceModelData([
+            ("<unk>", 0, 2),
+            ("<s>", 0, 3),
+            ("</s>", 0, 3),
+            ("▁hello", -0.1, 1),
+            ("▁world", -0.2, 1),
+        ])
+        try modelData.write(to: fixtureDir.appendingPathComponent("toy.model"))
+
+        let parsed = try SenseVoiceAudio.parseAMMVN(fixtureDir.appendingPathComponent("am.mvn"))
+        #expect(parsed.means == [-1.0, 0.5])
+        #expect(parsed.istd == [2.0, 4.0])
+
+        let tokenizer = try SenseVoiceTokenizer(modelDirectory: fixtureDir)
+        #expect(tokenizer.tokenizer != nil)
+        #expect(tokenizer.decode([3, 4]) == "hello world")
+    }
+
+    @Test func forwardShapeAndSanitize() {
+        let config = SenseVoiceConfig(
+            vocabSize: 32,
+            inputSize: 560,
+            encoderConf: SenseVoiceEncoderConfig(
+                outputSize: 64,
+                attentionHeads: 2,
+                linearUnits: 128,
+                numBlocks: 3,
+                tpBlocks: 2,
+                kernelSize: 5
+            )
+        )
+        let model = SenseVoiceModel(config)
+
+        let feats = MLXArray.zeros([1, 10, 560], type: Float.self)
+        let logProbs = model(feats, language: "en")
+        #expect(logProbs.shape == [1, 14, 32])
+
+        let sanitized = SenseVoiceModel.sanitize(weights: [
+            "ctc.ctc_lo.weight": MLXArray.zeros([32, 64], type: Float.self),
+            "encoder.encoders.0.self_attn.fsmn_block.weight": MLXArray.zeros([64, 1, 5], type: Float.self),
+        ])
+        #expect(sanitized["ctc_lo.weight"]?.shape == [32, 64])
+        #expect(sanitized["encoder.encoders.0.self_attn.fsmn_block.weight"]?.shape == [64, 5, 1])
+    }
+
+    @Test func fromDirectoryFixtureSmokeTest() throws {
+        let fixtureDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sensevoice-fixture-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtureDir) }
+
+        let configJSON = """
+        {
+          "model_type": "sensevoice",
+          "vocab_size": 6,
+          "input_size": 560,
+          "encoder_conf": {
+            "output_size": 8,
+            "attention_heads": 2,
+            "linear_units": 16,
+            "num_blocks": 1,
+            "tp_blocks": 0,
+            "kernel_size": 5
+          }
+        }
+        """
+        try configJSON.write(
+            to: fixtureDir.appendingPathComponent("config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let mvn = """
+        <AddShift> 560 560
+        <LearnRateCoef> 1 [ \(Array(repeating: "0.0", count: 560).joined(separator: " ")) ]
+        <Rescale> 560 560
+        <LearnRateCoef> 1 [ \(Array(repeating: "1.0", count: 560).joined(separator: " ")) ]
+        """
+        try mvn.write(
+            to: fixtureDir.appendingPathComponent("am.mvn"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let tokenizerData = makeSentencePieceModelData([
+            ("<unk>", 0, 2),
+            ("<s>", 0, 3),
+            ("</s>", 0, 3),
+            ("▁a", -0.1, 1),
+            ("▁b", -0.2, 1),
+            ("▁c", -0.3, 1),
+        ])
+        try tokenizerData.write(to: fixtureDir.appendingPathComponent("toy.model"))
+
+        let seedModel = SenseVoiceModel(try JSONDecoder().decode(
+            SenseVoiceConfig.self,
+            from: Data(configJSON.utf8)
+        ))
+        var weights = Dictionary(uniqueKeysWithValues: seedModel.parameters().flattened())
+        if let ctcWeight = weights.removeValue(forKey: "ctc_lo.weight") {
+            weights["ctc.ctc_lo.weight"] = ctcWeight
+        }
+        if let ctcBias = weights.removeValue(forKey: "ctc_lo.bias") {
+            weights["ctc.ctc_lo.bias"] = ctcBias
+        }
+        for (key, value) in Array(weights) where key.contains("fsmn_block.weight") && value.ndim == 3 {
+            weights[key] = value.transposed(0, 2, 1)
+        }
+        try MLX.save(arrays: weights, url: fixtureDir.appendingPathComponent("model.safetensors"))
+
+        let model = try SenseVoiceModel.fromDirectory(fixtureDir)
+        let output = model.generate(
+            audio: MLXArray(Array(repeating: Float(0), count: 16_000)),
+            generationParameters: STTGenerateParameters(language: "en")
+        )
+
+        #expect(model.cmvnMeans != nil)
+        #expect(model.cmvnIstd != nil)
+        #expect(model.tokenizer?.tokenizer != nil)
+        #expect(output.segments?.count == 1)
+    }
+}
+
+@Suite("SenseVoice Network Tests", .serialized)
+struct SenseVoiceNetworkTests {
+
+    @Test func senseVoiceFromPretrainedLoadsRealWeightsAndTranscribesAudio() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network SenseVoice test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
+        let repo = env["MLXAUDIO_SENSEVOICE_REPO"] ?? "mlx-community/SenseVoiceSmall"
+        let model = try await SenseVoiceModel.fromPretrained(repo)
+        let audio = try loadSTTNetworkFixture(sampleRate: 16000)
+        let output = model.generate(
+            audio: audio,
+            generationParameters: STTGenerateParameters(verbose: false, language: "en")
+        )
+
+        #expect(model.config.modelType == "sensevoice")
+        #expect(model.cmvnMeans != nil)
+        #expect(model.cmvnIstd != nil)
+        #expect(model.tokenizer?.tokenizer != nil)
+        #expect(output.language == "en" || output.language == "unknown")
+        #expect(!output.text.isEmpty)
     }
 }
 
