@@ -140,7 +140,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | LFM2.5-Audio | [LFM Audio README](Sources/MLXAudioSTS/Models/LFMAudio/README.md) | [mlx-community/LFM2.5-Audio-1.5B-6bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-6bit) |
 | SAM-Audio | [SAM Audio README](Sources/MLXAudioSTS/Models/SAMAudio/README.md) | [mlx-community/sam-audio-large-fp16](https://huggingface.co/mlx-community/sam-audio-large-fp16) |
 | MossFormer2-SE | — | [starkdmi/MossFormer2-SE-fp16](https://huggingface.co/starkdmi/MossFormer2-SE-fp16) |
-| DeepFilterNet | [DeepFilterNet README](Sources/MLXAudioSTS/Models/DeepFilterNet/README.md) | Local model path or compatible Hugging Face repo |
+| DeepFilterNet | [DeepFilterNet README](Sources/MLXAudioSTS/Models/DeepFilterNet/README.md) | [iky1e/DeepFilterNet3-MLX](https://huggingface.co/iky1e/DeepFilterNet3-MLX) |
 
 ### VAD / Speaker Diarization Models
 
