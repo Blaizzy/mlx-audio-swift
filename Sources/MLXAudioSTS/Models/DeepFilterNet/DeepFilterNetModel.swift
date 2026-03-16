@@ -101,7 +101,7 @@ public struct DeepFilterNetStreamingChunk: @unchecked Sendable {
 /// hop-by-hop streaming.
 ///
 /// ```swift
-/// let model = try await DeepFilterNetModel.fromPretrained("iky1e/DeepFilterNet3-MLX")
+/// let model = try await DeepFilterNetModel.fromPretrained()
 /// let enhanced = try model.enhance(noisyAudio)
 /// ```
 public final class DeepFilterNetModel: STSModel {

@@ -87,7 +87,7 @@ mlx-audio-swift-sts --model /path/to/DeepFilterNet3-MLX \
     --audio noisy.wav -o enhanced.wav --mode stream
 
 # From HuggingFace
-mlx-audio-swift-sts --model iky1e/DeepFilterNet3-MLX \
+mlx-audio-swift-sts --model mlx-community/DeepFilterNet-mlx \
     --audio noisy.wav -o enhanced.wav
 ```
 
