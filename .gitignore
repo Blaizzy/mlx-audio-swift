@@ -17,3 +17,4 @@ xcuserdata/*
 *.xcuserdatad/xcdebugger/Breakpoints_v2.xcbkptlist
 .xcode_derived/
 default.profraw
+scripts/
