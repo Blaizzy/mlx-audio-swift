@@ -463,6 +463,9 @@ enum App {
 
     // MARK: - DeepFilterNet Speech Enhancement
 
+    // DeepFilterNet reuses SeparationMode for CLI consistency with SAM Audio:
+    //   .short  = offline full-context enhancement (single batched forward pass)
+    //   .stream = low-latency hop-by-hop streaming enhancement
     private static func runDeepFilterNet(model: DeepFilterNetModel, args: CLI) async throws {
         guard let audioPath = args.audioPath else {
             throw AppError.enhanceRequiresAudio
