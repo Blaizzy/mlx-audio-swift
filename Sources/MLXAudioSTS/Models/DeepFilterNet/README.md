@@ -4,13 +4,13 @@ MLX Swift implementation of [DeepFilterNet](https://github.com/Rikorose/DeepFilt
 
 ## Available Models
 
-| Model | Version | Description |
-|-------|---------|-------------|
-| [iky1e/DeepFilterNet3-MLX](https://huggingface.co/iky1e/DeepFilterNet3-MLX) | V3 | Recommended. Best quality, supports streaming. |
+| Model | Versions | Description |
+|-------|----------|-------------|
+| [mlx-community/DeepFilterNet-mlx](https://huggingface.co/mlx-community/DeepFilterNet-mlx) | V1, V2, V3 | Contains v1/, v2/, v3/ subfolders. V3 (default) recommended. |
 
-DeepFilterNet V1, V2, and V3 model versions are supported. V2/V3 support both offline and streaming modes. V1 supports offline only.
+V2/V3 support both offline and streaming modes. V1 supports offline only.
 
-Models must contain `config.json` and `model.safetensors` in [MLX safetensors format](https://ml-explore.github.io/mlx/build/html/usage/weights.html).
+Each version subfolder contains `config.json` and `model.safetensors` in [MLX safetensors format](https://ml-explore.github.io/mlx/build/html/usage/weights.html).
 
 ## Swift Usage
 
@@ -22,7 +22,14 @@ import MLXAudioSTS
 
 let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: 48_000)
 
-let model = try await DeepFilterNetModel.fromPretrained("iky1e/DeepFilterNet3-MLX")
+// Default: loads V3 from mlx-community/DeepFilterNet-mlx
+let model = try await DeepFilterNetModel.fromPretrained()
+
+// Or specify a version
+let modelV2 = try await DeepFilterNetModel.fromPretrained(subfolder: "v2")
+
+// Or load from a local path
+let modelLocal = try await DeepFilterNetModel.fromPretrained("/path/to/DeepFilterNet3")
 let enhanced = try model.enhance(audio)
 // enhanced is a mono MLXArray of shape [samples] in [-1, 1]
 ```

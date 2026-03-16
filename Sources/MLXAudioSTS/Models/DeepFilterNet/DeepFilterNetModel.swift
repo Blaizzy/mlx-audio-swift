@@ -105,8 +105,11 @@ public struct DeepFilterNetStreamingChunk: @unchecked Sendable {
 /// let enhanced = try model.enhance(noisyAudio)
 /// ```
 public final class DeepFilterNetModel: STSModel {
-    /// Default HuggingFace repo for DeepFilterNet3.
-    public static let defaultRepo = "iky1e/DeepFilterNet3-MLX"
+    /// Default HuggingFace repo containing DeepFilterNet v1/v2/v3 weights.
+    public static let defaultRepo = "mlx-community/DeepFilterNet-mlx"
+
+    /// Default subfolder within the repo (v3 is recommended).
+    public static let defaultSubfolder = "v3"
 
     /// Model configuration decoded from `config.json`.
     public let config: DeepFilterNetConfig
@@ -229,22 +232,26 @@ public final class DeepFilterNetModel: STSModel {
     /// Loads a DeepFilterNet model from a local path or HuggingFace repo.
     ///
     /// If `modelPathOrRepo` is a local directory, loads directly. Otherwise, downloads
-    /// from HuggingFace Hub.
+    /// from HuggingFace Hub. The default repo contains v1/v2/v3 subfolders — use
+    /// `subfolder` to select the version.
     ///
     /// - Parameters:
     ///   - modelPathOrRepo: Local directory path or HuggingFace repo ID.
+    ///   - subfolder: Subfolder within the repo (e.g. `"v1"`, `"v2"`, `"v3"`).
+    ///     Ignored for local paths that already contain `config.json`.
     ///   - hfToken: Optional HuggingFace API token for private repos.
     ///   - cache: HuggingFace cache configuration.
     /// - Returns: A loaded model ready for inference.
     public static func fromPretrained(
         _ modelPathOrRepo: String = defaultRepo,
+        subfolder: String? = defaultSubfolder,
         hfToken: String? = nil,
         cache: HubCache = .default
     ) async throws -> DeepFilterNetModel {
         let local = URL(fileURLWithPath: modelPathOrRepo).standardizedFileURL
         if FileManager.default.fileExists(atPath: local.path) {
             if local.hasDirectoryPath {
-                return try fromLocal(local)
+                return try fromLocal(local, subfolder: subfolder)
             }
             return try fromLocal(local.deletingLastPathComponent())
         }
@@ -258,19 +265,32 @@ public final class DeepFilterNetModel: STSModel {
             hfToken: hfToken,
             cache: cache
         )
-        return try fromLocal(modelDir)
+        return try fromLocal(modelDir, subfolder: subfolder)
     }
 
     /// Loads a DeepFilterNet model from a local directory.
     ///
-    /// The directory must contain `config.json` and at least one `.safetensors` file.
+    /// The directory must contain `config.json` and at least one `.safetensors` file,
+    /// either at the top level or within the specified `subfolder`.
     ///
-    /// - Parameter directory: Path to the model directory.
+    /// - Parameters:
+    ///   - directory: Path to the model directory.
+    ///   - subfolder: Optional subfolder (e.g. `"v3"`). Used when the directory
+    ///     contains version subfolders rather than model files directly.
     /// - Returns: A loaded model ready for inference.
-    public static func fromLocal(_ directory: URL) throws -> DeepFilterNetModel {
-        let configURL = directory.appendingPathComponent("config.json")
+    public static func fromLocal(_ directory: URL, subfolder: String? = nil) throws -> DeepFilterNetModel {
+        // If the directory itself contains config.json, use it directly.
+        // Otherwise, try the subfolder.
+        var modelDir = directory
+        if !FileManager.default.fileExists(atPath: modelDir.appendingPathComponent("config.json").path),
+           let subfolder, !subfolder.isEmpty
+        {
+            modelDir = directory.appendingPathComponent(subfolder)
+        }
+
+        let configURL = modelDir.appendingPathComponent("config.json")
         guard FileManager.default.fileExists(atPath: configURL.path) else {
-            throw DeepFilterNetError.missingConfig(directory)
+            throw DeepFilterNetError.missingConfig(modelDir)
         }
 
         let decoder = JSONDecoder()
@@ -281,15 +301,15 @@ public final class DeepFilterNetModel: STSModel {
             config.modelVersion = "DeepFilterNet3"
         }
 
-        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        let files = try FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension.lowercased() == "safetensors" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
         guard let weightsURL = files.first(where: { $0.lastPathComponent == "model.safetensors" }) ?? files.first else {
-            throw DeepFilterNetError.missingWeights(directory)
+            throw DeepFilterNetError.missingWeights(modelDir)
         }
 
         let weights = try MLX.loadArrays(url: weightsURL)
-        return try DeepFilterNetModel(config: config, modelDirectory: directory, weights: weights)
+        return try DeepFilterNetModel(config: config, modelDirectory: modelDir, weights: weights)
     }
 
     // MARK: - Public API
