@@ -1,4 +1,3 @@
-import Accelerate
 import Foundation
 import HuggingFace
 import MLX
@@ -104,7 +103,7 @@ public struct DeepFilterNetStreamingChunk: @unchecked Sendable {
 /// let model = try await DeepFilterNetModel.fromPretrained()
 /// let enhanced = try model.enhance(noisyAudio)
 /// ```
-public final class DeepFilterNetModel: STSModel {
+public final class DeepFilterNetModel: STSModel, @unchecked Sendable {
     /// Default HuggingFace repo containing DeepFilterNet v1/v2/v3 weights.
     public static let defaultRepo = "mlx-community/DeepFilterNet-mlx"
 

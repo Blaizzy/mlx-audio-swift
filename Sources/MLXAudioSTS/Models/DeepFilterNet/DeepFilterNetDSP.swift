@@ -16,10 +16,11 @@ extension DeepFilterNetModel {
         let scaled = x * invPowers.expandedDimensions(axis: 1)
         let accum = cumsum(scaled, axis: 0)
 
+        // libDF default EMA init state for ERB mean normalization
         let initState = MLXArray(Self.linspace(start: -60.0, end: -90.0, count: x.shape[1]))
             .expandedDimensions(axis: 0)
         let state = powers.expandedDimensions(axis: 1) * (initState + MLXArray(oneMinusA) * accum)
-        return (x - state) / MLXArray(Float(40.0))
+        return (x - state) / MLXArray(Float(40.0))  // libDF fixed normalization divisor
     }
 
     func bandUnitNorm(real: MLXArray, imag: MLXArray) -> (MLXArray, MLXArray) {
@@ -34,6 +35,7 @@ extension DeepFilterNetModel {
         let scaled = mag * invPowers.expandedDimensions(axis: 1)
         let accum = cumsum(scaled, axis: 0)
 
+        // libDF default EMA init state for DF complex unit normalization
         let initState = MLXArray(Self.linspace(start: 0.001, end: 0.0001, count: real.shape[1]))
             .expandedDimensions(axis: 0)
         let state = powers.expandedDimensions(axis: 1) * (initState + MLXArray(oneMinusA) * accum)
@@ -50,7 +52,7 @@ extension DeepFilterNetModel {
 
         let xVals = x.asArray(Float.self)
         var out = Array<Float>(repeating: 0, count: xVals.count)
-        var state = Self.linspace(start: -60.0, end: -90.0, count: bands)
+        var state = Self.linspace(start: -60.0, end: -90.0, count: bands)  // libDF default EMA init
 
         for t in 0..<frames {
             let base = t * bands
@@ -58,7 +60,7 @@ extension DeepFilterNetModel {
                 let idx = base + e
                 let xv = xVals[idx]
                 state[e] = xv * oneMinusA + state[e] * a
-                out[idx] = (xv - state[e]) / 40.0
+                out[idx] = (xv - state[e]) / 40.0  // libDF fixed normalization divisor
             }
         }
         return MLXArray(out).reshaped([frames, bands])
@@ -75,7 +77,7 @@ extension DeepFilterNetModel {
         let iVals = imag.asArray(Float.self)
         var outR = Array<Float>(repeating: 0, count: rVals.count)
         var outI = Array<Float>(repeating: 0, count: iVals.count)
-        var state = Self.linspace(start: 0.001, end: 0.0001, count: freqs)
+        var state = Self.linspace(start: 0.001, end: 0.0001, count: freqs)  // libDF default EMA init
 
         for t in 0..<frames {
             let base = t * freqs

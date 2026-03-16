@@ -438,7 +438,6 @@ extension DeepFilterNetModel {
         }
 
         let inPerGroup = max(1, x.shape[3] / groups)
-        let outPerGroup = weight.shape[1]
         var ys = [MLXArray]()
         ys.reserveCapacity(groups)
 
@@ -460,9 +459,7 @@ extension DeepFilterNetModel {
             ys.append(yg)
         }
 
-        let y = MLX.concatenated(ys, axis: 3)
-        _ = outPerGroup
-        return y.transposed(0, 3, 1, 2)
+        return MLX.concatenated(ys, axis: 3).transposed(0, 3, 1, 2)
     }
 
     func groupedLinearV1(
