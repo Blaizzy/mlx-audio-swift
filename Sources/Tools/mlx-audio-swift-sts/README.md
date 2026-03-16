@@ -109,10 +109,10 @@ swift run mlx-audio-swift-sts \
 - `--audio`, `-i`: Input audio path
 - `--system`: System prompt (overrides per-mode defaults: t2t="You are a helpful assistant.", tts="Perform TTS.", stt="You are a helpful assistant that transcribes audio.", sts="Respond to the user with interleaved text and speech audio.")
 - `--max-new-tokens`: Max generation tokens (default: 512)
-- `--temperature`: Text temperature (default: 0.7)
+- `--temperature`: Text temperature (default: 0.8)
 - `--top-k`: Text top-K (default: 50)
-- `--audio-temperature`: Audio temperature (default: 0.8)
-- `--audio-top-k`: Audio top-K (default: 4)
+- `--audio-temperature`: Audio temperature (default: 0.7)
+- `--audio-top-k`: Audio top-K (default: 30)
 - `--stream`: Stream text to stdout
 - `--output-target`, `-o`: Audio WAV output
 - `--output-text`: Text output file
