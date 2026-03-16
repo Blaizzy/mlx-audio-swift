@@ -2,6 +2,19 @@ import Foundation
 import MLX
 import MLXNN
 
+/// Stateful streaming speech enhancer for DeepFilterNet.
+///
+/// Processes audio incrementally, one hop (10ms at 48kHz) at a time. Maintains
+/// internal recurrent state (GRU hidden states, analysis/synthesis overlap buffers)
+/// across calls.
+///
+/// Create via ``DeepFilterNetModel/createStreamer(config:)``.
+///
+/// ```swift
+/// let streamer = model.createStreamer()
+/// let enhanced = try streamer.processChunk(audioChunk)
+/// let tail = try streamer.flush()
+/// ```
 public final class DeepFilterNetStreamer {
     private struct StreamGRULayer {
         let wihT: MLXArray
@@ -130,6 +143,10 @@ public final class DeepFilterNetStreamer {
     private var profMaterializeSeconds = 0.0
     private let profilingForceEvalPerStage: Bool
 
+    /// Creates a new streamer for the given model.
+    ///
+    /// Prefer using ``DeepFilterNetModel/createStreamer(config:)`` which validates
+    /// that the model supports streaming.
     public init(model: DeepFilterNetModel, config: DeepFilterNetStreamingConfig = DeepFilterNetStreamingConfig()) {
         self.model = model
         self.config = config
@@ -223,6 +240,7 @@ public final class DeepFilterNetStreamer {
 
     // MARK: - Public API
 
+    /// Resets all internal state, allowing the streamer to be reused for a new audio stream.
     public func reset() {
         pendingSamples = MLXArray.zeros([0], type: Float.self)
         analysisMem = MLXArray.zeros([analysisMemCount], type: Float.self)
@@ -252,6 +270,15 @@ public final class DeepFilterNetStreamer {
         profMaterializeSeconds = 0.0
     }
 
+    /// Processes a chunk of audio and returns any enhanced samples ready for output.
+    ///
+    /// Internally buffers input and processes hop-by-hop (480 samples at 48kHz).
+    /// May return zero samples if the pipeline hasn't produced output yet.
+    ///
+    /// - Parameters:
+    ///   - chunk: Input audio samples as a 1D `MLXArray`.
+    ///   - isLast: Set `true` to flush remaining samples after the final chunk.
+    /// - Returns: Enhanced audio samples (may be empty if buffering).
     public func processChunk(_ chunk: MLXArray, isLast: Bool = false) throws -> MLXArray {
         guard chunk.ndim == 1 else {
             throw DeepFilterNetError.invalidAudioShape(chunk.shape)
@@ -331,6 +358,9 @@ public final class DeepFilterNetStreamer {
         return y
     }
 
+    /// Processes a chunk of audio samples and returns enhanced output as a `[Float]` array.
+    ///
+    /// Convenience overload that accepts and returns Swift arrays.
     public func processChunk(_ chunk: [Float], isLast: Bool = false) throws -> [Float] {
         guard !chunk.isEmpty || isLast else { return [] }
         let y = try processChunk(MLXArray(chunk), isLast: isLast)
@@ -340,14 +370,19 @@ public final class DeepFilterNetStreamer {
         return y.asArray(Float.self)
     }
 
+    /// Flushes remaining buffered samples and returns any final enhanced output.
     public func flush() throws -> [Float] {
         try processChunk([], isLast: true)
     }
 
+    /// Flushes remaining buffered samples and returns any final enhanced output as an `MLXArray`.
     public func flushMLX() throws -> MLXArray {
         try processChunk(MLXArray.zeros([0], type: Float.self), isLast: true)
     }
 
+    /// Returns a formatted profiling summary, or `nil` if profiling is disabled.
+    ///
+    /// Requires ``DeepFilterNetStreamingConfig/enableProfiling`` to be `true`.
     public func profilingSummary() -> String? {
         guard enableProfiling else { return nil }
         let hops = max(profHopCount, 1)

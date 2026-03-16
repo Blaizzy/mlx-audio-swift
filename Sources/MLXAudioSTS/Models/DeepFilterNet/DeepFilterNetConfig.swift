@@ -1,5 +1,6 @@
 import Foundation
 
+/// Model configuration for DeepFilterNet, decoded from `config.json` in the model directory.
 public struct DeepFilterNetConfig: Codable, Sendable {
     public var sampleRate: Int = 48_000
     public var fftSize: Int = 960

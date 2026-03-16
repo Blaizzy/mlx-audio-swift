@@ -5,6 +5,7 @@ import MLX
 import MLXAudioCore
 import MLXNN
 
+/// Errors thrown by DeepFilterNet model loading and inference.
 public enum DeepFilterNetError: Error, LocalizedError, CustomStringConvertible {
     case invalidRepoID(String)
     case modelPathNotFound(String)
@@ -36,17 +37,28 @@ public enum DeepFilterNetError: Error, LocalizedError, CustomStringConvertible {
     }
 }
 
+/// Configuration for DeepFilterNet streaming inference.
 public struct DeepFilterNetStreamingConfig: Sendable {
+    /// Number of zero-padded frames appended when flushing to drain the pipeline.
     public var padEndFrames: Int
+    /// Whether to trim the algorithmic delay (fftSize - hopSize samples) from the output.
     public var compensateDelay: Bool
+    /// Enable LSNR-based stage skipping to reduce computation on clean frames.
     public var enableStageSkipping: Bool
+    /// LSNR threshold (dB) below which input is treated as noise-only.
     public var minDbThresh: Float
+    /// LSNR threshold (dB) above which ERB gains are skipped (clean speech).
     public var maxDbErbThresh: Float
+    /// LSNR threshold (dB) above which deep filtering is skipped.
     public var maxDbDfThresh: Float
+    /// Enable per-stage profiling output via ``DeepFilterNetStreamer/profilingSummary()``.
     public var enableProfiling: Bool
+    /// Force `eval()` after each pipeline stage to isolate per-stage GPU time.
     public var profilingForceEvalPerStage: Bool
+    /// How many hops between forced `eval()` calls to bound lazy graph growth.
     public var materializeEveryHops: Int
 
+    /// Creates a streaming configuration with the given parameters.
     public init(
         padEndFrames: Int = 3,
         compensateDelay: Bool = true,
@@ -70,22 +82,43 @@ public struct DeepFilterNetStreamingConfig: Sendable {
     }
 }
 
+/// A chunk of enhanced audio produced by streaming inference.
 public struct DeepFilterNetStreamingChunk: @unchecked Sendable {
+    /// Enhanced audio samples for this chunk.
     public let audio: MLXArray
+    /// Sequential index of this chunk (0-based).
     public let chunkIndex: Int
+    /// Whether this is the final chunk in the stream.
     public let isLastChunk: Bool
 }
 
 // MARK: - Model
 
+/// DeepFilterNet speech enhancement model.
+///
+/// Removes background noise from speech audio using a dual-pathway (ERB + deep filtering)
+/// encoder-decoder architecture. Supports offline batch enhancement and low-latency
+/// hop-by-hop streaming.
+///
+/// ```swift
+/// let model = try await DeepFilterNetModel.fromPretrained("iky1e/DeepFilterNet3-MLX")
+/// let enhanced = try model.enhance(noisyAudio)
+/// ```
 public final class DeepFilterNetModel: STSModel {
+    /// Default HuggingFace repo for DeepFilterNet3.
     public static let defaultRepo = "iky1e/DeepFilterNet3-MLX"
 
+    /// Model configuration decoded from `config.json`.
     public let config: DeepFilterNetConfig
+    /// Local directory containing model weights and configuration.
     public let modelDirectory: URL
+    /// Model version string (e.g. "DeepFilterNet3").
     public let modelVersion: String
+    /// Whether this is a DeepFilterNet V1 model.
     public var isV1: Bool { modelVersion.lowercased() == "deepfilternet" }
+    /// Whether this model supports streaming mode. V2/V3 only.
     public var supportsStreaming: Bool { !isV1 }
+    /// Audio sample rate expected by this model (typically 48kHz).
     public var sampleRate: Int { config.sampleRate }
 
     // Internal visibility for cross-file access by extensions and DeepFilterNetStreamer.
@@ -193,6 +226,16 @@ public final class DeepFilterNetModel: STSModel {
 
     // MARK: - Loading
 
+    /// Loads a DeepFilterNet model from a local path or HuggingFace repo.
+    ///
+    /// If `modelPathOrRepo` is a local directory, loads directly. Otherwise, downloads
+    /// from HuggingFace Hub.
+    ///
+    /// - Parameters:
+    ///   - modelPathOrRepo: Local directory path or HuggingFace repo ID.
+    ///   - hfToken: Optional HuggingFace API token for private repos.
+    ///   - cache: HuggingFace cache configuration.
+    /// - Returns: A loaded model ready for inference.
     public static func fromPretrained(
         _ modelPathOrRepo: String = defaultRepo,
         hfToken: String? = nil,
@@ -218,6 +261,12 @@ public final class DeepFilterNetModel: STSModel {
         return try fromLocal(modelDir)
     }
 
+    /// Loads a DeepFilterNet model from a local directory.
+    ///
+    /// The directory must contain `config.json` and at least one `.safetensors` file.
+    ///
+    /// - Parameter directory: Path to the model directory.
+    /// - Returns: A loaded model ready for inference.
     public static func fromLocal(_ directory: URL) throws -> DeepFilterNetModel {
         let configURL = directory.appendingPathComponent("config.json")
         guard FileManager.default.fileExists(atPath: configURL.path) else {
@@ -245,6 +294,13 @@ public final class DeepFilterNetModel: STSModel {
 
     // MARK: - Public API
 
+    /// Enhances speech audio by removing background noise (offline/batch mode).
+    ///
+    /// Processes the entire audio in one pass. For real-time use, see
+    /// ``createStreamer(config:)`` or ``enhanceStreaming(_:chunkSamples:config:)-3u1fv``.
+    ///
+    /// - Parameter audioInput: Mono audio as a 1D `MLXArray` of float samples in `[-1, 1]`.
+    /// - Returns: Enhanced audio with the same length and sample rate as the input.
     public func enhance(_ audioInput: MLXArray) throws -> MLXArray {
         guard audioInput.ndim == 1 else {
             throw DeepFilterNetError.invalidAudioShape(audioInput.shape)
@@ -342,6 +398,14 @@ public final class DeepFilterNetModel: STSModel {
         return MLX.clip(audioOut, min: -1.0, max: 1.0)
     }
 
+    /// Creates a stateful streamer for hop-by-hop streaming enhancement.
+    ///
+    /// The streamer processes audio incrementally, maintaining internal state across calls.
+    /// Each call to ``DeepFilterNetStreamer/processChunk(_:isLast:)-9gh0v`` accepts any number
+    /// of samples and returns enhanced audio as it becomes available.
+    ///
+    /// - Parameter config: Streaming configuration. Defaults to standard settings.
+    /// - Returns: A new streamer instance. Call ``DeepFilterNetStreamer/reset()`` to reuse.
     public func createStreamer(
         config: DeepFilterNetStreamingConfig = DeepFilterNetStreamingConfig()
     ) -> DeepFilterNetStreamer {
@@ -352,6 +416,16 @@ public final class DeepFilterNetModel: STSModel {
         return DeepFilterNetStreamer(model: self, config: config)
     }
 
+    /// Enhances speech audio using streaming mode, returning the full result.
+    ///
+    /// Convenience method that internally creates a streamer, processes all chunks,
+    /// and returns the concatenated enhanced audio.
+    ///
+    /// - Parameters:
+    ///   - audioInput: Mono audio as a 1D `MLXArray`.
+    ///   - chunkSamples: Chunk size in samples. Defaults to one hop (480 samples = 10ms).
+    ///   - config: Streaming configuration.
+    /// - Returns: Enhanced audio with the same sample rate as the input.
     public func enhanceStreaming(
         _ audioInput: MLXArray,
         chunkSamples: Int? = nil,
@@ -393,6 +467,13 @@ public final class DeepFilterNetModel: STSModel {
         return MLX.clip(MLX.concatenated(outputChunks, axis: 0), min: -1.0, max: 1.0)
     }
 
+    /// Enhances speech audio using streaming mode, yielding chunks as they are produced.
+    ///
+    /// - Parameters:
+    ///   - audioInput: Mono audio as a 1D `MLXArray`.
+    ///   - chunkSamples: Chunk size in samples. Defaults to one hop (480 samples = 10ms).
+    ///   - config: Streaming configuration.
+    /// - Returns: An async stream of ``DeepFilterNetStreamingChunk`` values.
     public func enhanceStreaming(
         _ audioInput: MLXArray,
         chunkSamples: Int? = nil,
