@@ -1,3 +1,42 @@
+//  To enable downloading models, run with MLXAUDIO_ENABLE_NETWORK_TESTS=1
+//
+//  Run the LID suites in this file:
+//    xcodebuild test \
+//      -scheme MLXAudio-Package \
+//      -destination 'platform=macOS' \
+//      -parallel-testing-enabled NO \
+//      -only-testing:MLXAudioTests/Wav2Vec2LIDConfigTests \
+//      -only-testing:MLXAudioTests/LIDOutputTests \
+//      -only-testing:MLXAudioTests/LIDCLITests \
+//      -only-testing:MLXAudioTests/Wav2Vec2SanitizeTests \
+//      -only-testing:MLXAudioTests/Wav2Vec2ModelInitTests \
+//      -only-testing:MLXAudioTests/MmsLid256IntegrationTests \
+//      -only-testing:MLXAudioTests/EcapaTdnnConfigTests \
+//      -only-testing:MLXAudioTests/EcapaTdnnSanitizeTests \
+//      -only-testing:MLXAudioTests/EcapaMelSpectrogramTests \
+//      -only-testing:MLXAudioTests/EcapaTdnnModelTests \
+//      -only-testing:MLXAudioTests/EcapaTdnnIntegrationTests \
+//      CODE_SIGNING_ALLOWED=NO
+//
+//  Run a single category:
+//    -only-testing:'MLXAudioTests/Wav2Vec2LIDConfigTests'
+//    -only-testing:'MLXAudioTests/LIDOutputTests'
+//    -only-testing:'MLXAudioTests/LIDCLITests'
+//    -only-testing:'MLXAudioTests/Wav2Vec2SanitizeTests'
+//    -only-testing:'MLXAudioTests/Wav2Vec2ModelInitTests'
+//    -only-testing:'MLXAudioTests/MmsLid256IntegrationTests'
+//    -only-testing:'MLXAudioTests/EcapaTdnnConfigTests'
+//    -only-testing:'MLXAudioTests/EcapaTdnnSanitizeTests'
+//    -only-testing:'MLXAudioTests/EcapaMelSpectrogramTests'
+//    -only-testing:'MLXAudioTests/EcapaTdnnModelTests'
+//    -only-testing:'MLXAudioTests/EcapaTdnnIntegrationTests'
+//
+//  Run a single test (note the trailing parentheses for Swift Testing):
+//    -only-testing:'MLXAudioTests/Wav2Vec2LIDConfigTests/configDecodingMmsLid256()'
+//
+//  Filter test results:
+//    2>&1 | grep --color=never -E '(Suite.*started|Test test.*started|passed after|failed after|TEST SUCCEEDED|TEST FAILED|Suite.*passed|Test run)'
+
 import Foundation
 import Testing
 import MLX
@@ -138,7 +177,8 @@ struct LIDCLITests {
     }
 
     @Test func cliRuntimePreflightFailsWithActionableErrorWhenMetalResourcesAreMissing() throws {
-        let executableURL = URL(fileURLWithPath: "/tmp/mlx-audio-swift-lid")
+        let executableURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-audio-swift-lid-\(UUID().uuidString)")
 
         do {
             try App.ensureMLXRuntimeReadyForShell(

@@ -1,9 +1,38 @@
+//  Voice activity detection tests covering Sortformer configs/features/post-processing, VAD outputs, and Smart Turn behavior.
+//  Most suites are fast and local; SmartTurnNetworkTests downloads a model only when MLXAUDIO_ENABLE_NETWORK_TESTS=1.
 //
-//  MLXAudioVADTests.swift
-//  MLXAudioTests
+//  Run the VAD suites in this file:
+//    xcodebuild test \
+//      -scheme MLXAudio-Package \
+//      -destination 'platform=macOS' \
+//      -parallel-testing-enabled NO \
+//      -only-testing:MLXAudioTests/SortformerConfigTests \
+//      -only-testing:MLXAudioTests/VADOutputTests \
+//      -only-testing:MLXAudioTests/SortformerFeatureTests \
+//      -only-testing:MLXAudioTests/SortformerSanitizeTests \
+//      -only-testing:MLXAudioTests/SortformerPostprocessingTests \
+//      -only-testing:MLXAudioTests/SmartTurnConfigTests \
+//      -only-testing:MLXAudioTests/SmartTurnForwardTests \
+//      -only-testing:MLXAudioTests/SmartTurnSanitizeTests \
+//      -only-testing:MLXAudioTests/SmartTurnNetworkTests \
+//      CODE_SIGNING_ALLOWED=NO
 //
-//  Created by Prince Canuma on 10/02/2026.
+//  Run a single category:
+//    -only-testing:'MLXAudioTests/SortformerConfigTests'
+//    -only-testing:'MLXAudioTests/VADOutputTests'
+//    -only-testing:'MLXAudioTests/SortformerFeatureTests'
+//    -only-testing:'MLXAudioTests/SortformerSanitizeTests'
+//    -only-testing:'MLXAudioTests/SortformerPostprocessingTests'
+//    -only-testing:'MLXAudioTests/SmartTurnConfigTests'
+//    -only-testing:'MLXAudioTests/SmartTurnForwardTests'
+//    -only-testing:'MLXAudioTests/SmartTurnSanitizeTests'
+//    -only-testing:'MLXAudioTests/SmartTurnNetworkTests'
 //
+//  Run a single test (note the trailing parentheses for Swift Testing):
+//    -only-testing:'MLXAudioTests/SortformerConfigTests/fcEncoderConfigDefaults()'
+//
+//  Filter test results:
+//    2>&1 | grep --color=never -E '(Suite.*started|Test test.*started|passed after|failed after|TEST SUCCEEDED|TEST FAILED|Suite.*passed|Test run)'
 
 import Foundation
 import Testing

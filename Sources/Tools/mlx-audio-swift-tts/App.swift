@@ -96,7 +96,7 @@ enum App {
         let refAudio: MLXArray?
         if let refAudioPath, !refAudioPath.isEmpty {
             let refAudioURL = resovleURL(path: refAudioPath)
-            (_, refAudio) = try loadAudioArray(from: refAudioURL)
+            (_, refAudio) = try loadAudioArray(from: refAudioURL, sampleRate: loadedModel.sampleRate)
         } else {
             refAudio = nil
         }
