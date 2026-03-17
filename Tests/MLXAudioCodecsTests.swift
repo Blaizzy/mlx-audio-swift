@@ -8,6 +8,10 @@
 //      -only-testing:MLXAudioTests/SharedEcapaTdnnTests \
 //      -only-testing:MLXAudioTests/EncodecTests \
 //      -only-testing:MLXAudioTests/DACVAETests \
+//      -only-testing:MLXAudioTests/BigVGANTests \
+//      -only-testing:MLXAudioTests/DescriptDACTests \
+//      -only-testing:MLXAudioTests/FishS1DACTests \
+//      -only-testing:MLXAudioTests/CodecNetworkTests \
 //      CODE_SIGNING_ALLOWED=NO
 //
 //  Run a single category:
@@ -16,6 +20,10 @@
 //    -only-testing:'MLXAudioTests/SharedEcapaTdnnTests'
 //    -only-testing:'MLXAudioTests/EncodecTests'
 //    -only-testing:'MLXAudioTests/DACVAETests'
+//    -only-testing:'MLXAudioTests/BigVGANTests'
+//    -only-testing:'MLXAudioTests/DescriptDACTests'
+//    -only-testing:'MLXAudioTests/FishS1DACTests'
+//    -only-testing:'MLXAudioTests/CodecNetworkTests'
 //
 //  Run a single test (note the trailing parentheses for Swift Testing):
 //    -only-testing:'MLXAudioTests/EncodecTests/testEncodecConfig()'
@@ -31,6 +39,17 @@ import Foundation
 @testable import MLXAudioTTS
 @testable import MLXAudioCodecs
 @testable import MLXAudioLID
+
+private func loadCodecNetworkFixture(sampleRate: Int, maxSamples: Int) throws -> MLXArray {
+    let audioURL = Bundle.module.url(
+        forResource: "intention",
+        withExtension: "wav",
+        subdirectory: "media"
+    )!
+    let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: sampleRate)
+    let sampleCount = min(audio.shape[0], maxSamples)
+    return audio[0..<sampleCount]
+}
 
 struct SharedDSPTests {
 
@@ -700,5 +719,317 @@ struct DACVAETests {
         #expect(config2.hopLength == 1920)  // 2 * 8 * 10 * 12
 
         print("DACVAEConfig hopLength verified")
+    }
+}
+
+
+// MARK: - BigVGAN Tests
+
+struct BigVGANTests {
+
+    @Test func testBigVGAN22kHz80BandShape() throws {
+        let config = BigVGANConfig(
+            numMels: 80,
+            upsampleRates: [4, 4, 2, 2, 2, 2],
+            upsampleKernelSizes: [8, 8, 4, 4, 4, 4],
+            upsampleInitialChannel: 1536,
+            resblock: .one,
+            resblockKernelSizes: [3, 7, 11],
+            resblockDilationSizes: [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+            activation: .snakebeta,
+            snakeLogscale: true,
+            useBiasAtFinal: true,
+            useTanhAtFinal: true
+        )
+        let model = BigVGAN(config: config)
+
+        let input = MLXArray.zeros([1, 80, 800], dtype: .float32)
+        let output = model(input)
+
+        #expect(output.shape == [1, 1, 800 * config.upsampleRates.reduce(1, *)])
+    }
+
+    @Test func testBigVGAN44kHz128BandShape() throws {
+        let config = BigVGANConfig(
+            numMels: 128,
+            upsampleRates: [8, 4, 2, 2, 2, 2],
+            upsampleKernelSizes: [16, 8, 4, 4, 4, 4],
+            upsampleInitialChannel: 1536,
+            resblock: .one,
+            resblockKernelSizes: [3, 7, 11],
+            resblockDilationSizes: [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+            activation: .snakebeta,
+            snakeLogscale: true,
+            useBiasAtFinal: false,
+            useTanhAtFinal: false
+        )
+        let model = BigVGAN(config: config)
+
+        let input = MLXArray.zeros([1, 128, 800], dtype: .float32)
+        let output = model(input)
+
+        #expect(output.shape == [1, 1, 800 * config.upsampleRates.reduce(1, *)])
+    }
+
+    @Test func testBigVGANSanitizeTransposesConvWeights() throws {
+        let config = BigVGANConfig(
+            numMels: 80,
+            upsampleRates: [4],
+            upsampleKernelSizes: [8],
+            upsampleInitialChannel: 16,
+            resblock: .one,
+            resblockKernelSizes: [3],
+            resblockDilationSizes: [[1, 3, 5]],
+            activation: .snakebeta,
+            snakeLogscale: true
+        )
+        let model = BigVGAN(config: config)
+
+        let currentWeights = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
+        let convWeightEntry = currentWeights.first {
+            $0.value.ndim == 3
+                && ($0.key.contains("weight_v") || $0.key.contains("weightV"))
+                && !$0.key.contains("ups.")
+        }
+        #expect(convWeightEntry != nil)
+        guard let convWeightEntry else {
+            return
+        }
+        let currentShape = convWeightEntry.value.shape
+        let fakeTorchLayout = MLXArray.zeros([currentShape[0], currentShape[2], currentShape[1]], dtype: .float32)
+        let sanitized = model.sanitize(weights: [convWeightEntry.key: fakeTorchLayout])
+
+        #expect(sanitized[convWeightEntry.key]?.shape == currentShape)
+    }
+}
+
+
+// MARK: - Descript DAC Tests
+
+struct DescriptDACTests {
+
+    @Test func testDescript16kHzShapes() throws {
+        let model = DescriptDAC(config: DescriptDACConfig(
+            encoderDim: 64,
+            encoderRates: [2, 4, 5, 8],
+            decoderDim: 1536,
+            decoderRates: [8, 5, 4, 2],
+            nCodebooks: 12,
+            codebookSize: 1024,
+            codebookDim: 8,
+            sampleRate: 16_000
+        ))
+
+        let audio = MLXArray.zeros([1, 80_000, 1], dtype: .float32)
+        let padded = model.preprocess(audio, sampleRate: 16_000)
+        let (z, codes, latents, _, _) = model.encode(padded)
+        let decoded = model.decode(z)
+
+        #expect(z.shape == [1, 1024, 250])
+        #expect(codes.shape == [1, 12, 250])
+        #expect(latents.shape == [1, 96, 250])
+        #expect(decoded.shape == [1, 80_043, 1])
+    }
+
+    @Test func testDescript24kHzShapes() throws {
+        let model = DescriptDAC(config: DescriptDACConfig(
+            encoderDim: 64,
+            encoderRates: [2, 4, 5, 8],
+            decoderDim: 1536,
+            decoderRates: [8, 5, 4, 2],
+            nCodebooks: 32,
+            codebookSize: 1024,
+            codebookDim: 8,
+            sampleRate: 24_000
+        ))
+
+        let audio = MLXArray.zeros([1, 120_000, 1], dtype: .float32)
+        let padded = model.preprocess(audio, sampleRate: 24_000)
+        let (z, codes, latents, _, _) = model.encode(padded)
+        let decoded = model.decode(z)
+
+        #expect(z.shape == [1, 1024, 375])
+        #expect(codes.shape == [1, 32, 375])
+        #expect(latents.shape == [1, 256, 375])
+        #expect(decoded.shape == [1, 120_043, 1])
+    }
+
+    @Test func testDescript44kHzShapes() throws {
+        let model = DescriptDAC(config: DescriptDACConfig(
+            encoderDim: 64,
+            encoderRates: [2, 4, 8, 8],
+            decoderDim: 1536,
+            decoderRates: [8, 8, 4, 2],
+            nCodebooks: 9,
+            codebookSize: 1024,
+            codebookDim: 8,
+            sampleRate: 44_100
+        ))
+
+        let audio = MLXArray.zeros([1, 220_000, 1], dtype: .float32)
+        let padded = model.preprocess(audio, sampleRate: 44_100)
+        let (z, codes, latents, _, _) = model.encode(padded)
+        let decoded = model.decode(z)
+
+        #expect(z.shape == [1, 1024, 430])
+        #expect(codes.shape == [1, 9, 430])
+        #expect(latents.shape == [1, 72, 430])
+        #expect(decoded.shape == [1, 220_235, 1])
+    }
+
+    @Test func testDescriptAudioCodecRoundTripUsesCodes() throws {
+        let model = DescriptDAC(config: DescriptDACConfig(
+            encoderDim: 8,
+            encoderRates: [2, 2],
+            latentDim: 32,
+            decoderDim: 32,
+            decoderRates: [2, 2],
+            nCodebooks: 2,
+            codebookSize: 16,
+            codebookDim: 4,
+            sampleRate: 16_000
+        ))
+
+        let waveform = MLXArray.zeros([1, 128, 1], dtype: .float32)
+        let encoded = model.encodeAudio(waveform)
+        let decoded = model.decodeAudio(encoded)
+
+        #expect(encoded.codes.shape[0] == 1)
+        #expect(encoded.originalLength == 128)
+        #expect(decoded.shape[0] == 1)
+        #expect(decoded.shape[2] == 1)
+    }
+
+    @Test func testDescriptSanitizeRemovesModuleArrayLayersSegments() throws {
+        let model = DescriptDAC(config: DescriptDACConfig())
+        let weights: [String: MLXArray] = [
+            "encoder.block.layers.0.weight_v": MLXArray.zeros([1, 1, 1], dtype: .float32),
+            "decoder.model.layers.1.block.layers.4.weight_g": MLXArray.zeros([1, 1, 1], dtype: .float32),
+            "quantizer.quantizers.0.in_proj.weight_v": MLXArray.zeros([1, 1, 1], dtype: .float32),
+            "quantizer.quantizers.0.out_proj.weight_g": MLXArray.zeros([1, 1, 1], dtype: .float32)
+        ]
+
+        let sanitized = model.sanitize(weights: weights)
+
+        #expect(sanitized["encoder.block.0.weight_v"] != nil)
+        #expect(sanitized["decoder.model.1.block.4.weight_g"] != nil)
+        #expect(sanitized["quantizer.quantizers.0.inProj.weight_v"] != nil)
+        #expect(sanitized["quantizer.quantizers.0.outProj.weight_g"] != nil)
+        #expect(sanitized["encoder.block.layers.0.weight_v"] == nil)
+    }
+}
+
+
+// MARK: - Fish S1 DAC Tests
+
+struct FishS1DACTests {
+
+    @Test func testTinyEncodeDecode() throws {
+        let quantizer = FishS1DownsampleResidualVectorQuantize(
+            inputDim: 16,
+            nCodebooks: 2,
+            codebookDim: 4,
+            codebookSize: 16,
+            semanticCodebookSize: 32,
+            downsampleFactor: [2],
+            preModule: FishS1Identity(),
+            postModule: FishS1Identity()
+        )
+
+        let model = FishS1DAC(
+            encoderDim: 4,
+            encoderRates: [2, 2],
+            latentDim: 16,
+            decoderDim: 16,
+            decoderRates: [2, 2],
+            quantizer: quantizer,
+            sampleRate: 44_100,
+            causal: true,
+            encoderTransformerLayers: [0, 0],
+            decoderTransformerLayers: [0, 0],
+            transformerConfigFactory: nil
+        )
+
+        let audio = MLXArray.zeros([1, 128, 1], dtype: .float32)
+        let (indices, featureLengths) = model.encode(audio)
+
+        #expect(indices.shape[0] == 1)
+        #expect(indices.shape[1] == 3)
+        #expect(featureLengths.shape == [1])
+        #expect(featureLengths.item(Int32.self) == 8)
+
+        let (decoded, decodedLengths) = model.decode(indices, featureLengths: featureLengths)
+        #expect(decoded.shape == [1, 1, 128])
+        #expect(decodedLengths.item(Int32.self) == 128)
+
+        let zQ = model.encodeZQ(audio)
+        #expect(zQ.shape == [1, 16, 16])
+
+        let reconstructed = model.decodeZQ(zQ)
+        #expect(reconstructed.shape == [1, 1, 128])
+    }
+
+    @Test func testAudioCodecModelUsesPublicWaveformLayout() throws {
+        let quantizer = FishS1DownsampleResidualVectorQuantize(
+            inputDim: 16,
+            nCodebooks: 2,
+            codebookDim: 4,
+            codebookSize: 16,
+            semanticCodebookSize: 32,
+            downsampleFactor: [2],
+            preModule: FishS1Identity(),
+            postModule: FishS1Identity()
+        )
+
+        let model = FishS1DAC(
+            encoderDim: 4,
+            encoderRates: [2, 2],
+            latentDim: 16,
+            decoderDim: 16,
+            decoderRates: [2, 2],
+            quantizer: quantizer,
+            sampleRate: 44_100,
+            causal: true,
+            encoderTransformerLayers: [0, 0],
+            decoderTransformerLayers: [0, 0],
+            transformerConfigFactory: nil
+        )
+
+        let waveform = MLXArray.zeros([1, 128, 1], dtype: .float32)
+        let encoded = model.encodeAudio(waveform)
+        let decoded = model.decodeAudio(encoded)
+
+        #expect(encoded.codes.shape[0] == 1)
+        #expect(encoded.originalLength == 128)
+        #expect(decoded.shape == [1, 128, 1])
+    }
+}
+
+
+// MARK: - Codec Network Tests
+
+@Suite("Codec Network Tests", .serialized)
+struct CodecNetworkTests {
+
+    @Test func descriptDACFromPretrainedLoadsRealWeightsAndRoundTripsAudio() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network Descript DAC test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
+        let repo = env["MLXAUDIO_DESCRIPT_DAC_REPO"] ?? "mlx-community/descript-audio-codec-44khz"
+        let model = try await DescriptDAC.fromPretrained(repo)
+        let audio = try loadCodecNetworkFixture(sampleRate: model.sampleRate, maxSamples: model.sampleRate / 4)
+        let waveform = audio.reshaped([1, audio.shape[0], 1])
+
+        let encoded = model.encodeAudio(waveform)
+        let decoded = model.decodeAudio(encoded)
+        eval(encoded.codes, decoded)
+
+        #expect(encoded.codes.shape[0] == 1)
+        #expect(encoded.codes.shape[1] == model.config.nCodebooks)
+        #expect(encoded.originalLength == waveform.shape[1])
+        #expect(decoded.shape == waveform.shape)
     }
 }

@@ -19,7 +19,7 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
         case .unsupportedModelRepo(let repo):
             """
             Unsupported codec repo: \(repo)
-            Expected repo id containing one of: dacvae, encodec, snac, mimi.
+            Expected repo id containing one of: dacvae, encodec, snac, mimi, descript, fish_s1_dac.
             """
         case .failedToCreateAudioBuffer:
             "Failed to create audio buffer"
@@ -112,6 +112,12 @@ enum App {
                     progressHandler: { _ in }
                 )
             )
+        }
+        if repo.contains("descript") {
+            return AnyAudioCodecModel(try await DescriptDAC.fromPretrained(modelRepo))
+        }
+        if repo.contains("fish_s1_dac") || repo.contains("fish-s1-dac") {
+            return AnyAudioCodecModel(try await FishS1DAC.fromPretrained(modelRepo))
         }
 
         throw AppError.unsupportedModelRepo(modelRepo)

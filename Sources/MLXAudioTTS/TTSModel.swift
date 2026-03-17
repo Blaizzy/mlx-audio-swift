@@ -49,6 +49,8 @@ public enum TTS {
         }
 
         switch resolvedType {
+        case "echo_tts", "echo":
+            return try await EchoTTSModel.fromPretrained(modelRepo, cache: cache)
         case "qwen3_tts":
             return try await Qwen3TTSModel.fromPretrained(modelRepo, cache: cache)
         case "qwen3", "qwen":
@@ -79,6 +81,9 @@ public enum TTS {
         let lower = modelRepo.lowercased()
         if lower.contains("qwen3_tts") {
             return "qwen3_tts"
+        }
+        if lower.contains("echo") {
+            return "echo_tts"
         }
         if lower.contains("qwen3") || lower.contains("qwen") {
             return "qwen3"
