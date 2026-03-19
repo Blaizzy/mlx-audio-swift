@@ -23,6 +23,8 @@ jobs:
             suite: MLXAudioTests/MLXAudioSTTTests
           - name: VAD
             suite: MLXAudioTests/MLXAudioVADTests
+          - name: STS
+            suite: MLXAudioTests/MLXAudioSTSTests
 
     steps:
       - uses: actions/checkout@v4
@@ -36,25 +38,3 @@ jobs:
         run: xcodebuild build-for-testing -scheme MLXAudio-Package -destination 'platform=macOS' MACOSX_DEPLOYMENT_TARGET=14.0 CODE_SIGNING_ALLOWED=NO
       - name: Run ${{ matrix.name }} tests
         run: xcodebuild test-without-building -scheme MLXAudio-Package -destination 'platform=macOS' -only-testing:${{ matrix.suite }} CODE_SIGNING_ALLOWED=NO
-
-  sts-deepfilternet:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Select Xcode version
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: 'latest'
-      - name: Install Metal toolchain
-        run: xcodebuild -downloadComponent MetalToolchain
-      - name: Build
-        run: xcodebuild build-for-testing -scheme MLXAudio-Package -destination 'platform=macOS' MACOSX_DEPLOYMENT_TARGET=14.0 CODE_SIGNING_ALLOWED=NO
-      - name: Run STS DeepFilterNet tests
-        run: |
-          xcodebuild test-without-building \
-            -scheme MLXAudio-Package \
-            -destination 'platform=macOS' \
-            -only-testing:MLXAudioTests/DeepFilterNetConfigTests \
-            -only-testing:MLXAudioTests/DeepFilterNetStreamingConfigTests \
-            -only-testing:MLXAudioTests/DeepFilterNetLoadingTests \
-            CODE_SIGNING_ALLOWED=NO
