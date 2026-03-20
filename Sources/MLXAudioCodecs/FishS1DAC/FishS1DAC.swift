@@ -527,6 +527,50 @@ public final class FishS1DAC: Module {
         return out
     }
 
+    private static func buildConfig(from modelURL: URL) -> FishS1DACBuildConfig {
+        let configURL = modelURL.appendingPathComponent("config.json")
+        let buildConfig: FishS1DACBuildConfig
+        if FileManager.default.fileExists(atPath: configURL.path),
+           let data = try? Data(contentsOf: configURL) {
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            buildConfig = (try? decoder.decode(FishS1DACBuildConfig.self, from: data)) ?? FishS1DACBuildConfig()
+        } else {
+            buildConfig = FishS1DACBuildConfig()
+        }
+        return buildConfig
+    }
+
+    private static func weightsURL(from modelURL: URL) throws -> URL {
+        let codecWeightsURL = modelURL.appendingPathComponent("codec.safetensors")
+        let modelWeightsURL = modelURL.appendingPathComponent("model.safetensors")
+        let pytorchWeightsURL = modelURL.appendingPathComponent("pytorch_model.safetensors")
+        if FileManager.default.fileExists(atPath: codecWeightsURL.path) {
+            return codecWeightsURL
+        } else if FileManager.default.fileExists(atPath: modelWeightsURL.path) {
+            return modelWeightsURL
+        } else if FileManager.default.fileExists(atPath: pytorchWeightsURL.path) {
+            return pytorchWeightsURL
+        } else {
+            throw NSError(
+                domain: "FishS1DAC",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "No MLX-converted weights found in \(modelURL.path)"]
+            )
+        }
+    }
+
+    public static func fromModelDirectory(_ modelURL: URL) throws -> FishS1DAC {
+        let buildConfig = buildConfig(from: modelURL)
+        let model = buildFishS1DAC(buildConfig)
+        let weightsURL = try weightsURL(from: modelURL)
+
+        let weights = model.sanitize(weights: try loadArrays(url: weightsURL))
+        try model.update(parameters: ModuleParameters.unflattened(weights), verify: .noUnusedKeys)
+        eval(model.parameters())
+        return model
+    }
+
     public static func fromPretrained(
         _ repoId: String,
         cache: HubCache = .default
@@ -545,41 +589,7 @@ public final class FishS1DAC: Module {
             cache: cache
         )
 
-        let configURL = modelURL.appendingPathComponent("config.json")
-        let buildConfig: FishS1DACBuildConfig
-        if FileManager.default.fileExists(atPath: configURL.path),
-           let data = try? Data(contentsOf: configURL) {
-            let decoder = JSONDecoder()
-            decoder.keyDecodingStrategy = .convertFromSnakeCase
-            buildConfig = (try? decoder.decode(FishS1DACBuildConfig.self, from: data)) ?? FishS1DACBuildConfig()
-        } else {
-            buildConfig = FishS1DACBuildConfig()
-        }
-
-        let model = buildFishS1DAC(buildConfig)
-
-        let codecWeightsURL = modelURL.appendingPathComponent("codec.safetensors")
-        let modelWeightsURL = modelURL.appendingPathComponent("model.safetensors")
-        let pytorchWeightsURL = modelURL.appendingPathComponent("pytorch_model.safetensors")
-        let weightsURL: URL
-        if FileManager.default.fileExists(atPath: codecWeightsURL.path) {
-            weightsURL = codecWeightsURL
-        } else if FileManager.default.fileExists(atPath: modelWeightsURL.path) {
-            weightsURL = modelWeightsURL
-        } else if FileManager.default.fileExists(atPath: pytorchWeightsURL.path) {
-            weightsURL = pytorchWeightsURL
-        } else {
-            throw NSError(
-                domain: "FishS1DAC",
-                code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "No MLX-converted weights found in \(modelURL.path)"]
-            )
-        }
-
-        let weights = model.sanitize(weights: try loadArrays(url: weightsURL))
-        try model.update(parameters: ModuleParameters.unflattened(weights), verify: .noUnusedKeys)
-        eval(model.parameters())
-        return model
+        return try fromModelDirectory(modelURL)
     }
 }
 

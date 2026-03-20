@@ -28,6 +28,10 @@ public class AudioUtils {
 
     private init() {}
 
+    public static func writeWavFile(samples: [Float], sampleRate: Int, fileURL: URL) throws {
+        try writeWavFile(samples: samples, sampleRate: Double(sampleRate), fileURL: fileURL)
+    }
+
     public static func writeWavFile(samples: [Float], sampleRate: Double, fileURL: URL) throws {
         let frameCount = AVAudioFrameCount(samples.count)
 
