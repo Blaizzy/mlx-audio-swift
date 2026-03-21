@@ -1119,7 +1119,12 @@ public class GraniteSpeechModel: Module {
 extension GraniteSpeechModel: STTGenerationModel {
     public var defaultGenerationParameters: STTGenerateParameters {
         STTGenerateParameters(
-            maxTokens: 4096, temperature: 0.0, topP: 1.0, topK: 0, verbose: false
+            maxTokens: 4096,
+            temperature: 0.0,
+            topP: 1.0,
+            topK: 0,
+            verbose: false,
+            language: "English"
         )
     }
 

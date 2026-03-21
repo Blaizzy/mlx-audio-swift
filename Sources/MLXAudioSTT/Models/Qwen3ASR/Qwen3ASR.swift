@@ -33,7 +33,7 @@ extension Qwen3ASRModel: STTGenerationModel {
             topP: 0.95,
             topK: 0,
             verbose: false,
-            language: "English",
+            language: nil,
             chunkDuration: 1200.0,
             minChunkDuration: 1.0
         )
@@ -64,6 +64,32 @@ extension Qwen3ASRModel: STTGenerationModel {
         )
     }
 }
+
+private let qwen3ASRLanguageAliases: [String: String] = [
+    "zh": "Chinese",
+    "chinese": "Chinese",
+    "mandarin": "Chinese",
+    "yue": "Cantonese",
+    "cantonese": "Cantonese",
+    "en": "English",
+    "english": "English",
+    "de": "German",
+    "german": "German",
+    "es": "Spanish",
+    "spanish": "Spanish",
+    "fr": "French",
+    "french": "French",
+    "it": "Italian",
+    "italian": "Italian",
+    "pt": "Portuguese",
+    "portuguese": "Portuguese",
+    "ru": "Russian",
+    "russian": "Russian",
+    "ko": "Korean",
+    "korean": "Korean",
+    "ja": "Japanese",
+    "japanese": "Japanese",
+]
 
 func getFeatExtractOutputLengths(_ inputLengths: MLXArray) -> MLXArray {
     let inputLengthsLeave = inputLengths % 100
@@ -1029,20 +1055,107 @@ public class Qwen3ASRModel: Module {
 
     // MARK: - Prompt Building
 
-    public func buildPrompt(numAudioTokens: Int, language: String = "English") -> MLXArray {
+    private func extractLanguage(from text: String) -> (language: String?, text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = "language "
+        let marker = "<asr_text>"
+
+        guard trimmed.hasPrefix(prefix), let markerRange = trimmed.range(of: marker) else {
+            return (nil, trimmed)
+        }
+
+        let languageStart = trimmed.index(trimmed.startIndex, offsetBy: prefix.count)
+        let detectedLanguage = trimmed[languageStart..<markerRange.lowerBound]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let transcript = trimmed[markerRange.upperBound...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return (detectedLanguage.isEmpty ? nil : detectedLanguage, transcript)
+    }
+
+    func normalizeLanguageName(_ language: String?) -> String? {
+        guard let rawLanguage = language?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawLanguage.isEmpty else {
+            return nil
+        }
+
+        let supported = Dictionary(
+            uniqueKeysWithValues: config.supportLanguages.map { ($0.lowercased(), $0) }
+        )
+        let lowercased = rawLanguage.lowercased()
+
+        if let supportedName = supported[lowercased] {
+            return supportedName
+        }
+
+        if let aliasName = qwen3ASRLanguageAliases[lowercased] {
+            if supported.isEmpty {
+                return aliasName
+            }
+            if let supportedName = supported[aliasName.lowercased()] {
+                return supportedName
+            }
+        }
+
+        return rawLanguage
+    }
+
+    func parseGeneratedChunk(_ decodedText: String, forcedLanguage: String?) -> (language: String?, text: String) {
+        let normalizedForcedLanguage = normalizeLanguageName(forcedLanguage)
+        let trimmed = decodedText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let normalizedForcedLanguage {
+            return (normalizedForcedLanguage, trimmed)
+        }
+
+        let parsed = extractLanguage(from: decodedText)
+        if let detectedLanguage = normalizeLanguageName(parsed.language) {
+            return (detectedLanguage, parsed.text)
+        }
+
+        guard !trimmed.isEmpty else {
+            return (nil, "")
+        }
+
+        return ("English", trimmed)
+    }
+
+    static func mergeLanguages(_ languages: [String?]) -> String? {
+        var seen: Set<String> = []
+        var merged: [String] = []
+
+        for language in languages {
+            guard let language = language?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !language.isEmpty else {
+                continue
+            }
+
+            if seen.insert(language).inserted {
+                merged.append(language)
+            }
+        }
+
+        return merged.isEmpty ? nil : merged.joined(separator: ",")
+    }
+
+    public func buildPrompt(numAudioTokens: Int, language: String? = nil) -> MLXArray {
         guard let tokenizer = tokenizer else {
             fatalError("Tokenizer not loaded")
         }
 
-        let supported = config.supportLanguages
-        let supportedLower = Dictionary(uniqueKeysWithValues: supported.map { ($0.lowercased(), $0) })
-        let langName = supportedLower[language.lowercased()] ?? language
+        let assistantPrefix: String
+        if let langName = normalizeLanguageName(language) {
+            assistantPrefix = "language \(langName)<asr_text>"
+        } else {
+            assistantPrefix = ""
+        }
 
         let prompt = "<|im_start|>system\n<|im_end|>\n"
             + "<|im_start|>user\n<|audio_start|>"
             + String(repeating: "<|audio_pad|>", count: numAudioTokens)
             + "<|audio_end|><|im_end|>\n"
-            + "<|im_start|>assistant\nlanguage \(langName)<asr_text>"
+            + "<|im_start|>assistant\n"
+            + assistantPrefix
 
         let tokenIds = tokenizer.encode(text: prompt)
         return MLXArray(tokenIds.map { Int32($0) }).expandedDimensions(axis: 0)
@@ -1062,8 +1175,8 @@ public class Qwen3ASRModel: Module {
         audio: MLXArray,
         maxTokens: Int,
         temperature: Float,
-        language: String
-    ) -> (text: String, promptTokens: Int, generationTokens: Int) {
+        language: String?
+    ) -> (text: String, language: String?, promptTokens: Int, generationTokens: Int) {
         guard let tokenizer = tokenizer else {
             fatalError("Tokenizer not loaded")
         }
@@ -1112,8 +1225,10 @@ public class Qwen3ASRModel: Module {
             eval(logits)
         }
 
-        let text = tokenizer.decode(tokens: generatedTokens)
-        return (text.trimmingCharacters(in: .whitespacesAndNewlines), promptTokenCount, generatedTokens.count)
+        let decodedText = tokenizer.decode(tokens: generatedTokens)
+        let parsed = parseGeneratedChunk(decodedText, forcedLanguage: language)
+
+        return (parsed.text, parsed.language, promptTokenCount, generatedTokens.count)
     }
 
     // MARK: - Generation
@@ -1123,11 +1238,12 @@ public class Qwen3ASRModel: Module {
         audio: MLXArray,
         maxTokens: Int = 8192,
         temperature: Float = 0.0,
-        language: String = "English",
+        language: String? = nil,
         chunkDuration: Float = 1200.0,
         minChunkDuration: Float = 1.0
     ) -> STTOutput {
         let startTime = Date()
+        let forcedLanguage = normalizeLanguageName(language)
 
         // Split audio into chunks
         let chunks = splitAudioIntoChunks(
@@ -1142,6 +1258,7 @@ public class Qwen3ASRModel: Module {
         var totalPromptTokens = 0
         var totalGenerationTokens = 0
         var remainingTokens = maxTokens
+        var chunkLanguages: [String?] = []
 
         for (chunkAudio, offsetSec) in chunks {
             if remainingTokens <= 0 { break }
@@ -1152,19 +1269,24 @@ public class Qwen3ASRModel: Module {
                 audio: chunkAudio,
                 maxTokens: remainingTokens,
                 temperature: temperature,
-                language: language
+                language: forcedLanguage
             )
 
             allTexts.append(result.text)
+            chunkLanguages.append(result.language)
             totalPromptTokens += result.promptTokens
             totalGenerationTokens += result.generationTokens
             remainingTokens -= result.generationTokens
 
-            segments.append([
+            var segment: [String: Any] = [
                 "text": result.text,
                 "start": Double(offsetSec),
                 "end": Double(offsetSec + actualChunkDuration),
-            ])
+            ]
+            if let language = result.language {
+                segment["language"] = language
+            }
+            segments.append(segment)
 
             Memory.clearCache()
         }
@@ -1172,10 +1294,12 @@ public class Qwen3ASRModel: Module {
         let endTime = Date()
         let totalTime = endTime.timeIntervalSince(startTime)
         let fullText = allTexts.joined(separator: " ")
+        let mergedLanguage = Qwen3ASRModel.mergeLanguages(chunkLanguages)
 
         return STTOutput(
             text: fullText.trimmingCharacters(in: .whitespacesAndNewlines),
             segments: segments,
+            language: mergedLanguage,
             promptTokens: totalPromptTokens,
             generationTokens: totalGenerationTokens,
             totalTokens: totalPromptTokens + totalGenerationTokens,
@@ -1191,7 +1315,7 @@ public class Qwen3ASRModel: Module {
         audio: MLXArray,
         maxTokens: Int = 8192,
         temperature: Float = 0.0,
-        language: String = "English",
+        language: String? = nil,
         chunkDuration: Float = 1200.0,
         minChunkDuration: Float = 1.0
     ) -> AsyncThrowingStream<STTGeneration, Error> {
@@ -1221,6 +1345,7 @@ public class Qwen3ASRModel: Module {
                     var totalGenerationTokens = 0
                     var remainingTokens = maxTokens
                     var allGeneratedTokens: [Int] = []
+                    var resolvedLanguage = language
 
                     for (chunkAudio, _) in chunks {
                         if remainingTokens <= 0 { break }
@@ -1228,7 +1353,10 @@ public class Qwen3ASRModel: Module {
 
                         // Preprocess this chunk
                         let (inputFeatures, featureAttentionMask, numAudioTokens) = model.preprocessAudio(chunkAudio)
-                        let inputIds = model.buildPrompt(numAudioTokens: numAudioTokens, language: language)
+                        let inputIds = model.buildPrompt(
+                            numAudioTokens: numAudioTokens,
+                            language: resolvedLanguage
+                        )
                         let promptTokenCount = inputIds.dim(1)
                         totalPromptTokens += promptTokenCount
 
@@ -1254,6 +1382,7 @@ public class Qwen3ASRModel: Module {
                         eval(logits)
 
                         var chunkTokens: [Int] = []
+                        var languagePrefixBuffer = ""
 
                         for _ in 0..<remainingTokens {
                             try Task.checkCancellation()
@@ -1272,7 +1401,18 @@ public class Qwen3ASRModel: Module {
                             allGeneratedTokens.append(nextToken)
 
                             let tokenText = tokenizer.decode(tokens: [nextToken])
-                            continuation.yield(.token(tokenText))
+                            if resolvedLanguage == nil {
+                                languagePrefixBuffer += tokenText
+                                let parsed = model.extractLanguage(from: languagePrefixBuffer)
+                                if let detectedLanguage = parsed.language {
+                                    resolvedLanguage = detectedLanguage
+                                    if !parsed.text.isEmpty {
+                                        continuation.yield(.token(parsed.text))
+                                    }
+                                }
+                            } else {
+                                continuation.yield(.token(tokenText))
+                            }
 
                             let nextTokenArray = MLXArray([Int32(nextToken)]).expandedDimensions(axis: 0)
                             logits = model.callAsFunction(inputIds: nextTokenArray, cache: cache)
@@ -1281,6 +1421,10 @@ public class Qwen3ASRModel: Module {
 
                         totalGenerationTokens += chunkTokens.count
                         remainingTokens -= chunkTokens.count
+
+                        if resolvedLanguage == nil && !languagePrefixBuffer.isEmpty {
+                            continuation.yield(.token(languagePrefixBuffer))
+                        }
 
                         Memory.clearCache()
                     }
@@ -1302,9 +1446,13 @@ public class Qwen3ASRModel: Module {
                     continuation.yield(.info(info))
 
                     // Emit final result
-                    let text = tokenizer.decode(tokens: allGeneratedTokens)
+                    let decodedText = tokenizer.decode(tokens: allGeneratedTokens)
+                    let parsed = model.extractLanguage(from: decodedText)
+                    let outputLanguage = resolvedLanguage ?? parsed.language
+                    let text = language == nil ? parsed.text : decodedText.trimmingCharacters(in: .whitespacesAndNewlines)
                     let output = STTOutput(
-                        text: text.trimmingCharacters(in: .whitespacesAndNewlines),
+                        text: text,
+                        language: outputLanguage,
                         promptTokens: totalPromptTokens,
                         generationTokens: totalGenerationTokens,
                         totalTokens: totalPromptTokens + totalGenerationTokens,

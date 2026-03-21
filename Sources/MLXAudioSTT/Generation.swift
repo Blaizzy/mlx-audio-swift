@@ -6,7 +6,7 @@ public struct STTGenerateParameters: Sendable {
     public let topP: Float
     public let topK: Int
     public let verbose: Bool
-    public let language: String
+    public let language: String?
     public let chunkDuration: Float
     public let minChunkDuration: Float
 
@@ -16,7 +16,7 @@ public struct STTGenerateParameters: Sendable {
         topP: Float = 0.95,
         topK: Int = 0,
         verbose: Bool = false,
-        language: String = "English",
+        language: String? = nil,
         chunkDuration: Float = 1200.0,
         minChunkDuration: Float = 1.0
     ) {

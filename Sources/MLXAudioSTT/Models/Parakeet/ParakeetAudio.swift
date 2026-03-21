@@ -28,27 +28,29 @@ enum ParakeetAudio {
             window: window,
             nFft: config.nFft,
             hopLength: config.hopLength,
-            padMode: .reflect
+            padMode: .constant
         )
 
         let power = MLX.abs(stftOutput).square().asType(originalDType)
-        // NeMo's AudioToMelSpectrogramPreprocessor defaults to HTK mel scale.
-        // Both Parakeet V2 and V3 were trained with NeMo, so use HTK here.
         let filters = melFilters(
             sampleRate: config.sampleRate,
             nFft: config.nFft,
             nMels: config.features,
-            norm: config.normalize,
-            melScale: .htk
+            norm: "slaney",
+            melScale: .slaney
         )
 
         var mel = MLX.matmul(power, filters.asType(power.dtype))
-        mel = MLX.log(mel + MLXArray(1e-5, dtype: mel.dtype))
+        mel = MLX.log(mel + MLXArray(config.logZeroGuardValue, dtype: mel.dtype))
 
         let normalized: MLXArray
         if config.normalize == "per_feature" {
             let mean = MLX.mean(mel, axis: 0, keepDims: true)
-            let std = MLX.std(mel, axis: 0, keepDims: true)
+            let denominator = max(mel.dim(0) - 1, 1)
+            let variance = MLX.sum(
+                (mel - mean).square(), axis: 0, keepDims: true
+            ) / Float(denominator)
+            let std = MLX.sqrt(variance)
             normalized = (mel - mean) / (std + MLXArray(1e-5, dtype: mel.dtype))
         } else {
             let mean = MLX.mean(mel)
@@ -78,9 +80,13 @@ enum ParakeetAudio {
             return base[0..<fftLength]
         }
 
-        let rightPad = fftLength - winLength
-        let right = MLXArray(Array(repeating: Float(0), count: rightPad))
-        return MLX.concatenated([base, right], axis: 0)
+        let left = (fftLength - winLength) / 2
+        let right = fftLength - winLength - left
+        return MLX.concatenated([
+            MLXArray.zeros([left]),
+            base,
+            MLXArray.zeros([right])
+        ], axis: 0)
     }
 
     private static func hammingWindow(size: Int) -> MLXArray {

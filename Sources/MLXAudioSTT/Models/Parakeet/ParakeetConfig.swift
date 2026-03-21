@@ -12,6 +12,7 @@ public struct ParakeetPreprocessConfig: Codable, Sendable {
     public let padTo: Int
     public let padValue: Float
     public let preemph: Float
+    public let logZeroGuardValue: Float
 
     enum CodingKeys: String, CodingKey {
         case sampleRate = "sample_rate"
@@ -25,6 +26,7 @@ public struct ParakeetPreprocessConfig: Codable, Sendable {
         case padTo = "pad_to"
         case padValue = "pad_value"
         case preemph
+        case logZeroGuardValue = "log_zero_guard_value"
     }
 
     public init(
@@ -38,7 +40,8 @@ public struct ParakeetPreprocessConfig: Codable, Sendable {
         dither: Float,
         padTo: Int = 0,
         padValue: Float = 0,
-        preemph: Float = 0.97
+        preemph: Float = 0.97,
+        logZeroGuardValue: Float = pow(2, -24)
     ) {
         self.sampleRate = sampleRate
         self.normalize = normalize
@@ -51,6 +54,7 @@ public struct ParakeetPreprocessConfig: Codable, Sendable {
         self.padTo = padTo
         self.padValue = padValue
         self.preemph = preemph
+        self.logZeroGuardValue = logZeroGuardValue
     }
 
     public init(from decoder: Decoder) throws {
@@ -66,6 +70,7 @@ public struct ParakeetPreprocessConfig: Codable, Sendable {
         padTo = try container.decodeIfPresent(Int.self, forKey: .padTo) ?? 0
         padValue = try container.decodeIfPresent(Float.self, forKey: .padValue) ?? 0
         preemph = try container.decodeIfPresent(Float.self, forKey: .preemph) ?? 0.97
+        logZeroGuardValue = try container.decodeIfPresent(Float.self, forKey: .logZeroGuardValue) ?? pow(2, -24)
     }
 
     public var winLength: Int {

@@ -275,18 +275,20 @@ public final class ParakeetModel: Module, STTGenerationModel {
                 )
 
                 if token != blankToken {
-                    let start = frameTimeSeconds(frameIndex: t)
-                    let duration = frameTimeSeconds(frameIndex: step.jump)
-                    hypothesis.append(
-                        ParakeetAlignedToken(
-                            id: token,
-                            text: ParakeetTokenizer.decode(tokens: [token], vocabulary: vocabulary),
-                            start: start,
-                            duration: duration
-                        )
-                    )
                     lastToken = token
                     state = proposedState
+                    if !ParakeetTokenizer.isSpecialToken(token, vocabulary: vocabulary) {
+                        let start = frameTimeSeconds(frameIndex: t)
+                        let duration = frameTimeSeconds(frameIndex: step.jump)
+                        hypothesis.append(
+                            ParakeetAlignedToken(
+                                id: token,
+                                text: ParakeetTokenizer.decode(tokens: [token], vocabulary: vocabulary),
+                                start: start,
+                                duration: duration
+                            )
+                        )
+                    }
                 }
 
                 t = step.nextTime
@@ -354,19 +356,20 @@ public final class ParakeetModel: Module, STTGenerationModel {
                 )
 
                 if step.emittedToken {
-                    let start = frameTimeSeconds(frameIndex: t)
-                    let duration = frameTimeSeconds(frameIndex: 1)
-                    hypothesis.append(
-                        ParakeetAlignedToken(
-                            id: token,
-                            text: ParakeetTokenizer.decode(tokens: [token], vocabulary: vocabulary),
-                            start: start,
-                            duration: duration
-                        )
-                    )
-
                     lastToken = token
                     state = proposedState
+                    if !ParakeetTokenizer.isSpecialToken(token, vocabulary: vocabulary) {
+                        let start = frameTimeSeconds(frameIndex: t)
+                        let duration = frameTimeSeconds(frameIndex: 1)
+                        hypothesis.append(
+                            ParakeetAlignedToken(
+                                id: token,
+                                text: ParakeetTokenizer.decode(tokens: [token], vocabulary: vocabulary),
+                                start: start,
+                                duration: duration
+                            )
+                        )
+                    }
                 }
 
                 t = step.nextTime
@@ -407,7 +410,8 @@ public final class ParakeetModel: Module, STTGenerationModel {
 
             let ids: [Int] = (0..<featLen).map { bestTokens[$0].item(Int.self) }
             let spans = ParakeetDecodingLogic.ctcSpans(bestTokens: ids, blankToken: blankToken)
-            let hypothesis: [ParakeetAlignedToken] = spans.map { span in
+            let hypothesis: [ParakeetAlignedToken] = spans.compactMap { span in
+                if ParakeetTokenizer.isSpecialToken(span.token, vocabulary: vocabulary) { return nil }
                 let start = frameTimeSeconds(frameIndex: span.startFrame)
                 let end = frameTimeSeconds(frameIndex: span.endFrame)
                 return ParakeetAlignedToken(
@@ -554,6 +558,7 @@ public extension ParakeetModel {
         }
 
         try model.update(parameters: ModuleParameters.unflattened(sanitized), verify: .all)
+        model.train(false)
         eval(model)
         return model
     }
