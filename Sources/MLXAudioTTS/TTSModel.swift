@@ -55,6 +55,8 @@ public enum TTS {
             return try await Qwen3TTSModel.fromPretrained(modelRepo, cache: cache)
         case "qwen3", "qwen":
             return try await Qwen3Model.fromPretrained(modelRepo, cache: cache)
+        case "fish_speech", "fish_qwen3_omni":
+            return try await FishSpeechModel.fromPretrained(modelRepo, cache: cache)
         case "llama_tts", "llama3_tts", "llama3", "llama", "orpheus", "orpheus_tts":
             return try await LlamaTTSModel.fromPretrained(modelRepo, cache: cache)
         case "csm", "sesame":
@@ -65,6 +67,8 @@ public enum TTS {
             return try await PocketTTSModel.fromPretrained(modelRepo, cache: cache)
         case "chatterbox", "chatterbox_tts", "chatterbox_turbo":
             return try await ChatterboxModel.fromPretrained(modelRepo)
+        case "kitten_tts", "kitten":
+            return try await KittenTTSModel.fromPretrained(modelRepo, cache: cache)
         default:
             throw TTSModelError.unsupportedModelType(modelType ?? resolvedType)
         }
@@ -81,6 +85,14 @@ public enum TTS {
         let lower = modelRepo.lowercased()
         if lower.contains("qwen3_tts") {
             return "qwen3_tts"
+        }
+        if lower.contains("fish_qwen3_omni") {
+            return "fish_qwen3_omni"
+        }
+        if lower.contains("fish-audio") || lower.contains("fish_audio")
+            || lower.contains("fish-speech") || lower.contains("fish_speech")
+        {
+            return "fish_speech"
         }
         if lower.contains("echo") {
             return "echo_tts"
@@ -102,6 +114,9 @@ public enum TTS {
         }
         if lower.contains("chatterbox") {
             return "chatterbox"
+        }
+        if lower.contains("kitten") {
+            return "kitten_tts"
         }
         return nil
     }

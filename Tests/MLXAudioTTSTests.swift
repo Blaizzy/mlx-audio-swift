@@ -35,6 +35,71 @@ private func loadTTSNetworkFixture(sampleRate: Int, maxSamples: Int) throws -> M
     return audio[0..<sampleCount]
 }
 
+private struct FakeFishTokenizer: FishSpeechTokenizing {
+    let vocabSize = 8_192
+    let eosTokenID = 99
+    let padTokenID = 0
+    let semanticBeginID = 1_000
+    let semanticEndID = 5_095
+
+    func encode(_ text: String, addSpecialTokens: Bool) -> [Int] {
+        switch text {
+        case "\(fishSpeechIMStartToken)\(FishSpeechRole.assistant.rawValue)\n\(fishSpeechVoiceModalityToken)":
+            return [11]
+        case "\(fishSpeechIMEndToken)\n":
+            return [12]
+        case "hi":
+            return [13, 14]
+        default:
+            return text.utf8.map(Int.init)
+        }
+    }
+
+    func decode(_ tokens: [Int], skipSpecialTokens: Bool) -> String {
+        tokens.map(String.init).joined(separator: ",")
+    }
+
+    func tokenID(for token: String) -> Int? {
+        switch token {
+        case fishSpeechEOSToken:
+            return eosTokenID
+        case fishSpeechPadToken:
+            return padTokenID
+        case fishSpeechIMEndToken:
+            return 12
+        default:
+            return nil
+        }
+    }
+}
+
+private func makeTinyFishSpeechConfig() -> FishSpeechConfig {
+    FishSpeechConfig(
+        textConfig: FishTextConfig(
+            vocabSize: 128,
+            nLayer: 1,
+            nHead: 2,
+            dim: 8,
+            intermediateSize: 16,
+            nLocalHeads: 2,
+            headDim: 4,
+            maxSeqLen: 64
+        ),
+        audioDecoderConfig: FishAudioDecoderConfig(
+            vocabSize: 32,
+            nLayer: 1,
+            nHead: 2,
+            dim: 8,
+            intermediateSize: 16,
+            nLocalHeads: 2,
+            headDim: 4,
+            maxSeqLen: 8,
+            textDim: 8,
+            numCodebooks: 2
+        )
+    )
+}
+
 
 // MARK: - Text Cleaning Unit Tests
 
@@ -267,6 +332,226 @@ struct EchoTTSTests {
     }
 }
 
+struct FishSpeechTests {
+
+    @Test func testConfigDecodesQuantizationAlias() throws {
+        let data = Data(
+            """
+            {
+              "model_type": "fish_qwen3_omni",
+              "quantization_config": {
+                "group_size": 64,
+                "bits": 4
+              }
+            }
+            """.utf8
+        )
+
+        let config = try JSONDecoder().decode(FishSpeechConfig.self, from: data)
+
+        #expect(config.modelType == "fish_qwen3_omni")
+        #expect(config.sampleRate == 44_100)
+        #expect(config.quantization == BaseConfiguration.Quantization(groupSize: 64, bits: 4))
+    }
+
+    @Test func testConversationEncodingInterleavesSemanticAndCodebookRows() {
+        let tokenizer = FakeFishTokenizer()
+        let codes = MLXArray([Int32(1), 2, 10, 20]).reshaped([2, 2])
+        let conversation = FishSpeechConversation(messages: [
+            FishSpeechMessage(
+                role: .assistant,
+                parts: [
+                    .text(FishSpeechTextPart(text: "hi")),
+                    .vq(FishSpeechVQPart(codes)),
+                ],
+                addIMStart: true,
+                addIMEnd: true,
+                modality: .voice
+            )
+        ])
+
+        let encoded = conversation.encodeForInference(tokenizer: tokenizer, numCodebooks: 2)
+
+        #expect(encoded.shape == [3, 6])
+        #expect(encoded[0].asArray(Int32.self) == [11, 13, 14, 1_001, 1_002, 12])
+        #expect(encoded[1].asArray(Int32.self) == [0, 0, 0, 1, 2, 0])
+        #expect(encoded[2].asArray(Int32.self) == [0, 0, 0, 10, 20, 0])
+    }
+
+    @Test func testSpeakerSplitAndBatching() {
+        let text = "<|speaker:0|>hello\n<|speaker:1|>world\n<|speaker:2|>again"
+        let turns = fishSpeechSplitTextBySpeaker(text)
+        let batches = fishSpeechGroupTurnsIntoBatches(turns, maxSpeakers: 2, maxBytes: 1_000)
+
+        #expect(turns == ["<|speaker:0|>hello", "<|speaker:1|>world", "<|speaker:2|>again"])
+        #expect(batches == ["<|speaker:0|>hello\n<|speaker:1|>world", "<|speaker:2|>again"])
+    }
+
+    @Test func testSanitizeRemapsFishWeightPrefixes() {
+        let model = FishSpeechModel(config: makeTinyFishSpeechConfig())
+        let sanitized = model.sanitize(weights: [
+            "text_model.model.embeddings.weight": MLXArray.zeros([1, 1], dtype: .float32),
+            "audio_decoder.codebook_embeddings.weight": MLXArray.zeros([1, 1], dtype: .float32),
+            "audio_decoder.layers.0.attention.wqkv.weight": MLXArray.zeros([1, 1], dtype: .float32),
+            "model.norm.weight": MLXArray.zeros([1], dtype: .float32),
+        ])
+
+        #expect(sanitized["model.embeddings.weight"] != nil)
+        #expect(sanitized["model.codebook_embeddings.weight"] != nil)
+        #expect(sanitized["model.fast_layers.0.attention.wqkv.weight"] != nil)
+        #expect(sanitized["model.norm.weight"] != nil)
+    }
+
+    @Test func testDefaultRepositoryID() {
+        #expect(FishSpeechModel.defaultRepositoryID == "mlx-community/fish-audio-s2-pro-8bit")
+    }
+
+    @Test func testCachedTokenizerMatchesReferenceSpecialTokenEncoding() async throws {
+        let modelURL = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".cache/huggingface/hub/mlx-audio/mlx-community_fish-audio-s2-pro-8bit")
+        guard FileManager.default.fileExists(atPath: modelURL.path) else { return }
+
+        let tokenizer = try await FishSpeechTokenizer.fromModelDirectory(modelURL)
+
+        #expect(
+            tokenizer.encode("\(fishSpeechIMEndToken)\n", addSpecialTokens: false)
+                == [151_645, 198]
+        )
+        #expect(
+            tokenizer.encode(
+                "\(fishSpeechIMStartToken)assistant\n\(fishSpeechVoiceModalityToken)",
+                addSpecialTokens: false
+            ) == [151_644, 77_091, 198, 151_673]
+        )
+    }
+
+    @Test func testCachedConversationPromptMatchesReference() async throws {
+        let modelURL = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".cache/huggingface/hub/mlx-audio/mlx-community_fish-audio-s2-pro-8bit")
+        guard FileManager.default.fileExists(atPath: modelURL.path) else { return }
+
+        let tokenizer = try await FishSpeechTokenizer.fromModelDirectory(modelURL)
+        let conversation = FishSpeechConversation(messages: [
+            FishSpeechMessage(
+                role: .system,
+                parts: [.text(FishSpeechTextPart(text: "convert the provided text to speech"))],
+                addIMStart: true,
+                addIMEnd: true,
+                modality: nil
+            ),
+            FishSpeechMessage(
+                role: .user,
+                parts: [.text(FishSpeechTextPart(text: "This is a Fish S2 Pro generation test from the Swift port."))],
+                addIMStart: true,
+                addIMEnd: true,
+                modality: nil
+            ),
+            FishSpeechMessage(
+                role: .assistant,
+                parts: [],
+                addIMStart: true,
+                addIMEnd: false,
+                modality: .voice
+            ),
+        ])
+
+        let prompt = conversation.encodeForInference(tokenizer: tokenizer, numCodebooks: 10)
+
+        #expect(prompt.shape == [11, 34])
+        #expect(prompt[0].asArray(Int32.self) == [
+            151_644, 8_948, 198, 14_166, 279, 3_897, 1_467, 311, 8_806, 151_645, 198,
+            151_644, 872, 198, 1_986, 374, 264, 16_608, 328, 17, 1_298, 9_471, 1_273,
+            504, 279, 23_670, 2_635, 13, 151_645, 198, 151_644, 77_091, 198, 151_673,
+        ])
+    }
+
+    @Test func testCachedFirstGreedyStepMatchesReference() async throws {
+        let modelURL = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".cache/huggingface/hub/mlx-audio/mlx-community_fish-audio-s2-pro-8bit")
+        guard FileManager.default.fileExists(atPath: modelURL.path) else { return }
+
+        let model = try await FishSpeechModel.fromPretrained()
+        let tokenizer = try #require(model.tokenizer)
+        let semanticBias = try #require(model.semanticLogitBias)
+
+        var conversation = FishSpeechConversation()
+        conversation.append(FishSpeechMessage(
+            role: .system,
+            parts: [.text(FishSpeechTextPart(text: "convert the provided text to speech"))],
+            addIMStart: true,
+            addIMEnd: true,
+            modality: nil
+        ))
+        conversation.append(FishSpeechMessage(
+            role: .user,
+            parts: [.text(FishSpeechTextPart(text: "This is a Fish S2 Pro generation test from the Swift port."))],
+            addIMStart: true,
+            addIMEnd: true,
+            modality: nil
+        ))
+        conversation.append(FishSpeechMessage(
+            role: .assistant,
+            parts: [],
+            addIMStart: true,
+            addIMEnd: false,
+            modality: .voice
+        ))
+
+        let prompt = conversation.encodeForInference(tokenizer: tokenizer, numCodebooks: model.model.numCodebooks)
+            .expandedDimensions(axis: 0)
+        let cache = model.model.makeCache()
+        let result = model.model(prompt, cache: cache)
+        let logits = result.logits[0..., (result.logits.dim(1) - 1)..<result.logits.dim(1), 0...]
+            .squeezed(axis: 1)
+        let biased = logits + semanticBias.asType(logits.dtype)
+        func firstMax(_ logits: MLXArray) -> MLXArray {
+            let maxValues = MLX.max(logits, axis: -1, keepDims: true)
+            var indices = MLXArray(0 ..< logits.dim(logits.ndim - 1)).reshaped([1, -1]).asType(.int32)
+            if logits.ndim > 1 {
+                indices = MLX.broadcast(indices, to: logits.shape)
+            }
+            let firstMaxIndices = MLX.where(logits .== maxValues, indices, MLXArray(Int32.max))
+            return MLX.min(firstMaxIndices, axis: -1).asType(.int32)
+        }
+
+        let greedy = firstMax(biased)
+        let sorted = argSort(-biased, axis: -1)
+        eval(greedy, sorted)
+
+        let firstToken = Int(greedy.item(Int32.self))
+        let top10 = Array(sorted[0].asArray(Int32.self).prefix(10)).map(Int.init)
+
+        let semanticCode = clip(
+            greedy - Int32(model.config.semanticStartTokenID),
+            min: 0,
+            max: Int32(model.config.audioDecoderConfig.vocabSize - 1)
+        ).asType(.int32)
+        var codebooks = [Int(semanticCode.item(Int32.self))]
+        let fastCache = model.model.makeFastCache()
+        let fastPrefill = model.model.fastForwardCached(
+            result.hiddenStates[0..., (result.hiddenStates.dim(1) - 1)..<result.hiddenStates.dim(1), 0...]
+                .squeezed(axis: 1),
+            cache: fastCache
+        )
+        eval(fastPrefill)
+        var fastHidden = model.model.fastEmbeddings(semanticCode)
+        for _ in 0 ..< (model.model.numCodebooks - 1) {
+            let residualLogits = model.model.fastForwardCached(fastHidden, cache: fastCache)
+            let residualToken = firstMax(residualLogits).asType(.int32)
+            eval(residualToken)
+            codebooks.append(Int(residualToken.item(Int32.self)))
+            fastHidden = model.model.fastEmbeddings(residualToken)
+        }
+
+        #expect(result.logits.dtype == .bfloat16)
+        #expect(result.hiddenStates.dtype == .bfloat16)
+        #expect(model.model.embeddings.weight.dtype == .uint32)
+        #expect(firstToken == 153_005)
+        #expect(top10 == [153_005, 153_352, 154_140, 155_645, 153_743, 154_165, 154_636, 153_616, 155_380, 155_668])
+        #expect(codebooks == [1327, 917, 130, 446, 138, 836, 850, 370, 643, 383])
+    }
+}
+
 @Suite("Echo TTS Network Tests", .serialized)
 struct EchoTTSNetworkTests {
 
@@ -297,5 +582,178 @@ struct EchoTTSNetworkTests {
         #expect(result.info.generationTokenCount == 8)
         #expect(model.fishAE != nil)
         #expect(model.pcaState != nil)
+    }
+}
+
+// MARK: - KittenTTS Tests
+
+@Suite("KittenTTS")
+struct KittenTTSTests {
+    @Test func textCleanerMapsIPASymbols() {
+        let tokens = KittenTTSTextCleaner.cleanText("hello")
+        #expect(tokens.count == 5)
+        #expect(tokens.allSatisfy { $0 >= 0 })
+
+        let ipaTokens = KittenTTSTextCleaner.cleanText("həlˈoʊ")
+        #expect(ipaTokens.count > 0)
+        #expect(ipaTokens.allSatisfy { $0 >= 0 })
+    }
+
+    @Test func configDecodesFromJSON() throws {
+        let json = """
+        {
+            "model_type": "kitten_tts",
+            "hidden_dim": 128, "max_conv_dim": 256, "max_dur": 50,
+            "n_layer": 2, "n_mels": 80, "n_token": 178, "style_dim": 128,
+            "text_encoder_kernel_size": 5, "asr_res_dim": 64, "sample_rate": 24000,
+            "plbert": {
+                "num_hidden_layers": 12, "num_attention_heads": 12,
+                "hidden_size": 768, "intermediate_size": 2048,
+                "max_position_embeddings": 512, "embedding_size": 128,
+                "inner_group_num": 1, "num_hidden_groups": 1,
+                "hidden_dropout_prob": 0.0, "attention_probs_dropout_prob": 0.0,
+                "type_vocab_size": 2, "layer_norm_eps": 1e-12
+            },
+            "istftnet": {
+                "resblock_kernel_sizes": [3, 3], "upsample_rates": [10, 6],
+                "upsample_initial_channel": 256,
+                "resblock_dilation_sizes": [[1, 3, 5], [1, 3, 5]],
+                "upsample_kernel_sizes": [20, 12],
+                "gen_istft_n_fft": 20, "gen_istft_hop_size": 5
+            },
+            "voice_aliases": {"Bella": "expr-voice-2-f"},
+            "voices_path": "voices.npz"
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(KittenTTSConfig.self, from: json)
+        #expect(config.modelType == "kitten_tts")
+        #expect(config.sampleRate == 24000)
+        #expect(config.hiddenDim == 128)
+        #expect(config.plbert.numHiddenLayers == 12)
+        #expect(config.istftnet.upsampleRates == [10, 6])
+        #expect(config.voiceAliases?["Bella"] == "expr-voice-2-f")
+    }
+
+    @Test func modelStructureMatchesWeightKeys() throws {
+        let modelDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub/models--mlx-community--kitten-tts-nano-0.8/snapshots/f57e91b190ca3323aa94c7bbdde4565343d79588")
+        let configURL = modelDir.appendingPathComponent("config.json")
+        guard FileManager.default.fileExists(atPath: configURL.path) else {
+            print("⚠️ Skipping: model not downloaded")
+            return
+        }
+
+        let configData = try Data(contentsOf: configURL)
+        let config = try JSONDecoder().decode(KittenTTSConfig.self, from: configData)
+        let model = KittenTTSModel.testInit(config: config)
+
+        let weightsURL = modelDir.appendingPathComponent("model.safetensors")
+        let rawWeights = try MLX.loadArrays(url: weightsURL)
+        let sanitized = model.sanitize(weights: rawWeights)
+
+        let modelKeys = Set(model.parameters().flattened().map(\.0))
+        let weightKeys = Set(sanitized.keys)
+
+        let missingInModel = weightKeys.subtracting(modelKeys)
+        let missingInWeights = modelKeys.subtracting(weightKeys)
+
+        if !missingInModel.isEmpty {
+            print("❌ Weight keys not found in model (\(missingInModel.count)):")
+            for k in missingInModel.sorted().prefix(20) { print("  \(k)") }
+        }
+        if !missingInWeights.isEmpty {
+            print("⚠️ Model keys not in weights (\(missingInWeights.count)):")
+            for k in missingInWeights.sorted().prefix(20) { print("  \(k)") }
+        }
+
+        #expect(missingInModel.count == 0, "Weight keys not matched by model structure")
+    }
+
+    @Test func textCleanerHandlesSpecialCharacters() {
+        let empty = KittenTTSTextCleaner.cleanText("")
+        #expect(empty.isEmpty)
+
+        let punctuation = KittenTTSTextCleaner.cleanText("Hello, world!")
+        #expect(punctuation.count == "Hello, world!".count)
+
+        let unknown = KittenTTSTextCleaner.cleanText("日本語")
+        #expect(unknown.isEmpty)
+    }
+
+    @Test func textCleanerSymbolTableIsComplete() {
+        let symbolTable = KittenTTSTextCleaner.symbolToIndex
+        #expect(symbolTable.count >= 170)
+        #expect(symbolTable["$"] == 0)
+        #expect(symbolTable[";"] == 1)
+        #expect(symbolTable["A"] != nil)
+        #expect(symbolTable["ɑ"] != nil)
+        #expect(symbolTable["ᵻ"] != nil)
+    }
+
+    @Test func configDefaultValues() throws {
+        let minimalJSON = """
+        {
+            "model_type": "kitten_tts",
+            "hidden_dim": 128, "max_conv_dim": 256, "max_dur": 50,
+            "n_layer": 2, "n_mels": 80, "n_token": 178, "style_dim": 128,
+            "text_encoder_kernel_size": 5, "asr_res_dim": 64,
+            "plbert": {
+                "num_hidden_layers": 12, "num_attention_heads": 12,
+                "hidden_size": 768, "intermediate_size": 2048,
+                "max_position_embeddings": 512, "embedding_size": 128,
+                "inner_group_num": 1, "num_hidden_groups": 1,
+                "hidden_dropout_prob": 0.0, "attention_probs_dropout_prob": 0.0,
+                "type_vocab_size": 2, "layer_norm_eps": 1e-12
+            },
+            "istftnet": {
+                "resblock_kernel_sizes": [3, 3], "upsample_rates": [10, 6],
+                "upsample_initial_channel": 256,
+                "resblock_dilation_sizes": [[1, 3, 5], [1, 3, 5]],
+                "upsample_kernel_sizes": [20, 12],
+                "gen_istft_n_fft": 20, "gen_istft_hop_size": 5
+            }
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(KittenTTSConfig.self, from: minimalJSON)
+        #expect(config.sampleRate == 24000)
+        #expect(config.voicesPath == "voices.npz")
+        #expect(config.voiceAliases == nil)
+        #expect(config.speedPriors == nil)
+        #expect(config.decoderOutDim == nil)
+    }
+
+    @Test func voiceAliasResolution() throws {
+        let config = try JSONDecoder().decode(KittenTTSConfig.self, from: """
+        {
+            "model_type": "kitten_tts",
+            "hidden_dim": 128, "max_conv_dim": 256, "max_dur": 50,
+            "n_layer": 2, "n_mels": 80, "n_token": 178, "style_dim": 128,
+            "text_encoder_kernel_size": 5, "asr_res_dim": 64,
+            "voice_aliases": {"Bella": "expr-voice-2-f", "Luna": "expr-voice-3-f"},
+            "plbert": {
+                "num_hidden_layers": 12, "num_attention_heads": 12,
+                "hidden_size": 768, "intermediate_size": 2048,
+                "max_position_embeddings": 512, "embedding_size": 128,
+                "inner_group_num": 1, "num_hidden_groups": 1,
+                "hidden_dropout_prob": 0.0, "attention_probs_dropout_prob": 0.0,
+                "type_vocab_size": 2, "layer_norm_eps": 1e-12
+            },
+            "istftnet": {
+                "resblock_kernel_sizes": [3, 3], "upsample_rates": [10, 6],
+                "upsample_initial_channel": 256,
+                "resblock_dilation_sizes": [[1, 3, 5], [1, 3, 5]],
+                "upsample_kernel_sizes": [20, 12],
+                "gen_istft_n_fft": 20, "gen_istft_hop_size": 5
+            }
+        }
+        """.data(using: .utf8)!)
+        #expect(config.voiceAliases?["Bella"] == "expr-voice-2-f")
+        #expect(config.voiceAliases?["Luna"] == "expr-voice-3-f")
+        #expect(config.voiceAliases?["Hugo"] == nil)
+    }
+
+    @Test func factoryInfersKittenModelType() {
+        let lower = "mlx-community/kitten-tts-nano-0.8-8bit".lowercased()
+        #expect(lower.contains("kitten"))
     }
 }

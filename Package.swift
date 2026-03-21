@@ -104,7 +104,10 @@ let package = Package(
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "Transformers", package: "swift-transformers"),
             ],
-            path: "Sources/MLXAudioTTS"
+            path: "Sources/MLXAudioTTS",
+            resources: [
+                .copy("Resources/KittenTTS"),
+            ]
         ),
 
         // MARK: - MLXAudioSTT
