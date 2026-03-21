@@ -158,6 +158,249 @@ struct MossFormer2SEConfigTests {
     }
 }
 
+struct DeepFilterNetConfigTests {
+    @Test func deepFilterNetConfigDefaults() {
+        let config = DeepFilterNetConfig()
+
+        #expect(config.sampleRate == 48_000)
+        #expect(config.fftSize == 960)
+        #expect(config.hopSize == 480)
+        #expect(config.nbErb == 32)
+        #expect(config.nbDf == 96)
+        #expect(config.dfOrder == 5)
+        #expect(config.dfLookahead == 2)
+        #expect(config.modelType == "deepfilternet3")
+    }
+
+    @Test func deepFilterNetConfigDecoding() throws {
+        let json = """
+        {
+            "sample_rate": 48000,
+            "fft_size": 960,
+            "hop_size": 480,
+            "nb_erb": 32,
+            "nb_df": 96,
+            "df_order": 5,
+            "df_lookahead": 2,
+            "model_version": "DeepFilterNet3"
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let config = try decoder.decode(DeepFilterNetConfig.self, from: Data(json.utf8))
+        #expect(config.modelVersion == "DeepFilterNet3")
+        #expect(config.modelType == "deepfilternet3")
+        #expect(config.freqBins == 481)
+    }
+
+    @Test func deepFilterNetConfigVersionMapping() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+        let v1 = try decoder.decode(
+            DeepFilterNetConfig.self,
+            from: Data(#"{ "model_version": "DeepFilterNet" }"#.utf8)
+        )
+        #expect(v1.modelType == "deepfilternet")
+
+        let v2 = try decoder.decode(
+            DeepFilterNetConfig.self,
+            from: Data(#"{ "model_version": "DeepFilterNet2" }"#.utf8)
+        )
+        #expect(v2.modelType == "deepfilternet2")
+
+        let v3 = try decoder.decode(
+            DeepFilterNetConfig.self,
+            from: Data(#"{ "model_version": "DeepFilterNet3" }"#.utf8)
+        )
+        #expect(v3.modelType == "deepfilternet3")
+    }
+}
+
+struct DeepFilterNetStreamingConfigTests {
+    @Test func deepFilterNetStreamingConfigDefaults() {
+        let config = DeepFilterNetStreamingConfig()
+        #expect(config.padEndFrames == 3)
+        #expect(config.compensateDelay)
+    }
+
+    @Test func deepFilterNetStreamingConfigOverride() {
+        let config = DeepFilterNetStreamingConfig(
+            padEndFrames: 1,
+            compensateDelay: false
+        )
+        #expect(config.padEndFrames == 1)
+        #expect(config.compensateDelay == false)
+    }
+}
+
+struct DeepFilterNetLoadingTests {
+    @Test func deepFilterNetFromLocalRejectsMissingConfig() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("deepfilternet-empty-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        do {
+            _ = try DeepFilterNetModel.fromLocal(tempDir)
+            Issue.record("Expected fromLocal to throw for missing config.json")
+        } catch let error as DeepFilterNetError {
+            switch error {
+            case .missingConfig(let directory):
+                #expect(directory.path == tempDir.path)
+            default:
+                Issue.record("Expected missingConfig, got \(error)")
+            }
+        } catch {
+            Issue.record("Expected DeepFilterNetError, got \(error)")
+        }
+    }
+
+    @Test func deepFilterNetFromLocalRejectsMissingWeights() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("deepfilternet-noweights-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let configURL = tempDir.appendingPathComponent("config.json")
+        try """
+        { "model_version": "DeepFilterNet3" }
+        """.write(to: configURL, atomically: true, encoding: .utf8)
+
+        do {
+            _ = try DeepFilterNetModel.fromLocal(tempDir)
+            Issue.record("Expected fromLocal to throw for missing .safetensors")
+        } catch let error as DeepFilterNetError {
+            switch error {
+            case .missingWeights(let directory):
+                #expect(directory.path == tempDir.path)
+            default:
+                Issue.record("Expected missingWeights, got \(error)")
+            }
+        } catch {
+            Issue.record("Expected DeepFilterNetError, got \(error)")
+        }
+    }
+
+    @Test func stsLoadModelRoutesLocalDeepFilterNet() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("deepfilternet-sts-local-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let configURL = tempDir.appendingPathComponent("config.json")
+        try """
+        { "model_type": "deepfilternet3" }
+        """.write(to: configURL, atomically: true, encoding: .utf8)
+
+        do {
+            _ = try await STS.loadModel(modelRepo: tempDir.path)
+            Issue.record("Expected STS.loadModel to fail due to missing weights")
+        } catch let error as DeepFilterNetError {
+            switch error {
+            case .missingWeights(let directory):
+                #expect(directory.path == tempDir.path)
+            default:
+                Issue.record("Expected missingWeights, got \(error)")
+            }
+        } catch {
+            Issue.record("Expected DeepFilterNetError, got \(error)")
+        }
+    }
+
+    @Test func deepFilterNetDenoiseMatchesGoldenSpectrogram() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let modelDir = env["MLXAUDIO_DFN_MODEL_DIR"], !modelDir.isEmpty else {
+            print("Skipping DeepFilterNet golden test. Set MLXAUDIO_DFN_MODEL_DIR to enable.")
+            return
+        }
+
+        let noisyURL = Bundle.module.url(
+            forResource: "noisy_audio",
+            withExtension: "wav",
+            subdirectory: "media"
+        )!
+        let targetURL = Bundle.module.url(
+            forResource: "noisy_audio_target",
+            withExtension: "wav",
+            subdirectory: "media"
+        )!
+
+        let (noisySR, noisyAudio) = try loadAudioArray(from: noisyURL, sampleRate: 48_000)
+        let (targetSR, targetAudio) = try loadAudioArray(from: targetURL, sampleRate: 48_000)
+        #expect(noisySR == 48_000)
+        #expect(targetSR == 48_000)
+
+        let model = try DeepFilterNetModel.fromLocal(URL(fileURLWithPath: modelDir))
+        let enhanced = try model.enhance(noisyAudio)
+
+        let minLen = min(enhanced.shape[0], targetAudio.shape[0])
+        let enhancedTrim = enhanced[0..<minLen]
+        let targetTrim = targetAudio[0..<minLen]
+
+        let corr = Self.waveformCorrelation(lhs: enhancedTrim, rhs: targetTrim)
+        let specMae = Self.logSpectrogramMAE(lhs: enhancedTrim, rhs: targetTrim, fftLen: 960, hopLen: 480)
+
+        #expect(corr > 0.96, "Expected waveform correlation > 0.96, got \(corr)")
+        #expect(specMae < 4.0, "Expected log-spectrogram MAE < 4.0 dB, got \(specMae)")
+    }
+
+    private static func waveformCorrelation(lhs: MLXArray, rhs: MLXArray) -> Float {
+        let x = lhs.asArray(Float.self)
+        let y = rhs.asArray(Float.self)
+        let n = min(x.count, y.count)
+        if n == 0 { return 0 }
+
+        let xn = Array(x.prefix(n))
+        let yn = Array(y.prefix(n))
+        let meanX = xn.reduce(0, +) / Float(n)
+        let meanY = yn.reduce(0, +) / Float(n)
+
+        var num: Float = 0
+        var denX: Float = 0
+        var denY: Float = 0
+        for i in 0..<n {
+            let dx = xn[i] - meanX
+            let dy = yn[i] - meanY
+            num += dx * dy
+            denX += dx * dx
+            denY += dy * dy
+        }
+        let den = sqrt(max(denX * denY, 1e-20))
+        return num / den
+    }
+
+    private static func logSpectrogramMAE(lhs: MLXArray, rhs: MLXArray, fftLen: Int, hopLen: Int) -> Float {
+        let window = MossFormer2DSP.hammingWindow(size: fftLen, periodic: false)
+        let lhsSpec = MossFormer2DSP.stft(
+            audio: lhs,
+            fftLen: fftLen,
+            hopLength: hopLen,
+            winLen: fftLen,
+            window: window,
+            center: false
+        )
+        let rhsSpec = MossFormer2DSP.stft(
+            audio: rhs,
+            fftLen: fftLen,
+            hopLength: hopLen,
+            winLen: fftLen,
+            window: window,
+            center: false
+        )
+
+        let eps = MLXArray(Float(1e-10))
+        let lhsPow = lhsSpec.realPart().square() + lhsSpec.imaginaryPart().square()
+        let rhsPow = rhsSpec.realPart().square() + rhsSpec.imaginaryPart().square()
+        let lhsDb = MLXArray(Float(10.0)) * (lhsPow + eps).log10()
+        let rhsDb = MLXArray(Float(10.0)) * (rhsPow + eps).log10()
+
+        let delta = MLX.abs(lhsDb - rhsDb).asArray(Float.self)
+        guard !delta.isEmpty else { return .infinity }
+        return delta.reduce(0, +) / Float(delta.count)
+    }
+}
+
 struct MossFormer2SELayerTests {
 
     @Test func scaleNormShape() {
