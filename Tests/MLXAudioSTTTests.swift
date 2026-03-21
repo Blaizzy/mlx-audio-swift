@@ -1094,6 +1094,51 @@ struct Qwen3ASRModuleSetupTests {
         #expect(model.config.textConfig.tieWordEmbeddings == false)
     }
 
+    @Test func qwen3ASRDefaultGenerationParametersAllowAutoLanguage() {
+        let model = Qwen3ASRModel(Qwen3ASRConfig())
+
+        #expect(model.defaultGenerationParameters.language == nil)
+    }
+
+    @Test func qwen3ASRNormalizesLanguageAliases() {
+        let model = Qwen3ASRModel(
+            Qwen3ASRConfig(supportLanguages: ["Chinese", "English", "Japanese"])
+        )
+
+        #expect(model.normalizeLanguageName("en") == "English")
+        #expect(model.normalizeLanguageName(" chinese ") == "Chinese")
+        #expect(model.normalizeLanguageName("ja") == "Japanese")
+    }
+
+    @Test func qwen3ASRParsesDetectedChunkLanguage() {
+        let model = Qwen3ASRModel(
+            Qwen3ASRConfig(supportLanguages: ["Chinese", "English", "Japanese"])
+        )
+
+        let parsed = model.parseGeneratedChunk(
+            "language chinese<asr_text>你好世界",
+            forcedLanguage: nil
+        )
+
+        #expect(parsed.language == "Chinese")
+        #expect(parsed.text == "你好世界")
+    }
+
+    @Test func qwen3ASRChunkParsingFallsBackToEnglishForBareText() {
+        let model = Qwen3ASRModel(Qwen3ASRConfig())
+
+        let parsed = model.parseGeneratedChunk("hello world", forcedLanguage: nil)
+
+        #expect(parsed.language == "English")
+        #expect(parsed.text == "hello world")
+    }
+
+    @Test func qwen3ASRMergeLanguagesDeduplicatesInOrder() {
+        let merged = Qwen3ASRModel.mergeLanguages(["Chinese", "", "English", "Chinese", nil])
+
+        #expect(merged == "Chinese,English")
+    }
+
     @Test func qwen3ForcedAlignerModelConstruction() {
         let config = Qwen3ASRConfig(
             audioConfig: Qwen3AudioEncoderConfig(

@@ -334,7 +334,8 @@ public final class SenseVoiceModel: Module, STTGenerationModel {
         return feats
     }
 
-    private func normalizedLanguage(_ language: String) -> String {
+    private func normalizedLanguage(_ language: String?) -> String {
+        guard let language else { return "auto" }
         switch language.lowercased() {
         case "zh", "chinese", "mandarin":
             return "zh"

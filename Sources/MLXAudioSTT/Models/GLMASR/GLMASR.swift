@@ -30,7 +30,14 @@ private enum PromptTemplate {
 
 extension GLMASRModel: STTGenerationModel {
     public var defaultGenerationParameters: STTGenerateParameters {
-        STTGenerateParameters(maxTokens: 128, temperature: 0.0, topP: 0.95, topK: 0, verbose: false)
+        STTGenerateParameters(
+            maxTokens: 128,
+            temperature: 0.0,
+            topP: 0.95,
+            topK: 0,
+            verbose: false,
+            language: "English"
+        )
     }
 
     public func generate(audio: MLXArray, generationParameters: STTGenerateParameters) -> STTOutput {
