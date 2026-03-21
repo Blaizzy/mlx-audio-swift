@@ -1842,7 +1842,22 @@ struct ParakeetSTTTests {
         ])
     }
 
-    @Test func fromDirectorySmokeTestWithFixtureConfigAndWeights() async throws {
+    @Test func tokenizerFiltersSpecialTokens() {
+        let vocab = ["<unk>", "<|nospeech|>", "<pad>", "<|startoftranscript|>",
+                     "<|pnc|>", "<|ru|>", "▁", "h", "e", "l", "o"]
+        let tokens = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10]
+        let text = ParakeetTokenizer.decode(tokens: tokens, vocabulary: vocab)
+        #expect(text == " hello")
+
+        #expect(ParakeetTokenizer.isSpecialToken(0, vocabulary: vocab) == true)   // <unk>
+        #expect(ParakeetTokenizer.isSpecialToken(2, vocabulary: vocab) == true)   // <pad>
+        #expect(ParakeetTokenizer.isSpecialToken(3, vocabulary: vocab) == true)   // <|startoftranscript|>
+        #expect(ParakeetTokenizer.isSpecialToken(5, vocabulary: vocab) == true)   // <|ru|>
+        #expect(ParakeetTokenizer.isSpecialToken(7, vocabulary: vocab) == false)  // h
+        #expect(ParakeetTokenizer.isSpecialToken(99, vocabulary: vocab) == false) // out of range
+    }
+
+    @Test func modelIsInEvalModeAfterLoading() throws {
         let fixtureDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("parakeet-fixture-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
@@ -1900,12 +1915,50 @@ struct ParakeetSTTTests {
         try MLX.save(arrays: weights, url: fixtureDir.appendingPathComponent("model.safetensors"))
 
         let model = try ParakeetModel.fromDirectory(fixtureDir)
+        #expect(model.training == false)
+
         let audio = MLXArray(Array(repeating: Float(0), count: 3200))
         let output = model.generate(audio: audio)
 
         #expect(model.variant == .ctc)
         #expect(model.vocabulary.count == 4)
         #expect(output.text.count >= 0)
+    }
+
+    @Test func melPreprocessingNumericInvariants() {
+        let config = ParakeetPreprocessConfig(
+            sampleRate: 16000, normalize: "per_feature",
+            windowSize: 0.025, windowStride: 0.01, window: "hann",
+            features: 128, nFft: 512, dither: 0
+        )
+
+        let audio = MLXArray(Array(repeating: Float(0.1), count: 16000))
+        let mel = ParakeetAudio.logMelSpectrogram(audio, config: config)
+
+        #expect(mel.ndim == 3)
+        #expect(mel.shape[0] == 1)
+        #expect(mel.shape[2] == 128)
+
+        let mean = MLX.mean(mel).item(Float.self)
+        let std = MLX.std(mel).item(Float.self)
+        #expect(abs(mean) < 0.01, "Per-feature normalized mel should have near-zero mean, got \(mean)")
+        #expect(abs(std - 1.0) < 0.05, "Per-feature normalized mel should have near-unit std, got \(std)")
+        #expect(mel.min().item(Float.self).isFinite)
+        #expect(mel.max().item(Float.self).isFinite)
+    }
+
+    @Test func melPreprocessingShortAudioDoesNotCrash() {
+        let config = ParakeetPreprocessConfig(
+            sampleRate: 16000, normalize: "per_feature",
+            windowSize: 0.025, windowStride: 0.01, window: "hann",
+            features: 80, nFft: 512, dither: 0
+        )
+
+        let shortAudio = MLXArray([Float(0.1), 0.2, 0.3])
+        let mel = ParakeetAudio.logMelSpectrogram(shortAudio, config: config)
+
+        #expect(mel.ndim == 3)
+        #expect(mel.reshaped(-1)[0].item(Float.self).isFinite)
     }
 }
 
