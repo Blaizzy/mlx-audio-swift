@@ -29,10 +29,13 @@ let package = Package(
         // SwiftUI components
         .library(name: "MLXAudioUI", targets: ["MLXAudioUI"]),
 
+        // Shared NN building blocks (Conv, LSTM, normalization, residual blocks)
+        .library(name: "MLXAudioModules", targets: ["MLXAudioModules"]),
+
         // Legacy combined library (for backwards compatibility)
         .library(
             name: "MLXAudio",
-            targets: ["MLXAudioCore", "MLXAudioCodecs", "MLXAudioTTS", "MLXAudioSTT", "MLXAudioVAD", "MLXAudioLID", "MLXAudioSTS", "MLXAudioUI"]
+            targets: ["MLXAudioCore", "MLXAudioCodecs", "MLXAudioTTS", "MLXAudioSTT", "MLXAudioVAD", "MLXAudioLID", "MLXAudioSTS", "MLXAudioUI", "MLXAudioModules"]
         ),
         .executable(
             name: "mlx-audio-swift-tts",
@@ -177,6 +180,16 @@ let package = Package(
                 "MLXAudioSTS",
             ],
             path: "Sources/MLXAudioUI"
+        ),
+
+        // MARK: - MLXAudioModules
+        .target(
+            name: "MLXAudioModules",
+            dependencies: [
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+            ],
+            path: "Sources/MLXAudioModules"
         ),
         
         .executableTarget(
