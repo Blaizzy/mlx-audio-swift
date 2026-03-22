@@ -21,7 +21,7 @@ public struct KittenTTSISTFTNetConfig: Codable {
     }
 }
 
-public struct KittenTTSPLBertConfig: Codable {
+public struct KittenTTSPLBertConfig: Decodable {
     public let numHiddenLayers: Int
     public let numAttentionHeads: Int
     public let hiddenSize: Int
@@ -48,6 +48,24 @@ public struct KittenTTSPLBertConfig: Codable {
         case attentionProbsDropoutProb = "attention_probs_dropout_prob"
         case typeVocabSize = "type_vocab_size"
         case layerNormEps = "layer_norm_eps"
+        case dropout
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        numHiddenLayers = try container.decode(Int.self, forKey: .numHiddenLayers)
+        numAttentionHeads = try container.decode(Int.self, forKey: .numAttentionHeads)
+        hiddenSize = try container.decode(Int.self, forKey: .hiddenSize)
+        intermediateSize = try container.decode(Int.self, forKey: .intermediateSize)
+        maxPositionEmbeddings = try container.decode(Int.self, forKey: .maxPositionEmbeddings)
+        embeddingSize = try container.decodeIfPresent(Int.self, forKey: .embeddingSize) ?? 128
+        innerGroupNum = try container.decodeIfPresent(Int.self, forKey: .innerGroupNum) ?? 1
+        numHiddenGroups = try container.decodeIfPresent(Int.self, forKey: .numHiddenGroups) ?? 1
+        hiddenDropoutProb = try container.decodeIfPresent(Float.self, forKey: .hiddenDropoutProb)
+            ?? (try container.decodeIfPresent(Float.self, forKey: .dropout) ?? 0.1)
+        attentionProbsDropoutProb = try container.decodeIfPresent(Float.self, forKey: .attentionProbsDropoutProb) ?? 0.1
+        typeVocabSize = try container.decodeIfPresent(Int.self, forKey: .typeVocabSize) ?? 2
+        layerNormEps = try container.decodeIfPresent(Float.self, forKey: .layerNormEps) ?? 1e-12
     }
 }
 
