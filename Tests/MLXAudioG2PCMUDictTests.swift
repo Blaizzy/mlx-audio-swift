@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import MLXAudioG2P
 
@@ -107,32 +108,44 @@ struct ARPAbetMapperTests {
 
 struct CMUDictLoaderTests {
 
-    @Test func loadsFromBundle() throws {
-        let lexicon = try CMUDictLoader.loadFromBundle()
+    private static var cmuDictDir: URL? {
+        ProcessInfo.processInfo.environment["MLXAUDIO_CMUDICT_DIR"].map { URL(fileURLWithPath: $0) }
+    }
+
+    @Test func loadsFromDirectory() throws {
+        guard let dir = Self.cmuDictDir else {
+            print("Skipping: set MLXAUDIO_CMUDICT_DIR to cmudict directory")
+            return
+        }
+        let lexicon = try CMUDictLoader.load(from: dir)
         #expect(lexicon.lookup("hello") != nil)
         #expect(lexicon.lookup("world") != nil)
         #expect(lexicon.lookup("the") != nil)
     }
 
     @Test func producesCorrectIPA() throws {
-        let lexicon = try CMUDictLoader.loadFromBundle()
+        guard let dir = Self.cmuDictDir else { return }
+        let lexicon = try CMUDictLoader.load(from: dir)
         let hello = try #require(lexicon.lookup("hello"))
         #expect(hello.phonemes == ["h", "ə", "l", "oʊ"])
     }
 
     @Test func handlesUppercaseQuery() throws {
-        let lexicon = try CMUDictLoader.loadFromBundle()
+        guard let dir = Self.cmuDictDir else { return }
+        let lexicon = try CMUDictLoader.load(from: dir)
         #expect(lexicon.lookup("HELLO") != nil)
         #expect(lexicon.lookup("Hello") != nil)
     }
 
     @Test func returnsNilForNonsense() throws {
-        let lexicon = try CMUDictLoader.loadFromBundle()
+        guard let dir = Self.cmuDictDir else { return }
+        let lexicon = try CMUDictLoader.load(from: dir)
         #expect(lexicon.lookup("xyzzyplugh") == nil)
     }
 
     @Test func hasReasonableCount() throws {
-        let lexicon = try CMUDictLoader.loadFromBundle()
+        guard let dir = Self.cmuDictDir else { return }
+        let lexicon = try CMUDictLoader.load(from: dir)
         #expect(lexicon.lookup("phone") != nil)
         #expect(lexicon.lookup("knight") != nil)
         #expect(lexicon.lookup("psychology") != nil)
@@ -140,7 +153,8 @@ struct CMUDictLoaderTests {
     }
 
     @Test func fixesDigraphsCorrectly() throws {
-        let lexicon = try CMUDictLoader.loadFromBundle()
+        guard let dir = Self.cmuDictDir else { return }
+        let lexicon = try CMUDictLoader.load(from: dir)
 
         let phone = try #require(lexicon.lookup("phone"))
         #expect(phone.phonemes.contains("f"))
@@ -153,15 +167,21 @@ struct CMUDictLoaderTests {
 
 struct CMUDictIntegrationTests {
 
+    private static var cmuDictDir: URL? {
+        ProcessInfo.processInfo.environment["MLXAUDIO_CMUDICT_DIR"].map { URL(fileURLWithPath: $0) }
+    }
+
     @Test func englishLanguagePackWithCMUDict() throws {
-        let pack = try EnglishLanguagePack.withCMUDict()
+        guard let dir = Self.cmuDictDir else { return }
+        let pack = try EnglishLanguagePack.withCMUDict(directory: dir)
         let entry = pack.lexicon.lookup("hello")
         #expect(entry != nil)
         #expect(entry?.phonemes == ["h", "ə", "l", "oʊ"])
     }
 
     @Test func pipelineEnglishFactory() throws {
-        let pipeline = try G2PPipeline.english()
+        guard let dir = Self.cmuDictDir else { return }
+        let pipeline = try G2PPipeline.english(cmuDictDirectory: dir)
         let output = try pipeline.convert("Hello world")
         let rendered = output.phonemes.render(separator: " ")
         #expect(rendered.contains("oʊ"))
@@ -169,7 +189,8 @@ struct CMUDictIntegrationTests {
     }
 
     @Test func pipelineHandlesDigraphs() throws {
-        let pipeline = try G2PPipeline.english()
+        guard let dir = Self.cmuDictDir else { return }
+        let pipeline = try G2PPipeline.english(cmuDictDirectory: dir)
 
         let phone = try pipeline.convert("phone")
         #expect(phone.phonemes.render().contains("f"))
@@ -183,13 +204,15 @@ struct CMUDictIntegrationTests {
     }
 
     @Test func pipelineFallsBackForUnknownWords() throws {
-        let pipeline = try G2PPipeline.english()
+        guard let dir = Self.cmuDictDir else { return }
+        let pipeline = try G2PPipeline.english(cmuDictDirectory: dir)
         let output = try pipeline.convert("xyzzyplugh")
         #expect(!output.phonemes.isEmpty)
     }
 
     @Test func pipelineEnglishWithAlignmentFactory() throws {
-        let pipeline = try G2PPipeline.englishFull()
+        guard let dir = Self.cmuDictDir else { return }
+        let pipeline = try G2PPipeline.englishFull(cmuDictDirectory: dir)
         let output = try pipeline.convert("Hello world")
         #expect(output.alignment != nil)
         #expect(output.phonemes.render().contains("oʊ"))

@@ -199,10 +199,7 @@ let package = Package(
         .target(
             name: "MLXAudioG2P",
             dependencies: [],
-            path: "Sources/MLXAudioG2P",
-            resources: [
-                .copy("Resources/CMUdict")
-            ]
+            path: "Sources/MLXAudioG2P"
         ),
         
         .executableTarget(

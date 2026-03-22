@@ -79,8 +79,9 @@ public struct G2PPipeline: Sendable {
     }
 
     /// Full English pipeline with CMUdict (~135K words).
-    public static func english() throws -> G2PPipeline {
-        let pack = try EnglishLanguagePack.withCMUDict()
+    /// - Parameter cmuDictDirectory: Directory containing `cmudict.dict`.
+    public static func english(cmuDictDirectory: URL) throws -> G2PPipeline {
+        let pack = try EnglishLanguagePack.withCMUDict(directory: cmuDictDirectory)
         return G2PPipeline(
             normalizer: pack.normalizer,
             tokenizer: pack.tokenizer,
@@ -90,8 +91,9 @@ public struct G2PPipeline: Sendable {
     }
 
     /// Full English pipeline with CMUdict + alignment.
-    public static func englishFull() throws -> G2PPipeline {
-        let pack = try EnglishLanguagePack.withCMUDict()
+    /// - Parameter cmuDictDirectory: Directory containing `cmudict.dict`.
+    public static func englishFull(cmuDictDirectory: URL) throws -> G2PPipeline {
+        let pack = try EnglishLanguagePack.withCMUDict(directory: cmuDictDirectory)
         return G2PPipeline(
             normalizer: pack.normalizer,
             tokenizer: pack.tokenizer,

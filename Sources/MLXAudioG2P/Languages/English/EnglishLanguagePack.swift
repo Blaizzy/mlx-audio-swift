@@ -1,3 +1,5 @@
+import Foundation
+
 public struct EnglishLanguagePack: Sendable {
     public let normalizer: TextNormalizer
     public let tokenizer: TextTokenizer
@@ -23,9 +25,10 @@ public struct EnglishLanguagePack: Sendable {
         fallback: FallbackPhonemizer()
     )
 
-    /// Full CMUdict lexicon (~135K words). Requires bundle resources.
-    public static func withCMUDict() throws -> EnglishLanguagePack {
-        let lexicon = try CMUDictLoader.loadFromBundle()
+    /// Full CMUdict lexicon (~135K words).
+    /// - Parameter directory: Directory containing `cmudict.dict`.
+    public static func withCMUDict(directory: URL) throws -> EnglishLanguagePack {
+        let lexicon = try CMUDictLoader.load(from: directory)
         return EnglishLanguagePack(
             normalizer: .englishDefault,
             tokenizer: .englishDefault,

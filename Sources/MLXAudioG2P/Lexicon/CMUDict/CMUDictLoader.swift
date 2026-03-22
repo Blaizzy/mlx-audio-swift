@@ -2,15 +2,13 @@ import Foundation
 
 public enum CMUDictLoader {
 
-    public static func loadFromBundle() throws -> InMemoryLexicon {
-        guard let url = Bundle.module.url(
-            forResource: "cmudict",
-            withExtension: "dict",
-            subdirectory: "CMUdict"
-        ) else {
+    public static func load(from directory: URL) throws -> InMemoryLexicon {
+        let url = directory.appendingPathComponent("cmudict.dict")
+
+        guard FileManager.default.fileExists(atPath: url.path) else {
             throw G2PError.resourceLoadFailed(
                 name: "cmudict.dict",
-                reason: "File not found in bundle"
+                reason: "File not found at \(url.path)"
             )
         }
 
