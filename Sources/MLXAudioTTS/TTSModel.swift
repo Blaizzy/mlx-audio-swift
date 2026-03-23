@@ -83,6 +83,10 @@ public enum TTS {
         return trimmed.lowercased()
     }
 
+    static func resolveModelType(modelRepo: String, modelType: String? = nil) -> String? {
+        normalizedModelType(modelType) ?? inferModelType(from: modelRepo)
+    }
+
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
         if lower.contains("qwen3_tts") {

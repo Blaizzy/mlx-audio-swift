@@ -17,17 +17,8 @@
 
 import Testing
 import MLX
-import Metal
 import MLXLMCommon
 import Foundation
-
-private let metalAvailable: Bool = {
-    #if canImport(Metal)
-    return MTLCreateSystemDefaultDevice() != nil
-    #else
-    return false
-    #endif
-}()
 
 @testable import MLXAudioCore
 @testable import MLXAudioTTS
@@ -765,11 +756,11 @@ struct KittenTTSTests {
         #expect(config.voiceAliases?["Hugo"] == nil)
     }
 
-    @Test func factoryInfersKittenModelType() {
-        let repoNames = ["mlx-community/kitten-tts-nano-0.8-8bit", "mlx-community/kitten-tts-mini-0.8"]
-        for name in repoNames {
-            #expect(name.lowercased().contains("kitten"))
-        }
+    @Test func factoryInfersKittenModelType() throws {
+        let resolved = TTS.resolveModelType(modelRepo: "mlx-community/kitten-tts-nano-0.8-8bit")
+        #expect(resolved == "kitten_tts")
+        let resolved2 = TTS.resolveModelType(modelRepo: "mlx-community/kitten-tts-mini-0.8")
+        #expect(resolved2 == "kitten_tts")
     }
 }
 

@@ -99,6 +99,7 @@ public final class KittenTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         language: String?,
         generationParameters: GenerateParameters
     ) async throws -> MLXArray {
+        _ = refAudio; _ = refText; _ = generationParameters
         let (inputIds, refS, speed) = try prepareInputs(text: text, voice: voice, language: language)
         let (audio, _) = self.callAsFunction(inputIds: inputIds, refS: refS, speed: speed)
         return audio.reshaped([-1])
@@ -112,7 +113,8 @@ public final class KittenTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         language: String?,
         generationParameters: GenerateParameters
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
-        AsyncThrowingStream { continuation in
+        _ = refAudio; _ = refText; _ = generationParameters
+        return AsyncThrowingStream { continuation in
             do {
                 let (inputIds, refS, speed) = try self.prepareInputs(text: text, voice: voice, language: language)
                 let (audio, _) = self.callAsFunction(inputIds: inputIds, refS: refS, speed: speed)
