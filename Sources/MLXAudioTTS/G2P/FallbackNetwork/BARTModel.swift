@@ -59,7 +59,6 @@ nonisolated final class BARTModel: Module {
     // Language model head
     self.lmHead = Linear(weight: weights["model.shared.weight"]!, bias: nil)
     
-    // This is not used
     self.logitBias = weights["final_logits_bias"]!
 
     super.init()
@@ -108,11 +107,9 @@ nonisolated final class BARTModel: Module {
     return lmHead(hidden) + logitBias
   }
     
-  func generate(inputIds: MLXArray, maxLength: Int = 50, temperature: Float = 1.0) -> MLXArray {
-    // Encode input
+  func generate(inputIds: MLXArray, maxLength: Int = 50) -> MLXArray {
     let encoderOutput = encode(inputIds)
     
-    // Start with BOS token
     var decoderInput = MLXArray([config.bosTokenId]).reshaped([1, 1])
     var generatedTokens: [Int32] = []
         
@@ -122,15 +119,9 @@ nonisolated final class BARTModel: Module {
         break
       }
       
-      // Decode next token
       let logits = decode(decoderInput, encoderOutput: encoderOutput)
       let nextTokenLogits = logits[0, logits.shape[1] - 1]
-            
-      // Apply temperature
-      let scaledLogits = nextTokenLogits / temperature
-      
-      // Sample next token, take the max probability value
-      let nextToken = scaledLogits.argMax().item(Int32.self)
+      let nextToken = nextTokenLogits.argMax().item(Int32.self)
       
       // Stop if EOS token
       if nextToken == config.eosTokenId {
