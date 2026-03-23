@@ -23,6 +23,7 @@ public enum TTSModelError: Error, LocalizedError, CustomStringConvertible {
 public enum TTS {
     public static func loadModel(
         modelRepo: String,
+        textProcessor: TextProcessor? = nil,
         hfToken: String? = nil,
         cache: HubCache = .default
     ) async throws -> SpeechGenerationModel {
@@ -35,12 +36,13 @@ public enum TTS {
             hfToken: hfToken,
             cache: cache
         )
-        return try await loadModel(modelRepo: modelRepo, modelType: modelType, cache: cache)
+        return try await loadModel(modelRepo: modelRepo, modelType: modelType, textProcessor: textProcessor, cache: cache)
     }
 
     public static func loadModel(
         modelRepo: String,
         modelType: String?,
+        textProcessor: TextProcessor? = nil,
         cache: HubCache = .default
     ) async throws -> SpeechGenerationModel {
         let resolvedType = normalizedModelType(modelType) ?? inferModelType(from: modelRepo)
@@ -67,6 +69,8 @@ public enum TTS {
             return try await PocketTTSModel.fromPretrained(modelRepo, cache: cache)
         case "chatterbox", "chatterbox_tts", "chatterbox_turbo":
             return try await ChatterboxModel.fromPretrained(modelRepo)
+        case "kitten_tts", "kitten":
+            return try await KittenTTSModel.fromPretrained(modelRepo, textProcessor: textProcessor ?? MisakiTextProcessor(), cache: cache)
         default:
             throw TTSModelError.unsupportedModelType(modelType ?? resolvedType)
         }
@@ -112,6 +116,9 @@ public enum TTS {
         }
         if lower.contains("chatterbox") {
             return "chatterbox"
+        }
+        if lower.contains("kitten") {
+            return "kitten_tts"
         }
         return nil
     }

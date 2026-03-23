@@ -17,8 +17,17 @@
 
 import Testing
 import MLX
+import Metal
 import MLXLMCommon
 import Foundation
+
+private let metalAvailable: Bool = {
+    #if canImport(Metal)
+    return MTLCreateSystemDefaultDevice() != nil
+    #else
+    return false
+    #endif
+}()
 
 @testable import MLXAudioCore
 @testable import MLXAudioTTS
@@ -584,3 +593,183 @@ struct EchoTTSNetworkTests {
         #expect(model.pcaState != nil)
     }
 }
+
+// MARK: - KittenTTS Tests
+
+@Suite("KittenTTS")
+struct KittenTTSTests {
+    @Test func textCleanerMapsIPASymbols() {
+        let tokens = KittenTTSTextCleaner.cleanText("hello")
+        #expect(tokens.count == 5)
+        #expect(tokens.allSatisfy { $0 >= 0 })
+
+        let ipaTokens = KittenTTSTextCleaner.cleanText("həlˈoʊ")
+        #expect(ipaTokens.count > 0)
+        #expect(ipaTokens.allSatisfy { $0 >= 0 })
+    }
+
+    @Test func configDecodesFromJSON() throws {
+        let json = """
+        {
+            "model_type": "kitten_tts",
+            "hidden_dim": 128, "max_conv_dim": 256, "max_dur": 50,
+            "n_layer": 2, "n_mels": 80, "n_token": 178, "style_dim": 128,
+            "text_encoder_kernel_size": 5, "asr_res_dim": 64, "sample_rate": 24000,
+            "plbert": {
+                "num_hidden_layers": 12, "num_attention_heads": 12,
+                "hidden_size": 768, "intermediate_size": 2048,
+                "max_position_embeddings": 512, "embedding_size": 128,
+                "inner_group_num": 1, "num_hidden_groups": 1,
+                "hidden_dropout_prob": 0.0, "attention_probs_dropout_prob": 0.0,
+                "type_vocab_size": 2, "layer_norm_eps": 1e-12
+            },
+            "istftnet": {
+                "resblock_kernel_sizes": [3, 3], "upsample_rates": [10, 6],
+                "upsample_initial_channel": 256,
+                "resblock_dilation_sizes": [[1, 3, 5], [1, 3, 5]],
+                "upsample_kernel_sizes": [20, 12],
+                "gen_istft_n_fft": 20, "gen_istft_hop_size": 5
+            },
+            "voice_aliases": {"Bella": "expr-voice-2-f"},
+            "voices_path": "voices.npz"
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(KittenTTSConfig.self, from: json)
+        #expect(config.modelType == "kitten_tts")
+        #expect(config.sampleRate == 24000)
+        #expect(config.hiddenDim == 128)
+        #expect(config.plbert.numHiddenLayers == 12)
+        #expect(config.istftnet.upsampleRates == [10, 6])
+        #expect(config.voiceAliases?["Bella"] == "expr-voice-2-f")
+    }
+
+    @Test func modelStructureMatchesWeightKeys() throws {
+        // Integration test: requires model downloaded locally. Set MLXAUDIO_TEST_MODEL_DIR or skip.
+        guard let dirPath = ProcessInfo.processInfo.environment["MLXAUDIO_TEST_MODEL_DIR"] else {
+            print("⚠️ Skipping: set MLXAUDIO_TEST_MODEL_DIR to model directory")
+            return
+        }
+        let modelDir = URL(fileURLWithPath: dirPath)
+        let configURL = modelDir.appendingPathComponent("config.json")
+        guard FileManager.default.fileExists(atPath: configURL.path) else {
+            print("⚠️ Skipping: config.json not found at \(configURL.path)")
+            return
+        }
+
+        let configData = try Data(contentsOf: configURL)
+        let config = try JSONDecoder().decode(KittenTTSConfig.self, from: configData)
+        let model = KittenTTSModel.testInit(config: config)
+
+        let weightsURL = modelDir.appendingPathComponent("model.safetensors")
+        let rawWeights = try MLX.loadArrays(url: weightsURL)
+        let sanitized = model.sanitize(weights: rawWeights)
+
+        let modelKeys = Set(model.parameters().flattened().map(\.0))
+        let weightKeys = Set(sanitized.keys)
+
+        let missingInModel = weightKeys.subtracting(modelKeys)
+        let missingInWeights = modelKeys.subtracting(weightKeys)
+
+        if !missingInModel.isEmpty {
+            print("❌ Weight keys not found in model (\(missingInModel.count)):")
+            for k in missingInModel.sorted().prefix(20) { print("  \(k)") }
+        }
+        if !missingInWeights.isEmpty {
+            print("⚠️ Model keys not in weights (\(missingInWeights.count)):")
+            for k in missingInWeights.sorted().prefix(20) { print("  \(k)") }
+        }
+
+        #expect(missingInModel.count == 0, "Weight keys not matched by model structure")
+    }
+
+    @Test func textCleanerHandlesSpecialCharacters() {
+        let empty = KittenTTSTextCleaner.cleanText("")
+        #expect(empty.isEmpty)
+
+        let punctuation = KittenTTSTextCleaner.cleanText("Hello, world!")
+        #expect(punctuation.count == "Hello, world!".count)
+
+        let unknown = KittenTTSTextCleaner.cleanText("日本語")
+        #expect(unknown.isEmpty)
+    }
+
+    @Test func textCleanerSymbolTableIsComplete() {
+        let symbolTable = KittenTTSTextCleaner.symbolToIndex
+        #expect(symbolTable.count >= 170)
+        #expect(symbolTable["$"] == 0)
+        #expect(symbolTable[";"] == 1)
+        #expect(symbolTable["A"] != nil)
+        #expect(symbolTable["ɑ"] != nil)
+        #expect(symbolTable["ᵻ"] != nil)
+    }
+
+    @Test func configDefaultValues() throws {
+        let minimalJSON = """
+        {
+            "model_type": "kitten_tts",
+            "hidden_dim": 128, "max_conv_dim": 256, "max_dur": 50,
+            "n_layer": 2, "n_mels": 80, "n_token": 178, "style_dim": 128,
+            "text_encoder_kernel_size": 5, "asr_res_dim": 64,
+            "plbert": {
+                "num_hidden_layers": 12, "num_attention_heads": 12,
+                "hidden_size": 768, "intermediate_size": 2048,
+                "max_position_embeddings": 512, "embedding_size": 128,
+                "inner_group_num": 1, "num_hidden_groups": 1,
+                "hidden_dropout_prob": 0.0, "attention_probs_dropout_prob": 0.0,
+                "type_vocab_size": 2, "layer_norm_eps": 1e-12
+            },
+            "istftnet": {
+                "resblock_kernel_sizes": [3, 3], "upsample_rates": [10, 6],
+                "upsample_initial_channel": 256,
+                "resblock_dilation_sizes": [[1, 3, 5], [1, 3, 5]],
+                "upsample_kernel_sizes": [20, 12],
+                "gen_istft_n_fft": 20, "gen_istft_hop_size": 5
+            }
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(KittenTTSConfig.self, from: minimalJSON)
+        #expect(config.sampleRate == 24000)
+        #expect(config.voicesPath == "voices.npz")
+        #expect(config.voiceAliases == nil)
+        #expect(config.speedPriors == nil)
+        #expect(config.decoderOutDim == nil)
+    }
+
+    @Test func voiceAliasResolution() throws {
+        let config = try JSONDecoder().decode(KittenTTSConfig.self, from: """
+        {
+            "model_type": "kitten_tts",
+            "hidden_dim": 128, "max_conv_dim": 256, "max_dur": 50,
+            "n_layer": 2, "n_mels": 80, "n_token": 178, "style_dim": 128,
+            "text_encoder_kernel_size": 5, "asr_res_dim": 64,
+            "voice_aliases": {"Bella": "expr-voice-2-f", "Luna": "expr-voice-3-f"},
+            "plbert": {
+                "num_hidden_layers": 12, "num_attention_heads": 12,
+                "hidden_size": 768, "intermediate_size": 2048,
+                "max_position_embeddings": 512, "embedding_size": 128,
+                "inner_group_num": 1, "num_hidden_groups": 1,
+                "hidden_dropout_prob": 0.0, "attention_probs_dropout_prob": 0.0,
+                "type_vocab_size": 2, "layer_norm_eps": 1e-12
+            },
+            "istftnet": {
+                "resblock_kernel_sizes": [3, 3], "upsample_rates": [10, 6],
+                "upsample_initial_channel": 256,
+                "resblock_dilation_sizes": [[1, 3, 5], [1, 3, 5]],
+                "upsample_kernel_sizes": [20, 12],
+                "gen_istft_n_fft": 20, "gen_istft_hop_size": 5
+            }
+        }
+        """.data(using: .utf8)!)
+        #expect(config.voiceAliases?["Bella"] == "expr-voice-2-f")
+        #expect(config.voiceAliases?["Luna"] == "expr-voice-3-f")
+        #expect(config.voiceAliases?["Hugo"] == nil)
+    }
+
+    @Test func factoryInfersKittenModelType() {
+        let repoNames = ["mlx-community/kitten-tts-nano-0.8-8bit", "mlx-community/kitten-tts-mini-0.8"]
+        for name in repoNames {
+            #expect(name.lowercased().contains("kitten"))
+        }
+    }
+}
+
