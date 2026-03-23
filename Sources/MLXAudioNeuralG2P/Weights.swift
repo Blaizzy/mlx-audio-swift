@@ -33,8 +33,8 @@ public enum WeightLoader {
         (".layer.2.DenseReluDense.", ".dense."),
     ]
 
-    private static let ignoredSuffixes: [String] = [
-        "decoder.layers.0.cross_attention.relative_attention_bias.embeddings.weight"
+    private static let ignoredPatterns: [String] = [
+        ".cross_attention.relative_attention_bias."
     ]
 
     static func sanitizeKey(_ key: String) -> String? {
@@ -54,7 +54,7 @@ public enum WeightLoader {
             }
         }
 
-        if ignoredSuffixes.contains(key) { return nil }
+        if ignoredPatterns.contains(where: { key.contains($0) }) { return nil }
         return key
     }
 

@@ -67,10 +67,10 @@ public class RelativePositionBias: Module {
         queryLength: Int, keyLength: Int, offset: Int = 0
     ) -> MLXArray {
         let contextPosition = MLXArray(
-            Array(offset ..< (offset + queryLength))
+            Int32(offset) ..< Int32(offset + queryLength)
         ).expandedDimensions(axis: 1)
         let memoryPosition = MLXArray(
-            Array(0 ..< keyLength)
+            Int32(0) ..< Int32(keyLength)
         ).expandedDimensions(axis: 0)
         let relativePosition = memoryPosition - contextPosition
 

@@ -25,6 +25,7 @@ public final class NeuralPhonemizer: Phonemizing, @unchecked Sendable {
 
     public func phonemize(_ grapheme: String) throws -> [PhonemeUnit] {
         let ipa = g2p.convert(grapheme, language: language)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !ipa.isEmpty else {
             throw G2PError.phonemizationFailed(
@@ -33,6 +34,7 @@ public final class NeuralPhonemizer: Phonemizing, @unchecked Sendable {
             )
         }
 
-        return ipa.map { PhonemeUnit(symbol: String($0)) }
+        return ipa.filter { !$0.isWhitespace }
+            .map { PhonemeUnit(symbol: String($0)) }
     }
 }
