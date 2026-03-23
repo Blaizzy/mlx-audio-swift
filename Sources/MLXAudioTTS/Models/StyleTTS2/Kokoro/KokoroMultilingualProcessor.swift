@@ -143,6 +143,7 @@ public final class KokoroMultilingualProcessor: TextProcessor, @unchecked Sendab
         let lang = language.lowercased()
 
         if Self.englishCodes.contains(lang) || lang.hasPrefix("en") {
+            try await englishProcessor.prepare()
             return
         }
 

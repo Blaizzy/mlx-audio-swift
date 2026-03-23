@@ -1,6 +1,5 @@
 import Foundation
 @preconcurrency import MLX
-import MLXAudioModules
 import MLXNN
 
 // MARK: - STFT / iSTFT Utilities

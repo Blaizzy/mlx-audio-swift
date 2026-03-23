@@ -265,6 +265,8 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
 
         try model.update(parameters: ModuleParameters.unflattened(sanitized), verify: .noUnusedKeys)
 
+        try await model.textProcessor?.prepare()
+
         model.train(false)
         MLX.eval(model.parameters())
         return model

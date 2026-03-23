@@ -1,6 +1,5 @@
 import Foundation
 @preconcurrency import MLX
-import MLXAudioModules
 import MLXNN
 
 class KokoroTextEncoder: Module {

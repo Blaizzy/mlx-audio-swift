@@ -102,7 +102,6 @@ let package = Package(
             dependencies: [
                 "MLXAudioCore",
                 "MLXAudioCodecs",
-                "MLXAudioModules",
                 "MLXAudioNeuralG2P",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXFast", package: "mlx-swift"),
