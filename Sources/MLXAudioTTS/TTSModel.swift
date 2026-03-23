@@ -71,6 +71,9 @@ public enum TTS {
             return try await ChatterboxModel.fromPretrained(modelRepo)
         case "kitten_tts", "kitten":
             return try await KittenTTSModel.fromPretrained(modelRepo, textProcessor: textProcessor ?? MisakiTextProcessor(), cache: cache)
+        case "kokoro", "kokoro_tts":
+            let processor = textProcessor ?? KokoroMultilingualProcessor()
+            return try await KokoroModel.fromPretrained(modelRepo, textProcessor: processor, cache: cache)
         default:
             throw TTSModelError.unsupportedModelType(modelType ?? resolvedType)
         }
@@ -119,6 +122,9 @@ public enum TTS {
         }
         if lower.contains("kitten") {
             return "kitten_tts"
+        }
+        if lower.contains("kokoro") {
+            return "kokoro"
         }
         return nil
     }
