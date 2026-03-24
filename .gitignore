@@ -18,3 +18,5 @@ xcuserdata/*
 .xcode_derived/
 default.profraw
 scripts/
+.tmp/
+audit-repo/

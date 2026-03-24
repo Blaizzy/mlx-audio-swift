@@ -29,10 +29,13 @@ let package = Package(
         // SwiftUI components
         .library(name: "MLXAudioUI", targets: ["MLXAudioUI"]),
 
+        // Grapheme-to-Phoneme (neural ByT5 + dictionary lexicons)
+        .library(name: "MLXAudioG2P", targets: ["MLXAudioG2P"]),
+
         // Legacy combined library (for backwards compatibility)
         .library(
             name: "MLXAudio",
-            targets: ["MLXAudioCore", "MLXAudioCodecs", "MLXAudioTTS", "MLXAudioSTT", "MLXAudioVAD", "MLXAudioLID", "MLXAudioSTS", "MLXAudioUI"]
+            targets: ["MLXAudioCore", "MLXAudioCodecs", "MLXAudioTTS", "MLXAudioSTT", "MLXAudioVAD", "MLXAudioLID", "MLXAudioSTS", "MLXAudioUI", "MLXAudioG2P"]
         ),
         .executable(
             name: "mlx-audio-swift-tts",
@@ -168,6 +171,16 @@ let package = Package(
             path: "Sources/MLXAudioSTS"
         ),
 
+        // MARK: - MLXAudioG2P
+        .target(
+            name: "MLXAudioG2P",
+            dependencies: [
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+            ],
+            path: "Sources/MLXAudioG2P"
+        ),
+
         // MARK: - MLXAudioUI
         .target(
             name: "MLXAudioUI",
@@ -217,6 +230,7 @@ let package = Package(
                 "MLXAudioSTS",
                 "MLXAudioLID",
                 "mlx-audio-swift-lid",
+                "MLXAudioG2P",
             ],
             path: "Tests",
             resources: [
