@@ -1,0 +1,17 @@
+excluded:
+  - .build
+  - Package.resolved
+
+only_rules:
+  - unused_import
+  - syntactic_sugar
+  - mark
+  - return_arrow_whitespace
+  - void_return
+  - redundant_void_return
+  - closing_brace
+  - opening_brace
+  - comma
+  - colon
+  - statement_position
+  - control_statement
