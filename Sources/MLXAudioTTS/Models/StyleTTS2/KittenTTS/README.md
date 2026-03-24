@@ -2,15 +2,18 @@
 
 Compact non-autoregressive English TTS built on the StyleTTS2 stack.
 Uses an ALBERT encoder, duration-based prosody prediction, and an iSTFT-based vocoder.
-Output is 24kHz mono audio.
+Official KittenTTS docs describe it as a developer-preview English TTS family with 24kHz output.
 
 ## Supported Models
 
-KittenTTS model loading is selected by model type `kitten_tts`.
-Tested repository names include:
+Official KittenTTS repositories:
 
-- `mlx-community/kitten-tts-mini-0.8`
-- `mlx-community/kitten-tts-nano-0.8-8bit`
+- [KittenML/kitten-tts-mini-0.8](https://huggingface.co/KittenML/kitten-tts-mini-0.8) - 80M params
+- [KittenML/kitten-tts-micro-0.8](https://huggingface.co/KittenML/kitten-tts-micro-0.8) - 40M params
+- [KittenML/kitten-tts-nano-0.8-fp32](https://huggingface.co/KittenML/kitten-tts-nano-0.8-fp32) - 15M params
+- [KittenML/kitten-tts-nano-0.8-int8](https://huggingface.co/KittenML/kitten-tts-nano-0.8-int8) - 15M params, int8
+
+MLX ports can expose the same family under `mlx-community/...` repository names.
 
 ## Swift Example
 
@@ -20,7 +23,7 @@ import MLXAudioTTS
 let model = try await TTS.loadModel(modelRepo: "mlx-community/kitten-tts-mini-0.8")
 let audio = try await model.generate(
     text: "Hello from Kitten TTS.",
-    voice: "expr-voice-5-m"
+    voice: "Bella"
 )
 ```
 
@@ -29,28 +32,32 @@ let audio = try await model.generate(
 ```bash
 mlx-audio-swift-tts \
   --model mlx-community/kitten-tts-mini-0.8 \
-  --voice expr-voice-5-m \
+  --voice Bella \
   --text "Hello from Kitten TTS."
 ```
 
 ## Voices
 
-KittenTTS reads voices from the model repository's `voices.safetensors` file.
-The default voice is `expr-voice-5-m`.
+Official v0.8 voice list:
 
-Known voices in the current Kitten checkpoints:
+- `Bella`
+- `Jasper`
+- `Luna`
+- `Bruno`
+- `Rosie`
+- `Hugo`
+- `Kiki`
+- `Leo`
 
-- `expr-voice-2-f`
-- `expr-voice-2-m`
-- `expr-voice-3-f`
-- `expr-voice-3-m`
-- `expr-voice-4-f`
-- `expr-voice-4-m`
-- `expr-voice-5-f`
-- `expr-voice-5-m`
+Legacy v0.2 checkpoints used the older voice IDs:
+
+- `expr-voice-2-f`, `expr-voice-2-m`
+- `expr-voice-3-f`, `expr-voice-3-m`
+- `expr-voice-4-f`, `expr-voice-4-m`
+- `expr-voice-5-f`, `expr-voice-5-m`
 
 Models can also define voice aliases in `config.json`.
-For example, `Bella` may map to `expr-voice-2-f`.
+In the current Swift port, aliases from the checkpoint config are resolved automatically.
 
 ## English G2P
 
@@ -90,6 +97,8 @@ for try await event in model.generateStream(
 
 ## Notes
 
-- language support is English-centric
-- voice aliases and speed priors come from the model config
+- English only in the current official release
+- built-in text preprocessing covers numbers, currencies, and units
+- `nano-int8` is the smallest official variant, but upstream notes that some users have reported issues with it
 - quantized checkpoints are supported through the normal `quantization` config path
+- upstream project docs: [KittenML/KittenTTS](https://github.com/KittenML/KittenTTS)
