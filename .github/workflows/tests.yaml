@@ -11,20 +11,6 @@ on:
 jobs:
   tests:
     runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Codecs
-            suite: MLXAudioTests/MLXAudioCodecsTests
-          - name: TTS
-            suite: MLXAudioTests/MLXAudioTTSTests
-          - name: STT
-            suite: MLXAudioTests/MLXAudioSTTTests
-          - name: VAD
-            suite: MLXAudioTests/MLXAudioVADTests
-          - name: STS
-            suite: MLXAudioTests/MLXAudioSTSTests
 
     steps:
       - uses: actions/checkout@v4
