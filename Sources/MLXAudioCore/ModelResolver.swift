@@ -106,7 +106,6 @@ public enum ModelResolver {
         try await Acervo.download(
             modelId,
             files: Array(filesToDownload).sorted(),
-            token: token,
             progress: { progress in
                 print("  [\(progress.fileIndex + 1)/\(progress.totalFiles)] \(progress.fileName)")
             }
