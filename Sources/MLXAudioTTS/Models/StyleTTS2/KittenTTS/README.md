@@ -24,10 +24,30 @@ let audio = try await model.generate(
 )
 ```
 
+## CLI Example
+
+```bash
+mlx-audio-swift-tts \
+  --model mlx-community/kitten-tts-mini-0.8 \
+  --voice expr-voice-5-m \
+  --text "Hello from Kitten TTS."
+```
+
 ## Voices
 
 KittenTTS reads voices from the model repository's `voices.safetensors` file.
 The default voice is `expr-voice-5-m`.
+
+Known voices in the current Kitten checkpoints:
+
+- `expr-voice-2-f`
+- `expr-voice-2-m`
+- `expr-voice-3-f`
+- `expr-voice-3-m`
+- `expr-voice-4-f`
+- `expr-voice-4-m`
+- `expr-voice-5-f`
+- `expr-voice-5-m`
 
 Models can also define voice aliases in `config.json`.
 For example, `Bella` may map to `expr-voice-2-f`.
