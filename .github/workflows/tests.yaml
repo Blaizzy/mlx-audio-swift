@@ -11,18 +11,6 @@ on:
 jobs:
   tests:
     runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Codecs
-            suite: MLXAudioTests/MLXAudioCodecsTests
-          - name: TTS
-            suite: MLXAudioTests/MLXAudioTTSTests
-          - name: STT
-            suite: MLXAudioTests/MLXAudioSTTTests
-          - name: VAD
-            suite: MLXAudioTests/MLXAudioVADTests
 
     steps:
       - uses: actions/checkout@v4
@@ -34,5 +22,5 @@ jobs:
         run: xcodebuild -downloadComponent MetalToolchain
       - name: Build
         run: xcodebuild build-for-testing -scheme MLXAudio-Package -destination 'platform=macOS' MACOSX_DEPLOYMENT_TARGET=14.0 CODE_SIGNING_ALLOWED=NO
-      - name: Run ${{ matrix.name }} tests
-        run: xcodebuild test-without-building -scheme MLXAudio-Package -destination 'platform=macOS' -only-testing:${{ matrix.suite }} CODE_SIGNING_ALLOWED=NO
+      - name: Run tests
+        run: xcodebuild test-without-building -scheme MLXAudio-Package -destination 'platform=macOS' -skip-testing:'MLXAudioTests/SmokeTests' -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
