@@ -197,7 +197,6 @@ public final class KittenTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         let model = KittenTTSModel(config: config, textProcessor: textProcessor)
 
         try await model.textProcessor?.prepare()
-
         let weights = try loadWeights(modelDir: modelDir)
         let sanitized = model.sanitize(weights: weights)
 

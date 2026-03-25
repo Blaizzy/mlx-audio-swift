@@ -48,7 +48,9 @@ enum App {
                 temperature: args.temperature,
                 topP: args.topP,
                 timestamps: args.timestamps,
-                benchmark: args.benchmark
+                benchmark: args.benchmark,
+                rawIPA: args.rawIPA,
+                language: args.language
             )
         } catch {
             fputs("Error: \(error)\n", stderr)
@@ -69,6 +71,8 @@ enum App {
         topP: Float?,
         timestamps: Bool,
         benchmark: Bool,
+        rawIPA: Bool = false,
+        language: String? = nil,
         hfToken: String? = nil
     ) async throws {
         Memory.cacheLimit = 256 * 1024 * 1024
@@ -80,7 +84,8 @@ enum App {
 
         let loadedModel: SpeechGenerationModel
         do {
-            loadedModel = try await TTS.loadModel(modelRepo: model, hfToken: hfToken)
+            let processor: TextProcessor? = rawIPA ? PassthroughProcessor() : nil
+            loadedModel = try await TTS.loadModel(modelRepo: model, textProcessor: processor, hfToken: hfToken)
         } catch let error as TTSModelError {
             switch error {
             case .invalidRepositoryID(let modelRepo):
@@ -121,7 +126,7 @@ enum App {
                 voice: voice,
                 refAudio: refAudio,
                 refText: refText,
-                language: nil,
+                language: language,
                 generationParameters: generationParameters,
                 streamingInterval: 0.32
             )
@@ -168,7 +173,7 @@ enum App {
                 voice: voice,
                 refAudio: refAudio,
                 refText: refText,
-                language: nil,
+                language: language,
                 generationParameters: generationParameters
             ).asArray(Float.self)
         }
@@ -288,6 +293,10 @@ enum CLIError: Error, CustomStringConvertible {
     }
 }
 
+struct PassthroughProcessor: TextProcessor {
+    func process(text: String, language: String?) throws -> String { text }
+}
+
 struct CLI {
     let model: String
     let text: String
@@ -300,6 +309,8 @@ struct CLI {
     let topP: Float?
     let timestamps: Bool
     let benchmark: Bool
+    let rawIPA: Bool
+    let language: String?
 
     static func parse() throws -> CLI {
         var text: String?
@@ -313,6 +324,8 @@ struct CLI {
         var topP: Float? = nil
         var timestamps = false
         var benchmark = false
+        var rawIPA = false
+        var language: String? = nil
 
         var it = CommandLine.arguments.dropFirst().makeIterator()
         while let arg = it.next() {
@@ -351,6 +364,11 @@ struct CLI {
                 timestamps = true
             case "--benchmark":
                 benchmark = true
+            case "--raw-ipa":
+                rawIPA = true
+            case "--language", "-l":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                language = v
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -378,7 +396,9 @@ struct CLI {
             temperature: temperature,
             topP: topP,
             timestamps: timestamps,
-            benchmark: benchmark
+            benchmark: benchmark,
+            rawIPA: rawIPA,
+            language: language
         )
     }
 
@@ -400,6 +420,8 @@ struct CLI {
               --top_p <float>          Top-p sampling (overrides model default)
               --timestamps             Emit word timestamps using mlx-community/Qwen3-ForcedAligner-0.6B-4bit
               --benchmark              Run streaming benchmark and log TTFB/RTF metrics
+              --raw-ipa                Skip text processing, pass IPA phonemes directly
+          -l, --language <code>       Language code (e.g., es, fr, it, pt). Auto-detected from voice prefix if omitted
           -h, --help                    Show this help
         """)
     }
