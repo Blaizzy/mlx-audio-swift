@@ -17,7 +17,7 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
         case .inputFileNotFound(let path):
             "Input audio file not found: \(path)"
         case .unsupportedModelRepo(let repo):
-            "Unsupported STT model repo: \(repo). Expected FireRedASR2, SenseVoice, GLMASR, Qwen3ASR, VoxtralRealtime, Parakeet, or Qwen3ForcedAligner."
+            "Unsupported STT model repo: \(repo). Expected FireRedASR2, SenseVoice, GLMASR, Qwen3ASR, VoxtralRealtime, CohereTranscribe, Parakeet, or Qwen3ForcedAligner."
         case .missingTextForForcedAlignment:
             "--text is required when using a forced aligner model."
         case .streamUnsupportedForForcedAligner:
@@ -216,7 +216,7 @@ private struct Options {
             Options:
               --model <repo>                Model repo id.
                                             Default: mlx-community/Qwen3-ASR-0.6B-4bit
-                                            Supported families: FireRedASR2, SenseVoice, Qwen3-ASR, GLM-ASR, Voxtral, Parakeet, Qwen3-ForcedAligner
+                                            Supported families: FireRedASR2, SenseVoice, Qwen3-ASR, GLM-ASR, Voxtral, Cohere, Parakeet, Qwen3-ForcedAligner
               --audio <path>                Input audio file (required if not passed as trailing arg)
               --output-path <path>          Output path stem (required). Extension is appended from --format.
               --format <txt|srt|vtt|json>   Output format. Default: txt
@@ -392,6 +392,9 @@ enum App {
         }
         if lower.contains("voxtral") {
             return .stt(try await VoxtralRealtimeModel.fromPretrained(repo))
+        }
+        if lower.contains("cohere") {
+            return .stt(try await CohereTranscribeModel.fromPretrained(repo))
         }
         if lower.contains("parakeet") {
             return .stt(try await ParakeetModel.fromPretrained(repo))
