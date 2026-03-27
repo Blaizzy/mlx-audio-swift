@@ -22,6 +22,13 @@ private func normalizeCohereWeightKeys(_ weights: [String: MLXArray]) -> [String
         "encoder.subsampling.conv.5.": "encoder.subsampling.conv5.",
         "encoder.subsampling.conv.6.": "encoder.subsampling.conv6.",
     ]
+    let subsamplingKernelShapes = [
+        "encoder.subsampling.conv0.weight": [3, 3],
+        "encoder.subsampling.conv2.weight": [3, 3],
+        "encoder.subsampling.conv3.weight": [1, 1],
+        "encoder.subsampling.conv5.weight": [3, 3],
+        "encoder.subsampling.conv6.weight": [1, 1],
+    ]
 
     for (key, value) in weights {
         if key.hasSuffix(".num_batches_tracked")
@@ -35,8 +42,14 @@ private func normalizeCohereWeightKeys(_ weights: [String: MLXArray]) -> [String
             key.replacingOccurrences(of: $0.key, with: $0.value)
         } ?? key
 
-        if mappedKey.hasSuffix(".weight"), value.ndim == 4, mappedKey.hasPrefix("encoder.subsampling.conv") {
-            normalized[mappedKey] = value.transposed(0, 2, 3, 1)
+        if mappedKey.hasSuffix(".weight"), value.ndim == 4, let kernelShape = subsamplingKernelShapes[mappedKey] {
+            if value.shape[1] == kernelShape[0], value.shape[2] == kernelShape[1] {
+                normalized[mappedKey] = value
+            } else if value.shape[2] == kernelShape[0], value.shape[3] == kernelShape[1] {
+                normalized[mappedKey] = value.transposed(0, 2, 3, 1)
+            } else {
+                normalized[mappedKey] = value
+            }
         } else if mappedKey.hasSuffix(".weight"), value.ndim == 3, mappedKey.contains(".conv.") {
             normalized[mappedKey] = value.transposed(0, 2, 1)
         } else {
