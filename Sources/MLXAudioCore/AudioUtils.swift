@@ -233,6 +233,8 @@ public class StreamingWAVWriter {
     private let sampleRate: Double
     private var audioFile: AVAudioFile?
     private let format: AVAudioFormat
+    private var reusableBuffer: AVAudioPCMBuffer?
+    private var reusableCapacity: Int = 0
     public private(set) var framesWritten: Int = 0
 
     public init(url: URL, sampleRate: Double) throws {
@@ -252,6 +254,24 @@ public class StreamingWAVWriter {
 
     /// Write a chunk of audio samples to the file.
     public func writeChunk(_ samples: [Float]) throws {
+        try samples.withUnsafeBytes { raw in
+            let data = Data(raw)
+            try writeChunkData(data, sampleCount: samples.count)
+        }
+    }
+
+    /// Write a chunk of audio samples from an MLX array directly.
+    /// Expects a 1D float32 tensor.
+    public func writeChunk(_ samples: MLXArray) throws {
+        let f32 = samples.dtype == .float32 ? samples : samples.asType(.float32)
+        let sampleCount = f32.size
+        guard sampleCount > 0 else { return }
+        let data = f32.asData(access: .noCopyIfContiguous).data
+        try writeChunkData(data, sampleCount: sampleCount)
+    }
+
+    /// Write a chunk of float32 samples from a byte buffer.
+    public func writeChunkData(_ samplesData: Data, sampleCount: Int) throws {
         guard let audioFile else {
             throw NSError(
                 domain: "StreamingWAVWriter",
@@ -259,32 +279,70 @@ public class StreamingWAVWriter {
                 userInfo: [NSLocalizedDescriptionKey: "Audio file not initialized or already finalized"]
             )
         }
-
-        let frameCount = AVAudioFrameCount(samples.count)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+        guard sampleCount >= 0 else {
             throw NSError(
                 domain: "StreamingWAVWriter",
-                code: 3,
-                userInfo: [NSLocalizedDescriptionKey: "Failed to create audio buffer"]
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid negative sample count: \(sampleCount)"]
+            )
+        }
+        guard sampleCount > 0 else { return }
+
+        let expectedBytes = sampleCount * MemoryLayout<Float>.size
+        guard samplesData.count >= expectedBytes else {
+            throw NSError(
+                domain: "StreamingWAVWriter",
+                code: 5,
+                userInfo: [NSLocalizedDescriptionKey: "Insufficient sample data bytes (\(samplesData.count) < \(expectedBytes))"]
             )
         }
 
+        let frameCount = AVAudioFrameCount(sampleCount)
+        let buffer = try getReusableBuffer(minFrameCapacity: sampleCount)
         buffer.frameLength = frameCount
 
-        if let channelData = buffer.floatChannelData {
-            for i in 0 ..< samples.count {
-                channelData[0][i] = samples[i]
+        guard let channelData = buffer.floatChannelData else {
+            throw NSError(
+                domain: "StreamingWAVWriter",
+                code: 6,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to access output channel data"]
+            )
+        }
+        samplesData.withUnsafeBytes { src in
+            if let srcBase = src.baseAddress {
+                memcpy(channelData[0], srcBase, expectedBytes)
             }
         }
 
         try audioFile.write(from: buffer)
-        framesWritten += samples.count
+        framesWritten += sampleCount
     }
 
     /// Finalize the WAV file and return the URL.
     /// After calling this method, no more chunks can be written.
     public func finalize() -> URL {
         audioFile = nil // Close the file by releasing the reference
+        reusableBuffer = nil
+        reusableCapacity = 0
         return url
+    }
+
+    private func getReusableBuffer(minFrameCapacity: Int) throws -> AVAudioPCMBuffer {
+        if let reusableBuffer, reusableCapacity >= minFrameCapacity {
+            return reusableBuffer
+        }
+        guard let newBuffer = AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: AVAudioFrameCount(minFrameCapacity)
+        ) else {
+            throw NSError(
+                domain: "StreamingWAVWriter",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to create audio buffer"]
+            )
+        }
+        reusableBuffer = newBuffer
+        reusableCapacity = minFrameCapacity
+        return newBuffer
     }
 }

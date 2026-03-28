@@ -17,7 +17,7 @@ MLXAudio follows a modular design allowing you to import only what you need:
 - **MLXAudioTTS**: Text-to-Speech models (Qwen3-TTS, Fish Audio S2 Pro, Soprano, VyvoTTS, Orpheus, Marvis TTS, Pocket TTS)
 - **MLXAudioSTT**: Speech-to-Text models (Qwen3-ASR, Voxtral Realtime, Parakeet, GLMASR)
 - **MLXAudioVAD**: Voice Activity Detection & Speaker Diarization (Sortformer, SmartTurn)
-- **MLXAudioSTS**: Speech-to-Speech models (LFM2.5-Audio, SAM-Audio, MossFormer2-SE)
+- **MLXAudioSTS**: Speech-to-Speech models (LFM2.5-Audio, SAM-Audio, MossFormer2-SE, DeepFilterNet)
 - **MLXAudioUI**: SwiftUI components for audio interfaces
 
 ## Installation
@@ -143,6 +143,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | LFM2.5-Audio | [LFM Audio README](Sources/MLXAudioSTS/Models/LFMAudio/README.md) | [mlx-community/LFM2.5-Audio-1.5B-6bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-6bit) |
 | SAM-Audio | [SAM Audio README](Sources/MLXAudioSTS/Models/SAMAudio/README.md) | [mlx-community/sam-audio-large-fp16](https://huggingface.co/mlx-community/sam-audio-large-fp16) |
 | MossFormer2-SE | — | [starkdmi/MossFormer2-SE-fp16](https://huggingface.co/starkdmi/MossFormer2-SE-fp16) |
+| DeepFilterNet | [DeepFilterNet README](Sources/MLXAudioSTS/Models/DeepFilterNet/README.md) | [mlx-community/DeepFilterNet-mlx](https://huggingface.co/mlx-community/DeepFilterNet-mlx) |
 
 ### VAD / Speaker Diarization Models
 
