@@ -1,4 +1,7 @@
 <a href="https://trendshift.io/repositories/20684" target="_blank"><img src="https://trendshift.io/api/badge/repositories/20684" alt="Blaizzy%2Fmlx-audio-swift | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+  <a href="https://gitcgr.com/Blaizzy/mlx-audio-swift" target="_blank" rel="noopener noreferrer">
+    <img src="https://gitcgr.com/badge/Blaizzy/mlx-audio-swift.svg" alt="gitcgr" />
+  </a>
 
 # MLX Audio Swift
 
