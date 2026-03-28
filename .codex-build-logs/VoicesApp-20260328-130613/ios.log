@@ -1,0 +1,337 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -project Examples/VoicesApp/VoicesApp.xcodeproj -scheme VoicesApp -configuration Debug -destination "platform=iOS Simulator,name=iPhone 17" build CODE_SIGNING_ALLOWED=NO
+
+Build settings from command line:
+    CODE_SIGNING_ALLOWED = NO
+
+Resolve Package Graph
+
+
+Resolved source packages:
+  mlx-swift-lm: https://github.com/ml-explore/mlx-swift-lm.git @ 2.30.3
+  swift-collections: https://github.com/apple/swift-collections.git @ 1.3.0
+  Jinja: https://github.com/huggingface/swift-jinja.git @ 2.2.1
+  swift-numerics: https://github.com/apple/swift-numerics @ 1.1.1
+  EventSource: https://github.com/mattt/EventSource.git @ 1.3.0
+  mlx-swift: https://github.com/ml-explore/mlx-swift.git @ 0.30.6
+  swift-asn1: https://github.com/apple/swift-asn1.git @ 1.5.1
+  MLXAudio: /Users/adityahurry/Documents/code/mlx-audio-swift @ local
+  swift-transformers: https://github.com/huggingface/swift-transformers @ 1.1.6
+  swift-crypto: https://github.com/apple/swift-crypto.git @ 4.2.0
+  swift-huggingface: https://github.com/huggingface/swift-huggingface.git @ 0.9.0
+
+2026-03-28 13:06:38.534 xcodebuild[36992:7219357] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+ComputePackagePrebuildTargetDependencyGraph
+
+Prepare packages
+
+CreateBuildRequest
+
+SendProjectDescription
+
+CreateBuildOperation
+
+ComputeTargetDependencyGraph
+note: Building targets in dependency order
+note: Target dependency graph (52 targets)
+    Target 'VoicesApp' in project 'VoicesApp'
+        ➜ Explicit dependency on target 'MLXAudioCore' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioTTS' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioSTT' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioSTS' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudio' in project 'MLXAudio'
+    Target 'MLXAudio' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCore' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCodecs' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioTTS' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioSTT' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioVAD' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioLID' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioSTS' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioUI' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioG2P' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'HuggingFace' in project 'swift-huggingface'
+        ➜ Explicit dependency on target 'MLXFast' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXLMCommon' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'MLXLLM' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'Transformers' in project 'swift-transformers'
+    Target 'MLXAudioUI' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCore' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCodecs' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioG2P' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioTTS' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioSTT' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioSTS' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'HuggingFace' in project 'swift-huggingface'
+        ➜ Explicit dependency on target 'MLXFast' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXLMCommon' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'MLXLLM' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'Transformers' in project 'swift-transformers'
+    Target 'MLXAudioLID' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCore' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCodecs' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'HuggingFace' in project 'swift-huggingface'
+        ➜ Explicit dependency on target 'MLXFast' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXLMCommon' in project 'mlx-swift-lm'
+    Target 'MLXAudioVAD' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCore' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'HuggingFace' in project 'swift-huggingface'
+        ➜ Explicit dependency on target 'MLXLMCommon' in project 'mlx-swift-lm'
+    Target 'MLXAudioSTS' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioSTS' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCore' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCodecs' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioG2P' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioTTS' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioSTT' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'HuggingFace' in project 'swift-huggingface'
+        ➜ Explicit dependency on target 'MLXFast' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXLMCommon' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'MLXLLM' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'Transformers' in project 'swift-transformers'
+    Target 'MLXAudioSTS' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCore' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCodecs' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioG2P' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioTTS' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioSTT' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'HuggingFace' in project 'swift-huggingface'
+        ➜ Explicit dependency on target 'MLXFast' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXLMCommon' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'MLXLLM' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'Transformers' in project 'swift-transformers'
+    Target 'MLXAudioSTT' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioSTT' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCore' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCodecs' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'HuggingFace' in project 'swift-huggingface'
+        ➜ Explicit dependency on target 'MLXFast' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXLMCommon' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'MLXLLM' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'Transformers' in project 'swift-transformers'
+    Target 'MLXAudioSTT' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCore' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCodecs' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'HuggingFace' in project 'swift-huggingface'
+        ➜ Explicit dependency on target 'MLXFast' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXLMCommon' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'MLXLLM' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'Transformers' in project 'swift-transformers'
+    Target 'MLXAudioTTS' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioTTS' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCore' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCodecs' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioG2P' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'HuggingFace' in project 'swift-huggingface'
+        ➜ Explicit dependency on target 'MLXFast' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXLMCommon' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'MLXLLM' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'Transformers' in project 'swift-transformers'
+    Target 'MLXAudioTTS' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCore' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCodecs' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioG2P' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'HuggingFace' in project 'swift-huggingface'
+        ➜ Explicit dependency on target 'MLXFast' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXLMCommon' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'MLXLLM' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'Transformers' in project 'swift-transformers'
+    Target 'MLXLLM' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'MLXLLM' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'MLXLMCommon' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXOptimizers' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Transformers' in project 'swift-transformers'
+    Target 'MLXLLM' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'MLXLMCommon' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXOptimizers' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Transformers' in project 'swift-transformers'
+    Target 'MLXAudioG2P' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+    Target 'MLXAudioCodecs' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCore' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'HuggingFace' in project 'swift-huggingface'
+        ➜ Explicit dependency on target 'MLXFast' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXLMCommon' in project 'mlx-swift-lm'
+    Target 'MLXLMCommon' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'MLXLMCommon' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXOptimizers' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Transformers' in project 'swift-transformers'
+    Target 'MLXLMCommon' in project 'mlx-swift-lm'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXOptimizers' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Transformers' in project 'swift-transformers'
+    Target 'Transformers' in project 'swift-transformers'
+        ➜ Explicit dependency on target 'Tokenizers' in project 'swift-transformers'
+        ➜ Explicit dependency on target 'Generation' in project 'swift-transformers'
+        ➜ Explicit dependency on target 'Models' in project 'swift-transformers'
+        ➜ Explicit dependency on target 'Hub' in project 'swift-transformers'
+        ➜ Explicit dependency on target 'Jinja' in project 'Jinja'
+        ➜ Explicit dependency on target 'OrderedCollections' in project 'swift-collections'
+    Target 'Models' in project 'swift-transformers'
+        ➜ Explicit dependency on target 'Hub' in project 'swift-transformers'
+        ➜ Explicit dependency on target 'Tokenizers' in project 'swift-transformers'
+        ➜ Explicit dependency on target 'Generation' in project 'swift-transformers'
+        ➜ Explicit dependency on target 'Jinja' in project 'Jinja'
+        ➜ Explicit dependency on target 'OrderedCollections' in project 'swift-collections'
+    Target 'Generation' in project 'swift-transformers'
+        ➜ Explicit dependency on target 'Hub' in project 'swift-transformers'
+        ➜ Explicit dependency on target 'Tokenizers' in project 'swift-transformers'
+        ➜ Explicit dependency on target 'Jinja' in project 'Jinja'
+        ➜ Explicit dependency on target 'OrderedCollections' in project 'swift-collections'
+    Target 'Tokenizers' in project 'swift-transformers'
+        ➜ Explicit dependency on target 'Hub' in project 'swift-transformers'
+        ➜ Explicit dependency on target 'Jinja' in project 'Jinja'
+        ➜ Explicit dependency on target 'OrderedCollections' in project 'swift-collections'
+    Target 'Hub' in project 'swift-transformers'
+        ➜ Explicit dependency on target 'swift-transformers_Hub' in project 'swift-transformers'
+        ➜ Explicit dependency on target 'Jinja' in project 'Jinja'
+        ➜ Explicit dependency on target 'OrderedCollections' in project 'swift-collections'
+    Target 'Jinja' in project 'Jinja'
+        ➜ Explicit dependency on target 'Jinja' in project 'Jinja'
+        ➜ Explicit dependency on target 'OrderedCollections' in project 'swift-collections'
+    Target 'Jinja' in project 'Jinja'
+        ➜ Explicit dependency on target 'OrderedCollections' in project 'swift-collections'
+    Target 'OrderedCollections' in project 'swift-collections'
+        ➜ Explicit dependency on target 'OrderedCollections' in project 'swift-collections'
+        ➜ Explicit dependency on target 'InternalCollectionsUtilities' in project 'swift-collections'
+    Target 'OrderedCollections' in project 'swift-collections'
+        ➜ Explicit dependency on target 'InternalCollectionsUtilities' in project 'swift-collections'
+    Target 'InternalCollectionsUtilities' in project 'swift-collections' (no dependencies)
+    Target 'swift-transformers_Hub' in project 'swift-transformers' (no dependencies)
+    Target 'MLXOptimizers' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXOptimizers' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Cmlx' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Numerics' in project 'swift-numerics'
+    Target 'MLXOptimizers' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Cmlx' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Numerics' in project 'swift-numerics'
+    Target 'MLXFast' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXFast' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Cmlx' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Numerics' in project 'swift-numerics'
+    Target 'MLXFast' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Cmlx' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Numerics' in project 'swift-numerics'
+    Target 'MLXAudioCore' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLXAudioCore' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'HuggingFace' in project 'swift-huggingface'
+    Target 'MLXAudioCore' in project 'MLXAudio'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'HuggingFace' in project 'swift-huggingface'
+    Target 'HuggingFace' in project 'swift-huggingface'
+        ➜ Explicit dependency on target 'HuggingFace' in project 'swift-huggingface'
+        ➜ Explicit dependency on target 'EventSource' in project 'EventSource'
+        ➜ Explicit dependency on target 'Crypto' in project 'swift-crypto'
+    Target 'HuggingFace' in project 'swift-huggingface'
+        ➜ Explicit dependency on target 'EventSource' in project 'EventSource'
+        ➜ Explicit dependency on target 'Crypto' in project 'swift-crypto'
+    Target 'Crypto' in project 'swift-crypto'
+        ➜ Explicit dependency on target 'Crypto' in project 'swift-crypto'
+        ➜ Explicit dependency on target 'swift-crypto_Crypto' in project 'swift-crypto'
+    Target 'Crypto' in project 'swift-crypto'
+        ➜ Explicit dependency on target 'swift-crypto_Crypto' in project 'swift-crypto'
+    Target 'swift-crypto_Crypto' in project 'swift-crypto' (no dependencies)
+    Target 'EventSource' in project 'EventSource'
+        ➜ Explicit dependency on target 'EventSource' in project 'EventSource'
+    Target 'EventSource' in project 'EventSource' (no dependencies)
+    Target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Cmlx' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Numerics' in project 'swift-numerics'
+    Target 'MLXNN' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Cmlx' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Numerics' in project 'swift-numerics'
+    Target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Cmlx' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Numerics' in project 'swift-numerics'
+    Target 'MLX' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Cmlx' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'Numerics' in project 'swift-numerics'
+    Target 'Numerics' in project 'swift-numerics'
+        ➜ Explicit dependency on target 'Numerics' in project 'swift-numerics'
+        ➜ Explicit dependency on target '_NumericsShims' in project 'swift-numerics'
+        ➜ Explicit dependency on target 'RealModule' in project 'swift-numerics'
+        ➜ Explicit dependency on target 'ComplexModule' in project 'swift-numerics'
+    Target 'Numerics' in project 'swift-numerics'
+        ➜ Explicit dependency on target '_NumericsShims' in project 'swift-numerics'
+        ➜ Explicit dependency on target 'RealModule' in project 'swift-numerics'
+        ➜ Explicit dependency on target 'ComplexModule' in project 'swift-numerics'
+    Target 'ComplexModule' in project 'swift-numerics'
+        ➜ Explicit dependency on target '_NumericsShims' in project 'swift-numerics'
+        ➜ Explicit dependency on target 'RealModule' in project 'swift-numerics'
+    Target 'RealModule' in project 'swift-numerics'
+        ➜ Explicit dependency on target '_NumericsShims' in project 'swift-numerics'
+    Target '_NumericsShims' in project 'swift-numerics' (no dependencies)
+    Target 'Cmlx' in project 'mlx-swift'
+        ➜ Explicit dependency on target 'mlx-swift_Cmlx' in project 'mlx-swift'
+    Target 'mlx-swift_Cmlx' in project 'mlx-swift' (no dependencies)
+
+GatherProvisioningInputs
+
+CreateBuildDescription
+
+ExecuteExternalTool /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang -v -E -dM -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator26.1.sdk -x c -c /dev/null
+
+ExecuteExternalTool /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc --version
+
+ExecuteExternalTool /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang -v -E -dM -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator26.1.sdk -x objective-c -c /dev/null
+
+ExecuteExternalTool /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang -v -E -dM -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator26.1.sdk -x c -c /dev/null
+
+ExecuteExternalTool /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang -v -E -dM -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator26.1.sdk -x c++ -c /dev/null
+
+ExecuteExternalTool /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld -version_details
+
+ReadFileContents /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/share/docc/features.json
+
+Build description signature: 9c6556939d30bdcabf4a0ed4d2cf64f2
+Build description path: /Users/adityahurry/Library/Developer/Xcode/DerivedData/VoicesApp-bfdakhiigjkruhaynzxhmwqxslvf/Build/Intermediates.noindex/XCBuildData/9c6556939d30bdcabf4a0ed4d2cf64f2.xcbuilddata
+/Users/adityahurry/Documents/code/mlx-audio-swift/Examples/VoicesApp/Config/Debug.xcconfig:2:1: error: could not find included file 'Local.xcconfig' in search paths (in target 'VoicesApp' from project 'VoicesApp')
+** BUILD FAILED **
+
+
+The following build commands failed:
+	Building project VoicesApp with scheme VoicesApp and configuration Debug
+(1 failure)
