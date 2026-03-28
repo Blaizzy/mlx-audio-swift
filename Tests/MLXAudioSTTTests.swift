@@ -1448,6 +1448,22 @@ struct ForcedAlignResultTests {
 
 struct Qwen3ASRHelperTests {
 
+    @Test func qwen3ASRPromptTextIncludesContextAndAssistantPrefix() {
+        let model = Qwen3ASRModel(
+            Qwen3ASRConfig(supportLanguages: ["Chinese", "English", "Japanese"])
+        )
+
+        let prompt = model.buildPromptText(
+            numAudioTokens: 3,
+            context: "Prefer product names over pronouns.",
+            language: "en"
+        )
+
+        #expect(prompt.hasPrefix("<|im_start|>system\nPrefer product names over pronouns.<|im_end|>\n"))
+        #expect(prompt.contains("<|audio_start|><|audio_pad|><|audio_pad|><|audio_pad|><|audio_end|>"))
+        #expect(prompt.hasSuffix("<|im_start|>assistant\nlanguage English<asr_text>"))
+    }
+
     @Test func getFeatExtractOutputLengthsBasic() {
         // Test with a known input length
         let inputLengths = MLXArray([Int32(200)])
