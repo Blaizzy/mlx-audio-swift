@@ -43,13 +43,13 @@ public final class CohereTranscribeTokenizer {
         let promptTokens = [
             "<|startofcontext|>",
             "<|startoftranscript|>",
+            "<|emo:undefined|>",
             langCode,
             langCode,
             usePunctuation ? "<|pnc|>" : "<|nopnc|>",
+            "<|noitn|>",
             useTimestamps ? "<|timestamp|>" : "<|notimestamp|>",
             "<|nodiarize|>",
-            "<|noitn|>",
-            "<|emo:undefined|>",
         ]
 
         return promptTokens.compactMap { specialTokenToID[$0] }
