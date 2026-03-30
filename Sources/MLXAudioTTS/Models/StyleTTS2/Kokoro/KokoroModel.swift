@@ -73,19 +73,24 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
         let d = predictor.textEncoder(dEn, style: globalStyle, textLengths: inputLengths, mask: textMask)
         let (x, _) = predictor.lstm(d)
         let duration = predictor.durationProj(x)
+        // Defensive: quantized encoders may produce NaN durations for certain inputs.
+        // Cap at maxFramesPerPhoneme to prevent OOM from garbage int32 casts.
+        let maxFramesPerPhoneme = 100
         let durRaw = MLX.sigmoid(duration).sum(axis: -1) / speed
         let durSafe = nanToNum(durRaw, nan: 1.0)
-        let predDur = MLX.clip(MLX.round(durSafe), min: 1, max: 100).asType(.int32)[0]
+        let predDur = MLX.clip(MLX.round(durSafe), min: 1, max: Float(maxFramesPerPhoneme))
+            .asType(.int32)[0]
 
         let durArray: [Int32] = predDur.asArray(Int32.self)
         var indices = [MLXArray]()
         for (i, n) in durArray.enumerated() {
-            let count = min(max(Int(n), 0), 100)
+            let count = min(max(Int(n), 0), maxFramesPerPhoneme)
             if count > 0 {
                 indices.append(MLX.repeated(MLXArray(Int32(i)), count: count))
             }
         }
 
+        // All durations collapsed to zero — return silence instead of crashing on empty concat
         guard !indices.isEmpty else {
             let silence = MLXArray.zeros([1, 1])
             return (silence, predDur)
@@ -283,6 +288,10 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
     // MARK: - Weight Sanitization
 
     func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+        // Quantized checkpoints store conv weights in MLX (out, kernel, in) layout;
+        // non-quantized checkpoints use PyTorch (out, in, kernel) and need transposition.
+        let needsConvTranspose = config.quantization == nil
+
         var result = [String: MLXArray]()
         for (k, v) in weights {
             if k.contains("position_ids") { continue }
@@ -305,8 +314,7 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
             nk = nk.replacingOccurrences(of: ".alpha2.", with: ".alpha2_")
 
             var value = v
-            let isQuantized = config.quantization != nil
-            if !isQuantized {
+            if needsConvTranspose {
                 if (nk.contains("F0_proj.weight") || nk.contains("N_proj.weight")) && v.ndim == 3 {
                     value = v.transposed(0, 2, 1)
                 } else if nk.contains("noise_convs") && nk.hasSuffix(".weight") && v.ndim == 3 {
