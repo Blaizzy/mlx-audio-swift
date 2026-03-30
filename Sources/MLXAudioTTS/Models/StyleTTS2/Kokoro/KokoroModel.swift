@@ -288,9 +288,10 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
     // MARK: - Weight Sanitization
 
     func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
-        // Quantized checkpoints store conv weights in MLX (out, kernel, in) layout;
-        // non-quantized checkpoints use PyTorch (out, in, kernel) and need transposition.
-        let needsConvTranspose = config.quantization == nil
+        let hasPackedQuantizedWeights = weights.keys.contains {
+            $0.hasSuffix(".scales") || $0.hasSuffix(".biases")
+        }
+        let needsConvTranspose = !hasPackedQuantizedWeights
 
         var result = [String: MLXArray]()
         for (k, v) in weights {
