@@ -1289,6 +1289,10 @@ struct CohereTranscribeModuleSetupTests {
           "vocab_size": 16384,
           "sample_rate": 16000,
           "max_audio_clip_s": 35,
+          "quantization_config": {
+            "group_size": 64,
+            "bits": 8
+          },
           "encoder": {
             "d_model": 1280,
             "ff_expansion_factor": 4,
@@ -1321,6 +1325,7 @@ struct CohereTranscribeModuleSetupTests {
         #expect(config.decoder.hiddenSize == 1024)
         #expect(config.decoder.numLayers == 8)
         #expect(config.decoder.maxSequenceLength == 1024)
+        #expect(config.quantization?.bits == 8)
     }
 
     @Test func cohereAudioFeaturesShape() {

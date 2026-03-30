@@ -51,7 +51,13 @@ private func normalizeCohereWeightKeys(_ weights: [String: MLXArray]) -> [String
                 normalized[mappedKey] = value
             }
         } else if mappedKey.hasSuffix(".weight"), value.ndim == 3, mappedKey.contains(".conv.") {
-            normalized[mappedKey] = value.transposed(0, 2, 1)
+            let likelyPyTorchLayout: Bool
+            if mappedKey.contains("depthwise_conv") {
+                likelyPyTorchLayout = value.shape[1] == 1 && value.shape[2] > 1
+            } else {
+                likelyPyTorchLayout = value.shape[2] == 1 && value.shape[1] > 1
+            }
+            normalized[mappedKey] = likelyPyTorchLayout ? value.transposed(0, 2, 1) : value
         } else {
             normalized[mappedKey] = value
         }
@@ -523,7 +529,25 @@ public extension CohereTranscribeModel {
             weights.merge(shard) { _, new in new }
         }
 
-        try model.update(parameters: ModuleParameters.unflattened(normalizeCohereWeightKeys(weights)), verify: .all)
+        let sanitizedWeights = normalizeCohereWeightKeys(weights)
+
+        if config.quantization != nil || config.perLayerQuantization != nil {
+            quantize(model: model) { path, _ in
+                guard sanitizedWeights["\(path).scales"] != nil else {
+                    return nil
+                }
+
+                if let perLayerQuant = config.perLayerQuantization,
+                   let layerQuant = perLayerQuant.quantization(layer: path) {
+                    return layerQuant.asTuple
+                }
+
+                return config.quantization?.asTuple
+            }
+        }
+
+        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .all)
+        model.train(false)
         eval(model)
 
         return model

@@ -42,11 +42,13 @@ public struct CohereTranscribeTextDecoderConfig: Codable, Sendable {
     }
 }
 
-public struct CohereTranscribeConfig: Codable, Sendable {
+public struct CohereTranscribeConfig: Decodable, Sendable {
     public let modelType: String
     public let vocabSize: Int
     public let sampleRate: Int
     public let maxAudioClipS: Int
+    public var quantization: BaseConfiguration.Quantization?
+    public var perLayerQuantization: BaseConfiguration.PerLayerQuantization?
     
     public let encoder: CohereTranscribeAudioEncoderConfig
     
@@ -70,5 +72,23 @@ public struct CohereTranscribeConfig: Codable, Sendable {
         case maxAudioClipS = "max_audio_clip_s"
         case encoder
         case transfDecoder = "transf_decoder"
+        case quantization
+        case quantizationConfig = "quantization_config"
+    }
+
+    public init(from decoder: Swift.Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        modelType = try container.decode(String.self, forKey: .modelType)
+        vocabSize = try container.decode(Int.self, forKey: .vocabSize)
+        sampleRate = try container.decode(Int.self, forKey: .sampleRate)
+        maxAudioClipS = try container.decode(Int.self, forKey: .maxAudioClipS)
+        encoder = try container.decode(CohereTranscribeAudioEncoderConfig.self, forKey: .encoder)
+        transfDecoder = try container.decode(TransfDecoderWrapper.self, forKey: .transfDecoder)
+
+        let baseConfig = try? BaseConfiguration(from: decoder)
+        let globalQuant = try container.decodeIfPresent(BaseConfiguration.Quantization.self, forKey: .quantization)
+        let altGlobalQuant = try container.decodeIfPresent(BaseConfiguration.Quantization.self, forKey: .quantizationConfig)
+        quantization = globalQuant ?? altGlobalQuant
+        perLayerQuantization = baseConfig?.perLayerQuantization
     }
 }
