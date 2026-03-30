@@ -73,15 +73,22 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
         let d = predictor.textEncoder(dEn, style: globalStyle, textLengths: inputLengths, mask: textMask)
         let (x, _) = predictor.lstm(d)
         let duration = predictor.durationProj(x)
-        let durSigmoid = MLX.sigmoid(duration).sum(axis: -1) / speed
-        let predDur = MLX.clip(MLX.round(durSigmoid), min: 1).asType(.int32)[0]
+        let durRaw = MLX.sigmoid(duration).sum(axis: -1) / speed
+        let durSafe = nanToNum(durRaw, nan: 1.0)
+        let predDur = MLX.clip(MLX.round(durSafe), min: 1, max: 100).asType(.int32)[0]
 
         let durArray: [Int32] = predDur.asArray(Int32.self)
         var indices = [MLXArray]()
         for (i, n) in durArray.enumerated() {
-            if n > 0 {
-                indices.append(MLXArray(Array(repeating: Int32(i), count: Int(n))))
+            let count = min(max(Int(n), 0), 100)
+            if count > 0 {
+                indices.append(MLX.repeated(MLXArray(Int32(i)), count: count))
             }
+        }
+
+        guard !indices.isEmpty else {
+            let silence = MLXArray.zeros([1, 1])
+            return (silence, predDur)
         }
         let allIndices = MLX.concatenated(indices, axis: 0)
 
@@ -298,15 +305,17 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
             nk = nk.replacingOccurrences(of: ".alpha2.", with: ".alpha2_")
 
             var value = v
-            if (nk.contains("F0_proj.weight") || nk.contains("N_proj.weight")) && v.ndim == 3 {
-                value = v.transposed(0, 2, 1)
-            } else if nk.contains("noise_convs") && nk.hasSuffix(".weight") && v.ndim == 3 {
-                value = v.transposed(0, 2, 1)
-            } else if nk.hasSuffix("weight_v") && v.ndim == 3 {
-                // Transpose non-canonical [outCh, kH, kW] layout
-                let (o, h, w) = (v.shape[0], v.shape[1], v.shape[2])
-                if !(o >= h && o >= w && h == w) {
+            let isQuantized = config.quantization != nil
+            if !isQuantized {
+                if (nk.contains("F0_proj.weight") || nk.contains("N_proj.weight")) && v.ndim == 3 {
                     value = v.transposed(0, 2, 1)
+                } else if nk.contains("noise_convs") && nk.hasSuffix(".weight") && v.ndim == 3 {
+                    value = v.transposed(0, 2, 1)
+                } else if nk.hasSuffix("weight_v") && v.ndim == 3 {
+                    let (o, h, w) = (v.shape[0], v.shape[1], v.shape[2])
+                    if !(o >= h && o >= w && h == w) {
+                        value = v.transposed(0, 2, 1)
+                    }
                 }
             }
 
