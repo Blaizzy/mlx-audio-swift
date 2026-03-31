@@ -46,9 +46,10 @@ enum ParakeetAudio {
         let normalized: MLXArray
         if config.normalize == "per_feature" {
             let mean = MLX.mean(mel, axis: 0, keepDims: true)
+            let denominator = max(mel.dim(0) - 1, 1)
             let variance = MLX.sum(
                 (mel - mean).square(), axis: 0, keepDims: true
-            ) / Float(mel.dim(0) - 1)
+            ) / Float(denominator)
             let std = MLX.sqrt(variance)
             normalized = (mel - mean) / (std + MLXArray(1e-5, dtype: mel.dtype))
         } else {

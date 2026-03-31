@@ -15,6 +15,8 @@
 //      -only-testing:MLXAudioTests/SenseVoiceNetworkTests \
 //      -only-testing:MLXAudioTests/ParakeetSTTTests \
 //      -only-testing:MLXAudioTests/VoxtralRealtimeSTTTests \
+//      -only-testing:MLXAudioTests/CohereTranscribeModuleSetupTests \
+//      -only-testing:MLXAudioTests/CohereTranscribeSTTTests \
 //      CODE_SIGNING_ALLOWED=NO
 //
 //  Run a single category:
@@ -30,6 +32,8 @@
 //    -only-testing:'MLXAudioTests/SenseVoiceNetworkTests'
 //    -only-testing:'MLXAudioTests/ParakeetSTTTests'
 //    -only-testing:'MLXAudioTests/VoxtralRealtimeSTTTests'
+//    -only-testing:'MLXAudioTests/CohereTranscribeModuleSetupTests'
+//    -only-testing:'MLXAudioTests/CohereTranscribeSTTTests'
 //
 //  Run a single test (note the trailing parentheses for Swift Testing):
 //    -only-testing:'MLXAudioTests/GLMASRModuleSetupTests/whisperConfigDefaults()'
@@ -97,6 +101,37 @@ private func makeSentencePieceModelData(_ pieces: [(token: String, score: Float,
         data.append(pieceData)
     }
     return data
+}
+
+private func makeCohereFixtureConfigJSON(vocabSize: Int = 32, hiddenSize: Int = 16, numLayers: Int = 0, maxSequenceLength: Int = 32) -> String {
+    """
+    {
+      "model_type": "cohere_asr",
+      "vocab_size": \(vocabSize),
+      "sample_rate": 16000,
+      "max_audio_clip_s": 35,
+      "encoder": {
+        "d_model": \(hiddenSize),
+        "ff_expansion_factor": 2,
+        "n_heads": 2,
+        "conv_kernel_size": 9,
+        "n_layers": \(numLayers),
+        "pos_emb_max_len": 64,
+        "subsampling_conv_channels": 8,
+        "subsampling_factor": 8,
+        "feat_in": 128
+      },
+      "transf_decoder": {
+        "config_dict": {
+          "hidden_size": \(hiddenSize),
+          "inner_size": \(hiddenSize * 2),
+          "num_attention_heads": 2,
+          "num_layers": \(numLayers),
+          "max_sequence_length": \(maxSequenceLength)
+        }
+      }
+    }
+    """
 }
 
 
@@ -1094,6 +1129,51 @@ struct Qwen3ASRModuleSetupTests {
         #expect(model.config.textConfig.tieWordEmbeddings == false)
     }
 
+    @Test func qwen3ASRDefaultGenerationParametersAllowAutoLanguage() {
+        let model = Qwen3ASRModel(Qwen3ASRConfig())
+
+        #expect(model.defaultGenerationParameters.language == nil)
+    }
+
+    @Test func qwen3ASRNormalizesLanguageAliases() {
+        let model = Qwen3ASRModel(
+            Qwen3ASRConfig(supportLanguages: ["Chinese", "English", "Japanese"])
+        )
+
+        #expect(model.normalizeLanguageName("en") == "English")
+        #expect(model.normalizeLanguageName(" chinese ") == "Chinese")
+        #expect(model.normalizeLanguageName("ja") == "Japanese")
+    }
+
+    @Test func qwen3ASRParsesDetectedChunkLanguage() {
+        let model = Qwen3ASRModel(
+            Qwen3ASRConfig(supportLanguages: ["Chinese", "English", "Japanese"])
+        )
+
+        let parsed = model.parseGeneratedChunk(
+            "language chinese<asr_text>你好世界",
+            forcedLanguage: nil
+        )
+
+        #expect(parsed.language == "Chinese")
+        #expect(parsed.text == "你好世界")
+    }
+
+    @Test func qwen3ASRChunkParsingFallsBackToEnglishForBareText() {
+        let model = Qwen3ASRModel(Qwen3ASRConfig())
+
+        let parsed = model.parseGeneratedChunk("hello world", forcedLanguage: nil)
+
+        #expect(parsed.language == "English")
+        #expect(parsed.text == "hello world")
+    }
+
+    @Test func qwen3ASRMergeLanguagesDeduplicatesInOrder() {
+        let merged = Qwen3ASRModel.mergeLanguages(["Chinese", "", "English", "Chinese", nil])
+
+        #expect(merged == "Chinese,English")
+    }
+
     @Test func qwen3ForcedAlignerModelConstruction() {
         let config = Qwen3ASRConfig(
             audioConfig: Qwen3AudioEncoderConfig(
@@ -1197,6 +1277,200 @@ struct Qwen3ASRModuleSetupTests {
         // ForcedAligner should keep lm_head
         #expect(sanitized["lm_head.weight"] != nil)
         #expect(sanitized["model.norm.weight"] != nil)
+    }
+}
+
+struct CohereTranscribeModuleSetupTests {
+
+    @Test func cohereConfigDecoding() throws {
+        let json = """
+        {
+          "model_type": "cohere_asr",
+          "vocab_size": 16384,
+          "sample_rate": 16000,
+          "max_audio_clip_s": 35,
+          "quantization_config": {
+            "group_size": 64,
+            "bits": 8
+          },
+          "encoder": {
+            "d_model": 1280,
+            "ff_expansion_factor": 4,
+            "n_heads": 8,
+            "conv_kernel_size": 9,
+            "n_layers": 48,
+            "pos_emb_max_len": 5000,
+            "subsampling_conv_channels": 256,
+            "subsampling_factor": 8,
+            "feat_in": 128
+          },
+          "transf_decoder": {
+            "config_dict": {
+              "hidden_size": 1024,
+              "inner_size": 4096,
+              "num_attention_heads": 8,
+              "num_layers": 8,
+              "max_sequence_length": 1024
+            }
+          }
+        }
+        """
+
+        let config = try JSONDecoder().decode(CohereTranscribeConfig.self, from: Data(json.utf8))
+        #expect(config.modelType == "cohere_asr")
+        #expect(config.vocabSize == 16384)
+        #expect(config.sampleRate == 16000)
+        #expect(config.encoder.dModel == 1280)
+        #expect(config.encoder.featIn == 128)
+        #expect(config.decoder.hiddenSize == 1024)
+        #expect(config.decoder.numLayers == 8)
+        #expect(config.decoder.maxSequenceLength == 1024)
+        #expect(config.quantization?.bits == 8)
+    }
+
+    @Test func cohereAudioFeaturesShape() {
+        let audio = MLXArray(Array(repeating: Float(0), count: 16_000))
+        let filters = CohereTranscribeAudio.computeMelFilters()
+        let features = CohereTranscribeAudio.computeFeatures(audio: audio, melFilters: filters)
+
+        #expect(features.ndim == 3)
+        #expect(features.shape[0] == 1)
+        #expect(features.shape[1] == 128)
+        #expect(features.shape[2] > 0)
+        #expect(features.reshaped(-1)[0].item(Float.self).isFinite)
+    }
+
+    @Test func cohereTokenizerBuildsPromptTokens() throws {
+        let fixtureDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cohere-tokenizer-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtureDir) }
+
+        let tokenizerData = makeSentencePieceModelData([
+            ("<unk>", 0, 2),
+            ("<s>", 0, 3),
+            ("</s>", 0, 3),
+            ("▁hello", -0.1, 1),
+            ("▁world", -0.2, 1),
+        ])
+        try tokenizerData.write(to: fixtureDir.appendingPathComponent("tokenizer.model"))
+
+        let tokenizerConfig = """
+        {
+          "added_tokens_decoder": {
+            "3": {"content": "<|endoftext|>"},
+            "4": {"content": "<|startofcontext|>"},
+            "5": {"content": "<|startoftranscript|>"},
+            "6": {"content": "<|en|>"},
+            "7": {"content": "<|pnc|>"},
+            "8": {"content": "<|notimestamp|>"},
+            "9": {"content": "<|nodiarize|>"},
+            "10": {"content": "<|noitn|>"},
+            "11": {"content": "<|emo:undefined|>"},
+            "12": {"content": "<|timestamp|>"},
+            "13": {"content": "<|nopnc|>"}
+          }
+        }
+        """
+        try tokenizerConfig.write(
+            to: fixtureDir.appendingPathComponent("tokenizer_config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let config = try JSONDecoder().decode(
+            CohereTranscribeConfig.self,
+            from: Data(makeCohereFixtureConfigJSON().utf8)
+        )
+
+        let tokenizer = try CohereTranscribeTokenizer(modelDir: fixtureDir, config: config)
+        let prompt = tokenizer.buildPromptTokens(language: "en")
+
+        #expect(prompt.count == 9)
+        #expect(prompt[0] == 4)
+        #expect(prompt[1] == 5)
+        #expect(prompt[2] == 11)
+        #expect(prompt[3] == 6)
+        #expect(prompt[4] == 6)
+        #expect(prompt[5] == 7)
+        #expect(prompt[6] == 10)
+        #expect(prompt[7] == 8)
+        #expect(prompt[8] == 9)
+        #expect(tokenizer.encode(text: "<|endoftext|>") == [3])
+        #expect(tokenizer.decode(tokens: [3, 3]).isEmpty)
+    }
+}
+
+struct CohereTranscribeSTTTests {
+
+    @Test func fromDirectoryFixtureSmokeTest() throws {
+        let fixtureDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cohere-fixture-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtureDir) }
+
+        let configJSON = makeCohereFixtureConfigJSON()
+        try configJSON.write(
+            to: fixtureDir.appendingPathComponent("config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let tokenizerData = makeSentencePieceModelData([
+            ("<unk>", 0, 2),
+            ("<s>", 0, 3),
+            ("</s>", 0, 3),
+            ("▁a", -0.1, 1),
+            ("▁b", -0.2, 1),
+            ("▁c", -0.3, 1),
+        ])
+        try tokenizerData.write(to: fixtureDir.appendingPathComponent("tokenizer.model"))
+
+        let tokenizerConfig = """
+        {
+          "added_tokens_decoder": {
+            "3": {"content": "<|endoftext|>"},
+            "4": {"content": "<|startofcontext|>"},
+            "5": {"content": "<|startoftranscript|>"},
+            "6": {"content": "<|en|>"},
+            "7": {"content": "<|pnc|>"},
+            "8": {"content": "<|notimestamp|>"},
+            "9": {"content": "<|nodiarize|>"},
+            "10": {"content": "<|noitn|>"},
+            "11": {"content": "<|emo:undefined|>"},
+            "12": {"content": "<|timestamp|>"},
+            "13": {"content": "<|nopnc|>"}
+          }
+        }
+        """
+        try tokenizerConfig.write(
+            to: fixtureDir.appendingPathComponent("tokenizer_config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let seedModel = CohereTranscribeModel(try JSONDecoder().decode(
+            CohereTranscribeConfig.self,
+            from: Data(configJSON.utf8)
+        ))
+        var weights = Dictionary(uniqueKeysWithValues: seedModel.parameters().flattened().map { key, value in
+            (key, MLXArray.zeros(value.shape, type: Float.self).asType(value.dtype))
+        })
+        weights["lm_head.bias"] = MLXArray(
+            (0..<32).map { $0 == 3 ? Float(1000) : Float(0) }
+        )
+        try MLX.save(arrays: weights, url: fixtureDir.appendingPathComponent("model.safetensors"))
+
+        let model = try CohereTranscribeModel.fromDirectory(fixtureDir)
+        let output = model.generate(
+            audio: MLXArray(Array(repeating: Float(0), count: 16_000)),
+            generationParameters: STTGenerateParameters(language: "en")
+        )
+
+        #expect(output.text.isEmpty)
+        #expect(output.promptTokens == 9)
+        #expect(output.generationTokens == 0)
+        #expect(output.totalTokens == 9)
     }
 }
 
@@ -1842,7 +2116,22 @@ struct ParakeetSTTTests {
         ])
     }
 
-    @Test func fromDirectorySmokeTestWithFixtureConfigAndWeights() async throws {
+    @Test func tokenizerFiltersSpecialTokens() {
+        let vocab = ["<unk>", "<|nospeech|>", "<pad>", "<|startoftranscript|>",
+                     "<|pnc|>", "<|ru|>", "▁", "h", "e", "l", "o"]
+        let tokens = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10]
+        let text = ParakeetTokenizer.decode(tokens: tokens, vocabulary: vocab)
+        #expect(text == " hello")
+
+        #expect(ParakeetTokenizer.isSpecialToken(0, vocabulary: vocab) == true)   // <unk>
+        #expect(ParakeetTokenizer.isSpecialToken(2, vocabulary: vocab) == true)   // <pad>
+        #expect(ParakeetTokenizer.isSpecialToken(3, vocabulary: vocab) == true)   // <|startoftranscript|>
+        #expect(ParakeetTokenizer.isSpecialToken(5, vocabulary: vocab) == true)   // <|ru|>
+        #expect(ParakeetTokenizer.isSpecialToken(7, vocabulary: vocab) == false)  // h
+        #expect(ParakeetTokenizer.isSpecialToken(99, vocabulary: vocab) == false) // out of range
+    }
+
+    @Test func modelIsInEvalModeAfterLoading() throws {
         let fixtureDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("parakeet-fixture-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
@@ -1900,12 +2189,50 @@ struct ParakeetSTTTests {
         try MLX.save(arrays: weights, url: fixtureDir.appendingPathComponent("model.safetensors"))
 
         let model = try ParakeetModel.fromDirectory(fixtureDir)
+        #expect(model.training == false)
+
         let audio = MLXArray(Array(repeating: Float(0), count: 3200))
         let output = model.generate(audio: audio)
 
         #expect(model.variant == .ctc)
         #expect(model.vocabulary.count == 4)
         #expect(output.text.count >= 0)
+    }
+
+    @Test func melPreprocessingNumericInvariants() {
+        let config = ParakeetPreprocessConfig(
+            sampleRate: 16000, normalize: "per_feature",
+            windowSize: 0.025, windowStride: 0.01, window: "hann",
+            features: 128, nFft: 512, dither: 0
+        )
+
+        let audio = MLXArray(Array(repeating: Float(0.1), count: 16000))
+        let mel = ParakeetAudio.logMelSpectrogram(audio, config: config)
+
+        #expect(mel.ndim == 3)
+        #expect(mel.shape[0] == 1)
+        #expect(mel.shape[2] == 128)
+
+        let mean = MLX.mean(mel).item(Float.self)
+        let std = MLX.std(mel).item(Float.self)
+        #expect(abs(mean) < 0.01, "Per-feature normalized mel should have near-zero mean, got \(mean)")
+        #expect(abs(std - 1.0) < 0.05, "Per-feature normalized mel should have near-unit std, got \(std)")
+        #expect(mel.min().item(Float.self).isFinite)
+        #expect(mel.max().item(Float.self).isFinite)
+    }
+
+    @Test func melPreprocessingShortAudioDoesNotCrash() {
+        let config = ParakeetPreprocessConfig(
+            sampleRate: 16000, normalize: "per_feature",
+            windowSize: 0.025, windowStride: 0.01, window: "hann",
+            features: 80, nFft: 512, dither: 0
+        )
+
+        let shortAudio = MLXArray([Float(0.1), 0.2, 0.3])
+        let mel = ParakeetAudio.logMelSpectrogram(shortAudio, config: config)
+
+        #expect(mel.ndim == 3)
+        #expect(mel.reshaped(-1)[0].item(Float.self).isFinite)
     }
 }
 

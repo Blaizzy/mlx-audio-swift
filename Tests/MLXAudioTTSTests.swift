@@ -17,8 +17,17 @@
 
 import Testing
 import MLX
+import Metal
 import MLXLMCommon
 import Foundation
+
+private let metalAvailable: Bool = {
+    #if canImport(Metal)
+    return MTLCreateSystemDefaultDevice() != nil
+    #else
+    return false
+    #endif
+}()
 
 @testable import MLXAudioCore
 @testable import MLXAudioTTS
@@ -635,11 +644,15 @@ struct KittenTTSTests {
     }
 
     @Test func modelStructureMatchesWeightKeys() throws {
-        let modelDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache/huggingface/hub/models--mlx-community--kitten-tts-nano-0.8/snapshots/f57e91b190ca3323aa94c7bbdde4565343d79588")
+        // Integration test: requires model downloaded locally. Set MLXAUDIO_TEST_MODEL_DIR or skip.
+        guard let dirPath = ProcessInfo.processInfo.environment["MLXAUDIO_TEST_MODEL_DIR"] else {
+            print("⚠️ Skipping: set MLXAUDIO_TEST_MODEL_DIR to model directory")
+            return
+        }
+        let modelDir = URL(fileURLWithPath: dirPath)
         let configURL = modelDir.appendingPathComponent("config.json")
         guard FileManager.default.fileExists(atPath: configURL.path) else {
-            print("⚠️ Skipping: model not downloaded")
+            print("⚠️ Skipping: config.json not found at \(configURL.path)")
             return
         }
 
@@ -752,8 +765,530 @@ struct KittenTTSTests {
         #expect(config.voiceAliases?["Hugo"] == nil)
     }
 
-    @Test func factoryInfersKittenModelType() {
-        let lower = "mlx-community/kitten-tts-nano-0.8-8bit".lowercased()
-        #expect(lower.contains("kitten"))
+    @Test func factoryInfersKittenModelType() throws {
+        let resolved = TTS.resolveModelType(modelRepo: "mlx-community/kitten-tts-nano-0.8-8bit")
+        #expect(resolved == "kitten_tts")
+        let resolved2 = TTS.resolveModelType(modelRepo: "mlx-community/kitten-tts-mini-0.8")
+        #expect(resolved2 == "kitten_tts")
+    }
+}
+
+
+// MARK: - Kokoro TTS Tests
+
+private let kokoroConfigJSON = """
+{
+    "model_type": "kokoro",
+    "hidden_dim": 512, "n_token": 178, "dim_in": 64, "dropout": 0.2,
+    "max_conv_dim": 512, "max_dur": 50, "multispeaker": false,
+    "n_layer": 3, "n_mels": 80, "style_dim": 128,
+    "text_encoder_kernel_size": 5, "asr_res_dim": 64,
+    "vocab": {"a": 1, "b": 2, "c": 3, "h": 4, "e": 5, "l": 6, "o": 7, " ": 8},
+    "plbert": {
+        "num_hidden_layers": 12, "num_attention_heads": 12,
+        "hidden_size": 768, "intermediate_size": 2048,
+        "max_position_embeddings": 512, "embedding_size": 128,
+        "inner_group_num": 1, "num_hidden_groups": 1,
+        "hidden_dropout_prob": 0.0, "attention_probs_dropout_prob": 0.0,
+        "type_vocab_size": 2, "layer_norm_eps": 1e-12
+    },
+    "istftnet": {
+        "resblock_kernel_sizes": [3, 7, 11], "upsample_rates": [10, 6],
+        "upsample_initial_channel": 512,
+        "resblock_dilation_sizes": [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+        "upsample_kernel_sizes": [20, 12],
+        "gen_istft_n_fft": 20, "gen_istft_hop_size": 5
+    }
+}
+"""
+
+private func makeKokoroConfig() throws -> KokoroConfig {
+    try JSONDecoder().decode(KokoroConfig.self, from: kokoroConfigJSON.data(using: .utf8)!)
+}
+
+@Suite("KokoroTTS")
+struct KokoroTTSTests {
+
+    @Test func configDecodesFromJSON() throws {
+        let config = try makeKokoroConfig()
+        #expect(config.modelType == "kokoro")
+        #expect(config.hiddenDim == 512)
+        #expect(config.nToken == 178)
+        #expect(config.dimIn == 64)
+        #expect(config.dropout == 0.2)
+        #expect(config.multispeaker == false)
+        #expect(config.styleDim == 128)
+        #expect(config.vocab["a"] == 1)
+        #expect(config.vocab.count == 8)
+        #expect(config.plbert.numHiddenLayers == 12)
+        #expect(config.istftnet.upsampleRates == [10, 6])
+    }
+
+    @Test func configDefaultValues() throws {
+        let json = """
+        {
+            "model_type": "kokoro", "hidden_dim": 512, "n_token": 178,
+            "vocab": {"x": 1},
+            "plbert": {
+                "num_hidden_layers": 12, "num_attention_heads": 12,
+                "hidden_size": 768, "intermediate_size": 2048,
+                "max_position_embeddings": 512, "embedding_size": 128,
+                "inner_group_num": 1, "num_hidden_groups": 1,
+                "hidden_dropout_prob": 0.0, "attention_probs_dropout_prob": 0.0,
+                "type_vocab_size": 2, "layer_norm_eps": 1e-12
+            },
+            "istftnet": {
+                "resblock_kernel_sizes": [3], "upsample_rates": [10, 6],
+                "upsample_initial_channel": 512,
+                "resblock_dilation_sizes": [[1, 3, 5]],
+                "upsample_kernel_sizes": [20, 12],
+                "gen_istft_n_fft": 20, "gen_istft_hop_size": 5
+            }
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(KokoroConfig.self, from: json)
+        #expect(config.sampleRate == 24000)
+        #expect(config.dimIn == 64)
+        #expect(config.dropout == 0.2)
+        #expect(config.maxConvDim == 512)
+        #expect(config.maxDur == 50)
+        #expect(config.nLayer == 3)
+        #expect(config.nMels == 80)
+        #expect(config.styleDim == 128)
+        #expect(config.textEncoderKernelSize == 5)
+        #expect(config.asrResDim == 64)
+        #expect(config.voicesPath == nil)
+        #expect(config.voiceAliases == nil)
+        #expect(config.speedPriors == nil)
+        #expect(config.quantization == nil)
+    }
+
+    @Test func configDecodesQuantizationAlias() throws {
+        let json = """
+        {
+            "model_type": "kokoro", "hidden_dim": 512, "n_token": 178,
+            "vocab": {"x": 1},
+            "quantization_config": {"group_size": 64, "bits": 4},
+            "plbert": {
+                "num_hidden_layers": 12, "num_attention_heads": 12,
+                "hidden_size": 768, "intermediate_size": 2048,
+                "max_position_embeddings": 512, "embedding_size": 128,
+                "inner_group_num": 1, "num_hidden_groups": 1,
+                "hidden_dropout_prob": 0.0, "attention_probs_dropout_prob": 0.0,
+                "type_vocab_size": 2, "layer_norm_eps": 1e-12
+            },
+            "istftnet": {
+                "resblock_kernel_sizes": [3], "upsample_rates": [10, 6],
+                "upsample_initial_channel": 512,
+                "resblock_dilation_sizes": [[1, 3, 5]],
+                "upsample_kernel_sizes": [20, 12],
+                "gen_istft_n_fft": 20, "gen_istft_hop_size": 5
+            }
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(KokoroConfig.self, from: json)
+        #expect(config.quantization == BaseConfiguration.Quantization(groupSize: 64, bits: 4))
+    }
+
+    @Test func tokenizerConvertsCharsToIDs() throws {
+        let config = try makeKokoroConfig()
+        let tokens = "hello".compactMap { config.vocab[String($0)] }
+        #expect(tokens == [4, 5, 6, 6, 7])
+    }
+
+    @Test func tokenizerSkipsUnknownChars() throws {
+        let config = try makeKokoroConfig()
+        let tokens = "a日b".compactMap { config.vocab[String($0)] }
+        #expect(tokens == [1, 2])
+    }
+
+    @Test func tokenizerEmptyString() throws {
+        let config = try makeKokoroConfig()
+        let tokens = "".compactMap { config.vocab[String($0)] }
+        #expect(tokens.isEmpty)
+    }
+
+    @Test func sanitizeSkipsPositionIds() throws {
+        guard metalAvailable else { return }
+        let config = try makeKokoroConfig()
+        let model = KokoroModel.testInit(config: config)
+        let sanitized = model.sanitize(weights: [
+            "bert.embeddings.position_ids": MLXArray.zeros([1, 512]),
+            "bert.encoder.position_ids": MLXArray.zeros([1]),
+            "bert.embeddings.word_embeddings.weight": MLXArray.zeros([1, 1]),
+        ])
+        #expect(sanitized["bert.embeddings.position_ids"] == nil)
+        #expect(sanitized["bert.encoder.position_ids"] == nil)
+        #expect(sanitized["bert.embeddings.word_embeddings.weight"] != nil)
+    }
+
+    @Test func sanitizeRemapsLSTMKeys() throws {
+        guard metalAvailable else { return }
+        let config = try makeKokoroConfig()
+        let model = KokoroModel.testInit(config: config)
+        let sanitized = model.sanitize(weights: [
+            "predictor.lstm.weight_ih_l0": MLXArray.zeros([1]),
+            "predictor.lstm.weight_hh_l0": MLXArray.zeros([1]),
+            "predictor.lstm.bias_ih_l0": MLXArray.zeros([1]),
+            "predictor.lstm.bias_hh_l0": MLXArray.zeros([1]),
+            "predictor.lstm.weight_ih_l0_reverse": MLXArray.zeros([1]),
+            "predictor.lstm.weight_hh_l0_reverse": MLXArray.zeros([1]),
+            "predictor.lstm.bias_ih_l0_reverse": MLXArray.zeros([1]),
+            "predictor.lstm.bias_hh_l0_reverse": MLXArray.zeros([1]),
+        ])
+        #expect(sanitized["predictor.lstm.Wx_forward"] != nil)
+        #expect(sanitized["predictor.lstm.Wh_forward"] != nil)
+        #expect(sanitized["predictor.lstm.bias_ih_forward"] != nil)
+        #expect(sanitized["predictor.lstm.bias_hh_forward"] != nil)
+        #expect(sanitized["predictor.lstm.Wx_backward"] != nil)
+        #expect(sanitized["predictor.lstm.Wh_backward"] != nil)
+        #expect(sanitized["predictor.lstm.bias_ih_backward"] != nil)
+        #expect(sanitized["predictor.lstm.bias_hh_backward"] != nil)
+        #expect(sanitized["predictor.lstm.weight_ih_l0"] == nil)
+        #expect(sanitized["predictor.lstm.weight_ih_l0_reverse"] == nil)
+    }
+
+    @Test func sanitizeRemapsLayerNormKeys() throws {
+        guard metalAvailable else { return }
+        let config = try makeKokoroConfig()
+        let model = KokoroModel.testInit(config: config)
+        let sanitized = model.sanitize(weights: [
+            "bert.embeddings.LayerNorm.gamma": MLXArray.zeros([1]),
+            "bert.embeddings.LayerNorm.beta": MLXArray.zeros([1]),
+        ])
+        #expect(sanitized["bert.embeddings.LayerNorm.weight"] != nil)
+        #expect(sanitized["bert.embeddings.LayerNorm.bias"] != nil)
+        #expect(sanitized["bert.embeddings.LayerNorm.gamma"] == nil)
+    }
+
+    @Test func sanitizeRemapsAlphaKeys() throws {
+        guard metalAvailable else { return }
+        let config = try makeKokoroConfig()
+        let model = KokoroModel.testInit(config: config)
+        let sanitized = model.sanitize(weights: [
+            "decoder.generator.resblocks.0.alpha1.0": MLXArray.zeros([1]),
+            "decoder.generator.resblocks.0.alpha2.0": MLXArray.zeros([1]),
+        ])
+        #expect(sanitized["decoder.generator.resblocks.0.alpha1_0"] != nil)
+        #expect(sanitized["decoder.generator.resblocks.0.alpha2_0"] != nil)
+    }
+
+    @Test func sanitizeTransposesF0NProj() throws {
+        guard metalAvailable else { return }
+        let config = try makeKokoroConfig()
+        let model = KokoroModel.testInit(config: config)
+        let w = MLXArray(Array(stride(from: Float(0), to: 24, by: 1))).reshaped([2, 3, 4])
+        let sanitized = model.sanitize(weights: [
+            "predictor.F0_proj.weight": w,
+            "predictor.N_proj.weight": w,
+        ])
+        #expect(sanitized["predictor.F0_proj.weight"]!.shape == [2, 4, 3])
+        #expect(sanitized["predictor.N_proj.weight"]!.shape == [2, 4, 3])
+    }
+
+    @Test func sanitizeTransposesNoiseConvs() throws {
+        guard metalAvailable else { return }
+        let config = try makeKokoroConfig()
+        let model = KokoroModel.testInit(config: config)
+        let w = MLXArray(Array(stride(from: Float(0), to: 24, by: 1))).reshaped([2, 3, 4])
+        let sanitized = model.sanitize(weights: [
+            "decoder.generator.noise_convs.0.weight": w,
+        ])
+        #expect(sanitized["decoder.generator.noise_convs.0.weight"]!.shape == [2, 4, 3])
+    }
+
+    @Test func sanitizeTransposesNonCanonicalWeightV() throws {
+        guard metalAvailable else { return }
+        let config = try makeKokoroConfig()
+        let model = KokoroModel.testInit(config: config)
+        let canonical = MLXArray.zeros([8, 3, 3])
+        let nonCanonical = MLXArray.zeros([3, 8, 1])
+        let sanitized = model.sanitize(weights: [
+            "text_encoder.cnn.0.0.weight_v": canonical,
+            "decoder.encode.conv1.weight_v": nonCanonical,
+        ])
+        #expect(sanitized["text_encoder.cnn.0.0.weight_v"]!.shape == [8, 3, 3])
+        #expect(sanitized["decoder.encode.conv1.weight_v"]!.shape == [3, 1, 8])
+    }
+
+    @Test func factoryInfersKokoroModelType() {
+        let repoNames = ["mlx-community/Kokoro-82M-bf16", "mlx-community/kokoro-v1-8bit"]
+        for name in repoNames {
+            #expect(name.lowercased().contains("kokoro"))
+        }
+    }
+
+    @Test func configDecodesMinimalPLBert() throws {
+        let json = """
+        {
+            "model_type": "kokoro", "hidden_dim": 512, "n_token": 178,
+            "vocab": {"x": 1},
+            "plbert": {
+                "hidden_size": 768, "num_attention_heads": 12,
+                "intermediate_size": 2048, "max_position_embeddings": 512,
+                "num_hidden_layers": 12, "dropout": 0.1
+            },
+            "istftnet": {
+                "resblock_kernel_sizes": [3], "upsample_rates": [10, 6],
+                "upsample_initial_channel": 512,
+                "resblock_dilation_sizes": [[1, 3, 5]],
+                "upsample_kernel_sizes": [20, 12],
+                "gen_istft_n_fft": 20, "gen_istft_hop_size": 5
+            }
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(KokoroConfig.self, from: json)
+        #expect(config.plbert.hiddenSize == 768)
+        #expect(config.plbert.embeddingSize == 128)
+        #expect(config.plbert.innerGroupNum == 1)
+        #expect(config.plbert.numHiddenGroups == 1)
+        #expect(config.plbert.hiddenDropoutProb == 0.1)
+        #expect(config.plbert.typeVocabSize == 2)
+    }
+
+    @Test func modelStructureMatchesWeightKeys() throws {
+        guard metalAvailable else { return }
+        guard let dirPath = ProcessInfo.processInfo.environment["MLXAUDIO_KOKORO_MODEL_DIR"] else {
+            print("⚠️ Skipping: set MLXAUDIO_KOKORO_MODEL_DIR to model directory")
+            return
+        }
+        let modelDir = URL(fileURLWithPath: dirPath)
+        let configURL = modelDir.appendingPathComponent("config.json")
+        guard FileManager.default.fileExists(atPath: configURL.path) else {
+            print("⚠️ Skipping: config.json not found at \(configURL.path)")
+            return
+        }
+
+        let configData = try Data(contentsOf: configURL)
+        let config = try JSONDecoder().decode(KokoroConfig.self, from: configData)
+        let model = KokoroModel.testInit(config: config)
+
+        let weightsURL = modelDir.appendingPathComponent("model.safetensors")
+        let rawWeights = try MLX.loadArrays(url: weightsURL)
+        let sanitized = model.sanitize(weights: rawWeights)
+
+        let modelKeys = Set(model.parameters().flattened().map(\.0))
+        let weightKeys = Set(sanitized.keys)
+
+        let missingInModel = weightKeys.subtracting(modelKeys)
+        let missingInWeights = modelKeys.subtracting(weightKeys)
+
+        if !missingInModel.isEmpty {
+            print("❌ Weight keys not found in model (\(missingInModel.count)):")
+            for k in missingInModel.sorted().prefix(20) { print("  \(k)") }
+        }
+        if !missingInWeights.isEmpty {
+            print("⚠️ Model keys not in weights (\(missingInWeights.count)):")
+            for k in missingInWeights.sorted().prefix(20) { print("  \(k)") }
+        }
+
+        #expect(missingInModel.count == 0, "Weight keys not matched by model structure")
+    }
+}
+
+// MARK: - Kokoro Multilingual Processor Tests
+
+@Suite("KokoroMultilingualProcessor")
+struct KokoroMultilingualProcessorTests {
+
+    @Test func voiceLanguageMapCoversAllPrefixes() {
+        let map = KokoroMultilingualProcessor.voiceLanguageMap
+        #expect(map["a"] == "en-us")
+        #expect(map["b"] == "en-gb")
+        #expect(map["e"] == "es")
+        #expect(map["f"] == "fr")
+        #expect(map["h"] == "hi")
+        #expect(map["i"] == "it")
+        #expect(map["j"] == "ja")
+        #expect(map["p"] == "pt")
+        #expect(map["z"] == "cmn")
+        #expect(map.count == 9)
+    }
+
+    @Test func languageForVoiceInfersCorrectly() {
+        #expect(KokoroMultilingualProcessor.languageForVoice("af_heart") == "en-us")
+        #expect(KokoroMultilingualProcessor.languageForVoice("am_adam") == "en-us")
+        #expect(KokoroMultilingualProcessor.languageForVoice("bf_emma") == "en-gb")
+        #expect(KokoroMultilingualProcessor.languageForVoice("ef_dora") == "es")
+        #expect(KokoroMultilingualProcessor.languageForVoice("ff_siwis") == "fr")
+        #expect(KokoroMultilingualProcessor.languageForVoice("hf_alpha") == "hi")
+        #expect(KokoroMultilingualProcessor.languageForVoice("if_sara") == "it")
+        #expect(KokoroMultilingualProcessor.languageForVoice("jf_alpha") == "ja")
+        #expect(KokoroMultilingualProcessor.languageForVoice("pf_dora") == "pt")
+        #expect(KokoroMultilingualProcessor.languageForVoice("zf_xiaobei") == "cmn")
+    }
+
+    @Test func languageForVoiceReturnsNilForEmpty() {
+        #expect(KokoroMultilingualProcessor.languageForVoice("") == nil)
+    }
+
+    @Test func languageForVoiceReturnsNilForUnknownPrefix() {
+        #expect(KokoroMultilingualProcessor.languageForVoice("xf_unknown") == nil)
+    }
+
+    @Test func processEnglishDelegatesToMisaki() async throws {
+        guard metalAvailable else { return }
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+        let processor = KokoroMultilingualProcessor()
+        try await processor.prepare(for: "en-us")
+        let result = try processor.process(text: "hello", language: "en-us")
+        #expect(!result.isEmpty)
+        #expect(result != "hello")
+    }
+
+    @Test func processEnglishGBDelegatesToMisaki() async throws {
+        guard metalAvailable else { return }
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+        let processor = KokoroMultilingualProcessor()
+        try await processor.prepare(for: "en-gb")
+        let result = try processor.process(text: "hello", language: "en-gb")
+        #expect(!result.isEmpty)
+        #expect(result != "hello")
+    }
+
+    @Test func processNilLanguageDefaultsToEnglish() async throws {
+        guard metalAvailable else { return }
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+        let processor = KokoroMultilingualProcessor()
+        try await processor.prepare(for: "en-us")
+        let result = try processor.process(text: "hello", language: nil)
+        #expect(!result.isEmpty)
+        #expect(result != "hello")
+    }
+
+    @Test func processUnsupportedLanguageThrows() {
+        guard metalAvailable else { return }
+        let processor = KokoroMultilingualProcessor()
+        #expect(throws: LexiconError.self) {
+            try processor.process(text: "test", language: "xyz")
+        }
+    }
+
+    @Test func processLexiconLangWithoutDownloadThrows() {
+        guard metalAvailable else { return }
+        let processor = KokoroMultilingualProcessor(lexiconRepo: "nonexistent/repo")
+        #expect(throws: LexiconError.self) {
+            try processor.process(text: "hola", language: "es")
+        }
+    }
+
+    @Test func processNeuralLangWithoutModelThrows() {
+        guard metalAvailable else { return }
+        let processor = KokoroMultilingualProcessor(neuralG2PRepo: "nonexistent/repo")
+        #expect(throws: LexiconError.self) {
+            try processor.process(text: "こんにちは", language: "ja")
+        }
+    }
+
+    @Test func splitWordsCJKSplitsByCharacter() {
+        guard metalAvailable else { return }
+        let processor = KokoroMultilingualProcessor()
+        let tokens = processor.splitWords(text: "こんにちは世界", lang: "ja")
+        #expect(tokens == ["こ", "ん", "に", "ち", "は", "世", "界"])
+    }
+
+    @Test func splitWordsCJKSkipsWhitespace() {
+        guard metalAvailable else { return }
+        let processor = KokoroMultilingualProcessor()
+        let tokens = processor.splitWords(text: "你好 世界", lang: "cmn")
+        #expect(tokens == ["你", "好", "世", "界"])
+    }
+
+    @Test func splitWordsRegularSplitsByPunctuation() {
+        guard metalAvailable else { return }
+        let processor = KokoroMultilingualProcessor()
+        let tokens = processor.splitWords(text: "hola, mundo!", lang: "es")
+        #expect(tokens == ["hola", ",", "mundo", "!"])
+    }
+
+    @Test func splitWordsHindiSplitsBySpace() {
+        guard metalAvailable else { return }
+        let processor = KokoroMultilingualProcessor()
+        let tokens = processor.splitWords(text: "नमस्ते दुनिया", lang: "hi")
+        #expect(tokens == ["नमस्ते", "दुनिया"])
+    }
+
+    @Test func lookupWordDirectMatch() {
+        guard metalAvailable else { return }
+        let processor = KokoroMultilingualProcessor()
+        let lexicon = ["hola": "ˈola", "mundo": "ˈmundo"]
+        #expect(processor.lookupWord("hola", lexicon: lexicon) == "ˈola")
+        #expect(processor.lookupWord("mundo", lexicon: lexicon) == "ˈmundo")
+    }
+
+    @Test func lookupWordFallsBackToOriginal() {
+        guard metalAvailable else { return }
+        let processor = KokoroMultilingualProcessor()
+        let lexicon = ["hola": "ˈola"]
+        #expect(processor.lookupWord("unknown", lexicon: lexicon) == "unknown")
+    }
+
+    @Test func lookupWordAccentStrippedFallback() {
+        guard metalAvailable else { return }
+        let processor = KokoroMultilingualProcessor()
+        let lexicon = ["mas": "ˈmas"]
+        #expect(processor.lookupWord("más", lexicon: lexicon) == "ˈmas")
+    }
+
+    @Test func phonemizePreservesPunctuation() {
+        guard metalAvailable else { return }
+        let processor = KokoroMultilingualProcessor()
+        let lexicon = ["hola": "ˈola", "mundo": "ˈmundo"]
+        let result = processor.phonemize(text: "Hola, mundo!", lexicon: lexicon)
+        #expect(result == "ˈola , ˈmundo !")
+    }
+
+    @Test func phonemizePassesThroughUnknownWords() {
+        guard metalAvailable else { return }
+        let processor = KokoroMultilingualProcessor()
+        let lexicon = ["hola": "ˈola"]
+        let result = processor.phonemize(text: "hola xyz", lexicon: lexicon)
+        #expect(result.contains("ˈola"))
+        #expect(result.contains("xyz"))
+    }
+
+    @Test func phonemizeHandlesEmptyText() {
+        guard metalAvailable else { return }
+        let processor = KokoroMultilingualProcessor()
+        let result = processor.phonemize(text: "", lexicon: [:])
+        #expect(result.isEmpty)
+    }
+
+    @Test func initDefaultRepos() async throws {
+        guard metalAvailable else { return }
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+        let processor = KokoroMultilingualProcessor()
+        try await processor.prepare(for: "en-us")
+        let result = try processor.process(text: "hello", language: "en-us")
+        #expect(!result.isEmpty)
+    }
+
+    @Test func prepareForEnglishSupportsAllEnglishVariants() async throws {
+        guard metalAvailable else { return }
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+        let processor = KokoroMultilingualProcessor()
+        try await processor.prepare(for: "en-us")
+        try await processor.prepare(for: "en-gb")
+        try await processor.prepare(for: "en")
     }
 }
