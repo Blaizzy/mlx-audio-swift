@@ -218,6 +218,11 @@ Check out the [Examples/VoicesApp](Examples/VoicesApp) directory for a complete 
 
 Additional usage examples can be found in the test files.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the PR workflow, local checks, and
+commit-signing expectations for contributions to `main`.
+
 ## Credits
 
 - Built on [MLX Swift](https://github.com/ml-explore/mlx-swift)
