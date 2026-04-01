@@ -1,0 +1,149 @@
+# SwiftLint 0.63.x
+# Swift 6 · mlx-audio-swift
+
+included:
+  - Sources
+  - Tests
+  - Examples
+  - Tools
+
+excluded:
+  - .build
+  - DerivedData
+
+# ──────────────────────────────────────────────
+# Opt-in rules (not enabled by default)
+# ──────────────────────────────────────────────
+opt_in_rules:
+  # Performance — avoid common collection inefficiencies
+  - contains_over_filter_count
+  - contains_over_first_not_nil
+  - first_where
+  - last_where
+  - sorted_first_last
+  - reduce_into
+
+  # Modern Swift idioms (Swift 5.7+)
+  - shorthand_optional_binding
+  - toggle_bool
+  - implicit_return
+  - direct_return
+  - convenience_type
+  - empty_string
+  - empty_collection_literal
+
+  # Concurrency — critical in a Swift 6 strict-concurrency project
+  - async_without_await       # flag async functions that never await
+  - unowned_variable_capture  # prefer [weak] over [unowned] to avoid crashes
+
+  # Safety — important for a public library
+  - force_unwrapping           # reports every ! unwrap; see severity override below
+  - discouraged_assert
+
+  # Test quality
+  - final_test_case
+  - unneeded_synthesized_initializer
+
+# Analyzer rules — run separately with `swiftlint analyze`
+analyzer_rules:
+  - unused_declaration
+  - unused_import
+
+# ──────────────────────────────────────────────
+# Disabled default rules — with justification
+# ──────────────────────────────────────────────
+disabled_rules:
+  # non-default: allow TODO comments; project has many in-progress model ports
+  - todo
+  # non-default: SwiftFormat already enforces trailing commas; disabling avoids
+  # duplicate diagnostics when both tools run on the same file
+  - trailing_comma
+
+# ──────────────────────────────────────────────
+# Threshold overrides — non-default values annotated
+# ──────────────────────────────────────────────
+line_length:
+  warning: 120
+  error: 200
+  # non-default (default: false): URL literals and explanatory comments
+  # should not be forced to wrap — the wrapping provides no readability gain
+  ignores_urls: true
+  ignores_comments: true
+  ignores_interpolated_strings: true
+
+file_length:
+  # non-default (default warning: 400): MLX model files include weight tensors,
+  # layer definitions, and forward passes that are inherently verbose
+  warning: 500
+  error: 1000
+  # non-default (default: false): MARK headers and doc blocks inflate line counts
+  # without adding complexity
+  ignore_comment_only_lines: true
+
+function_body_length:
+  # non-default (default warning: 40, error: 100): DSP routines (mel spectrogram,
+  # STFT, resampling) and model forward() passes cannot always be decomposed
+  # further without sacrificing numerical clarity
+  warning: 60
+  error: 150
+
+type_body_length:
+  # non-default (default warning: 250, error: 350): MLX model classes declare
+  # all weight tensors as stored properties — a typical transformer block
+  # easily exceeds the default threshold
+  warning: 400
+  error: 800
+
+cyclomatic_complexity:
+  warning: 10
+  error: 20
+  # non-default (default: false): switch statements over token types / language IDs
+  # inflate the metric without representing real logical complexity
+  ignores_case_statements: true
+
+nesting:
+  type_level:
+    warning: 2
+  function_level:
+    warning: 3
+
+identifier_name:
+  min_length:
+    warning: 2
+    error: 1
+  excluded:
+    - id
+    - x
+    - y
+    - z
+    - i
+    - j
+    - k
+    - db
+    - op
+    - fs
+    # non-default exclusions: domain abbreviations standard in audio/ML literature
+    - sr   # sample rate
+    - lr   # learning rate
+    - hz   # frequency in Hertz
+    - db   # decibels
+    - fft  # Fast Fourier Transform
+
+# ──────────────────────────────────────────────
+# Severity overrides
+# ──────────────────────────────────────────────
+# non-default (default: error): force_cast / force_try appear in MLX bridging
+# glue during prototyping; downgrading to warning keeps CI green while still
+# surfacing the pattern for manual review
+force_cast: warning
+force_try: warning
+
+# non-default (default: error): force_unwrapping is an opt-in rule above; keeping
+# it as warning lets the team adopt it incrementally across existing code
+force_unwrapping: warning
+
+# ──────────────────────────────────────────────
+# Reporter
+# ──────────────────────────────────────────────
+# Use "github-actions-logging" in CI for inline PR annotations
+reporter: xcode
