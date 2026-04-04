@@ -16,7 +16,7 @@ let package = Package(
         .executableTarget(
             name: "ConsumerGraphFixture",
             dependencies: [
-                .product(name: "MLXAudioCodecs", package: "mlx-audio-swift"),
+                .product(name: "MLXAudioTTS", package: "mlx-audio-swift"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "Hub", package: "swift-transformers"),
                 .product(name: "Tokenizers", package: "swift-transformers"),

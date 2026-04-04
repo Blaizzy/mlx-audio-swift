@@ -1,5 +1,5 @@
 import Hub
-import MLXAudioCodecs
+import MLXAudioTTS
 import MLXLMCommon
 import Tokenizers
 

@@ -8,6 +8,8 @@ It depends on:
 - `swift-transformers` from `1.3.0`
 - `mlx-swift-lm` from the `main` branch
 
+It intentionally depends on `MLXAudioTTS`, not just `MLXAudioCodecs`, because the current consumer-graph failure shows up while compiling the higher-level TTS target against that newer shared stack.
+
 Build it locally with:
 
 ```sh
