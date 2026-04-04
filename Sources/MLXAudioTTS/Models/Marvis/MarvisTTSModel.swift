@@ -25,7 +25,7 @@ public final class MarvisTTSModel: Module {
     
     private let model: CSMModel
     private let _promptURLs: [URL]?
-    private let _textTokenizer: any Tokenizers.Tokenizer
+    private let _textTokenizer: TTSModelTokenizer
     private let _audio_tokenizer: MimiTokenizer
     private let _streamingDecoder: MimiStreamingDecoder
     
@@ -33,7 +33,7 @@ public final class MarvisTTSModel: Module {
         config: CSMModelArgs,
         repoId: String,
         promptURLs: [URL]? = nil,
-        textTokenizer: any Tokenizers.Tokenizer,
+        textTokenizer: TTSModelTokenizer,
         audioTokenizer: MimiTokenizer
     ) {
         _ = repoId
