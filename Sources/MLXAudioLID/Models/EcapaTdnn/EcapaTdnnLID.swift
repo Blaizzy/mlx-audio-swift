@@ -152,6 +152,10 @@ public class EcapaTdnn: Module {
             hfToken: hfToken
         )
 
+        return try fromModelDirectory(modelDir)
+    }
+
+    public static func fromModelDirectory(_ modelDir: URL) throws -> EcapaTdnn {
         let configURL = modelDir.appendingPathComponent("config.json")
         guard FileManager.default.fileExists(atPath: configURL.path) else {
             throw LIDError.configNotFound
