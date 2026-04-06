@@ -163,6 +163,10 @@ public class Wav2Vec2ForSequenceClassification: Module {
             hfToken: hfToken
         )
 
+        return try fromModelDirectory(modelDir)
+    }
+
+    public static func fromModelDirectory(_ modelDir: URL) throws -> Wav2Vec2ForSequenceClassification {
         let configURL = modelDir.appendingPathComponent("config.json")
         guard FileManager.default.fileExists(atPath: configURL.path) else {
             throw LIDError.configNotFound

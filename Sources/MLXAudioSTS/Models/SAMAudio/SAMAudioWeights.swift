@@ -361,6 +361,14 @@ extension SAMAudio {
             )
         }
 
+        return try fromDirectory(modelDir, fileManager: fm, strict: strict)
+    }
+
+    public static func fromDirectory(
+        _ modelDir: URL,
+        fileManager fm: FileManager = .default,
+        strict: Bool = false
+    ) throws -> SAMAudio {
         let configURL = modelDir.appendingPathComponent("config.json")
         let config: SAMAudioConfig
         if fm.fileExists(atPath: configURL.path), let configData = try? Data(contentsOf: configURL) {

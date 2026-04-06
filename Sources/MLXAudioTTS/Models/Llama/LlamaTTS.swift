@@ -932,6 +932,13 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
             cache: cache
         )
 
+        return try await fromModelDirectory(modelDir)
+    }
+
+    public static func fromModelDirectory(
+        _ modelDir: URL,
+        cache: HubCache = .default
+    ) async throws -> LlamaTTSModel {
         let configPath = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configPath)
         let config = try JSONDecoder().decode(LlamaTTSConfiguration.self, from: configData)

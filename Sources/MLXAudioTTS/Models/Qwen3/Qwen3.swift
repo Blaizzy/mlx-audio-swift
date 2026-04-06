@@ -884,7 +884,13 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
             cache: cache
         )
 
+        return try await fromModelDirectory(modelDir)
+    }
 
+    public static func fromModelDirectory(
+        _ modelDir: URL,
+        cache: HubCache = .default
+    ) async throws -> Qwen3Model {
         let configPath = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configPath)
         let config = try JSONDecoder().decode(Qwen3Configuration.self, from: configData)
