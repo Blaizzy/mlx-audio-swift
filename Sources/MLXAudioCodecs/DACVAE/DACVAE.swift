@@ -590,6 +590,11 @@ public class DACVAE: Module {
             cache: cache
         )
 
+        return try fromModelDirectory(modelURL)
+    }
+
+    /// Load a pretrained DACVAE model from a local path.
+    public static func fromModelDirectory(_ modelURL: URL) throws -> DACVAE {
         // Load config
         let configURL = modelURL.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configURL)

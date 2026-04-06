@@ -1403,6 +1403,10 @@ public class SortformerModel: Module {
             cache: cache
         )
 
+        return try fromModelDirectory(modelURL)
+    }
+
+    public static func fromModelDirectory(_ modelURL: URL) throws -> SortformerModel {
         // Load config
         let configURL = modelURL.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configURL)

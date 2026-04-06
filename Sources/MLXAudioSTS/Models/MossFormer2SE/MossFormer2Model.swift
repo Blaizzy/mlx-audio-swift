@@ -376,6 +376,11 @@ public final class MossFormer2SEModel: STSModel {
             requiredExtension: "safetensors",
             cache: cache
         )
+
+        return try fromDirectory(modelDir)
+    }
+
+    public static func fromDirectory(_ modelDir: URL) throws -> MossFormer2SEModel {
         let config = try loadConfig(from: modelDir, fallbackPolicy: .fallbackOnReadError)
         let weights = try loadWeights(from: modelDir, duplicateKeyPolicy: .overwrite)
         return try buildModel(config: config, weights: weights)

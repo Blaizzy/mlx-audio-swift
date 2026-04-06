@@ -191,6 +191,13 @@ public final class KittenTTSModel: Module, SpeechGenerationModel, @unchecked Sen
             cache: cache
         )
 
+        return try await fromModelDirectory(modelDir, textProcessor: textProcessor)
+    }
+
+    public static func fromModelDirectory(
+        _ modelDir: URL,
+        textProcessor: TextProcessor? = MisakiTextProcessor()
+    ) async throws -> KittenTTSModel {
         let configURL = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configURL)
         let config = try JSONDecoder().decode(KittenTTSConfig.self, from: configData)
