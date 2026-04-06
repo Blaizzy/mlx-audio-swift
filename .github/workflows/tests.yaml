@@ -22,5 +22,7 @@ jobs:
         run: xcodebuild -downloadComponent MetalToolchain
       - name: Build
         run: xcodebuild build-for-testing -scheme MLXAudio-Package -destination 'platform=macOS' MACOSX_DEPLOYMENT_TARGET=14.0 CODE_SIGNING_ALLOWED=NO
+      - name: Build consumer graph fixture
+        run: swift build --package-path Integration/ConsumerGraphFixture
       - name: Run tests
         run: xcodebuild test-without-building -scheme MLXAudio-Package -destination 'platform=macOS' -skip-testing:'MLXAudioTests/SmokeTests' -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO

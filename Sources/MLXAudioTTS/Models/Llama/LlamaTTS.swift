@@ -354,7 +354,7 @@ private class LlamaTTSModelInner: Module {
 public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationModel, @unchecked Sendable {
     public let vocabularySize: Int
     public let kvHeads: [Int]
-    public var tokenizer: Tokenizer?
+    public var tokenizer: TTSModelTokenizer?
     public var _snacModel: SNAC?
 
     private let model: LlamaTTSModelInner
