@@ -1,5 +1,7 @@
 .build
 .swiftpm
+.scratch
+.xcodebuild
 .DS_Store
 .xcbkptlist
 .claude
@@ -13,5 +15,9 @@ xcuserdata/*
 *.xcuserdatad
 *.xcuserdatad/xcdebugger
 *.xcuserdatad/xcdebugger/Breakpoints_v2.xcbkptlist
+.xcode_derived/
+default.profraw
+scripts/
 .tmp/
 audit-repo/
+/scratchpad

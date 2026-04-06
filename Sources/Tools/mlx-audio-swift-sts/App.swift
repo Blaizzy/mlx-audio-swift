@@ -12,6 +12,7 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
     case lfmRequiresText
     case lfmRequiresAudioForMode(LFMMode)
     case enhanceRequiresAudio
+    case streamingUnsupportedForModelVersion(String)
 
     var errorDescription: String? { description }
 
@@ -31,6 +32,8 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
             "--audio is required for LFM \(mode.rawValue) mode."
         case .enhanceRequiresAudio:
             "--audio is required for speech enhancement."
+        case .streamingUnsupportedForModelVersion(let version):
+            "Streaming mode is not supported for model version \(version). Use --mode short."
         }
     }
 }
@@ -72,6 +75,8 @@ enum App {
                 try await runSAMAudio(model: model, args: args)
             case .mossFormer2SE(let model):
                 try await runMossFormer2SE(model: model, args: args)
+            case .deepFilterNet(let model):
+                try await runDeepFilterNet(model: model, args: args)
             }
         } catch {
             fputs("Error: \(error)\n", stderr)
@@ -456,6 +461,178 @@ enum App {
         print(String(format: "Done. Elapsed: %.2fs", elapsed))
     }
 
+    // MARK: - DeepFilterNet Speech Enhancement
+
+    // DeepFilterNet reuses SeparationMode for CLI consistency with SAM Audio:
+    //   .short  = offline full-context enhancement (single batched forward pass)
+    //   .stream = low-latency hop-by-hop streaming enhancement
+    private static func runDeepFilterNet(model: DeepFilterNetModel, args: CLI) async throws {
+        guard let audioPath = args.audioPath else {
+            throw AppError.enhanceRequiresAudio
+        }
+
+        let inputURL = resolveURL(path: audioPath)
+        guard FileManager.default.fileExists(atPath: inputURL.path) else {
+            throw AppError.inputFileNotFound(inputURL.path)
+        }
+
+        let (inputSampleRate, rawAudio) = try loadAudioArray(from: inputURL)
+        let audioData = try resampleIfNeeded(rawAudio, from: inputSampleRate, to: model.sampleRate)
+
+        let outputURL: URL
+        if let path = args.outputTargetPath {
+            outputURL = resolveURL(path: path)
+        } else {
+            let stem = inputURL.deletingPathExtension().lastPathComponent
+            outputURL = inputURL.deletingLastPathComponent()
+                .appendingPathComponent("\(stem).deepfilternet.wav")
+        }
+
+        let started = CFAbsoluteTimeGetCurrent()
+        let env = ProcessInfo.processInfo.environment
+        let forcedDevice = env["DFN_DEVICE"]?.lowercased()
+        if let forcedDevice {
+            print("Using MLX device override: \(forcedDevice)")
+        }
+        switch args.mode {
+        case .stream:
+            guard model.supportsStreaming else {
+                throw AppError.streamingUnsupportedForModelVersion(model.modelVersion)
+            }
+            print("Enhancing audio with \(model.modelVersion) (mode=stream)")
+            let streamProfiling = env["DFN_STREAM_PROFILE"] == "1"
+            let forceStageEval = env["DFN_STREAM_PROFILE_STAGE_EVAL"] == "1"
+            let materializeEveryHops = max(Int(env["DFN_STREAM_MAT_EVERY"] ?? "") ?? 512, 0)
+            let enableStageSkipping = env["DFN_STREAM_STAGE_SKIP"] == "1"
+            let bypassModel = env["DFN_STREAM_BYPASS"] == "1"
+
+            let runStream = {
+                let streamer = bypassModel
+                    ? nil
+                    : model.createStreamer(
+                        config: DeepFilterNetStreamingConfig(
+                            padEndFrames: 3,
+                            compensateDelay: true,
+                            enableStageSkipping: enableStageSkipping,
+                            enableProfiling: streamProfiling,
+                            profilingForceEvalPerStage: forceStageEval,
+                            materializeEveryHops: materializeEveryHops
+                        )
+                    )
+                let writer = try StreamingWAVWriter(url: outputURL, sampleRate: Double(model.sampleRate))
+                let requestedChunkSamples = max(Int(Float(model.sampleRate) * args.chunkSeconds), model.config.hopSize)
+                let usingDefaultChunk = abs(args.chunkSeconds - 10.0) < 0.000_001
+                let chunkSamples = usingDefaultChunk ? model.config.hopSize : requestedChunkSamples
+                if usingDefaultChunk {
+                    print("Using hop-by-hop streaming chunk (\(chunkSamples) samples) for low-latency mode")
+                }
+                if bypassModel {
+                    print("Bypass mode enabled: measuring stream harness overhead only")
+                }
+                if streamProfiling {
+                    print(
+                        "Stream profiling enabled (stageEval=\(forceStageEval), materializeEveryHops=\(materializeEveryHops), stageSkip=\(enableStageSkipping))"
+                    )
+                }
+
+                var chunkCount = 0
+                var writtenSamples = 0
+                var processSeconds = 0.0
+                var emitSeconds = 0.0
+                var start = 0
+                let totalSamples = audioData.shape[0]
+                while start < totalSamples {
+                    let end = min(start + chunkSamples, totalSamples)
+                    let tProcess0 = CFAbsoluteTimeGetCurrent()
+                    let outChunk: MLXArray
+                    if let streamer {
+                        outChunk = try streamer.processChunk(audioData[start..<end])
+                    } else {
+                        outChunk = audioData[start..<end]
+                    }
+                    if streamProfiling, outChunk.shape[0] > 0 {
+                        eval(outChunk)
+                    }
+                    processSeconds += CFAbsoluteTimeGetCurrent() - tProcess0
+                    if outChunk.shape[0] > 0 {
+                        let tEmit0 = CFAbsoluteTimeGetCurrent()
+                        try writer.writeChunk(outChunk)
+                        emitSeconds += CFAbsoluteTimeGetCurrent() - tEmit0
+                        writtenSamples += outChunk.shape[0]
+                        chunkCount += 1
+                    }
+                    start = end
+                }
+
+                if let streamer {
+                    let tTail0 = CFAbsoluteTimeGetCurrent()
+                    let tail = try streamer.flushMLX()
+                    if streamProfiling, tail.shape[0] > 0 {
+                        eval(tail)
+                    }
+                    processSeconds += CFAbsoluteTimeGetCurrent() - tTail0
+                    if tail.shape[0] > 0 {
+                        let tEmit0 = CFAbsoluteTimeGetCurrent()
+                        try writer.writeChunk(tail)
+                        emitSeconds += CFAbsoluteTimeGetCurrent() - tEmit0
+                        writtenSamples += tail.shape[0]
+                        chunkCount += 1
+                    }
+                }
+                _ = writer.finalize()
+                print("Wrote WAV to \(outputURL.path)")
+                print("Streamed \(chunkCount) chunk(s)")
+                let duration = Double(writtenSamples) / Double(model.sampleRate)
+                print(String(format: "Enhanced %d samples (%.1fs at %dHz)", writtenSamples, duration, model.sampleRate))
+                if streamProfiling {
+                    let loopTotal = processSeconds + emitSeconds
+                    print(
+                        String(
+                            format:
+                                "Stream loop profile: process=%.3fs (%.1f%%), emit(mlx->host+wav)=%.3fs (%.1f%%)",
+                            processSeconds,
+                            loopTotal > 0 ? (processSeconds / loopTotal) * 100.0 : 0.0,
+                            emitSeconds,
+                            loopTotal > 0 ? (emitSeconds / loopTotal) * 100.0 : 0.0
+                        )
+                    )
+                    if let streamer, let summary = streamer.profilingSummary() {
+                        print(summary)
+                    }
+                }
+            }
+
+            switch forcedDevice {
+            case "cpu":
+                try Device.withDefaultDevice(.cpu) {
+                    try runStream()
+                }
+            case "gpu":
+                try Device.withDefaultDevice(.gpu) {
+                    try runStream()
+                }
+            default:
+                try runStream()
+            }
+
+        case .short, .long:
+            if args.mode == .long {
+                print("DeepFilterNet --mode long currently uses full-context offline enhancement.")
+            }
+            print("Enhancing audio with \(model.modelVersion) (mode=offline)")
+            let enhanced = try model.enhance(audioData)
+            eval(enhanced)
+            let samples = enhanced.asArray(Float.self)
+            try AudioUtils.writeWavFile(samples: samples, sampleRate: Double(model.sampleRate), fileURL: outputURL)
+            print("Wrote WAV to \(outputURL.path)")
+            let duration = Double(samples.count) / Double(model.sampleRate)
+            print(String(format: "Enhanced %d samples (%.1fs at %dHz)", samples.count, duration, model.sampleRate))
+        }
+
+        let elapsed = CFAbsoluteTimeGetCurrent() - started
+        print(String(format: "Done. Elapsed: %.2fs", elapsed))
+    }
+
     // MARK: - Helpers
 
     private static func resolveURL(path: String) -> URL {
@@ -752,12 +929,14 @@ struct CLI {
                 - LFM2.5-Audio: multimodal generation (t2t, tts, stt, sts)
                 - SAM Audio: source separation
                 - MossFormer2-SE: speech enhancement
+                - DeepFilterNet: speech enhancement (local or HF model directory)
 
             Model Selection:
               --model <repo>               Model repo or local path (auto-detected).
                                            SAM Audio default: \(SAMAudio.defaultRepo)
                                            LFM example: mlx-community/LFM2.5-Audio-1.5B-6bit
                                            MossFormer2 example: starkdmi/MossFormer2-SE-fp16
+                                           DeepFilterNet local example: /path/to/DeepFilterNet3
 
             LFM2.5-Audio Options:
               --mode <t2t|tts|stt|sts>     LFM generation mode.
@@ -795,6 +974,14 @@ struct CLI {
             MossFormer2-SE Options:
               -i, --audio <path>           Input audio file (required)
               -o, --output-target <path>   Enhanced WAV output. Default: <input>.enhanced.wav
+
+            DeepFilterNet Options:
+              --model <path-or-repo>       Local model dir with config.json + model.safetensors,
+                                           or Hugging Face repo.
+              -i, --audio <path>           Input audio file (required)
+              --mode <short|stream>        short = offline enhance, stream = stateful chunked enhance
+              --chunk-seconds <float>      Chunk duration in stream mode. Default: 10.0
+              -o, --output-target <path>   Enhanced WAV output. Default: <input>.deepfilternet.wav
 
             Common:
               --hf-token <token>           Hugging Face token (or set HF_TOKEN env var)
