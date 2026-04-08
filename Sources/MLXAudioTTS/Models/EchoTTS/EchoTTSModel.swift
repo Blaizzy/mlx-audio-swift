@@ -334,6 +334,13 @@ public final class EchoTTSModel: Module, @unchecked Sendable {
             cache: cache
         )
 
+        return try await fromModelDirectory(modelDir)
+    }
+
+    public static func fromModelDirectory(
+        _ modelDir: URL,
+        cache: HubCache = .default
+    ) async throws -> EchoTTSModel {
         let configData = try Data(contentsOf: modelDir.appendingPathComponent("config.json"))
         let config = try JSONDecoder().decode(EchoTTSConfig.self, from: configData)
         let model = EchoTTSModel(config: config)
