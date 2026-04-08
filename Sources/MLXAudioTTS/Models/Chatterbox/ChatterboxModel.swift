@@ -917,6 +917,13 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
             hfToken: hfToken
         )
 
+        return try await fromModelDirectory(modelDir, hfToken: hfToken)
+    }
+
+    public static func fromModelDirectory(
+        _ modelDir: URL,
+        hfToken: String?
+    ) async throws -> ChatterboxModel {
         // Load config
         let configURL = modelDir.appendingPathComponent("config.json")
         let config: ChatterboxConfiguration

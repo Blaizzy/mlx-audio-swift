@@ -1005,6 +1005,10 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
             cache: cache
         )
 
+        return try await fromModelDirectory(modelDir)
+    }
+
+    public static func fromModelDirectory(_ modelDir: URL) async throws -> FishSpeechModel {
         let configURL = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configURL)
         let config = try JSONDecoder().decode(FishSpeechConfig.self, from: configData)
