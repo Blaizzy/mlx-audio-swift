@@ -730,6 +730,10 @@ public class LFM2AudioModel: Module, STSModel, @unchecked Sendable {
             cache: cache
         )
 
+        return try await fromModelDirectory(modelDir)
+    }
+
+    public static func fromModelDirectory(_ modelDir: URL) async throws -> LFM2AudioModel {
         let configURL = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configURL)
         let config = try JSONDecoder().decode(LFM2AudioConfig.self, from: configData)

@@ -911,6 +911,10 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
             cache: cache
         )
 
+        return try await fromModelDirectory(modelDir, repo: modelRepo)
+    }
+
+    public static func fromModelDirectory(_ modelDir: URL, repo modelRepo: String) async throws -> SopranoModel {
         // Load config
         let configPath = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configPath)

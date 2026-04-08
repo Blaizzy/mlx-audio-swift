@@ -261,6 +261,13 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
             cache: cache
         )
 
+        return try await fromModelDirectory(modelDir)
+    }
+
+    public static func fromModelDirectory(
+        _ modelDir: URL,
+        textProcessor: TextProcessor? = nil
+    ) async throws -> KokoroModel {
         let configURL = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configURL)
         let config = try JSONDecoder().decode(KokoroConfig.self, from: configData)

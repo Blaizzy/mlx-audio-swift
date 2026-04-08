@@ -168,7 +168,10 @@ public class SNAC: Module {
             cache: cache
         )
 
+        return try fromModelDirectory(modelDir)
+    }
 
+    public static func fromModelDirectory(_ modelDir: URL) throws -> SNAC {
         let configPath = modelDir.appendingPathComponent("config.json")
         let weightsPath = modelDir.appendingPathComponent("model.safetensors")
 
