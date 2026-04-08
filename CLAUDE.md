@@ -1,3 +1,3 @@
 # This file moved
 
-The single source of truth now lives in [Agents.md](./Agents.md).
+See [Agents.md](./Agents.md) for the canonical agent guidance.
