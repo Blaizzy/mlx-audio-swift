@@ -315,6 +315,10 @@ public final class DescriptDAC: Module {
             cache: cache
         )
 
+        return try fromModelDirectory(modelURL)
+    }
+
+    public static func fromModelDirectory(_ modelURL: URL) throws -> DescriptDAC {
         let configURL = modelURL.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configURL)
         let config = try JSONDecoder().decode(DescriptDACConfig.self, from: configData)

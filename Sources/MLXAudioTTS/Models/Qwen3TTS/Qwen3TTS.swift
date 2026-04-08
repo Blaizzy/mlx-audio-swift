@@ -818,6 +818,10 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             cache: cache
         )
 
+        return try await fromModelDirectory(modelDir)
+    }
+
+    public static func fromModelDirectory(_ modelDir: URL) async throws -> Qwen3TTSModel {
         // Load main config
         let configData = try Data(contentsOf: modelDir.appendingPathComponent("config.json"))
         let config = try JSONDecoder().decode(Qwen3TTSModelConfig.self, from: configData)

@@ -333,6 +333,10 @@ public class SmartTurnModel: Module {
             requiredExtension: "safetensors"
         )
 
+        return try fromModelDirectory(modelURL)
+    }
+
+    public static func fromModelDirectory(_ modelURL: URL) throws -> SmartTurnModel {
         let configURL = modelURL.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configURL)
         let config = try JSONDecoder().decode(SmartTurnConfig.self, from: configData)
