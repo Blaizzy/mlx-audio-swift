@@ -1,0 +1,112 @@
+# SwiftFormat 0.60.x
+# Swift 6 · mlx-audio-swift
+
+--exclude .build,DerivedData
+
+# non-default (default: none): explicitly pin to the swift-tools-version in Package.swift
+# so format rules that depend on language version (redundantAsync, redundantSendable, etc.)
+# activate correctly
+--swiftversion 6.2
+
+# ──────────────────────────────────────────────
+# Indentation
+# ──────────────────────────────────────────────
+--indent 4
+--tabwidth 4
+--smarttabs enabled
+--indentcase false
+
+# ──────────────────────────────────────────────
+# Line wrapping
+# ──────────────────────────────────────────────
+
+# non-default (default: none): 120 chars balances readability on modern displays
+# and matches the line_length warning in .swiftlint.yml
+--maxwidth 120
+
+# non-default (default: preserve): auto-wrap uses --maxwidth to break long lines;
+# without this, --maxwidth has no effect on existing code
+--wrap auto
+
+# non-default (default: preserve): aligns wrapped arguments to the first parameter
+# position — more readable for MLX layer initialisers with many named parameters
+--wraparguments before-first
+--wrapparameters before-first
+--wrapcollections before-first
+
+# non-default (default: preserve): wraps -> ReturnType onto its own line only when
+# the signature is already multi-line, keeping short signatures on one line
+--wrapreturntype if-multiline
+--wrapeffects if-multiline
+--closingparen balanced
+
+# ──────────────────────────────────────────────
+# Braces & control flow
+# ──────────────────────────────────────────────
+--allman false
+--elseposition same-line
+
+# non-default (default: auto): forces `guard else` body onto the next line,
+# which improves readability when guard conditions span multiple lines — common
+# in async model loading and parameter validation functions
+--guardelse next-line
+
+# ──────────────────────────────────────────────
+# Imports
+# ──────────────────────────────────────────────
+
+# non-default (default: none): @testable imports are kept at the bottom of the
+# import block, making test-only dependencies immediately visible
+--importgrouping testable-bottom
+
+# ──────────────────────────────────────────────
+# Self / redundancy
+# ──────────────────────────────────────────────
+--self remove
+--semicolons never
+--commas always
+
+# ──────────────────────────────────────────────
+# Operators & literals
+# ──────────────────────────────────────────────
+--operatorfunc spaced
+--ranges spaced
+--decimalgrouping 3,6
+--binarygrouping 4,8
+--hexgrouping 4,8
+--hexliteralcase uppercase
+
+# ──────────────────────────────────────────────
+# File structure
+# ──────────────────────────────────────────────
+--header strip
+--emptylines around-mark
+
+# ──────────────────────────────────────────────
+# Opt-in rules — non-default, each requires explicit --enable
+# ──────────────────────────────────────────────
+
+# non-default: rewrites `.count == 0` → `.isEmpty` and `.count > 0` → `!.isEmpty`;
+# semantically identical, cleaner to read, and avoids iterating the full sequence
+--enable isEmpty
+
+# non-default: adds `final` to classes with no subclasses; correct for virtually
+# all MLX model types and allows the compiler to devirtualise calls
+--enable preferFinalClasses
+
+# non-default: normalises Id → ID, Url → URL, Uuid → UUID, matching Apple API
+# Design Guidelines (acronyms are fully uppercase)
+--enable acronyms
+
+# non-default: forces if/guard bodies onto a new line even for single-statement
+# bodies; prevents `guard let x else { return }` one-liners that are easy to miss
+--enable wrapConditionalBodies
+
+# non-default: converts /* block */ comments to // line comments, matching all
+# major Swift style guides and improving diff readability
+--enable blockComments
+
+# -- organizeDeclarations is intentionally left off --
+# It groups properties / inits / methods with MARK headers automatically, but
+# the first run produces a very large diff on existing files.  Enable manually
+# after reviewing the reordering: --enable organizeDeclarations
