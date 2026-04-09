@@ -90,7 +90,41 @@ public struct Qwen3Configuration: Codable, Sendable {
         let baseConfig = try? BaseConfiguration(from: decoder)
         self.perLayerQuantization = baseConfig?.perLayerQuantization
     }
-    
+
+    public init(
+        hiddenSize: Int,
+        hiddenLayers: Int,
+        intermediateSize: Int,
+        attentionHeads: Int,
+        kvHeads: Int,
+        headDim: Int,
+        vocabularySize: Int,
+        rmsNormEps: Float,
+        ropeTheta: Float,
+        ropeScaling: [String: StringOrNumber]? = nil,
+        tieWordEmbeddings: Bool = false,
+        sampleRate: Int = 24_000,
+        eosTokenId: Int = 151645
+    ) {
+        self.hiddenSize = hiddenSize
+        self.hiddenLayers = hiddenLayers
+        self.intermediateSize = intermediateSize
+        self.attentionHeads = attentionHeads
+        self.kvHeads = kvHeads
+        self.headDim = headDim
+        self.vocabularySize = vocabularySize
+        self.rmsNormEps = rmsNormEps
+        self.ropeTheta = ropeTheta
+        self.ropeScaling = ropeScaling
+        self.tieWordEmbeddings = tieWordEmbeddings
+        self.sampleRate = sampleRate
+        self.eosTokenId = eosTokenId
+        self.maxPositionEmbeddings = 40960
+        self.quantization = nil
+        self.perLayerQuantization = nil
+        self.tokenizer_name = nil
+    }
+
     public func encode(to encoder: Swift.Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         

@@ -504,6 +504,36 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         return out
     }
 
+    /// Forward pass with pre-built embeddings (for custom input injection like OmniVoice).
+    ///
+    /// - Parameters:
+    ///   - inputsEmbeds: Pre-built embeddings of shape [batch, seq_len, hidden]
+    ///   - cache: Optional KV cache
+    ///   - mask: Optional attention mask
+    /// - Returns: Hidden states of shape [batch, seq_len, hidden]
+    public func forwardWithEmbeddings(
+        inputsEmbeds: MLXArray,
+        cache: [KVCache]? = nil,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode? = nil
+    ) -> MLXArray {
+        var h = inputsEmbeds
+        let layers = model.layers
+        let resolvedMask: MLXFast.ScaledDotProductAttentionMaskMode = mask ?? .none
+        for (i, layer) in layers.enumerated() {
+            h = layer(h, mask: resolvedMask, cache: cache?[i])
+        }
+        h = model.norm(h)
+        return h
+    }
+
+    /// Get embeddings for given token IDs (for custom embedding injection).
+    ///
+    /// - Parameter inputIds: Token IDs of shape [batch, seq_len]
+    /// - Returns: Embeddings of shape [batch, seq_len, hidden]
+    public func getEmbeddings(for inputIds: MLXArray) -> MLXArray {
+        return model.embedTokens(inputIds)
+    }
+
     public var sampleRate: Int {
         return self.configuration.sampleRate
     }
