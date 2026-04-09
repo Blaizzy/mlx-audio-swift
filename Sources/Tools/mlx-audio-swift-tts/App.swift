@@ -50,7 +50,19 @@ enum App {
                 timestamps: args.timestamps,
                 benchmark: args.benchmark,
                 rawIPA: args.rawIPA,
-                language: args.language
+                language: args.language,
+                // OmniVoice-specific parameters
+                instruct: args.instruct,
+                numStep: args.numStep,
+                guidanceScale: args.guidanceScale,
+                speed: args.speed,
+                duration: args.duration,
+                tShift: args.tShift,
+                denoise: args.denoise,
+                postprocessOutput: args.postprocessOutput,
+                layerPenaltyFactor: args.layerPenaltyFactor,
+                positionTemperature: args.positionTemperature,
+                classTemperature: args.classTemperature
             )
         } catch {
             fputs("Error: \(error)\n", stderr)
@@ -73,7 +85,19 @@ enum App {
         benchmark: Bool,
         rawIPA: Bool = false,
         language: String? = nil,
-        hfToken: String? = nil
+        hfToken: String? = nil,
+        // OmniVoice-specific parameters
+        instruct: String? = nil,
+        numStep: Int? = nil,
+        guidanceScale: Float? = nil,
+        speed: Float? = nil,
+        duration: Float? = nil,
+        tShift: Float? = nil,
+        denoise: Bool? = nil,
+        postprocessOutput: Bool? = nil,
+        layerPenaltyFactor: Float? = nil,
+        positionTemperature: Float? = nil,
+        classTemperature: Float? = nil
     ) async throws {
         Memory.cacheLimit = 256 * 1024 * 1024
 
@@ -93,6 +117,43 @@ enum App {
             case .unsupportedModelType(let modelType):
                 throw AppError.unsupportedModelType(modelType)
             }
+        }
+
+        // Configure OmniVoice-specific parameters if the model is OmniVoice
+        if let omnivoiceModel = loadedModel as? OmniVoiceModel {
+            omnivoiceModel.setGenerationConfig(
+                numStep: numStep ?? 32,
+                guidanceScale: guidanceScale ?? 2.0,
+                speed: speed ?? 1.0,
+                duration: duration,
+                tShift: tShift ?? 0.1,
+                denoise: denoise ?? true,
+                postprocessOutput: postprocessOutput ?? true,
+                layerPenaltyFactor: layerPenaltyFactor ?? 5.0,
+                positionTemperature: positionTemperature ?? 5.0,
+                classTemperature: classTemperature ?? 0.0
+            )
+            print("Configured OmniVoice parameters:")
+            print("  num_step: \(numStep ?? 32)")
+            print("  guidance_scale: \(guidanceScale ?? 2.0)")
+            print("  speed: \(speed ?? 1.0)")
+            if let duration {
+                print("  duration: \(duration)s")
+            }
+            print("  t_shift: \(tShift ?? 0.1)")
+            print("  denoise: \(denoise ?? true)")
+            print("  postprocess_output: \(postprocessOutput ?? true)")
+            print("  layer_penalty_factor: \(layerPenaltyFactor ?? 5.0)")
+            print("  position_temperature: \(positionTemperature ?? 5.0)")
+            print("  class_temperature: \(classTemperature ?? 0.0)")
+        }
+
+        // For OmniVoice voice design mode, use --instruct as the voice parameter
+        let effectiveVoice: String?
+        if loadedModel is OmniVoiceModel, let instruct, voice == nil {
+            effectiveVoice = instruct
+        } else {
+            effectiveVoice = voice
         }
 
         print("Generating")
@@ -123,7 +184,7 @@ enum App {
             let sampleRate = Double(loadedModel.sampleRate)
             let stream = loadedModel.generateStream(
                 text: text,
-                voice: voice,
+                voice: effectiveVoice,
                 refAudio: refAudio,
                 refText: refText,
                 language: language,
@@ -170,7 +231,7 @@ enum App {
         } else {
             audioData = try await loadedModel.generate(
                 text: text,
-                voice: voice,
+                voice: effectiveVoice,
                 refAudio: refAudio,
                 refText: refText,
                 language: language,
@@ -312,6 +373,19 @@ struct CLI {
     let rawIPA: Bool
     let language: String?
 
+    // OmniVoice-specific parameters
+    let instruct: String?
+    let numStep: Int?
+    let guidanceScale: Float?
+    let speed: Float?
+    let duration: Float?
+    let tShift: Float?
+    let denoise: Bool?
+    let postprocessOutput: Bool?
+    let layerPenaltyFactor: Float?
+    let positionTemperature: Float?
+    let classTemperature: Float?
+
     static func parse() throws -> CLI {
         var text: String?
         var voice: String? = nil
@@ -326,6 +400,19 @@ struct CLI {
         var benchmark = false
         var rawIPA = false
         var language: String? = nil
+
+        // OmniVoice-specific parameters
+        var instruct: String? = nil
+        var numStep: Int? = nil
+        var guidanceScale: Float? = nil
+        var speed: Float? = nil
+        var duration: Float? = nil
+        var tShift: Float? = nil
+        var denoise: Bool? = nil
+        var postprocessOutput: Bool? = nil
+        var layerPenaltyFactor: Float? = nil
+        var positionTemperature: Float? = nil
+        var classTemperature: Float? = nil
 
         var it = CommandLine.arguments.dropFirst().makeIterator()
         while let arg = it.next() {
@@ -369,6 +456,50 @@ struct CLI {
             case "--language", "-l":
                 guard let v = it.next() else { throw CLIError.missingValue(arg) }
                 language = v
+
+            // OmniVoice-specific arguments
+            case "--instruct":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                instruct = v
+            case "--num_step":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                guard let value = Int(v) else { throw CLIError.invalidValue(arg, v) }
+                numStep = value
+            case "--guidance_scale":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                guard let value = Float(v) else { throw CLIError.invalidValue(arg, v) }
+                guidanceScale = value
+            case "--speed":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                guard let value = Float(v) else { throw CLIError.invalidValue(arg, v) }
+                speed = value
+            case "--duration":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                guard let value = Float(v) else { throw CLIError.invalidValue(arg, v) }
+                duration = value
+            case "--t_shift":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                guard let value = Float(v) else { throw CLIError.invalidValue(arg, v) }
+                tShift = value
+            case "--denoise":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                denoise = v.lowercased() == "true" || v == "1"
+            case "--postprocess_output":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                postprocessOutput = v.lowercased() == "true" || v == "1"
+            case "--layer_penalty_factor":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                guard let value = Float(v) else { throw CLIError.invalidValue(arg, v) }
+                layerPenaltyFactor = value
+            case "--position_temperature":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                guard let value = Float(v) else { throw CLIError.invalidValue(arg, v) }
+                positionTemperature = value
+            case "--class_temperature":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                guard let value = Float(v) else { throw CLIError.invalidValue(arg, v) }
+                classTemperature = value
+
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -398,17 +529,28 @@ struct CLI {
             timestamps: timestamps,
             benchmark: benchmark,
             rawIPA: rawIPA,
-            language: language
+            language: language,
+            instruct: instruct,
+            numStep: numStep,
+            guidanceScale: guidanceScale,
+            speed: speed,
+            duration: duration,
+            tShift: tShift,
+            denoise: denoise,
+            postprocessOutput: postprocessOutput,
+            layerPenaltyFactor: layerPenaltyFactor,
+            positionTemperature: positionTemperature,
+            classTemperature: classTemperature
         )
     }
 
     static func printUsage() {
-        let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "marvis-tts-cli"
+        let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "mlx-audio-swift-tts"
         print("""
         Usage:
-          \(exe) --text "Hello world" [--voice conversational_b] [--model <hf-repo>] [--output <path>] [--ref_audio <path>] [--ref_text <string>] [--max_tokens <int>] [--temperature <float>] [--top_p <float>] [--timestamps] [--benchmark]
+          \(exe) --text "Hello world" [--voice conversational_b] [--model <hf-repo>] [--output <path>] [--ref_audio <path>] [--ref_text <string>] [--max_tokens <int>] [--temperature <float>] [--top_p <float>] [--timestamps] [--benchmark] [--raw-ipa] [--language <code>]
 
-        Options:
+        General Options:
           -t, --text <string>           Text to synthesize (required if not passed as trailing arg)
           -v, --voice <name>            Voice id
               --model <repo>            HF repo id. Default: Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit
@@ -422,7 +564,41 @@ struct CLI {
               --benchmark              Run streaming benchmark and log TTFB/RTF metrics
               --raw-ipa                Skip text processing, pass IPA phonemes directly
           -l, --language <code>       Language code (e.g., es, fr, it, pt). Auto-detected from voice prefix if omitted
-          -h, --help                    Show this help
+
+        OmniVoice Options (when using --model mlx-community/OmniVoice-bf16 or similar):
+              --instruct <string>      Voice design instruction (e.g., "male, British accent")
+              --num_step <int>         Number of diffusion steps. Default: 32
+              --guidance_scale <float> Classifier-free guidance scale. Default: 2.0
+              --speed <float>          Speech speed factor. Default: 1.0
+              --duration <float>       Fixed output duration in seconds (optional)
+              --t_shift <float>        Time shift for diffusion. Default: 0.1
+              --denoise <bool>         Denoise output audio. Default: true
+              --postprocess_output <bool> Postprocess output audio. Default: true
+              --layer_penalty_factor <float> Layer penalty factor. Default: 5.0
+              --position_temperature <float> Position temperature. Default: 5.0
+              --class_temperature <float> Class temperature. Default: 0.0
+
+        Examples:
+          # Voice cloning
+          \(exe) --model mlx-community/OmniVoice-bf16 \\
+              --text "Hello, this is a test." \\
+              --ref_audio ref.wav --ref_text "Reference transcript." --output out.wav
+
+          # Voice design
+          \(exe) --model mlx-community/OmniVoice-bf16 \\
+              --text "Hello, this is a test." \\
+              --instruct "male, British accent" --output out.wav
+
+          # Auto voice
+          \(exe) --model mlx-community/OmniVoice-bf16 \\
+              --text "Hello, this is a test." --output out.wav
+
+          # Custom generation parameters
+          \(exe) --model mlx-community/OmniVoice-bf16 \\
+              --text "Hello, this is a test." \\
+              --num_step 64 --guidance_scale 2.5 --speed 0.9 --output out.wav
+
+        -h, --help                    Show this help
         """)
     }
 }
