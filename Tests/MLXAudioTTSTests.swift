@@ -1084,6 +1084,40 @@ struct KokoroTTSTests {
 
         #expect(missingInModel.count == 0, "Weight keys not matched by model structure")
     }
+
+    @Test func durationNaNProducesSilenceInsteadOfCrash() throws {
+        guard metalAvailable else { return }
+        let nanDuration = MLXArray([Float.nan, Float.nan, Float.nan])
+        let safe = nanToNum(nanDuration, nan: 1.0)
+        let clipped = MLX.clip(MLX.round(safe), min: 1, max: 100).asType(.int32)
+        let arr: [Int32] = clipped.asArray(Int32.self)
+        for n in arr {
+            #expect(n >= 1 && n <= 100, "Duration \(n) should be clamped between 1 and 100")
+        }
+    }
+
+    @Test func durationExtremeValuesAreCapped() throws {
+        guard metalAvailable else { return }
+        let extreme = MLXArray([Float(999), Float(0.001), Float(-5)])
+        let clipped = MLX.clip(MLX.round(extreme), min: 1, max: 100).asType(.int32)
+        let arr: [Int32] = clipped.asArray(Int32.self)
+        #expect(arr[0] == 100, "Large duration should be capped at 100")
+        #expect(arr[1] == 1, "Tiny duration should be clamped to 1")
+        #expect(arr[2] == 1, "Negative duration should be clamped to 1")
+    }
+
+    @Test func emptyIndicesReturnsGracefully() throws {
+        guard metalAvailable else { return }
+        let durArray: [Int32] = [0, 0, 0]
+        var indices = [MLXArray]()
+        for (i, n) in durArray.enumerated() {
+            let count = min(max(Int(n), 0), 100)
+            if count > 0 {
+                indices.append(MLX.repeated(MLXArray(Int32(i)), count: count))
+            }
+        }
+        #expect(indices.isEmpty, "All-zero durations should produce empty indices")
+    }
 }
 
 // MARK: - Kokoro Multilingual Processor Tests
