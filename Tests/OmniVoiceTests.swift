@@ -231,9 +231,17 @@ struct OmniVoiceModelTests {
         print("Loading OmniVoice model from \(repo)...")
         let model = try await TTS.loadModel(modelRepo: repo)
 
-        // Configure for voice design
-        if let omnivoiceModel = model as? OmniVoiceModel {
-            omnivoiceModel.setGenerationConfig(
+        // Test voice design generation with instruct
+        let text = "Hello, this is a voice design test."
+        let instruct = "male, British accent"
+        print("Generating audio with instruct: \(instruct)")
+        print("Text: \(text)")
+
+        let startTime = CFAbsoluteTimeGetCurrent()
+        let audio = try await (model as! OmniVoiceModel).generate(
+            text: text,
+            voice: instruct,
+            ovParameters: OmniVoiceGenerateParameters(
                 numStep: 32,
                 guidanceScale: 2.0,
                 speed: 1.0,
@@ -241,28 +249,6 @@ struct OmniVoiceModelTests {
                 denoise: true,
                 postprocessOutput: true
             )
-        }
-
-        // Test voice design generation with instruct
-        let text = "Hello, this is a voice design test."
-        let instruct = "male, British accent"
-        print("Generating audio with instruct: \(instruct)")
-        print("Text: \(text)")
-
-        let generationParams = GenerateParameters(
-            maxTokens: 2048,
-            temperature: 1.0,
-            topP: 0.95
-        )
-
-        let startTime = CFAbsoluteTimeGetCurrent()
-        let audio = try await model.generate(
-            text: text,
-            voice: instruct,  // For OmniVoice, voice parameter is used as instruct
-            refAudio: nil,
-            refText: nil,
-            language: "English",
-            generationParameters: generationParams
         )
         let elapsed = CFAbsoluteTimeGetCurrent() - startTime
 
@@ -299,36 +285,22 @@ struct OmniVoiceModelTests {
         let (refSampleRate, refAudio) = try loadAudioArray(from: audioURL, sampleRate: model.sampleRate)
         print("Loaded reference audio: \(refAudio.shape[0]) samples at \(refSampleRate)Hz")
 
-        // Configure for voice cloning
-        if let omnivoiceModel = model as? OmniVoiceModel {
-            omnivoiceModel.setGenerationConfig(
-                numStep: 32,
-                guidanceScale: 2.0,
-                speed: 1.0
-            )
-        }
-
-        // Test voice cloning with reference audio
         let text = "This is a voice cloning test."
         let refText = "intention"  // Simple reference text
         print("Generating with voice cloning...")
         print("Text: \(text)")
         print("Ref text: \(refText)")
 
-        let generationParams = GenerateParameters(
-            maxTokens: 2048,
-            temperature: 1.0,
-            topP: 0.95
-        )
-
         let startTime = CFAbsoluteTimeGetCurrent()
-        let audio = try await model.generate(
+        let audio = try await (model as! OmniVoiceModel).generate(
             text: text,
-            voice: nil,
             refAudio: refAudio,
             refText: refText,
-            language: "English",
-            generationParameters: generationParams
+            ovParameters: OmniVoiceGenerateParameters(
+                numStep: 32,
+                guidanceScale: 2.0,
+                speed: 1.0
+            )
         )
         let elapsed = CFAbsoluteTimeGetCurrent() - startTime
 

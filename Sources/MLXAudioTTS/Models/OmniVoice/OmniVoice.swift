@@ -50,18 +50,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         )
     }
 
-    // MARK: - OmniVoice-specific parameters
-
-    private var numStep: Int = 32
-    private var cfgGuidanceScale: Float = 2.0
-    private var cfgSpeed: Float = 1.0
-    private var cfgDuration: Float?
-    private var cfgTShift: Float = 0.1
-    private var cfgDenoise: Bool = true
-    private var cfgPostprocessOutput: Bool = true
-    private var cfgLayerPenaltyFactor: Float = 5.0
-    private var cfgPositionTemperature: Float = 5.0
-    private var cfgClassTemperature: Float = 0.0
+    // MARK: - OmniVoice-specific defaults (unused; parameters are passed via generate())
 
     // MARK: - Initialization
 
@@ -171,6 +160,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
     // MARK: - SpeechGenerationModel Protocol
 
+    /// Generate audio using the standard protocol (uses sensible defaults).
     public func generate(
         text: String,
         voice: String?,
@@ -182,13 +172,46 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         guard tokenizer != nil else {
             throw AudioGenerationError.modelNotInitialized("Tokenizer not loaded")
         }
+        // Use OmniVoice-specific defaults internally
+        let ovParams = OmniVoiceGenerateParameters()
         return try await generateAudio(
             text: text,
             voice: voice,
             refAudio: refAudio,
             refText: refText,
             language: language,
-            generationParameters: generationParameters
+            ovParameters: ovParams
+        )
+    }
+
+    /// Generate audio with custom OmniVoice diffusion parameters.
+    ///
+    /// - Parameters:
+    ///   - text: Text to synthesize
+    ///   - voice: Voice design instruction (e.g., "male, British accent") or nil for auto voice
+    ///   - refAudio: Reference audio for voice cloning
+    ///   - refText: Transcript of reference audio
+    ///   - language: Language code
+    ///   - ovParameters: OmniVoice-specific diffusion and generation parameters
+    /// - Returns: Generated audio waveform at 24kHz
+    public func generate(
+        text: String,
+        voice: String? = nil,
+        refAudio: MLXArray? = nil,
+        refText: String? = nil,
+        language: String? = nil,
+        ovParameters: OmniVoiceGenerateParameters
+    ) async throws -> MLXArray {
+        guard tokenizer != nil else {
+            throw AudioGenerationError.modelNotInitialized("Tokenizer not loaded")
+        }
+        return try await generateAudio(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: language,
+            ovParameters: ovParameters
         )
     }
 
@@ -220,6 +243,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         generationParameters: GenerateParameters,
         streamingInterval: Double
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let ovParams = OmniVoiceGenerateParameters()
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
         Task { @Sendable [weak self] in
             guard let self else { return }
@@ -233,7 +257,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
                     refAudio: refAudio,
                     refText: refText,
                     language: language,
-                    generationParameters: generationParameters
+                    ovParameters: ovParams
                 )
                 let info = AudioGenerationInfo(
                     promptTokenCount: 0,
@@ -253,32 +277,6 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         return stream
     }
 
-    // MARK: - Generation Config
-
-    public func setGenerationConfig(
-        numStep: Int = 32,
-        guidanceScale: Float = 2.0,
-        speed: Float = 1.0,
-        duration: Float? = nil,
-        tShift: Float = 0.1,
-        denoise: Bool = true,
-        postprocessOutput: Bool = true,
-        layerPenaltyFactor: Float = 5.0,
-        positionTemperature: Float = 5.0,
-        classTemperature: Float = 0.0
-    ) {
-        self.numStep = numStep
-        self.cfgGuidanceScale = guidanceScale
-        self.cfgSpeed = speed
-        self.cfgDuration = duration
-        self.cfgTShift = tShift
-        self.cfgDenoise = denoise
-        self.cfgPostprocessOutput = postprocessOutput
-        self.cfgLayerPenaltyFactor = layerPenaltyFactor
-        self.cfgPositionTemperature = positionTemperature
-        self.cfgClassTemperature = classTemperature
-    }
-
     // MARK: - Generation
 
     private func generateAudio(
@@ -287,14 +285,15 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         refAudio: MLXArray?,
         refText: String?,
         language: String?,
-        generationParameters: GenerateParameters
+        ovParameters: OmniVoiceGenerateParameters
     ) async throws -> MLXArray {
+        guard let audioTok = audioTokenizer else {
+            throw AudioGenerationError.modelNotInitialized("Audio tokenizer not loaded")
+        }
+
         // 1. Encode reference audio to tokens if provided
         var refAudioTokens: MLXArray?
         if let refAudio {
-            guard let audioTok = audioTokenizer else {
-                throw AudioGenerationError.modelNotInitialized("Audio tokenizer not loaded for refAudio")
-            }
             refAudioTokens = try audioTok.encode(refAudio)
         }
 
@@ -304,7 +303,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             text: text,
             refText: refText,
             numRefAudioTokens: numRefTokCount,
-            speed: self.cfgSpeed
+            speed: ovParameters.speed
         )
 
         // 3. Prepare inference inputs
@@ -314,7 +313,8 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             refText: refText,
             refAudioTokens: refAudioTokens,
             language: language,
-            instruct: voice
+            instruct: voice,
+            denoise: ovParameters.denoise
         )
 
         let inputIds = prepared.inputIds
@@ -344,14 +344,14 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         )
 
         // 6. Compute timesteps and unmasking schedule
-        let timesteps = getTimeSteps(tStart: 0.0, tEnd: 1.0, numStep: self.numStep + 1, tShift: self.cfgTShift)
+        let timesteps = getTimeSteps(tStart: 0.0, tEnd: 1.0, numStep: ovParameters.numStep + 1, tShift: ovParameters.tShift)
 
         let totalMask = targetLen * numCodebooks
         var rem = totalMask
         var schedule: [Int] = []
-        for step in 0..<numStep {
+        for step in 0..<ovParameters.numStep {
             let k: Int
-            if step == numStep - 1 {
+            if step == ovParameters.numStep - 1 {
                 k = rem
             } else {
                 let ceilVal = Int(ceil(Float(totalMask) * (timesteps[step + 1] - timesteps[step])))
@@ -364,7 +364,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         let layerIds = MLXArray((0..<numCodebooks).map { Int32($0) }).reshaped([1, numCodebooks, 1])
 
         // 7. Iterative diffusion generation
-        for step in 0..<numStep {
+        for step in 0..<ovParameters.numStep {
             let k = schedule[step]
             if k <= 0 { continue }
 
@@ -386,17 +386,17 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             let (predTokens, scores) = predictTokensWithScoring(
                 cLogits: cLogitsBatch,
                 uLogits: uLogitsBatch,
-                guidanceScale: self.cfgGuidanceScale,
-                classTemperature: self.cfgClassTemperature
+                guidanceScale: ovParameters.guidanceScale,
+                classTemperature: ovParameters.classTemperature
             )
 
             // Apply layer penalty
-            let adjustedScores = scores - (layerIds.asType(.float32) * self.cfgLayerPenaltyFactor)
+            let adjustedScores = scores - (layerIds.asType(.float32) * ovParameters.layerPenaltyFactor)
 
             // Gumbel sampling for position selection
             var finalScores = adjustedScores
-            if self.cfgPositionTemperature > 0.0 {
-                finalScores = gumbelSample(logits: adjustedScores, temperature: self.cfgPositionTemperature)
+            if ovParameters.positionTemperature > 0.0 {
+                finalScores = gumbelSample(logits: adjustedScores, temperature: ovParameters.positionTemperature)
             }
 
             // Mask out already-filled positions
@@ -409,7 +409,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             let flatPreds = predTokens[0].reshaped([-1])
 
             // Select top-k positions to unmask
-            let topkIndices = MLX.argPartition(MLXArray(-1.0, dtype: .float32) * flatScores.asType(.float32), kth: k - 1, axis: 0)[0..., ..<k]
+            let topkIndices = MLX.argPartition(MLXArray(-1.0) * flatScores.asType(.float32), kth: k - 1, axis: 0)[0..., ..<k]
 
             // Build update mask: positions in topkIndices get updated
             let linearTopkIndices = topkIndices.reshaped([-1])
@@ -441,14 +441,11 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         }
 
         // 8. Decode tokens to waveform
-        guard let audioTok = audioTokenizer else {
-            throw AudioGenerationError.modelNotInitialized("Audio tokenizer not loaded for decoding")
-        }
         let outputTokens = tokens[0, 0..., 0..., 0..<targetLen]
         let audio = try audioTok.decode(outputTokens)
 
         // 9. Post-process
-        return postProcessAudio(audio, refRms: nil)
+        return postProcessAudio(audio, refRms: nil, postprocessOutput: ovParameters.postprocessOutput)
     }
 
     // MARK: - Token Prediction with CFG
@@ -572,7 +569,8 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         refText: String?,
         refAudioTokens: MLXArray?,
         language: String?,
-        instruct: String?
+        instruct: String?,
+        denoise: Bool
     ) throws -> (inputIds: MLXArray, audioMask: MLXArray) {
         guard let tokenizer else {
             throw AudioGenerationError.modelNotInitialized("Tokenizer not loaded")
@@ -582,7 +580,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
         // Build style tokens
         var styleText = ""
-        if self.cfgDenoise && refAudioTokens != nil {
+        if denoise && refAudioTokens != nil {
             styleText += "<|denoise|>"
         }
         let langStr = language ?? "None"
@@ -652,7 +650,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         return fullText
     }
 
-    private func postProcessAudio(_ audio: MLXArray, refRms: Float?) -> MLXArray {
+    private func postProcessAudio(_ audio: MLXArray, refRms: Float?, postprocessOutput: Bool) -> MLXArray {
         var result = audio
 
         if let refRms, refRms < 0.1 {
@@ -664,7 +662,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             }
         }
 
-        if self.cfgPostprocessOutput {
+        if postprocessOutput {
             let len = result.shape[0]
             let fadeLen = min(480, len / 2)
             if fadeLen > 0 {
