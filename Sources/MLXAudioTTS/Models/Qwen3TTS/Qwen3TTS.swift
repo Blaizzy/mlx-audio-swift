@@ -225,7 +225,16 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             ttsPadEmbed = prepared.2
             refCodes = prepared.3
         } else {
-            let prepared = prepareGenerationInputs(text: text, language: language, instruct: instruct)
+            // For CustomVoice models: voice is a speaker name, not free-text instruct.
+            let isCVModel = config.ttsModelType == "custom_voice"
+            let speaker: String? = isCVModel ? instruct : nil
+            let effectiveInstruct: String? = isCVModel ? nil : instruct
+            let prepared = prepareGenerationInputs(
+                text: text,
+                language: language,
+                instruct: effectiveInstruct,
+                speaker: speaker
+            )
             inputEmbedsInit = prepared.0
             trailingTextHidden = prepared.1
             ttsPadEmbed = prepared.2
@@ -599,7 +608,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     func prepareGenerationInputs(
         text: String,
         language: String,
-        instruct: String?
+        instruct: String?,
+        speaker: String? = nil
     ) -> (MLXArray, MLXArray, MLXArray) {
         guard let tokenizer, let talkerConfig = config.talkerConfig else {
             fatalError("Tokenizer/config not loaded")
@@ -621,10 +631,32 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         let ttsEosEmbed = ttsEmbeds[0..., 1 ..< 2, 0...]
         let ttsPadEmbed = ttsEmbeds[0..., 2 ..< 3, 0...]
 
-        // Language ID
+        // Language ID — may be overridden by speaker dialect below
         var languageId: Int?
         if language.lowercased() != "auto", let langMap = talkerConfig.codecLanguageId {
             languageId = langMap[language.lowercased()]
+        }
+
+        // Speaker embedding (CustomVoice models only)
+        var speakerEmbed: MLXArray? = nil
+        if let speaker = speaker {
+            if let spkIdMap = talkerConfig.spkId,
+               let spkIdValue = spkIdMap[speaker.lowercased()] {
+                let spkIdArray = MLXArray([Int32(spkIdValue.intValue)]).reshaped(1, 1)
+                speakerEmbed = talker.getInputEmbeddings()(spkIdArray)
+                print("[Qwen3TTS] CustomVoice: speaker '\(speaker)' → spkId=\(spkIdValue.intValue)")
+            } else {
+                print("[Qwen3TTS] CustomVoice: WARNING - speaker '\(speaker)' not found in spkId map")
+            }
+            if let dialectMap = talkerConfig.spkIsDialect,
+               let dialectVal = dialectMap[speaker.lowercased()],
+               dialectVal.isDialect,
+               let dialectName = dialectVal.dialectName,
+               let langMap = talkerConfig.codecLanguageId,
+               let dialectLangId = langMap[dialectName] {
+                print("[Qwen3TTS] CustomVoice: dialect override '\(dialectName)' langId=\(dialectLangId)")
+                languageId = dialectLangId
+            }
         }
 
         // Build codec prefix
@@ -647,9 +679,14 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         let codecEmbedSuffix = talker.getInputEmbeddings()(
             MLXArray([Int32(talkerConfig.codecPadId), Int32(talkerConfig.codecBosId)]).reshaped(1, 2)
         )
-        codecEmbed = concatenated([codecEmbed, codecEmbedSuffix], axis: 1)
+        if let spkEmbed = speakerEmbed {
+            codecEmbed = concatenated([codecEmbed, spkEmbed.reshaped([1, 1, -1]), codecEmbedSuffix], axis: 1)
+            print("[Qwen3TTS] CustomVoice: codec prefix length = \(codecEmbed.dim(1))")
+        } else {
+            codecEmbed = concatenated([codecEmbed, codecEmbedSuffix], axis: 1)
+        }
 
-        // Instruct embedding
+        // Instruct embedding (VoiceDesign only — not CustomVoice)
         var instructEmbed: MLXArray?
         if let instruct, !instruct.isEmpty {
             let instructText = "<|im_start|>user\n\(instruct)<|im_end|>\n"
