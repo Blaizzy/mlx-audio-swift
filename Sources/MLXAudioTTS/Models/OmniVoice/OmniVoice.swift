@@ -24,14 +24,12 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     /// Qwen3 LLM backbone
     private var llm: Qwen3Model
 
-    /// Audio embeddings: maps shifted audio token IDs to hidden states
-    @ModuleInfo(key: "audio_embeddings") var audioEmbeddings: Embedding
+    /// Audio embeddings: array of embeddings, one per codebook
+    /// Each maps audio token IDs to hidden states: [audioVocabSize, hiddenSize]
+    @ModuleInfo(key: "audio_embeddings") var audioEmbeddings: [Embedding]
 
     /// Audio heads: projects hidden states to codebook logits
     @ModuleInfo(key: "audio_heads") var audioHeads: Linear
-
-    /// Codebook layer offsets for shifting audio token IDs
-    private var codebookLayerOffsets: MLXArray
 
     /// Normalized codebook weights for loss computation
     private var normalizedCodebookWeights: [Float]
@@ -75,12 +73,10 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         )
         self.llm = Qwen3Model(llmConfigWrapper)
 
-        // Audio embeddings: [num_codebooks * vocab_size, hidden_size]
-        let embedDim = config.numAudioCodebook * config.audioVocabSize
-        self._audioEmbeddings.wrappedValue = Embedding(
-            embeddingCount: embedDim,
-            dimensions: llmConfig.hiddenSize
-        )
+        // Audio embeddings: array of [numAudioCodebook] embeddings, each [audioVocabSize, hiddenSize]
+        self._audioEmbeddings.wrappedValue = (0..<config.numAudioCodebook).map { _ in
+            Embedding(embeddingCount: config.audioVocabSize, dimensions: llmConfig.hiddenSize)
+        }
 
         // Audio heads: Linear(hidden_size, num_codebooks * vocab_size, bias=false)
         self._audioHeads.wrappedValue = Linear(
@@ -88,11 +84,6 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             outputDimensions: config.numAudioCodebook * config.audioVocabSize,
             bias: false
         )
-
-        // Codebook layer offsets
-        self.codebookLayerOffsets = MLXArray(
-            (0..<config.numAudioCodebook).map { Int32($0 * config.audioVocabSize) }
-        ).reshaped([1, config.numAudioCodebook, 1])
 
         // Normalized codebook weights
         let totalWeight = config.audioCodebookWeights.reduce(0, +)
@@ -110,17 +101,25 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         let textIds = inputIds[0..., 0, 0...]  // [B, S]
         let textEmbeds = llm.getEmbeddings(for: textIds)
 
-        // Shift audio IDs by codebook layer offsets
-        let shiftedIds = (inputIds * audioMask.reshaped([inputIds.shape[0], 1, inputIds.shape[2]]))
-            + codebookLayerOffsets
+        // Apply audio mask to inputIds
+        let maskedIds = inputIds * audioMask.reshaped([inputIds.shape[0], 1, inputIds.shape[2]])
 
-        // Embed and sum across codebooks
-        let audioEmbeds = audioEmbeddings(shiftedIds).sum(axis: 1)
+        // Embed each codebook separately and sum
+        var audioEmbeds: MLXArray?
+        for (i, embedding) in audioEmbeddings.enumerated() {
+            let codebookIds = maskedIds[0..., i, 0...]  // [B, S]
+            let codebookEmbeds = embedding(codebookIds)  // [B, S, D]
+            if audioEmbeds == nil {
+                audioEmbeds = codebookEmbeds
+            } else {
+                audioEmbeds = audioEmbeds! + codebookEmbeds
+            }
+        }
 
         // Where audio: use audio_embeds, else use text_embeds
         return MLX.where(
             audioMask.reshaped([audioMask.shape[0], audioMask.shape[1], 1]),
-            audioEmbeds,
+            audioEmbeds!,
             textEmbeds
         )
     }
