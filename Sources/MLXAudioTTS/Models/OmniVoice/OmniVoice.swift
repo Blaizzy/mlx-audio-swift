@@ -28,8 +28,9 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     /// Each maps audio token IDs to hidden states: [audioVocabSize, hiddenSize]
     @ModuleInfo(key: "audio_embeddings") var audioEmbeddings: [Embedding]
 
-    /// Audio heads: projects hidden states to codebook logits
-    @ModuleInfo(key: "audio_heads") var audioHeads: Linear
+    /// Audio heads: array of Linear layers, one per codebook
+    /// Each projects hidden states to codebook logits: [hiddenSize, audioVocabSize]
+    @ModuleInfo(key: "audio_heads") var audioHeads: [Linear]
 
     /// Normalized codebook weights for loss computation
     private var normalizedCodebookWeights: [Float]
@@ -78,12 +79,10 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             Embedding(embeddingCount: config.audioVocabSize, dimensions: llmConfig.hiddenSize)
         }
 
-        // Audio heads: Linear(hidden_size, num_codebooks * vocab_size, bias=false)
-        self._audioHeads.wrappedValue = Linear(
-            inputDimensions: llmConfig.hiddenSize,
-            outputDimensions: config.numAudioCodebook * config.audioVocabSize,
-            bias: false
-        )
+        // Audio heads: array of [numAudioCodebook] Linear layers, each [hiddenSize, audioVocabSize]
+        self._audioHeads.wrappedValue = (0..<config.numAudioCodebook).map { _ in
+            Linear(inputDimensions: llmConfig.hiddenSize, outputDimensions: config.audioVocabSize, bias: false)
+        }
 
         // Normalized codebook weights
         let totalWeight = config.audioCodebookWeights.reduce(0, +)
@@ -146,13 +145,15 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             cache: cache
         )
 
-        // Project to audio codebook logits
+        // Project to audio codebook logits via per-codebook heads
         let batchSize = hiddenStates.shape[0]
         let seqLen = hiddenStates.shape[1]
-        let logitsFlat = audioHeads(hiddenStates)
-        let audioLogits = logitsFlat
-            .reshaped([batchSize, seqLen, config.numAudioCodebook, config.audioVocabSize])
-            .transposed(0, 2, 1, 3)
+        var logitsPerCodebook: [MLXArray] = []
+        for head in audioHeads {
+            let logits = head(hiddenStates)  // [B, S, V]
+            logitsPerCodebook.append(logits.reshaped([batchSize, seqLen, 1, config.audioVocabSize]))
+        }
+        let audioLogits = MLX.concatenated(logitsPerCodebook, axis: 2)  // [B, C, S, V]
 
         return audioLogits
     }
