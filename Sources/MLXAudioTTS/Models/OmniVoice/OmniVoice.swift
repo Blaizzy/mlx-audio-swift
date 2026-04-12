@@ -819,7 +819,7 @@ final class OmniVoiceConvTranspose1d: Module {
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         var h = MLX.convTransposed1d(x, weight, stride: strideVal, padding: paddingVal)
         if let b = bias {
-            h = h + b.reshaped(1, 1, -1)
+            h = h + b.reshaped([-1])
         }
         return h
     }
@@ -849,7 +849,9 @@ final class OmniVoiceConv1d: Module {
         let w = weight.transposed(0, 2, 1)
         var h = MLX.conv1d(x, w, stride: strideVal, padding: paddingVal)
         if let b = bias {
-            h = h + b.reshaped(1, 1, -1)
+            // Ensure bias is 1D, then add to channel dim
+            let flatBias = b.reshaped([-1])
+            h = h + flatBias
         }
         return h
     }
