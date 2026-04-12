@@ -735,32 +735,10 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var sanitized: [String: MLXArray] = [:]
 
-        // Concatenate per-codebook embeddings into a single embedding table
-        // The safetensors has audio_embeddings.0.weight ... audio_embeddings.7.weight
-        // We need a single audio_embeddings.weight of shape [8*1025, 1024]
-        var embedParts: [MLXArray] = []
-        var headParts: [MLXArray] = []
-        for i in 0..<config.numAudioCodebook {
-            if let w = weights["audio_embeddings.\(i).weight"] {
-                embedParts.append(w)
-            }
-            if let w = weights["audio_heads.\(i).weight"] {
-                headParts.append(w)
-            }
-        }
-        if !embedParts.isEmpty {
-            sanitized["audio_embeddings.weight"] = MLX.concatenated(embedParts, axis: 0)
-        }
-        if !headParts.isEmpty {
-            sanitized["audio_heads.weight"] = MLX.concatenated(headParts, axis: 0)
-        }
-
         // Map LLM weight prefixes
         for (key, value) in weights {
-            // Skip individual embedding/head parts (already concatenated above)
-            if key.hasPrefix("audio_embeddings.") || key.hasPrefix("audio_heads.") {
-                continue
-            }
+            // Skip keys that don't need remapping (audio_embeddings.N.weight, audio_heads.N.weight
+            // already match the module structure)
             var newKey = key
             if key.hasPrefix("model.") {
                 // model.embed_tokens -> llm.model.embed_tokens
