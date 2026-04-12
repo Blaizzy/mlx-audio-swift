@@ -737,8 +737,10 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
         for (key, value) in weights {
             if key.hasPrefix("audio_embeddings.") || key.hasPrefix("audio_heads.") {
-                // These already match our module structure
                 sanitized[key] = value
+            } else if key == "lm_head.weight" {
+                // lm_head lives on Qwen3Model, not Qwen3ModelInner
+                sanitized["llm.lm_head.weight"] = value
             } else if key.hasPrefix("model.") {
                 // model.X -> llm.model.X
                 let stripped = String(key.dropFirst("model.".count))
@@ -752,8 +754,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
                 let stripped = String(key.dropFirst(4))
                 sanitized["llm.model.\(stripped)"] = value
             } else {
-                // No prefix: LLM root weights (e.g., embed_tokens.weight)
-                // -> llm.model.X
+                // Bare key -> llm.model.X
                 sanitized["llm.model.\(key)"] = value
             }
         }

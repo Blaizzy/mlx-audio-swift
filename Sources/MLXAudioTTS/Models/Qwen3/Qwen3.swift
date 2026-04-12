@@ -326,7 +326,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
     public var tokenizer: Tokenizer?
     public var _snacModel: SNAC?
 
-    private let model: Qwen3ModelInner
+    @ModuleInfo(key: "model") fileprivate var model: Qwen3ModelInner
 
     let configuration: Qwen3Configuration
 
@@ -341,7 +341,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         self.configuration = args
         self.vocabularySize = args.vocabularySize
         self.kvHeads = (0..<args.hiddenLayers).map {_ in args.kvHeads}
-        self.model = Qwen3ModelInner(args)
+        self._model.wrappedValue = Qwen3ModelInner(args)
 
         if !args.tieWordEmbeddings {
             self._lmHead.wrappedValue = Linear(args.hiddenSize, args.vocabularySize, bias: false)
