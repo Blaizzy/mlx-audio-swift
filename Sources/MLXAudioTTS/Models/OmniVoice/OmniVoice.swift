@@ -825,6 +825,36 @@ final class OmniVoiceConvTranspose1d: Module {
     }
 }
 
+/// Conv1d using PyTorch weight layout [out_channels, in_channels, kernel_size].
+final class OmniVoiceConv1d: Module {
+    @ModuleInfo(key: "weight") var weight: MLXArray
+    @ModuleInfo(key: "bias") var bias: MLXArray?
+
+    let strideVal: Int
+    let paddingVal: Int
+
+    init(inChannels: Int, outChannels: Int, kernelSize: Int, stride: Int, padding: Int) {
+        self.strideVal = stride
+        self.paddingVal = padding
+
+        let scale = sqrt(1.0 / Float(inChannels * kernelSize))
+        self._weight.wrappedValue = MLXRandom.uniform(
+            low: -scale, high: scale, [outChannels, inChannels, kernelSize]
+        )
+        self._bias.wrappedValue = MLXArray.zeros([outChannels])
+    }
+
+    func callAsFunction(_ x: MLXArray) -> MLXArray {
+        // Weight is [out, in, kernel], MLX conv expects [out, kernel, in]
+        let w = weight.transposed(0, 2, 1)
+        var h = MLX.conv1d(x, w, stride: strideVal, padding: paddingVal)
+        if let b = bias {
+            h = h + b.reshaped(1, 1, -1)
+        }
+        return h
+    }
+}
+
 // MARK: - DAC-style Audio Codec
 
 /// Snake activation: x + (1/a) * sin(a*x)^2
@@ -835,22 +865,22 @@ func snakeActivation(_ x: MLXArray) -> MLXArray {
 
 /// DAC-style residual unit with Snake activations.
 public final class OmniVoiceDACResidualUnit: Module {
-    @ModuleInfo(key: "conv1") var conv1: MLXNN.Conv1d
-    @ModuleInfo(key: "conv2") var conv2: MLXNN.Conv1d
+    @ModuleInfo(key: "conv1") var conv1: OmniVoiceConv1d
+    @ModuleInfo(key: "conv2") var conv2: OmniVoiceConv1d
     @ModuleInfo(key: "snake1") var snake1: snakeAlpha
     @ModuleInfo(key: "snake2") var snake2: snakeAlpha
 
     init(channels: Int, kernelSize: Int, dilation: Int) {
-        self._conv1.wrappedValue = MLXNN.Conv1d(
-            inputChannels: channels,
-            outputChannels: channels,
+        self._conv1.wrappedValue = OmniVoiceConv1d(
+            inChannels: channels,
+            outChannels: channels,
             kernelSize: kernelSize,
             stride: 1,
             padding: ((kernelSize - 1) * dilation + 1) / 2
         )
-        self._conv2.wrappedValue = MLXNN.Conv1d(
-            inputChannels: channels,
-            outputChannels: channels,
+        self._conv2.wrappedValue = OmniVoiceConv1d(
+            inChannels: channels,
+            outChannels: channels,
             kernelSize: kernelSize,
             stride: 1,
             padding: ((kernelSize - 1) * dilation + 1) / 2
@@ -887,7 +917,7 @@ public final class OmniVoiceDACDownBlock: Module {
     @ModuleInfo var res_unit2: OmniVoiceDACResidualUnit
     @ModuleInfo var res_unit3: OmniVoiceDACResidualUnit
     @ModuleInfo(key: "snake1") var snake1: snakeAlpha
-    @ModuleInfo(key: "conv1") var conv1: MLXNN.Conv1d
+    @ModuleInfo(key: "conv1") var conv1: OmniVoiceConv1d
 
     init(inputChannels: Int, outputChannels: Int, stride: Int, kernelSize: Int) {
         self._res_unit1.wrappedValue = OmniVoiceDACResidualUnit(
@@ -900,9 +930,9 @@ public final class OmniVoiceDACDownBlock: Module {
             channels: inputChannels, kernelSize: kernelSize, dilation: 9
         )
         self._snake1.wrappedValue = snakeAlpha(channels: inputChannels)
-        self._conv1.wrappedValue = MLXNN.Conv1d(
-            inputChannels: inputChannels,
-            outputChannels: outputChannels,
+        self._conv1.wrappedValue = OmniVoiceConv1d(
+            inChannels: inputChannels,
+            outChannels: outputChannels,
             kernelSize: stride * 2,
             stride: stride,
             padding: stride / 2 + stride % 2
@@ -959,18 +989,18 @@ public final class OmniVoiceDACUpBlock: Module {
 
 /// Higgs Audio V2 acoustic encoder: conv1 → down blocks → snake1 → conv2.
 public final class OmniVoiceDACAcousticEncoder: Module {
-    @ModuleInfo(key: "conv1") var conv1: MLXNN.Conv1d
+    @ModuleInfo(key: "conv1") var conv1: OmniVoiceConv1d
     @ModuleInfo var block: [OmniVoiceDACDownBlock]
     @ModuleInfo(key: "snake1") var snake1: snakeAlpha
-    @ModuleInfo(key: "conv2") var conv2: MLXNN.Conv1d
+    @ModuleInfo(key: "conv2") var conv2: OmniVoiceConv1d
 
     init(config: OmniVoiceAudioTokenizerConfig) {
         let hiddenSize = config.encoderHiddenSize
         let downsamplingRatios = config.downsamplingRatios
 
-        self._conv1.wrappedValue = MLXNN.Conv1d(
-            inputChannels: 1,
-            outputChannels: hiddenSize,
+        self._conv1.wrappedValue = OmniVoiceConv1d(
+            inChannels: 1,
+            outChannels: hiddenSize,
             kernelSize: 7,
             stride: 1,
             padding: 3
@@ -991,9 +1021,9 @@ public final class OmniVoiceDACAcousticEncoder: Module {
         self._block.wrappedValue = blocks
 
         self._snake1.wrappedValue = snakeAlpha(channels: currentChannels)
-        self._conv2.wrappedValue = MLXNN.Conv1d(
-            inputChannels: currentChannels,
-            outputChannels: currentChannels / 8,  // 2048 → 256
+        self._conv2.wrappedValue = OmniVoiceConv1d(
+            inChannels: currentChannels,
+            outChannels: currentChannels / 8,  // 2048 → 256
             kernelSize: 3,
             stride: 1,
             padding: 1
@@ -1013,19 +1043,19 @@ public final class OmniVoiceDACAcousticEncoder: Module {
 
 /// Higgs Audio V2 acoustic decoder: conv1 → up blocks → snake1 → conv2.
 public final class OmniVoiceDACAcousticDecoder: Module {
-    @ModuleInfo(key: "conv1") var conv1: MLXNN.Conv1d
+    @ModuleInfo(key: "conv1") var conv1: OmniVoiceConv1d
     @ModuleInfo var block: [OmniVoiceDACUpBlock]
     @ModuleInfo(key: "snake1") var snake1: snakeAlpha
-    @ModuleInfo(key: "conv2") var conv2: MLXNN.Conv1d
+    @ModuleInfo(key: "conv2") var conv2: OmniVoiceConv1d
 
     init(config: OmniVoiceAudioTokenizerConfig) {
         let hiddenSize = config.decoderHiddenSize
         let upsamplingRatios = config.upsamplingRatios
 
         // Initial projection to decoder hidden size
-        self._conv1.wrappedValue = MLXNN.Conv1d(
-            inputChannels: config.encoderHiddenSize * 4,  // 256
-            outputChannels: hiddenSize,                     // 1024
+        self._conv1.wrappedValue = OmniVoiceConv1d(
+            inChannels: config.encoderHiddenSize * 4,  // 256
+            outChannels: hiddenSize,                     // 1024
             kernelSize: 7,
             stride: 1,
             padding: 3
@@ -1046,9 +1076,9 @@ public final class OmniVoiceDACAcousticDecoder: Module {
         self._block.wrappedValue = blocks
 
         self._snake1.wrappedValue = snakeAlpha(channels: currentChannels)
-        self._conv2.wrappedValue = MLXNN.Conv1d(
-            inputChannels: currentChannels,
-            outputChannels: 1,
+        self._conv2.wrappedValue = OmniVoiceConv1d(
+            inChannels: currentChannels,
+            outChannels: 1,
             kernelSize: 7,
             stride: 1,
             padding: 3
@@ -1190,9 +1220,14 @@ public final class OmniVoiceAudioTokenizer: Module {
     public func encode(_ audio: MLXArray) throws -> MLXArray {
         var wav = audio
         if wav.ndim == 1 {
-            wav = wav.reshaped([1, 1, -1])
+            // [T] -> [1, T, 1]  (batch, length, channels) NLC
+            wav = wav.reshaped([1, -1, 1])
         } else if wav.ndim == 2 {
-            wav = wav.reshaped([1, 1, wav.shape[1]])
+            // [B, T] -> [B, T, 1]
+            wav = wav.reshaped([wav.shape[0], wav.shape[1], 1])
+        } else if wav.ndim == 3 && wav.shape[1] < wav.shape[2] {
+            // NCL [B, C, L] -> NLC [B, L, C]
+            wav = wav.transposed(0, 2, 1)
         }
 
         // Encoder: [B, 1, T] -> [B, D, T']
