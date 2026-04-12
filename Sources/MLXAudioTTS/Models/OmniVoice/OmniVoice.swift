@@ -22,7 +22,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     let config: OmniVoiceConfig
 
     /// Qwen3 LLM backbone
-    @ModuleInfo(key: "backbone") private var llm: Qwen3Model
+    @ModuleInfo(key: "llm") private var llm: Qwen3Model
 
     /// Audio embeddings: array of embeddings, one per codebook
     /// Each maps audio token IDs to hidden states: [audioVocabSize, hiddenSize]
