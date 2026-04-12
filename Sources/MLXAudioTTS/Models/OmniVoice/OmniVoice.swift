@@ -1004,6 +1004,9 @@ public final class OmniVoiceDACAcousticEncoder: Module {
 /// DAC-style acoustic decoder: ConvTranspose1d + upsampling blocks.
 public final class OmniVoiceDACAcousticDecoder: Module {
     @ModuleInfo var block: [OmniVoiceDACUpBlock]
+    @ModuleInfo(key: "snake1") var snake1: snakeAlpha
+    @ModuleInfo(key: "conv1") var conv1: MLXNN.Conv1d
+    @ModuleInfo(key: "conv2") var conv1_: MLXNN.Conv1d
     @ModuleInfo(key: "conv_post") var convPost: MLXNN.Conv1d
 
     init(config: OmniVoiceAudioTokenizerConfig) {
@@ -1024,6 +1027,22 @@ public final class OmniVoiceDACAcousticDecoder: Module {
         }
         self._block.wrappedValue = blocks
 
+        // Final layers after up blocks (matching checkpoint)
+        self._snake1.wrappedValue = snakeAlpha(channels: currentChannels)
+        self._conv1.wrappedValue = MLXNN.Conv1d(
+            inputChannels: currentChannels,
+            outputChannels: currentChannels,
+            kernelSize: 3,
+            stride: 1,
+            padding: 1
+        )
+        self._conv1_.wrappedValue = MLXNN.Conv1d(
+            inputChannels: currentChannels,
+            outputChannels: currentChannels,
+            kernelSize: 3,
+            stride: 1,
+            padding: 1
+        )
         self._convPost.wrappedValue = MLXNN.Conv1d(
             inputChannels: currentChannels,
             outputChannels: 1,
@@ -1039,6 +1058,9 @@ public final class OmniVoiceDACAcousticDecoder: Module {
         for b in block {
             h = snakeActivation(b(h))
         }
+        h = snake1.callAsFunction(h)
+        h = conv1(h)
+        h = conv1_(h)
         h = MLX.tanh(convPost(h))
         return h
     }
