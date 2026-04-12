@@ -766,10 +766,13 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 // MARK: - OmniVoice Audio Tokenizer
 
 /// Audio tokenizer for OmniVoice - handles encoding/decoding of audio tokens.
-/// Wraps a DAC + RVQ codec for discrete audio tokenization.
+/// Wraps a DAC-style codec with RVQ quantization.
+///
+/// TODO: Implement the full HiggsAudioV2 tokenizer with acoustic encoder/decoder,
+/// RVQ quantizer, and semantic (HuBERT) features. The safetensors contains
+/// acoustic_encoder, acoustic_decoder, quantizer, and fc2 weights.
 public final class OmniVoiceAudioTokenizer: Module {
     let config: OmniVoiceAudioTokenizerConfig
-    var codec: OmniVoiceHiggsCodec?
 
     init(config: OmniVoiceAudioTokenizerConfig) {
         self.config = config
@@ -779,27 +782,22 @@ public final class OmniVoiceAudioTokenizer: Module {
     /// - Parameter audio: [samples] or [1, samples]
     /// - Returns: [num_codebooks, seq_len]
     public func encode(_ audio: MLXArray) throws -> MLXArray {
-        guard let codec else {
-            throw AudioGenerationError.modelNotInitialized("Audio codec not loaded")
-        }
-        var wav = audio
-        if wav.ndim == 1 {
-            wav = wav.reshaped([1, 1, -1])
-        } else if wav.ndim == 2 {
-            wav = wav.reshaped([1, 1, wav.shape[1]])
-        }
-        return codec.encode(wav)[0]
+        // TODO: Implement HiggsAudioV2 acoustic encoder + RVQ
+        throw AudioGenerationError.modelNotInitialized(
+            "Audio tokenizer encode not yet implemented. " +
+            "Requires HiggsAudioV2 acoustic encoder + RVQ quantizer."
+        )
     }
 
     /// Decode discrete tokens back to audio waveform.
     /// - Parameter tokens: [num_codebooks, seq_len]
     /// - Returns: [samples]
     public func decode(_ tokens: MLXArray) throws -> MLXArray {
-        guard let codec else {
-            throw AudioGenerationError.modelNotInitialized("Audio codec not loaded")
-        }
-        let batchedTokens = tokens.reshaped([1, tokens.shape[0], tokens.shape[1]])
-        return codec.decode(batchedTokens).reshaped([-1])
+        // TODO: Implement HiggsAudioV2 acoustic decoder
+        throw AudioGenerationError.modelNotInitialized(
+            "Audio tokenizer decode not yet implemented. " +
+            "Requires HiggsAudioV2 acoustic decoder."
+        )
     }
 
     public static func fromPretrained(
@@ -819,32 +817,19 @@ public final class OmniVoiceAudioTokenizer: Module {
         let configData = try Data(contentsOf: configURL)
         let config = try JSONDecoder().decode(OmniVoiceAudioTokenizerConfig.self, from: configData)
 
+        // TODO: Implement full HiggsAudioV2 audio tokenizer.
+        // The safetensors contains acoustic_encoder, acoustic_decoder,
+        // quantizer, and fc2 weights with a DAC-style architecture.
+        // For now, return a config-only tokenizer.
         let tokenizer = OmniVoiceAudioTokenizer(config: config)
-
-        let weightsURL = try await ModelUtils.resolveOrDownloadModel(
-            repoID: repo,
-            requiredExtension: ".safetensors",
-            additionalMatchingPatterns: ["audio_tokenizer/model.safetensors"]
-        ).appendingPathComponent("audio_tokenizer/model.safetensors")
-
-        let weights = try MLX.loadArrays(url: weightsURL)
-        let sanitized = tokenizer.sanitizeCodecWeights(weights)
-        try tokenizer.update(parameters: ModuleParameters.unflattened(sanitized), verify: .noUnusedKeys)
         eval(tokenizer)
 
         return tokenizer
     }
 
     func sanitizeCodecWeights(_ weights: [String: MLXArray]) -> [String: MLXArray] {
-        var sanitized: [String: MLXArray] = [:]
-        for (key, value) in weights {
-            var newKey = key
-            if newKey.hasPrefix("audio_tokenizer.") {
-                newKey = String(newKey.dropFirst("audio_tokenizer.".count))
-            }
-            sanitized[newKey] = value
-        }
-        return sanitized
+        // All weights pass through for now; the codec needs full implementation
+        weights
     }
 }
 
