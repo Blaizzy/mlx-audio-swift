@@ -899,6 +899,9 @@ public final class OmniVoiceDACUpBlock: Module {
 public final class OmniVoiceDACAcousticEncoder: Module {
     @ModuleInfo(key: "conv_pre") var convPre: MLXNN.Conv1d
     @ModuleInfo var block: [OmniVoiceDACDownBlock]
+    @ModuleInfo(key: "snake1") var snake1: snakeAlpha
+    @ModuleInfo(key: "conv1") var conv1: MLXNN.Conv1d
+    @ModuleInfo(key: "conv2") var conv2: MLXNN.Conv1d
     @ModuleInfo(key: "conv_post") var convPost: MLXNN.Conv1d
 
     init(config: OmniVoiceAudioTokenizerConfig) {
@@ -927,6 +930,22 @@ public final class OmniVoiceDACAcousticEncoder: Module {
         }
         self._block.wrappedValue = blocks
 
+        // Final layers after down blocks
+        self._snake1.wrappedValue = snakeAlpha(channels: currentChannels)
+        self._conv1.wrappedValue = MLXNN.Conv1d(
+            inputChannels: currentChannels,
+            outputChannels: currentChannels,
+            kernelSize: 3,
+            stride: 1,
+            padding: 1
+        )
+        self._conv2.wrappedValue = MLXNN.Conv1d(
+            inputChannels: currentChannels,
+            outputChannels: currentChannels,
+            kernelSize: 3,
+            stride: 1,
+            padding: 1
+        )
         self._convPost.wrappedValue = MLXNN.Conv1d(
             inputChannels: currentChannels,
             outputChannels: currentChannels,
@@ -938,10 +957,13 @@ public final class OmniVoiceDACAcousticEncoder: Module {
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         // x: [B, 1, T] -> [B, D, T']
-        var h = snakeActivation(convPre(x))
+        var h = convPre(x)
         for b in block {
-            h = snakeActivation(b(h))
+            h = b(h)
         }
+        h = snake1.callAsFunction(h)
+        h = conv1(h)
+        h = conv2(h)
         h = convPost(h)
         return h
     }
