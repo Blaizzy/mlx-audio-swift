@@ -818,43 +818,56 @@ public final class snakeAlpha: Module {
     }
 }
 
-/// DAC downsampling block: Conv1d + residual units.
+/// DAC downsampling block (Higgs Audio V2 EncoderBlock):
+/// 3 ResidualUnits(dilation 1,3,9) + Snake1d + WNConv1d.
 public final class OmniVoiceDACDownBlock: Module {
-    @ModuleInfo(key: "conv") var conv: MLXNN.Conv1d
     @ModuleInfo var res_unit1: OmniVoiceDACResidualUnit
     @ModuleInfo var res_unit2: OmniVoiceDACResidualUnit
+    @ModuleInfo var res_unit3: OmniVoiceDACResidualUnit
+    @ModuleInfo(key: "snake1") var snake1: snakeAlpha
+    @ModuleInfo(key: "conv1") var conv1: MLXNN.Conv1d
 
     init(inputChannels: Int, outputChannels: Int, stride: Int, kernelSize: Int) {
-        self._conv.wrappedValue = MLXNN.Conv1d(
+        self._res_unit1.wrappedValue = OmniVoiceDACResidualUnit(
+            channels: inputChannels, kernelSize: kernelSize, dilation: 1
+        )
+        self._res_unit2.wrappedValue = OmniVoiceDACResidualUnit(
+            channels: inputChannels, kernelSize: kernelSize, dilation: 3
+        )
+        self._res_unit3.wrappedValue = OmniVoiceDACResidualUnit(
+            channels: inputChannels, kernelSize: kernelSize, dilation: 9
+        )
+        self._snake1.wrappedValue = snakeAlpha(channels: inputChannels)
+        self._conv1.wrappedValue = MLXNN.Conv1d(
             inputChannels: inputChannels,
             outputChannels: outputChannels,
             kernelSize: stride * 2,
             stride: stride,
             padding: stride / 2 + stride % 2
         )
-        self._res_unit1.wrappedValue = OmniVoiceDACResidualUnit(
-            channels: outputChannels, kernelSize: kernelSize, dilation: 1
-        )
-        self._res_unit2.wrappedValue = OmniVoiceDACResidualUnit(
-            channels: outputChannels, kernelSize: kernelSize, dilation: 3
-        )
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        var h = conv(x)
-        h = res_unit1(h)
+        var h = res_unit1(x)
         h = res_unit2(h)
+        h = res_unit3(h)
+        h = snake1.callAsFunction(h)
+        h = conv1(h)
         return h
     }
 }
 
-/// DAC upsampling block: ConvTranspose1d + residual units.
+/// DAC upsampling block (Higgs Audio V2 DecoderBlock):
+/// Snake1d + ConvTranspose1d + 3 ResidualUnits(dilation 1,3,9).
 public final class OmniVoiceDACUpBlock: Module {
+    @ModuleInfo(key: "snake1") var snake1: snakeAlpha
     @ModuleInfo(key: "conv_t1") var convT1: DACVAEWNConvTranspose1d
     @ModuleInfo var res_unit1: OmniVoiceDACResidualUnit
     @ModuleInfo var res_unit2: OmniVoiceDACResidualUnit
+    @ModuleInfo var res_unit3: OmniVoiceDACResidualUnit
 
     init(inputChannels: Int, outputChannels: Int, stride: Int, kernelSize: Int) {
+        self._snake1.wrappedValue = snakeAlpha(channels: outputChannels)
         self._convT1.wrappedValue = DACVAEWNConvTranspose1d(
             inChannels: inputChannels,
             outChannels: outputChannels,
@@ -868,12 +881,16 @@ public final class OmniVoiceDACUpBlock: Module {
         self._res_unit2.wrappedValue = OmniVoiceDACResidualUnit(
             channels: outputChannels, kernelSize: kernelSize, dilation: 3
         )
+        self._res_unit3.wrappedValue = OmniVoiceDACResidualUnit(
+            channels: outputChannels, kernelSize: kernelSize, dilation: 9
+        )
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        var h = convT1(x)
+        var h = snake1.callAsFunction(convT1(x))
         h = res_unit1(h)
         h = res_unit2(h)
+        h = res_unit3(h)
         return h
     }
 }
