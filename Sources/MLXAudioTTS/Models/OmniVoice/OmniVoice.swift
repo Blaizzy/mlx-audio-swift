@@ -1066,7 +1066,7 @@ public final class OmniVoiceAudioTokenizer: Module {
 
     @ModuleInfo(key: "acoustic_encoder") var acousticEncoder: OmniVoiceDACAcousticEncoder
     @ModuleInfo(key: "acoustic_decoder") var acousticDecoder: OmniVoiceDACAcousticDecoder
-    @ModuleInfo(key: "quantizer") var quantizer: OmniVoiceRVQQuantizer
+    @ModuleInfo(key: "quantizers") var quantizer: OmniVoiceRVQQuantizer
     @ModuleInfo(key: "fc2") var fc2: MLXNN.Linear
 
     init(config: OmniVoiceAudioTokenizerConfig) {
