@@ -735,19 +735,27 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var sanitized: [String: MLXArray] = [:]
 
-        // Map LLM weight prefixes
         for (key, value) in weights {
-            // Skip keys that don't need remapping (audio_embeddings.N.weight, audio_heads.N.weight
-            // already match the module structure)
-            var newKey = key
-            if key.hasPrefix("model.") {
-                // model.embed_tokens -> llm.model.embed_tokens
-                newKey = "llm.\(key)"
+            if key.hasPrefix("audio_embeddings.") || key.hasPrefix("audio_heads.") {
+                // These already match our module structure
+                sanitized[key] = value
+            } else if key.hasPrefix("model.") {
+                // model.X -> llm.model.X
+                let stripped = String(key.dropFirst("model.".count))
+                sanitized["llm.model.\(stripped)"] = value
             } else if key.hasPrefix("backbone.") {
-                // backbone.embed_tokens -> llm.backbone.embed_tokens
-                newKey = "llm.\(String(key.dropFirst("backbone.".count)))"
+                // backbone.X -> llm.model.X
+                let stripped = String(key.dropFirst("backbone.".count))
+                sanitized["llm.model.\(stripped)"] = value
+            } else if key.hasPrefix("llm.") {
+                // llm.X -> llm.model.X
+                let stripped = String(key.dropFirst(4))
+                sanitized["llm.model.\(stripped)"] = value
+            } else {
+                // No prefix: LLM root weights (e.g., embed_tokens.weight)
+                // -> llm.model.X
+                sanitized["llm.model.\(key)"] = value
             }
-            sanitized[newKey] = value
         }
 
         return sanitized
