@@ -102,6 +102,9 @@ public struct OmniVoiceAudioTokenizerConfig: Codable, Sendable {
     var samplingRate: Int
     var downsamplingRatios: [Int]
     var upsamplingRatios: [Int]
+    var encoderHiddenSize: Int
+    var decoderHiddenSize: Int
+    var kernelSize: Int
 
     // Hubert semantic config
     var hiddenSize: Int
@@ -125,6 +128,9 @@ public struct OmniVoiceAudioTokenizerConfig: Codable, Sendable {
         case samplingRate = "sampling_rate"
         case downsamplingRatios = "downsampling_ratios"
         case upsamplingRatios = "upsampling_ratios"
+        case encoderHiddenSize = "encoder_hidden_size"
+        case decoderHiddenSize = "decoder_hidden_size"
+        case kernelSize = "kernel_size"
         case hiddenSize = "hidden_size"
         case numHiddenLayers = "num_hidden_layers"
         case numAttentionHeads = "num_attention_heads"
@@ -146,6 +152,9 @@ public struct OmniVoiceAudioTokenizerConfig: Codable, Sendable {
         samplingRate = try c.decodeIfPresent(Int.self, forKey: .samplingRate) ?? 16000
         downsamplingRatios = try c.decodeIfPresent([Int].self, forKey: .downsamplingRatios) ?? [8, 5, 4, 2, 3]
         upsamplingRatios = try c.decodeIfPresent([Int].self, forKey: .upsamplingRatios) ?? [8, 5, 4, 2, 3]
+        encoderHiddenSize = try c.decodeIfPresent(Int.self, forKey: .encoderHiddenSize) ?? 64
+        decoderHiddenSize = try c.decodeIfPresent(Int.self, forKey: .decoderHiddenSize) ?? 1024
+        kernelSize = try c.decodeIfPresent(Int.self, forKey: .kernelSize) ?? 3
         hiddenSize = try c.decodeIfPresent(Int.self, forKey: .hiddenSize) ?? 768
         numHiddenLayers = try c.decodeIfPresent(Int.self, forKey: .numHiddenLayers) ?? 12
         numAttentionHeads = try c.decodeIfPresent(Int.self, forKey: .numAttentionHeads) ?? 12

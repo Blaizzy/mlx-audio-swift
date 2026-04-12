@@ -763,41 +763,364 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     }
 }
 
-// MARK: - OmniVoice Audio Tokenizer
+// MARK: - DAC-style Audio Codec
 
-/// Audio tokenizer for OmniVoice - handles encoding/decoding of audio tokens.
-/// Wraps a DAC-style codec with RVQ quantization.
-///
-/// TODO: Implement the full HiggsAudioV2 tokenizer with acoustic encoder/decoder,
-/// RVQ quantizer, and semantic (HuBERT) features. The safetensors contains
-/// acoustic_encoder, acoustic_decoder, quantizer, and fc2 weights.
+/// Snake activation: x + (1/a) * sin(a*x)^2
+func snakeActivation(_ x: MLXArray) -> MLXArray {
+    let alpha: Float = 1.0
+    return x + (1.0 / alpha) * MLX.square(MLX.sin(alpha * x))
+}
+
+/// DAC-style residual unit with Snake activations.
+public final class OmniVoiceDACResidualUnit: Module {
+    @ModuleInfo(key: "conv1") var conv1: MLXNN.Conv1d
+    @ModuleInfo(key: "conv2") var conv2: MLXNN.Conv1d
+    @ModuleInfo(key: "snake1") var snake1: snakeAlpha
+    @ModuleInfo(key: "snake2") var snake2: snakeAlpha
+
+    init(channels: Int, kernelSize: Int, dilation: Int) {
+        self._conv1.wrappedValue = MLXNN.Conv1d(
+            inputChannels: channels,
+            outputChannels: channels,
+            kernelSize: kernelSize,
+            stride: 1,
+            padding: ((kernelSize - 1) * dilation + 1) / 2
+        )
+        self._conv2.wrappedValue = MLXNN.Conv1d(
+            inputChannels: channels,
+            outputChannels: channels,
+            kernelSize: kernelSize,
+            stride: 1,
+            padding: ((kernelSize - 1) * dilation + 1) / 2
+        )
+        self._snake1.wrappedValue = snakeAlpha(channels: channels)
+        self._snake2.wrappedValue = snakeAlpha(channels: channels)
+    }
+
+    func callAsFunction(_ x: MLXArray) -> MLXArray {
+        var h = snake1.callAsFunction(conv1(x))
+        h = snake2.callAsFunction(conv2(h))
+        return x + h
+    }
+}
+
+/// Learnable Snake activation parameter.
+public final class snakeAlpha: Module {
+    @ModuleInfo(key: "alpha") var alpha: MLXArray
+
+    init(channels: Int) {
+        self._alpha.wrappedValue = MLXArray.ones([1, channels, 1])
+    }
+
+    func callAsFunction(_ x: MLXArray) -> MLXArray {
+        let a = MLX.square(MLX.log(1.0 + MLX.exp(alpha)))
+        return x + (1.0 / a) * MLX.square(MLX.sin(a * x))
+    }
+}
+
+/// DAC downsampling block: Conv1d + residual units.
+public final class OmniVoiceDACDownBlock: Module {
+    @ModuleInfo(key: "conv") var conv: MLXNN.Conv1d
+    @ModuleInfo var res_unit1: OmniVoiceDACResidualUnit
+    @ModuleInfo var res_unit2: OmniVoiceDACResidualUnit
+
+    init(inputChannels: Int, outputChannels: Int, stride: Int, kernelSize: Int) {
+        self._conv.wrappedValue = MLXNN.Conv1d(
+            inputChannels: inputChannels,
+            outputChannels: outputChannels,
+            kernelSize: stride * 2,
+            stride: stride,
+            padding: stride / 2 + stride % 2
+        )
+        self._res_unit1.wrappedValue = OmniVoiceDACResidualUnit(
+            channels: outputChannels, kernelSize: kernelSize, dilation: 1
+        )
+        self._res_unit2.wrappedValue = OmniVoiceDACResidualUnit(
+            channels: outputChannels, kernelSize: kernelSize, dilation: 3
+        )
+    }
+
+    func callAsFunction(_ x: MLXArray) -> MLXArray {
+        var h = conv(x)
+        h = res_unit1(h)
+        h = res_unit2(h)
+        return h
+    }
+}
+
+/// DAC upsampling block: ConvTranspose1d + residual units.
+public final class OmniVoiceDACUpBlock: Module {
+    @ModuleInfo(key: "conv_t1") var convT1: DACVAEWNConvTranspose1d
+    @ModuleInfo var res_unit1: OmniVoiceDACResidualUnit
+    @ModuleInfo var res_unit2: OmniVoiceDACResidualUnit
+
+    init(inputChannels: Int, outputChannels: Int, stride: Int, kernelSize: Int) {
+        self._convT1.wrappedValue = DACVAEWNConvTranspose1d(
+            inChannels: inputChannels,
+            outChannels: outputChannels,
+            kernelSize: stride * 2,
+            stride: stride,
+            padding: stride / 2 + stride % 2
+        )
+        self._res_unit1.wrappedValue = OmniVoiceDACResidualUnit(
+            channels: outputChannels, kernelSize: kernelSize, dilation: 1
+        )
+        self._res_unit2.wrappedValue = OmniVoiceDACResidualUnit(
+            channels: outputChannels, kernelSize: kernelSize, dilation: 3
+        )
+    }
+
+    func callAsFunction(_ x: MLXArray) -> MLXArray {
+        var h = convT1(x)
+        h = res_unit1(h)
+        h = res_unit2(h)
+        return h
+    }
+}
+
+/// DAC-style acoustic encoder: Conv1d + downsampling blocks + final conv.
+public final class OmniVoiceDACAcousticEncoder: Module {
+    @ModuleInfo(key: "conv_pre") var convPre: MLXNN.Conv1d
+    @ModuleInfo var block: [OmniVoiceDACDownBlock]
+    @ModuleInfo(key: "conv_post") var convPost: MLXNN.Conv1d
+
+    init(config: OmniVoiceAudioTokenizerConfig) {
+        let hiddenSize = config.encoderHiddenSize
+        let downsamplingRatios = config.downsamplingRatios
+
+        self._convPre.wrappedValue = MLXNN.Conv1d(
+            inputChannels: 1,
+            outputChannels: hiddenSize,
+            kernelSize: 7,
+            stride: 1,
+            padding: 3
+        )
+
+        var blocks: [OmniVoiceDACDownBlock] = []
+        var currentChannels = hiddenSize
+        for (i, stride) in downsamplingRatios.enumerated() {
+            let outChannels = (i == downsamplingRatios.count - 1) ? config.codebookDim : currentChannels * 2
+            blocks.append(OmniVoiceDACDownBlock(
+                inputChannels: currentChannels,
+                outputChannels: outChannels,
+                stride: stride,
+                kernelSize: config.kernelSize
+            ))
+            currentChannels = outChannels
+        }
+        self._block.wrappedValue = blocks
+
+        self._convPost.wrappedValue = MLXNN.Conv1d(
+            inputChannels: currentChannels,
+            outputChannels: currentChannels,
+            kernelSize: 3,
+            stride: 1,
+            padding: 1
+        )
+    }
+
+    func callAsFunction(_ x: MLXArray) -> MLXArray {
+        // x: [B, 1, T] -> [B, D, T']
+        var h = snakeActivation(convPre(x))
+        for b in block {
+            h = snakeActivation(b(h))
+        }
+        h = convPost(h)
+        return h
+    }
+}
+
+/// DAC-style acoustic decoder: ConvTranspose1d + upsampling blocks.
+public final class OmniVoiceDACAcousticDecoder: Module {
+    @ModuleInfo var block: [OmniVoiceDACUpBlock]
+    @ModuleInfo(key: "conv_post") var convPost: MLXNN.Conv1d
+
+    init(config: OmniVoiceAudioTokenizerConfig) {
+        let hiddenSize = config.decoderHiddenSize
+        let upsamplingRatios = config.upsamplingRatios
+
+        var blocks: [OmniVoiceDACUpBlock] = []
+        var currentChannels = hiddenSize
+        for (i, stride) in upsamplingRatios.enumerated() {
+            let outChannels = (i == upsamplingRatios.count - 1) ? 1 : currentChannels / 2
+            blocks.append(OmniVoiceDACUpBlock(
+                inputChannels: currentChannels,
+                outputChannels: outChannels,
+                stride: stride,
+                kernelSize: config.kernelSize
+            ))
+            currentChannels = outChannels
+        }
+        self._block.wrappedValue = blocks
+
+        self._convPost.wrappedValue = MLXNN.Conv1d(
+            inputChannels: currentChannels,
+            outputChannels: 1,
+            kernelSize: 7,
+            stride: 1,
+            padding: 3
+        )
+    }
+
+    func callAsFunction(_ x: MLXArray) -> MLXArray {
+        // x: [B, D, T] -> [B, 1, T']
+        var h = x
+        for b in block {
+            h = snakeActivation(b(h))
+        }
+        h = MLX.tanh(convPost(h))
+        return h
+    }
+}
+
+/// Residual Vector Quantization.
+public final class OmniVoiceRVQQuantizer: Module {
+    @ModuleInfo var codebook: MLXArray  // [n_codebooks, codebook_size, codebook_dim]
+
+    init(config: OmniVoiceAudioTokenizerConfig) {
+        let nCodebooks = config.nCodebooks
+        let codebookSize = config.codebookSize
+        let codebookDim = config.codebookDim
+
+        // Initialize codebooks with small random values
+        var cbs: [MLXArray] = []
+        for _ in 0..<nCodebooks {
+            let scale = sqrt(1.0 / Float(codebookDim))
+            let cb = MLXRandom.uniform(low: -scale, high: scale, [codebookSize, codebookDim])
+            cbs.append(cb)
+        }
+        self._codebook.wrappedValue = MLX.stacked(cbs)  // [n_codebooks, codebook_size, codebook_dim]
+    }
+
+    /// Quantize: [B, D, T] -> (codes [B, n_codebooks, T], quantized [B, D, T])
+    func callAsFunction(_ z: MLXArray) -> (MLXArray, MLXArray) {
+        let batchSize = z.shape[0]
+        let codebookDim = z.shape[1]
+        let seqLen = z.shape[2]
+        let nCodebooks = codebook.shape[0]
+        let codebookSize = codebook.shape[1]
+
+        var residual = z  // [B, D, T]
+        var allCodes: [MLXArray] = []
+        var quantized = MLXArray.zeros([batchSize, codebookDim, seqLen])
+
+        for cbIdx in 0..<nCodebooks {
+            let cb = codebook[cbIdx]  // [codebook_size, D]
+
+            // [B, D, T] -> [B, T, D] for distance computation
+            let zPermute = z.transposed(0, 2, 1)  // [B, T, D]
+            let zFlat = zPermute.reshaped([batchSize * seqLen, codebookDim])
+
+            // Compute distances: [B*T, K]
+            // [B*T, 1, D] - [1, K, D] -> [B*T, K]
+            let diff = zFlat.reshaped([zFlat.shape[0], 1, zFlat.shape[1]])
+                - cb.reshaped([1, codebookSize, codebookDim])
+            let dist = MLX.sum(diff * diff, axis: -1)
+
+            // Nearest codebook index
+            let codes = MLX.argMin(dist, axis: -1)  // [B*T]
+            let codes2d = codes.reshaped([batchSize, seqLen])
+            allCodes.append(codes2d)
+
+            // Gather quantized vectors
+            let q = MLX.take(cb, codes, axis: 0)  // [B*T, D]
+            let q3d = q.reshaped([batchSize, seqLen, codebookDim]).transposed(0, 2, 1)
+
+            quantized = quantized + q3d
+            residual = residual - q3d
+        }
+
+        let codes = MLX.stacked(allCodes, axis: 1)  // [B, n_codebooks, T]
+        return (codes, quantized)
+    }
+
+    /// Decode: [B, n_codebooks, T] -> [B, D, T]
+    func decode(_ codes: MLXArray) -> MLXArray {
+        let batchSize = codes.shape[0]
+        let nCodebooks = codes.shape[1]
+        let seqLen = codes.shape[2]
+        let codebookDim = codebook.shape[2]
+
+        var quantized = MLXArray.zeros([batchSize, codebookDim, seqLen])
+
+        for cbIdx in 0..<nCodebooks {
+            let cb = codebook[cbIdx]  // [codebook_size, D]
+            let cbCodes = codes[0..., cbIdx, 0...]  // [B, T]
+            let flatCodes = cbCodes.reshaped([-1])  // [B*T]
+
+            let q = MLX.take(cb, flatCodes, axis: 0)  // [B*T, D]
+            let q3d = q.reshaped([batchSize, seqLen, codebookDim]).transposed(0, 2, 1)
+
+            quantized = quantized + q3d
+        }
+
+        return quantized
+    }
+}
+
+// MARK: - OmniVoice Higgs Audio Tokenizer
+
+/// Audio tokenizer for OmniVoice: DAC encoder/decoder with RVQ quantization.
 public final class OmniVoiceAudioTokenizer: Module {
     let config: OmniVoiceAudioTokenizerConfig
 
+    @ModuleInfo(key: "acoustic_encoder") var acousticEncoder: OmniVoiceDACAcousticEncoder
+    @ModuleInfo(key: "acoustic_decoder") var acousticDecoder: OmniVoiceDACAcousticDecoder
+    @ModuleInfo(key: "quantizer") var quantizer: OmniVoiceRVQQuantizer
+    @ModuleInfo(key: "fc2") var fc2: MLXNN.Linear
+
     init(config: OmniVoiceAudioTokenizerConfig) {
         self.config = config
+
+        self._acousticEncoder.wrappedValue = OmniVoiceDACAcousticEncoder(config: config)
+        self._acousticDecoder.wrappedValue = OmniVoiceDACAcousticDecoder(config: config)
+        self._quantizer.wrappedValue = OmniVoiceRVQQuantizer(config: config)
+
+        // fc2 projects quantized features to decoder input
+        self._fc2.wrappedValue = MLXNN.Linear(
+            inputDimensions: config.codebookDim,
+            outputDimensions: config.decoderHiddenSize
+        )
     }
 
     /// Encode audio waveform to discrete tokens.
     /// - Parameter audio: [samples] or [1, samples]
     /// - Returns: [num_codebooks, seq_len]
     public func encode(_ audio: MLXArray) throws -> MLXArray {
-        // TODO: Implement HiggsAudioV2 acoustic encoder + RVQ
-        throw AudioGenerationError.modelNotInitialized(
-            "Audio tokenizer encode not yet implemented. " +
-            "Requires HiggsAudioV2 acoustic encoder + RVQ quantizer."
-        )
+        var wav = audio
+        if wav.ndim == 1 {
+            wav = wav.reshaped([1, 1, -1])
+        } else if wav.ndim == 2 {
+            wav = wav.reshaped([1, 1, wav.shape[1]])
+        }
+
+        // Encoder: [B, 1, T] -> [B, D, T']
+        let z = acousticEncoder(wav)
+
+        // RVQ: [B, D, T'] -> (codes [B, n_codebooks, T'], quantized [B, D, T'])
+        let (codes, _) = quantizer(z)
+
+        // Return [n_codebooks, T'] (squeeze batch dim)
+        return codes[0]
     }
 
     /// Decode discrete tokens back to audio waveform.
     /// - Parameter tokens: [num_codebooks, seq_len]
     /// - Returns: [samples]
     public func decode(_ tokens: MLXArray) throws -> MLXArray {
-        // TODO: Implement HiggsAudioV2 acoustic decoder
-        throw AudioGenerationError.modelNotInitialized(
-            "Audio tokenizer decode not yet implemented. " +
-            "Requires HiggsAudioV2 acoustic decoder."
-        )
+        // Add batch dim: [n_codebooks, T] -> [1, n_codebooks, T]
+        let batchedTokens = tokens.reshaped([1, tokens.shape[0], tokens.shape[1]])
+
+        // RVQ decode: [1, n_codebooks, T] -> [1, D, T]
+        let z = quantizer.decode(batchedTokens)
+
+        // fc2 project: [1, D, T] -> [1, D', T]
+        let h = fc2(z.transposed(0, 2, 1)).transposed(0, 2, 1)
+
+        // Decoder: [1, D', T] -> [1, 1, T']
+        let audio = acousticDecoder(h)
+
+        return audio.reshaped([-1])
     }
 
     public static func fromPretrained(
@@ -817,339 +1140,19 @@ public final class OmniVoiceAudioTokenizer: Module {
         let configData = try Data(contentsOf: configURL)
         let config = try JSONDecoder().decode(OmniVoiceAudioTokenizerConfig.self, from: configData)
 
-        // TODO: Implement full HiggsAudioV2 audio tokenizer.
-        // The safetensors contains acoustic_encoder, acoustic_decoder,
-        // quantizer, and fc2 weights with a DAC-style architecture.
-        // For now, return a config-only tokenizer.
         let tokenizer = OmniVoiceAudioTokenizer(config: config)
+
+        let weightsURL = try await ModelUtils.resolveOrDownloadModel(
+            repoID: repo,
+            requiredExtension: ".safetensors",
+            additionalMatchingPatterns: ["audio_tokenizer/model.safetensors"]
+        ).appendingPathComponent("audio_tokenizer/model.safetensors")
+
+        let weights = try MLX.loadArrays(url: weightsURL)
+        try tokenizer.update(parameters: ModuleParameters.unflattened(weights), verify: .noUnusedKeys)
         eval(tokenizer)
 
         return tokenizer
     }
-
-    func sanitizeCodecWeights(_ weights: [String: MLXArray]) -> [String: MLXArray] {
-        // All weights pass through for now; the codec needs full implementation
-        weights
-    }
 }
 
-// MARK: - OmniVoice Higgs Codec (DAC + RVQ)
-
-/// Audio codec for OmniVoice: DAC-style encoder/decoder with RVQ quantization.
-public final class OmniVoiceHiggsCodec: Module {
-    let config: OmniVoiceAudioTokenizerConfig
-
-    @ModuleInfo(key: "encoder") var encoder: OmniVoiceDACLikeEncoder
-    @ModuleInfo(key: "quantizer") var quantizer: OmniVoiceRVQQuantizer
-    @ModuleInfo(key: "decoder") var decoder: OmniVoiceDACLikeDecoder
-
-    init(config: OmniVoiceAudioTokenizerConfig) {
-        self.config = config
-
-        self._encoder.wrappedValue = OmniVoiceDACLikeEncoder(
-            inputChannels: 1,
-            channels: 64,
-            strides: config.downsamplingRatios,
-            latentDim: config.codebookDim
-        )
-
-        self._quantizer.wrappedValue = OmniVoiceRVQQuantizer(
-            codebookSize: config.codebookSize,
-            codebookDim: config.codebookDim,
-            nCodebooks: config.nCodebooks
-        )
-
-        self._decoder.wrappedValue = OmniVoiceDACLikeDecoder(
-            inputChannels: config.codebookDim,
-            channels: 512,
-            strides: config.upsamplingRatios,
-            outputChannels: 1
-        )
-    }
-
-    func encode(_ waveform: MLXArray) -> MLXArray {
-        let z = encoder(waveform)
-        let (codes, _) = quantizer(z)
-        return codes
-    }
-
-    func decode(_ codes: MLXArray) -> MLXArray {
-        let z = quantizer.decode(codes)
-        return decoder(z)
-    }
-}
-
-// MARK: - DAC-like Encoder
-
-public final class OmniVoiceDACLikeEncoder: Module {
-    @ModuleInfo(key: "conv_in") var convIn: MLXNN.Conv1d
-    @ModuleInfo(key: "down_blocks") var downBlocks: [OmniVoiceDownBlock]
-    @ModuleInfo(key: "conv_out") var convOut: MLXNN.Conv1d
-
-    init(inputChannels: Int, channels: Int, strides: [Int], latentDim: Int) {
-        self._convIn.wrappedValue = MLXNN.Conv1d(
-            inputChannels: inputChannels,
-            outputChannels: channels,
-            kernelSize: 7,
-            padding: 3
-        )
-
-        var blocks: [OmniVoiceDownBlock] = []
-        var currentChannels = channels
-        for (i, stride) in strides.enumerated() {
-            let outChannels = (i == strides.count - 1) ? latentDim : currentChannels * 2
-            blocks.append(OmniVoiceDownBlock(
-                inChannels: currentChannels,
-                outChannels: outChannels,
-                stride: stride
-            ))
-            currentChannels = outChannels
-        }
-        self._downBlocks.wrappedValue = blocks
-
-        self._convOut.wrappedValue = MLXNN.Conv1d(
-            inputChannels: latentDim,
-            outputChannels: latentDim,
-            kernelSize: 3,
-            padding: 1
-        )
-    }
-
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        var h = convIn(x)
-        for block in downBlocks {
-            h = block(h)
-        }
-        return snakeActivation(convOut(h))
-    }
-}
-
-// MARK: - DAC-like Decoder
-
-public final class OmniVoiceDACLikeDecoder: Module {
-    @ModuleInfo(key: "conv_in") var convIn: MLXNN.Conv1d
-    @ModuleInfo(key: "up_blocks") var upBlocks: [OmniVoiceUpBlock]
-    @ModuleInfo(key: "conv_out") var convOut: MLXNN.Conv1d
-
-    init(inputChannels: Int, channels: Int, strides: [Int], outputChannels: Int) {
-        self._convIn.wrappedValue = MLXNN.Conv1d(
-            inputChannels: inputChannels,
-            outputChannels: channels,
-            kernelSize: 7,
-            padding: 3
-        )
-
-        var blocks: [OmniVoiceUpBlock] = []
-        var currentChannels = channels
-        for (i, stride) in strides.enumerated() {
-            let outChannels = (i == strides.count - 1) ? outputChannels : currentChannels / 2
-            blocks.append(OmniVoiceUpBlock(
-                inChannels: currentChannels,
-                outChannels: outChannels,
-                stride: stride
-            ))
-            currentChannels = outChannels
-        }
-        self._upBlocks.wrappedValue = blocks
-
-        self._convOut.wrappedValue = MLXNN.Conv1d(
-            inputChannels: outputChannels,
-            outputChannels: outputChannels,
-            kernelSize: 7,
-            padding: 3
-        )
-    }
-
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        var h = convIn(x)
-        for block in upBlocks {
-            h = block(h)
-        }
-        return MLX.tanh(convOut(h))
-    }
-}
-
-// MARK: - Down Block (Encoder)
-
-public final class OmniVoiceDownBlock: Module {
-    @ModuleInfo(key: "conv_1") var conv1: MLXNN.Conv1d
-    @ModuleInfo(key: "conv_2") var conv2: MLXNN.Conv1d
-    @ModuleInfo(key: "conv_res") var convRes: MLXNN.Conv1d?
-    @ModuleInfo(key: "norm_1") var norm1: GroupNorm
-    @ModuleInfo(key: "norm_2") var norm2: GroupNorm
-
-    init(inChannels: Int, outChannels: Int, stride: Int) {
-        self._conv1.wrappedValue = MLXNN.Conv1d(
-            inputChannels: inChannels,
-            outputChannels: outChannels,
-            kernelSize: stride,
-            stride: stride
-        )
-        self._conv2.wrappedValue = MLXNN.Conv1d(
-            inputChannels: outChannels,
-            outputChannels: outChannels,
-            kernelSize: 3,
-            padding: 1
-        )
-        self._norm1.wrappedValue = GroupNorm(groupCount: 32, dimensions: outChannels)
-        self._norm2.wrappedValue = GroupNorm(groupCount: 32, dimensions: outChannels)
-
-        if inChannels != outChannels {
-            self._convRes.wrappedValue = MLXNN.Conv1d(
-                inputChannels: inChannels,
-                outputChannels: outChannels,
-                kernelSize: 1,
-                stride: stride
-            )
-        }
-    }
-
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        var h = conv1(x)
-        h = norm1(h)
-        h = snakeActivation(h)
-        h = conv2(h)
-        h = norm2(h)
-
-        let residual = convRes != nil ? convRes!(x) : x
-        return snakeActivation(h + residual)
-    }
-}
-
-// MARK: - Up Block (Decoder)
-
-/// Upsampling block for the decoder using transposed convolution.
-public final class OmniVoiceUpBlock: Module {
-    @ModuleInfo(key: "conv_1") var conv1: DACVAEWNConvTranspose1d
-    @ModuleInfo(key: "conv_2") var conv2: MLXNN.Conv1d
-    @ModuleInfo(key: "conv_res") var convRes: DACVAEWNConvTranspose1d?
-    @ModuleInfo(key: "norm_1") var norm1: GroupNorm
-    @ModuleInfo(key: "norm_2") var norm2: GroupNorm
-
-    init(inChannels: Int, outChannels: Int, stride: Int) {
-        self._conv1.wrappedValue = DACVAEWNConvTranspose1d(
-            inChannels: inChannels,
-            outChannels: outChannels,
-            kernelSize: stride * 2,
-            stride: stride,
-            padding: stride / 2
-        )
-        self._conv2.wrappedValue = MLXNN.Conv1d(
-            inputChannels: outChannels,
-            outputChannels: outChannels,
-            kernelSize: 3,
-            padding: 1
-        )
-        self._norm1.wrappedValue = GroupNorm(groupCount: 32, dimensions: outChannels)
-        self._norm2.wrappedValue = GroupNorm(groupCount: 32, dimensions: outChannels)
-
-        if inChannels != outChannels {
-            self._convRes.wrappedValue = DACVAEWNConvTranspose1d(
-                inChannels: inChannels,
-                outChannels: outChannels,
-                kernelSize: stride,
-                stride: stride
-            )
-        }
-    }
-
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        var h = conv1(x)
-        h = norm1(h)
-        h = snakeActivation(h)
-        h = conv2(h)
-        h = norm2(h)
-
-        let residual: MLXArray
-        if let convRes {
-            residual = convRes(x)
-        } else {
-            residual = x
-        }
-
-        return snakeActivation(h + residual)
-    }
-}
-
-// MARK: - RVQ Quantizer
-
-/// Residual Vector Quantization for audio tokenization.
-public final class OmniVoiceRVQQuantizer: Module {
-    let codebookSize: Int
-    let codebookDim: Int
-    let nCodebooks: Int
-
-    @ModuleInfo(key: "codebooks") var codebooks: [MLXArray]
-
-    init(codebookSize: Int, codebookDim: Int, nCodebooks: Int) {
-        self.codebookSize = codebookSize
-        self.codebookDim = codebookDim
-        self.nCodebooks = nCodebooks
-
-        var cbs: [MLXArray] = []
-        for _ in 0..<nCodebooks {
-            let scale = sqrt(1.0 / Float(codebookDim))
-            let cb = MLXRandom.uniform(low: -scale, high: scale, [codebookSize, codebookDim])
-            cbs.append(cb)
-        }
-        self._codebooks.wrappedValue = cbs
-    }
-
-    /// Quantize: [batch, dim, seq] -> (codes [batch, n_codebooks, seq], quantized [batch, dim, seq])
-    func callAsFunction(_ z: MLXArray) -> (MLXArray, MLXArray) {
-        let batchSize = z.shape[0]
-        let seqLen = z.shape[2]
-
-        var residual = z
-        var allCodes: [MLXArray] = []
-        var quantized = MLXArray.zeros(z.shape)
-
-        for cbIdx in 0..<nCodebooks {
-            let cb = codebooks[cbIdx]
-            let zFlat = residual.transposed(0, 2, 1).reshaped([-1, codebookDim])
-
-            // Compute distances: [B*T, K]
-            let diff = zFlat.reshaped([zFlat.shape[0], 1, zFlat.shape[1]])
-                - cb.reshaped([1, codebookSize, codebookDim])
-            let dist = MLX.sum(diff * diff, axis: -1)
-
-            let codes = MLX.argMin(dist, axis: -1)
-            let codes2d = codes.reshaped([batchSize, seqLen])
-            allCodes.append(codes2d.reshaped([batchSize, 1, seqLen]))
-
-            let q = MLX.take(cb, codes, axis: 0)
-            let q2d = q.reshaped([batchSize, seqLen, codebookDim]).transposed(0, 2, 1)
-
-            quantized = quantized + q2d
-            residual = residual - q2d
-        }
-
-        return (MLX.concatenated(allCodes, axis: 1), quantized)
-    }
-
-    /// Decode: [batch, n_codebooks, seq] -> [batch, dim, seq]
-    func decode(_ codes: MLXArray) -> MLXArray {
-        let batchSize = codes.shape[0]
-        let seqLen = codes.shape[2]
-        var quantized = MLXArray.zeros([batchSize, codebookDim, seqLen])
-
-        for cbIdx in 0..<nCodebooks {
-            let cb = codebooks[cbIdx]
-            let cbCodes = codes[0..., cbIdx, 0...]
-            let flatCodes = cbCodes.reshaped([-1])
-            let q = MLX.take(cb, flatCodes, axis: 0)
-            let q2d = q.reshaped([batchSize, seqLen, codebookDim]).transposed(0, 2, 1)
-            quantized = quantized + q2d
-        }
-
-        return quantized
-    }
-}
-
-// MARK: - Snake Activation
-
-/// Snake activation: x + (1/a) * sin(a*x)^2
-func snakeActivation(_ x: MLXArray) -> MLXArray {
-    let alpha: Float = 1.0
-    return x + (1.0 / alpha) * MLX.square(MLX.sin(alpha * x))
-}
