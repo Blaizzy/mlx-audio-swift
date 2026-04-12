@@ -736,8 +736,20 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         var sanitized: [String: MLXArray] = [:]
         for (key, value) in weights {
             var newKey = key
+            // Strip "backbone." prefix from LLM weights
+            // e.g. "backbone.embed_tokens" -> "model.embed_tokens"
+            if newKey.hasPrefix("backbone.") {
+                let stripped = String(newKey.dropFirst("backbone.".count))
+                newKey = "model.\(stripped)"
+            }
+            // Also strip "llm." if present (alternative naming)
             if newKey.hasPrefix("llm.") {
-                newKey = String(newKey.dropFirst(4))
+                let stripped = String(newKey.dropFirst(4))
+                if !newKey.hasPrefix("model.") {
+                    newKey = "model.\(stripped)"
+                } else {
+                    newKey = stripped
+                }
             }
             sanitized[newKey] = value
         }
