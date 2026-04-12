@@ -763,6 +763,38 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     }
 }
 
+// MARK: - OmniVoice ConvTranspose1d (PyTorch weight convention)
+
+/// Simple ConvTranspose1d matching PyTorch checkpoint weight layout [in, out, kernel].
+/// Used by OmniVoice decoder which does NOT use weight normalization.
+final class OmniVoiceConvTranspose1d: Module {
+    @ModuleInfo(key: "weight") var weight: MLXArray
+    @ModuleInfo(key: "bias") var bias: MLXArray?
+
+    let strideVal: Int
+    let paddingVal: Int
+
+    init(inChannels: Int, outChannels: Int, kernelSize: Int, stride: Int, padding: Int) {
+        self.strideVal = stride
+        self.paddingVal = padding
+
+        let scale = sqrt(1.0 / Float(inChannels * kernelSize))
+        self._weight.wrappedValue = MLXRandom.uniform(
+            low: -scale, high: scale, [inChannels, outChannels, kernelSize]
+        )
+        self._bias.wrappedValue = MLXArray.zeros([outChannels])
+    }
+
+    func callAsFunction(_ x: MLXArray) -> MLXArray {
+        // x: [B, C_in, L]  (channel-first, matching Conv1d layout)
+        var h = MLX.convTransposed1d(x, weight, stride: strideVal, padding: paddingVal)
+        if let b = bias {
+            h = h + b.reshaped(1, -1, 1)
+        }
+        return h
+    }
+}
+
 // MARK: - DAC-style Audio Codec
 
 /// Snake activation: x + (1/a) * sin(a*x)^2
@@ -861,14 +893,14 @@ public final class OmniVoiceDACDownBlock: Module {
 /// Snake1d + ConvTranspose1d + 3 ResidualUnits(dilation 1,3,9).
 public final class OmniVoiceDACUpBlock: Module {
     @ModuleInfo(key: "snake1") var snake1: snakeAlpha
-    @ModuleInfo(key: "conv_t1") var convT1: DACVAEWNConvTranspose1d
+    @ModuleInfo(key: "conv_t1") var convT1: OmniVoiceConvTranspose1d
     @ModuleInfo var res_unit1: OmniVoiceDACResidualUnit
     @ModuleInfo var res_unit2: OmniVoiceDACResidualUnit
     @ModuleInfo var res_unit3: OmniVoiceDACResidualUnit
 
     init(inputChannels: Int, outputChannels: Int, stride: Int, kernelSize: Int) {
         self._snake1.wrappedValue = snakeAlpha(channels: outputChannels)
-        self._convT1.wrappedValue = DACVAEWNConvTranspose1d(
+        self._convT1.wrappedValue = OmniVoiceConvTranspose1d(
             inChannels: inputChannels,
             outChannels: outputChannels,
             kernelSize: stride * 2,
