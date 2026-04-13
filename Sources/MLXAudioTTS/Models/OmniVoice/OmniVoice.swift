@@ -797,7 +797,7 @@ final class OmniVoiceSingleQuantizer: Module {
 
 // MARK: - OmniVoice ConvTranspose1d (PyTorch weight convention)
 
-/// Simple ConvTranspose1d matching PyTorch checkpoint weight layout [in, out, kernel].
+/// ConvTranspose1d using MLX weight layout [in_channels, kernel_size, out_channels].
 final class OmniVoiceConvTranspose1d: Module {
     @ModuleInfo(key: "weight") var weight: MLXArray
     @ModuleInfo(key: "bias") var bias: MLXArray?
@@ -810,8 +810,9 @@ final class OmniVoiceConvTranspose1d: Module {
         self.paddingVal = padding
 
         let scale = sqrt(1.0 / Float(inChannels * kernelSize))
+        // MLX format: [in_channels, kernel_size, out_channels]
         self._weight.wrappedValue = MLXRandom.uniform(
-            low: -scale, high: scale, [inChannels, outChannels, kernelSize]
+            low: -scale, high: scale, [inChannels, kernelSize, outChannels]
         )
         self._bias.wrappedValue = MLXArray.zeros([outChannels])
     }
@@ -819,16 +820,14 @@ final class OmniVoiceConvTranspose1d: Module {
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         var h = MLX.convTransposed1d(x, weight, stride: strideVal, padding: paddingVal)
         if let b = bias {
-            print("DEBUG OmniVoiceConvTranspose1d bias shape: \(b.shape), h shape: \(h.shape)")
             let flatBias = MLX.flatten(b, startAxis: 0)
-            print("DEBUG flatBias shape: \(flatBias.shape)")
             h = h + flatBias
         }
         return h
     }
 }
 
-/// Conv1d using PyTorch weight layout [out_channels, in_channels, kernel_size].
+/// Conv1d using MLX weight layout [out_channels, kernel_size, in_channels].
 final class OmniVoiceConv1d: Module {
     @ModuleInfo(key: "weight") var weight: MLXArray
     @ModuleInfo(key: "bias") var bias: MLXArray?
@@ -841,21 +840,18 @@ final class OmniVoiceConv1d: Module {
         self.paddingVal = padding
 
         let scale = sqrt(1.0 / Float(inChannels * kernelSize))
+        // MLX format: [out_channels, kernel_size, in_channels]
         self._weight.wrappedValue = MLXRandom.uniform(
-            low: -scale, high: scale, [outChannels, inChannels, kernelSize]
+            low: -scale, high: scale, [outChannels, kernelSize, inChannels]
         )
         self._bias.wrappedValue = MLXArray.zeros([outChannels])
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        // Weight is [out, in, kernel], MLX conv expects [out, kernel, in]
-        let w = weight.transposed(0, 2, 1)
-        var h = MLX.conv1d(x, w, stride: strideVal, padding: paddingVal)
+        // Weight is already in MLX format [out, kernel, in]
+        var h = MLX.conv1d(x, weight, stride: strideVal, padding: paddingVal)
         if let b = bias {
-            // Debug: print bias shape
-            print("DEBUG OmniVoiceConv1d bias shape: \(b.shape), h shape: \(h.shape)")
             let flatBias = MLX.flatten(b, startAxis: 0)
-            print("DEBUG flatBias shape: \(flatBias.shape)")
             h = h + flatBias
         }
         return h
