@@ -615,7 +615,19 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         // Concatenate: [style, text, ref_audio (optional), target]
         var parts: [MLXArray] = [styleIds, textIds]
         if let refTok = refAudioTokens {
-            let reshaped = refTok.reshaped([1, refTok.shape[0], refTok.shape[1]])
+            var alignedRefTok = refTok
+            if refTok.ndim == 2 && refTok.shape[0] != numCodebooks {
+                if refTok.shape[0] < numCodebooks {
+                    // Pad with mask tokens to match numCodebooks
+                    let padShape = [numCodebooks - refTok.shape[0], refTok.shape[1]]
+                    let pad = MLXArray.full(padShape, values: MLXArray(Int32(config.audioMaskId)))
+                    alignedRefTok = MLX.concatenated([refTok, pad], axis: 0)
+                } else {
+                    // Truncate to numCodebooks
+                    alignedRefTok = refTok[0..<numCodebooks, 0...]
+                }
+            }
+            let reshaped = alignedRefTok.reshaped([1, alignedRefTok.shape[0], alignedRefTok.shape[1]])
             parts.append(reshaped)
         }
         parts.append(targetIds)
@@ -1122,7 +1134,7 @@ public final class OmniVoiceDACAcousticEncoder: Module {
         self._snake1.wrappedValue = snakeAlpha(channels: currentChannels)
         self._conv2.wrappedValue = OmniVoiceConv1d(
             inChannels: currentChannels,
-            outChannels: currentChannels / 32,  // 2048 → 64 to match checkpoint
+            outChannels: currentChannels / 8,   // 2048 → 256 to match checkpoint
             kernelSize: 3,
             stride: 1,
             padding: 1
@@ -1405,6 +1417,18 @@ public final class OmniVoiceAudioTokenizer: Module {
         let inferredNCodebooks = Self.inferNCodebooks(from: weights) ?? 9
 
         var configDict = try JSONSerialization.jsonObject(with: configData) as! [String: Any]
+        
+        // Pull in nested acoustic_model_config values if present
+        if let acoustic = configDict["acoustic_model_config"] as? [String: Any] {
+            for key in ["codebook_size", "codebook_dim", "n_codebooks", "hop_length", "sampling_rate",
+                        "downsampling_ratios", "upsampling_ratios", "encoder_hidden_size",
+                        "decoder_hidden_size", "kernel_size"] {
+                if configDict[key] == nil, let val = acoustic[key] {
+                    configDict[key] = val
+                }
+            }
+        }
+        
         if let currentNum = configDict["n_codebooks"] as? Int, currentNum != inferredNCodebooks {
             print("[OmniVoiceAudioTokenizer] INFO: overriding n_codebooks from \(currentNum) to \(inferredNCodebooks) to match checkpoint")
             configDict["n_codebooks"] = inferredNCodebooks
