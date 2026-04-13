@@ -347,11 +347,15 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         let numCodebooks = config.numAudioCodebook
         let targetLen = numTargetTokens
 
+        print("DEBUG inputIds.shape=\(inputIds.shape), condLength=\(condLength), targetLen=\(targetLen)")
+        
         // Unconditional input: only the target portion
         let uncondInputIds = inputIds[0..., 0..., (condLength - targetLen)...]
         let uncondAudioMask = audioMask[0..., (condLength - targetLen)...]
+        print("DEBUG uncondInputIds.shape=\(uncondInputIds.shape)")
 
         // Concatenate cond + uncond along batch axis
+        print("DEBUG concatenating inputIds and uncondInputIds along axis 0")
         let batchInputIds = MLX.concatenated([inputIds, uncondInputIds], axis: 0)
         let batchAudioMask = MLX.concatenated(
             [audioMask, uncondAudioMask],
