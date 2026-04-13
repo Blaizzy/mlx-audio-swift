@@ -138,18 +138,24 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         cache: [KVCache]? = nil
     ) -> MLXArray {
         let inputsEmbeds = prepareEmbedInputs(inputIds: inputIds, audioMask: audioMask)
+        print("DEBUG forward: inputsEmbeds.shape=\(inputsEmbeds.shape)")
 
         // Run through LLM (causal masking is handled internally by Qwen3Model)
         let hiddenStates = llm.forwardWithEmbeddings(
             inputsEmbeds: inputsEmbeds,
             cache: cache
         )
+        print("DEBUG forward: hiddenStates.shape=\(hiddenStates.shape)")
+        print("DEBUG forward: audioHeads.count=\(audioHeads.count)")
+        print("DEBUG forward: llmConfig.hiddenSize=\(config.llmConfig.hiddenSize)")
+        print("DEBUG forward: audioVocabSize=\(config.audioVocabSize)")
 
         // Project to audio codebook logits via per-codebook heads
         let batchSize = hiddenStates.shape[0]
         let seqLen = hiddenStates.shape[1]
         var logitsPerCodebook: [MLXArray] = []
-        for head in audioHeads {
+        for (i, head) in audioHeads.enumerated() {
+            print("DEBUG forward: processing head \(i)")
             let logits = head(hiddenStates)  // [B, S, V]
             logitsPerCodebook.append(logits.reshaped([batchSize, seqLen, 1, config.audioVocabSize]))
         }
