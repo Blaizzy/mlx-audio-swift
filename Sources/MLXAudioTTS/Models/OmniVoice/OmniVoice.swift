@@ -1074,7 +1074,7 @@ public final class OmniVoiceDACAcousticEncoder: Module {
         self._snake1.wrappedValue = snakeAlpha(channels: currentChannels)
         self._conv2.wrappedValue = OmniVoiceConv1d(
             inChannels: currentChannels,
-            outChannels: currentChannels / 8,  // 2048 → 256
+            outChannels: currentChannels / 32,  // 2048 → 64 to match checkpoint
             kernelSize: 3,
             stride: 1,
             padding: 1
@@ -1156,11 +1156,8 @@ public final class OmniVoiceRVQQuantizer: Module {
         let nQuantizers = config.nCodebooks
         let codebookSize = config.codebookSize
         let codebookDim = config.codebookDim
-        // From checkpoint: encoder output is 256 channels, projectIn weight is (1024, 64)
-        // So inputDim should be 256, but weight expects 64... 
-        // This suggests encoderHiddenSize in checkpoint is actually 256, not 64
-        print("DEBUG RVQ init: encoderHiddenSize=\(config.encoderHiddenSize), will use inputDim=64 based on weight")
-        let inputDim = 64  // Hardcode based on checkpoint weight shape
+        // Encoder outputs 64 channels (2048 / 32 = 64)
+        let inputDim = config.encoderHiddenSize  // 64
         self.outputDim = config.decoderHiddenSize     // 1024
 
         var qs: [OmniVoiceSingleQuantizer] = []
