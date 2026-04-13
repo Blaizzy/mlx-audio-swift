@@ -1209,23 +1209,27 @@ public final class OmniVoiceRVQQuantizer: Module {
         var quantized = MLXArray.zeros([batchSize, outputDim, seqLen])
 
         for qIdx in 0..<nQuantizers {
+            print("DEBUG quantizer qIdx=\(qIdx)")
             let q = quantizers[qIdx]
             let codebook = q.codebook.embed
             let codebookSize = codebook.shape[0]
             let codebookDim = codebook.shape[1]
+            print("DEBUG codebook.shape=\(codebook.shape)")
 
             // Project input to codebook dimension
             // zProjected is [B, C, L] (NCL) = [1, 1024, 332], Linear expects [B, L, C] (NLC)
             let zNLC = zProjected.transposed(0, 2, 1)  // [B, L, C] = [1, 332, 1024]
             let zProjNLC = q.projectIn(zNLC)  // [B, L, codebookDim] = [1, 332, 64]
             let zProj = zProjNLC.transposed(0, 2, 1)  // [B, codebookDim, L] = [1, 64, 332]
+            print("DEBUG zProj.shape=\(zProj.shape)")
 
             // [B, codebookDim, T] -> [B, T, codebookDim] for distance computation
             let zPermute = zProj.transposed(0, 2, 1)
             let zFlat = zPermute.reshaped([batchSize * seqLen, codebookDim])
+            print("DEBUG zFlat.shape=\(zFlat.shape), codebookSize=\(codebookSize), codebookDim=\(codebookDim)")
 
             // Compute distances: [B*T, K]
-            let diff = zFlat.reshaped([zFlat.shape[0], 1, zFlat.shape[1]])
+            let diff = zFlat.reshaped([zFlat.shape[0], 1, codebookDim])
                 - codebook.reshaped([1, codebookSize, codebookDim])
             let dist = MLX.sum(diff * diff, axis: -1)
 
