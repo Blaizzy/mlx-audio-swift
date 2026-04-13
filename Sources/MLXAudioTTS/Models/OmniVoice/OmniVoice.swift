@@ -1098,7 +1098,7 @@ public final class OmniVoiceDACUpBlock: Module {
     @ModuleInfo var res_unit3: OmniVoiceDACResidualUnit
 
     init(inputChannels: Int, outputChannels: Int, stride: Int, kernelSize: Int) {
-        self._snake1.wrappedValue = snakeAlpha(channels: outputChannels)
+        self._snake1.wrappedValue = snakeAlpha(channels: inputChannels)
         self._convT1.wrappedValue = OmniVoiceConvTranspose1d(
             inChannels: inputChannels,
             outChannels: outputChannels,
