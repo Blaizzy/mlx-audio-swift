@@ -1333,6 +1333,7 @@ public final class OmniVoiceAudioTokenizer: Module {
         let (codes, _) = quantizer(z)
 
         // Return [n_codebooks, T'] (squeeze batch dim)
+        print("DEBUG encode returning codes[0].shape=\(codes[0].shape)")
         return codes[0]
     }
 
@@ -1340,17 +1341,24 @@ public final class OmniVoiceAudioTokenizer: Module {
     /// - Parameter tokens: [num_codebooks, seq_len]
     /// - Returns: [samples]
     public func decode(_ tokens: MLXArray) throws -> MLXArray {
+        print("DEBUG decode input tokens.shape=\(tokens.shape)")
         // Add batch dim: [n_codebooks, T] -> [1, n_codebooks, T]
         let batchedTokens = tokens.reshaped([1, tokens.shape[0], tokens.shape[1]])
+        print("DEBUG decode batchedTokens.shape=\(batchedTokens.shape)")
 
         // RVQ decode: [1, n_codebooks, T] -> [1, D, T]
         let z = quantizer.decode(batchedTokens)
+        print("DEBUG decode z.shape=\(z.shape)")
 
         // fc2 project: [1, D, T] -> [1, D', T]
+        print("DEBUG decode fc2 input shape=\(z.transposed(0, 2, 1).shape)")
         let h = fc2(z.transposed(0, 2, 1)).transposed(0, 2, 1)
+        print("DEBUG decode h.shape=\(h.shape)")
 
         // Decoder: [1, D', T] -> [1, 1, T']
+        print("DEBUG decode calling acousticDecoder with h.shape=\(h.shape)")
         let audio = acousticDecoder(h)
+        print("DEBUG decode audio.shape=\(audio.shape)")
 
         return audio.reshaped([-1])
     }
