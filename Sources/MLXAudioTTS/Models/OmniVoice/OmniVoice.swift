@@ -1240,13 +1240,21 @@ public final class OmniVoiceRVQQuantizer: Module {
 
             // Gather quantized vectors and project to output dimension
             let qVecs = MLX.take(codebook, codes, axis: 0)  // [B*T, codebookDim]
+            print("DEBUG qIdx=\(qIdx): qVecs.shape=\(qVecs.shape)")
             let qOut = q.projectOut(qVecs)  // [B*T, outputDim]
+            print("DEBUG qIdx=\(qIdx): qOut.shape=\(qOut.shape), outputDim=\(outputDim)")
             let q3d = qOut.reshaped([batchSize, seqLen, -1]).transposed(0, 2, 1)
+            print("DEBUG qIdx=\(qIdx): q3d.shape=\(q3d.shape), quantized.shape=\(quantized.shape)")
 
             quantized = quantized + q3d
         }
 
+        print("DEBUG allCodes.count=\(allCodes.count)")
+        for (i, c) in allCodes.enumerated() {
+            print("DEBUG allCodes[\(i)].shape=\(c.shape)")
+        }
         let codes = MLX.stacked(allCodes, axis: 1)  // [B, n_quantizers, T]
+        print("DEBUG stacked codes.shape=\(codes.shape)")
         return (codes, quantized)
     }
 
