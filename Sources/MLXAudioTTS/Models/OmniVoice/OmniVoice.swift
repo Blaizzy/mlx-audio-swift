@@ -415,13 +415,17 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
                 audioMask: batchAudioMask
             ).asType(.float32)
 
+            print("DEBUG logits.shape=\(logits.shape), condLength=\(condLength), targetLen=\(targetLen)")
             // Extract conditional and unconditional logits for the target region
-            let cLogits = logits[0, 0..., (condLength - targetLen)..<condLength, 0...]  // [C, T, V]
-            let uLogits = logits[1, 0..., 0..<targetLen, 0...]  // [C, T, V]
+            // logits shape: [B, S, C, V] = [2, 817, 9, 1025]
+            let cLogits = logits[0, (condLength - targetLen)..<condLength, 0..., 0...]  // [T, C, V]
+            let uLogits = logits[1, 0..<targetLen, 0..., 0...]  // [T, C, V]
+            print("DEBUG cLogits.shape=\(cLogits.shape), uLogits.shape=\(uLogits.shape)")
 
             // Add batch dimension back for scoring
-            let cLogitsBatch = cLogits.reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
-            let uLogitsBatch = uLogits.reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
+            // Need to transpose to [C, T, V] for scoring
+            let cLogitsBatch = cLogits.transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
+            let uLogitsBatch = uLogits.transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
 
             // Token prediction with CFG
             let (predTokens, scores) = predictTokensWithScoring(
