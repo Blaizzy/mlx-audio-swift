@@ -370,7 +370,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
         // Concatenate cond + uncond along batch axis
         print("DEBUG concatenating inputIds and uncondInputIds along axis 0")
-        let batchInputIds = MLX.concatenated([inputIds, uncondInputIds], axis: 0)
+        var batchInputIds = MLX.concatenated([inputIds, uncondInputIds], axis: 0)
         let batchAudioMask = MLX.concatenated(
             [audioMask, uncondAudioMask],
             axis: 0
@@ -478,7 +478,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
             // Vectorized update using putAlong to avoid indexed-assignment crashes
             let updateValues = MLX.take(flatPreds, linearTopkIndices, axis: 0)
-            let updatedTokens = putAlong(flatTokens, linearTopkIndices, values: updateValues)
+            let updatedTokens = putAlong(flatTokens, linearTopkIndices, values: updateValues, axis: 0)
 
             print("DEBUG reshaping updatedTokens to [\(numCodebooks), \(targetLen)]")
             let reshapedTokens = updatedTokens.reshaped([numCodebooks, targetLen])
@@ -571,22 +571,8 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         let topVals = MLX.takeAlong(logits, topIndices, axis: -1)
 
         var filtered = MLXArray.full(logits.shape, values: MLXArray(Float(-Float.infinity)))
-        // Fill in top-k values by iterating (simple approach)
-        let batchSize = logits.shape[0]
-        let numCodebooks = logits.shape[1]
-        let seqLen = logits.shape[2]
-
-        for b in 0..<batchSize {
-            for c in 0..<numCodebooks {
-                for s in 0..<seqLen {
-                    for ki in 0..<k {
-                        let idx = topIndices[b, c, s, ki].item(Int.self)
-                        let val = topVals[b, c, s, ki]
-                        filtered[b, c, s, idx] = val
-                    }
-                }
-            }
-        }
+        // Vectorized scatter along the last axis to avoid indexed-assignment crashes
+        filtered = putAlong(filtered, topIndices, values: topVals, axis: -1)
         return filtered
     }
 
@@ -707,13 +693,12 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
         print("DEBUG condInputIds.shape=\(condInputIds.shape)")
         
-        var condAudioMask = MLXArray.zeros([1, totalLength], type: Bool.self)
-        print("DEBUG condAudioMask.shape before assignment=\(condAudioMask.shape)")
         print("DEBUG audioStartIdx=\(audioStartIdx), totalLength=\(totalLength)")
-        let onesArray = MLXArray.ones([totalLength - audioStartIdx], type: Bool.self)
-        print("DEBUG onesArray.shape=\(onesArray.shape)")
-        condAudioMask[0..., audioStartIdx...] = onesArray
-        print("DEBUG condAudioMask.shape after assignment=\(condAudioMask.shape)")
+        let zerosPrefix = MLXArray.zeros([audioStartIdx], type: Bool.self)
+        let onesSuffix = MLXArray.ones([totalLength - audioStartIdx], type: Bool.self)
+        let condAudioMask = MLX.concatenated([zerosPrefix, onesSuffix], axis: 0)
+            .reshaped([1, totalLength])
+        print("DEBUG condAudioMask.shape=\(condAudioMask.shape)")
 
         return (condInputIds, condAudioMask)
     }
@@ -754,8 +739,10 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             if fadeLen > 0 {
                 let fadeIn = MLXArray((0..<fadeLen).map { Float($0) / Float(fadeLen) })
                 let fadeOut = MLXArray((0..<fadeLen).reversed().map { Float($0) / Float(fadeLen) })
-                result[0..<fadeLen] = result[0..<fadeLen] * fadeIn
-                result[(len - fadeLen)...] = result[(len - fadeLen)...] * fadeOut
+                let head = result[0..<fadeLen] * fadeIn
+                let mid = result[fadeLen..<(len - fadeLen)]
+                let tail = result[(len - fadeLen)...] * fadeOut
+                result = MLX.concatenated([head, mid, tail], axis: 0)
             }
         }
 
