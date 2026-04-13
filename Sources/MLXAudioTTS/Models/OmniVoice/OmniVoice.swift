@@ -619,8 +619,8 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         var styleIds = MLXArray(styleTokenIds.map { Int32($0) })
         styleIds = styleIds.reshaped([1, -1])
         print("DEBUG styleIds before broadcast.shape=\(styleIds.shape)")
-        print("DEBUG broadcasting styleIds to [1, \(numCodebooks), \(styleIds.shape[0])]")
-        styleIds = MLX.broadcast(styleIds.reshaped([1, 1, -1]), to: [1, numCodebooks, styleIds.shape[0]])
+        print("DEBUG broadcasting styleIds to [1, \(numCodebooks), \(styleIds.shape[1])]")
+        styleIds = MLX.broadcast(styleIds.reshaped([1, 1, -1]), to: [1, numCodebooks, styleIds.shape[1]])
 
         // Build text tokens
         let fullText = combineText(refText: refText, text: text)
@@ -630,8 +630,8 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         var textIds = MLXArray(textTokenIds.map { Int32($0) })
         textIds = textIds.reshaped([1, -1])
         print("DEBUG textIds before broadcast.shape=\(textIds.shape)")
-        print("DEBUG broadcasting textIds to [1, \(numCodebooks), \(textIds.shape[0])]")
-        textIds = MLX.broadcast(textIds.reshaped([1, 1, -1]), to: [1, numCodebooks, textIds.shape[0]])
+        print("DEBUG broadcasting textIds to [1, \(numCodebooks), \(textIds.shape[1])]")
+        textIds = MLX.broadcast(textIds.reshaped([1, 1, -1]), to: [1, numCodebooks, textIds.shape[1]])
 
         // Target: all MASK
         print("DEBUG creating targetIds with shape [1, \(numCodebooks), \(numTargetTokens)]")
