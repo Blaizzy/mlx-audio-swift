@@ -453,30 +453,43 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             }
 
             // Mask out already-filled positions
+            print("DEBUG tokens.shape=\(tokens.shape), tokens[0].shape=\(tokens[0].shape)")
             let mask = tokens[0] .!= Int32(config.audioMaskId)
+            print("DEBUG mask.shape=\(mask.shape)")
             let maskInf = MLX.where(mask, MLXArray(Float(-Float.infinity)), finalScores).asType(.float32)
+            print("DEBUG maskInf.shape=\(maskInf.shape)")
 
             // Flatten for top-k selection
             let flatScores = maskInf.reshaped([-1])
             let flatTokens = tokens[0].reshaped([-1])
             let flatPreds = predTokens[0].reshaped([-1])
+            print("DEBUG flatScores.shape=\(flatScores.shape), flatTokens.shape=\(flatTokens.shape), flatPreds.shape=\(flatPreds.shape)")
 
             // Select top-k positions to unmask
-            let topkIndices = MLX.argPartition(MLXArray(-1.0) * flatScores.asType(.float32), kth: k - 1, axis: 0)[0..., ..<k]
+            let partitionInput = MLXArray(-1.0) * flatScores.asType(.float32)
+            print("DEBUG partitionInput.shape=\(partitionInput.shape), k=\(k)")
+            let topkIndices = MLX.argPartition(partitionInput, kth: k - 1, axis: 0)[0..., ..<k]
+            print("DEBUG topkIndices.shape=\(topkIndices.shape)")
 
             // Build update mask: positions in topkIndices get updated
             let linearTopkIndices = topkIndices.reshaped([-1])
+            print("DEBUG linearTopkIndices.shape=\(linearTopkIndices.shape)")
             let updateMask = MLXArray.zeros([flatTokens.shape[0]], type: Bool.self)
             var updatedTokens = flatTokens
 
             // Mark positions to update
-            for idx in linearTopkIndices.asArray(Int.self) {
+            let indicesArray = linearTopkIndices.asArray(Int.self)
+            print("DEBUG indicesArray.count=\(indicesArray.count)")
+            for idx in indicesArray {
                 if idx >= 0 && idx < flatTokens.shape[0] {
                     updatedTokens[idx] = flatPreds[idx]
                 }
             }
 
-            tokens[0] = updatedTokens.reshaped([numCodebooks, targetLen])
+            print("DEBUG reshaping updatedTokens to [\(numCodebooks), \(targetLen)]")
+            let reshapedTokens = updatedTokens.reshaped([numCodebooks, targetLen])
+            print("DEBUG reshapedTokens.shape=\(reshapedTokens.shape)")
+            tokens[0] = reshapedTokens
 
             // Update batch inputs for next step
             // Update cond: replace target region
