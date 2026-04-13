@@ -820,7 +820,7 @@ final class OmniVoiceConvTranspose1d: Module {
         var h = MLX.convTransposed1d(x, weight, stride: strideVal, padding: paddingVal)
         if let b = bias {
             print("DEBUG OmniVoiceConvTranspose1d bias shape: \(b.shape), h shape: \(h.shape)")
-            let flatBias = MLX.flatten(b)
+            let flatBias = MLX.flatten(b, startAxis: 0)
             print("DEBUG flatBias shape: \(flatBias.shape)")
             h = h + flatBias
         }
@@ -854,7 +854,7 @@ final class OmniVoiceConv1d: Module {
         if let b = bias {
             // Debug: print bias shape
             print("DEBUG OmniVoiceConv1d bias shape: \(b.shape), h shape: \(h.shape)")
-            let flatBias = MLX.flatten(b)
+            let flatBias = MLX.flatten(b, startAxis: 0)
             print("DEBUG flatBias shape: \(flatBias.shape)")
             h = h + flatBias
         }
