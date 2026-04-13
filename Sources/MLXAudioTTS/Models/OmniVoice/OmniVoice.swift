@@ -984,34 +984,38 @@ public final class OmniVoiceDACResidualUnit: Module {
     @ModuleInfo(key: "snake2") var snake2: snakeAlpha
 
     init(channels: Int, kernelSize: Int, dilation: Int) {
-        // Standard "same" padding for stride=1
-        // output_length = input_length - kernel + 2*padding + 1
-        // For same: padding = (kernel - 1) * dilation / 2
-        let padding = (kernelSize - 1) * dilation / 2
+        // Checkpoint uses kernel_size=7 for conv1 with dilation=1 and same-padding,
+        // and kernel_size=1 for conv2 (pointwise).
+        // The `kernelSize` parameter from config (3) is NOT what the checkpoint uses.
+        let conv1KernelSize = 7
+        let conv1Padding = (conv1KernelSize - 1) / 2  // 3 for same-padding
+        let conv2KernelSize = 1
+        let conv2Padding = 0
 
         self._conv1.wrappedValue = OmniVoiceConv1d(
             inChannels: channels,
             outChannels: channels,
-            kernelSize: kernelSize,
+            kernelSize: conv1KernelSize,
             stride: 1,
-            padding: padding
+            padding: conv1Padding
         )
         self._conv2.wrappedValue = OmniVoiceConv1d(
             inChannels: channels,
             outChannels: channels,
-            kernelSize: kernelSize,
+            kernelSize: conv2KernelSize,
             stride: 1,
-            padding: padding
+            padding: conv2Padding
         )
         self._snake1.wrappedValue = snakeAlpha(channels: channels)
         self._snake2.wrappedValue = snakeAlpha(channels: channels)
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let c1 = conv1(x)
-        let s1 = snake1.callAsFunction(c1)
-        let c2 = conv2(s1)
-        let h = snake2.callAsFunction(c2)
+        // DAC residual unit order: Snake → Conv → Snake → Conv + residual
+        let s1 = snake1.callAsFunction(x)
+        let c1 = conv1(s1)
+        let s2 = snake2.callAsFunction(c1)
+        let h = conv2(s2)
         
         // Handle potential length mismatch for residual connection
         let xLen = x.shape[2]
@@ -1232,25 +1236,14 @@ public final class OmniVoiceDACAcousticDecoder: Module {
 /// Residual Vector Quantization with projection layers (Higgs Audio V2 style).
 public final class OmniVoiceRVQQuantizer: Module {
     @ModuleInfo(key: "quantizers") var quantizers: [OmniVoiceSingleQuantizer]
-    @ModuleInfo(key: "pre_project") var preProject: MLXNN.Linear
     let outputDim: Int
 
     init(config: OmniVoiceAudioTokenizerConfig) {
         let nQuantizers = config.nCodebooks
         let codebookSize = config.codebookSize
         let codebookDim = config.codebookDim
-        // From checkpoint:
-        // - encoder.conv2 outputs 256 channels
-        // - quantizer.project_in expects 1024 input (weight shape [64, 1024])
-        let encoderOutputDim = 256  // Actual encoder output
-        let inputDim = 1024  // What project_in expects
-        self.outputDim = config.decoderHiddenSize     // 1024
-
-        // Pre-projection from encoder output to quantizer input
-        self._preProject.wrappedValue = MLXNN.Linear(
-            inputDimensions: encoderOutputDim,
-            outputDimensions: inputDim
-        )
+        let inputDim = config.decoderHiddenSize  // 1024, matching project_in weight shape [64, 1024]
+        self.outputDim = config.decoderHiddenSize  // 1024
 
         var qs: [OmniVoiceSingleQuantizer] = []
         for _ in 0..<nQuantizers {
@@ -1265,16 +1258,11 @@ public final class OmniVoiceRVQQuantizer: Module {
     }
 
     /// Quantize: [B, D, T] -> (codes [B, n_quantizers, T], quantized [B, outputDim, T])
+    /// Note: D must be 1024 (decoderHiddenSize). The caller must pre-project if needed.
     func callAsFunction(_ z: MLXArray) -> (MLXArray, MLXArray) {
-        
-        // Pre-project from encoder output (256) to quantizer input (1024)
-        // z is [B, C, L] (NCL), need [B, L, C] for Linear
-        let zNLC = z.transposed(0, 2, 1)  // [B, L, 256]
-        let zProjectedNLC = preProject(zNLC)  // [B, L, 1024]
-        let zProjected = zProjectedNLC.transposed(0, 2, 1)  // [B, 1024, L]
-        
-        let batchSize = zProjected.shape[0]
-        let seqLen = zProjected.shape[2]
+        // z is [B, C, L] (NCL) where C = 1024
+        let batchSize = z.shape[0]
+        let seqLen = z.shape[2]
         let nQuantizers = quantizers.count
 
         var allCodes: [MLXArray] = []
@@ -1287,10 +1275,10 @@ public final class OmniVoiceRVQQuantizer: Module {
             let codebookDim = codebook.shape[1]
 
             // Project input to codebook dimension
-            // zProjected is [B, C, L] (NCL) = [1, 1024, 332], Linear expects [B, L, C] (NLC)
-            let zNLC = zProjected.transposed(0, 2, 1)  // [B, L, C] = [1, 332, 1024]
-            let zProjNLC = q.projectIn(zNLC)  // [B, L, codebookDim] = [1, 332, 64]
-            let zProj = zProjNLC.transposed(0, 2, 1)  // [B, codebookDim, L] = [1, 64, 332]
+            // z is [B, C, L] (NCL), Linear expects [B, L, C] (NLC)
+            let zNLC = z.transposed(0, 2, 1)  // [B, L, C]
+            let zProjNLC = q.projectIn(zNLC)  // [B, L, codebookDim]
+            let zProj = zProjNLC.transposed(0, 2, 1)  // [B, codebookDim, L]
 
             // [B, codebookDim, T] -> [B, T, codebookDim] for distance computation
             let zPermute = zProj.transposed(0, 2, 1)
@@ -1384,11 +1372,17 @@ public final class OmniVoiceAudioTokenizer: Module {
             wav = wav.transposed(0, 2, 1)
         }
 
-        // Encoder: [B, 1, T] -> [B, D, T']
+        // Encoder: [B, 1, T] -> [B, D, T'] where D=256
         let z = acousticEncoder(wav)
 
+        // Project encoder output (256) to quantizer input dimension (1024)
+        // fc2 maps 1024→256; use its transposed weight to go 256→1024
+        let zNLC = z.transposed(0, 2, 1)  // [B, T', 256]
+        let zProjectedNLC = MLX.matmul(zNLC, fc2.weight.T)  // [B, T', 1024]
+        let zProjected = zProjectedNLC.transposed(0, 2, 1)  // [B, 1024, T']
+
         // RVQ: [B, D, T'] -> (codes [B, n_codebooks, T'], quantized [B, D, T'])
-        let (codes, _) = quantizer(z)
+        let (codes, _) = quantizer(zProjected)
 
         // Return [n_codebooks, T'] (squeeze batch dim)
         return codes[0]
