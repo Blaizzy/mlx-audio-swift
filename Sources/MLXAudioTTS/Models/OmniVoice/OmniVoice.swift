@@ -1188,9 +1188,10 @@ public final class OmniVoiceRVQQuantizer: Module {
             let codebookDim = codebook.shape[1]
 
             // Project input to codebook dimension
-            print("DEBUG quantizer qIdx=\(qIdx): z.shape=\(z.shape)")
-            let zProj = q.projectIn(z)  // [B, codebookDim, T]
-            print("DEBUG quantizer qIdx=\(qIdx): zProj.shape=\(zProj.shape)")
+            // z is [B, C, L] (NCL), Linear expects [B, L, C] (NLC)
+            let zNLC = z.transposed(0, 2, 1)  // [B, L, C] = [1, 332, 256]
+            let zProjNLC = q.projectIn(zNLC)  // [B, L, codebookDim] = [1, 332, 64]
+            let zProj = zProjNLC.transposed(0, 2, 1)  // [B, codebookDim, L] = [1, 64, 332]
 
             // [B, codebookDim, T] -> [B, T, codebookDim] for distance computation
             let zPermute = zProj.transposed(0, 2, 1)
