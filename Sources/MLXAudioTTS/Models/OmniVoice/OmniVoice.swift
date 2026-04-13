@@ -174,7 +174,8 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             print("DEBUG forward: head \(i) reshaped.shape=\(reshaped.shape)")
             logitsPerCodebook.append(reshaped)
         }
-        let audioLogits = MLX.concatenated(logitsPerCodebook, axis: 2)  // [B, C, S, V]
+        let audioLogits = MLX.concatenated(logitsPerCodebook, axis: 2)  // [B, S, C, V]
+        print("DEBUG forward returning audioLogits.shape=\(audioLogits.shape)")
 
         return audioLogits
     }
