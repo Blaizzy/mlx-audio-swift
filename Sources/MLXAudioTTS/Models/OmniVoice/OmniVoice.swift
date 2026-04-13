@@ -734,7 +734,33 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         ).appendingPathComponent("config.json")
 
         let configData = try Data(contentsOf: configURL)
-        let config = try JSONDecoder().decode(OmniVoiceConfig.self, from: configData)
+        
+        // Load tokenizer config first to get correct n_codebooks
+        let tokenizerConfigURL = try await ModelUtils.resolveOrDownloadModel(
+            repoID: repo,
+            requiredExtension: "json",
+            additionalMatchingPatterns: ["audio_tokenizer/config.json"]
+        ).appendingPathComponent("audio_tokenizer/config.json")
+        let tokenizerConfigData = try Data(contentsOf: tokenizerConfigURL)
+        let tokenizerConfig = try JSONDecoder().decode(OmniVoiceAudioTokenizerConfig.self, from: tokenizerConfigData)
+        let correctNumCodebooks = tokenizerConfig.nCodebooks
+        
+        // Parse and modify main config to use correct num_codebooks
+        var configDict = try JSONSerialization.jsonObject(with: configData) as! [String: Any]
+        if let currentNum = configDict["num_audio_codebook"] as? Int, currentNum != correctNumCodebooks {
+            print("DEBUG: overriding num_audio_codebook from \(currentNum) to \(correctNumCodebooks) to match tokenizer")
+            configDict["num_audio_codebook"] = correctNumCodebooks
+            // Also update audio_codebook_weights if needed
+            if let weights = configDict["audio_codebook_weights"] as? [Int], weights.count != correctNumCodebooks {
+                var newWeights = weights
+                while newWeights.count < correctNumCodebooks {
+                    newWeights.append(newWeights.last ?? 2)
+                }
+                configDict["audio_codebook_weights"] = newWeights
+            }
+        }
+        let modifiedConfigData = try JSONSerialization.data(withJSONObject: configDict)
+        let config = try JSONDecoder().decode(OmniVoiceConfig.self, from: modifiedConfigData)
 
         let model = try OmniVoiceModel(config: config)
 
