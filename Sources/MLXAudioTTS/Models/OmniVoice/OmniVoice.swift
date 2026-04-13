@@ -141,9 +141,11 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         let inputsEmbeds = prepareEmbedInputs(inputIds: inputIds, audioMask: audioMask)
 
         // Run through LLM (causal masking is handled internally by Qwen3Model)
+        let mask = createAttentionMask(h: inputsEmbeds, cache: cache)
         let hiddenStates = llm.forwardWithEmbeddings(
             inputsEmbeds: inputsEmbeds,
-            cache: cache
+            cache: cache,
+            mask: mask
         )
 
         // Project to audio codebook logits via per-codebook heads
