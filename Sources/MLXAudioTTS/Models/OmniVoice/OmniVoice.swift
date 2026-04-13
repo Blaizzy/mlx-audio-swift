@@ -909,24 +909,26 @@ final class OmniVoiceConvTranspose1d: Module {
         self.paddingVal = padding
 
         let scale = sqrt(1.0 / Float(inChannels * kernelSize))
-        // MLX format: [in_channels, kernel_size, out_channels]
+        // PyTorch format: [in_channels, out_channels, kernel_size]
         self._weight.wrappedValue = MLXRandom.uniform(
-            low: -scale, high: scale, [inChannels, kernelSize, outChannels]
+            low: -scale, high: scale, [inChannels, outChannels, kernelSize]
         )
         self._bias.wrappedValue = MLXArray.zeros([outChannels])
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
+        // Weight stored as [in, out, kernel] (PyTorch) → transpose to [in, kernel, out] (MLX)
+        let w = weight.transposed(0, 2, 1)
         // Data flows in NCL [B, C, L]; transpose to NLC for MLX convTransposed1d
         let xNLC = x.transposed(0, 2, 1)
-        var h = MLX.convTransposed1d(xNLC, weight, stride: strideVal, padding: paddingVal)
+        var h = MLX.convTransposed1d(xNLC, w, stride: strideVal, padding: paddingVal)
         if let b = bias {
             let n = b.size
             h = h + b.reshaped([n])
         }
         // Convert back to NCL [B, C, L]
         let out = h.transposed(0, 2, 1)
-        print("DEBUG convTranspose1d: in=\(x.shape) w=\(weight.shape) pad=\(paddingVal) out=\(out.shape)")
+        print("DEBUG convTranspose1d: in=\(x.shape) w=\(w.shape) pad=\(paddingVal) out=\(out.shape)")
         return out
     }
 }
