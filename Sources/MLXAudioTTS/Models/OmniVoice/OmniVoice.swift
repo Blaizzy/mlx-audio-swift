@@ -1153,16 +1153,25 @@ public final class OmniVoiceDACAcousticDecoder: Module {
 /// Residual Vector Quantization with projection layers (Higgs Audio V2 style).
 public final class OmniVoiceRVQQuantizer: Module {
     @ModuleInfo(key: "quantizers") var quantizers: [OmniVoiceSingleQuantizer]
+    @ModuleInfo(key: "pre_project") var preProject: MLXNN.Linear
     let outputDim: Int
 
     init(config: OmniVoiceAudioTokenizerConfig) {
         let nQuantizers = config.nCodebooks
         let codebookSize = config.codebookSize
         let codebookDim = config.codebookDim
-        // Encoder actually outputs 256 channels (from checkpoint weight)
-        // projectIn weight shape will tell us the expected input dim
-        let inputDim = 256  // Actual encoder output, not config.encoderHiddenSize
+        // From checkpoint:
+        // - encoder.conv2 outputs 256 channels
+        // - quantizer.project_in expects 1024 input (weight shape [64, 1024])
+        let encoderOutputDim = 256  // Actual encoder output
+        let inputDim = 1024  // What project_in expects
         self.outputDim = config.decoderHiddenSize     // 1024
+
+        // Pre-projection from encoder output to quantizer input
+        self._preProject.wrappedValue = MLXNN.Linear(
+            inputDimensions: encoderOutputDim,
+            outputDimensions: inputDim
+        )
 
         var qs: [OmniVoiceSingleQuantizer] = []
         for _ in 0..<nQuantizers {
@@ -1179,8 +1188,16 @@ public final class OmniVoiceRVQQuantizer: Module {
     /// Quantize: [B, D, T] -> (codes [B, n_quantizers, T], quantized [B, outputDim, T])
     func callAsFunction(_ z: MLXArray) -> (MLXArray, MLXArray) {
         print("DEBUG RVQQuantizer input z.shape=\(z.shape)")
-        let batchSize = z.shape[0]
-        let seqLen = z.shape[2]
+        
+        // Pre-project from encoder output (256) to quantizer input (1024)
+        // z is [B, C, L] (NCL), need [B, L, C] for Linear
+        let zNLC = z.transposed(0, 2, 1)  // [B, L, 256]
+        let zProjectedNLC = preProject(zNLC)  // [B, L, 1024]
+        let zProjected = zProjectedNLC.transposed(0, 2, 1)  // [B, 1024, L]
+        print("DEBUG RVQQuantizer after preProject: zProjected.shape=\(zProjected.shape)")
+        
+        let batchSize = zProjected.shape[0]
+        let seqLen = zProjected.shape[2]
         let nQuantizers = quantizers.count
 
         var allCodes: [MLXArray] = []
@@ -1193,8 +1210,8 @@ public final class OmniVoiceRVQQuantizer: Module {
             let codebookDim = codebook.shape[1]
 
             // Project input to codebook dimension
-            // z is [B, C, L] (NCL), Linear expects [B, L, C] (NLC)
-            let zNLC = z.transposed(0, 2, 1)  // [B, L, C] = [1, 332, 256]
+            // zProjected is [B, C, L] (NCL) = [1, 1024, 332], Linear expects [B, L, C] (NLC)
+            let zNLC = zProjected.transposed(0, 2, 1)  // [B, L, C] = [1, 332, 1024]
             let zProjNLC = q.projectIn(zNLC)  // [B, L, codebookDim] = [1, 332, 64]
             let zProj = zProjNLC.transposed(0, 2, 1)  // [B, codebookDim, L] = [1, 64, 332]
 
