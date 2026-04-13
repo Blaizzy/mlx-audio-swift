@@ -777,6 +777,24 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         return model
     }
 
+    // MARK: - Weight Inspection
+
+    private static func inferNumCodebooks(from weights: [String: MLXArray]) -> Int? {
+        var maxIdx = -1
+        for key in weights.keys {
+            if key.hasPrefix("audio_embeddings."), key.hasSuffix(".weight") {
+                let suffix = key.dropFirst("audio_embeddings.".count)
+                if let dotIdx = suffix.firstIndex(of: ".") {
+                    let numStr = suffix.prefix(upTo: dotIdx)
+                    if let idx = Int(numStr), idx > maxIdx {
+                        maxIdx = idx
+                    }
+                }
+            }
+        }
+        return maxIdx >= 0 ? maxIdx + 1 : nil
+    }
+
     // MARK: - Weight Sanitization
 
     func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
@@ -1376,17 +1394,29 @@ public final class OmniVoiceAudioTokenizer: Module {
         ).appendingPathComponent("audio_tokenizer/config.json")
 
         let configData = try Data(contentsOf: configURL)
-        let config = try JSONDecoder().decode(OmniVoiceAudioTokenizerConfig.self, from: configData)
 
-        let tokenizer = OmniVoiceAudioTokenizer(config: config)
-
+        // Load tokenizer weights first to infer actual n_codebooks
         let weightsURL = try await ModelUtils.resolveOrDownloadModel(
             repoID: repo,
             requiredExtension: ".safetensors",
             additionalMatchingPatterns: ["audio_tokenizer/model.safetensors"]
         ).appendingPathComponent("audio_tokenizer/model.safetensors")
-
         let weights = try MLX.loadArrays(url: weightsURL)
+        let inferredNCodebooks = Self.inferNCodebooks(from: weights) ?? 9
+
+        var configDict = try JSONSerialization.jsonObject(with: configData) as! [String: Any]
+        if let currentNum = configDict["n_codebooks"] as? Int, currentNum != inferredNCodebooks {
+            print("[OmniVoiceAudioTokenizer] INFO: overriding n_codebooks from \(currentNum) to \(inferredNCodebooks) to match checkpoint")
+            configDict["n_codebooks"] = inferredNCodebooks
+        } else if configDict["n_codebooks"] == nil {
+            print("[OmniVoiceAudioTokenizer] INFO: setting n_codebooks to \(inferredNCodebooks) from checkpoint")
+            configDict["n_codebooks"] = inferredNCodebooks
+        }
+        let patchedConfigData = try JSONSerialization.data(withJSONObject: configDict)
+        let config = try JSONDecoder().decode(OmniVoiceAudioTokenizerConfig.self, from: patchedConfigData)
+
+        let tokenizer = OmniVoiceAudioTokenizer(config: config)
+
         // Verify weight coverage before loading
         let moduleParams = Dictionary(uniqueKeysWithValues: tokenizer.parameters().flattened())
         let weightKeys = Set(weights.keys)
@@ -1403,6 +1433,22 @@ public final class OmniVoiceAudioTokenizer: Module {
         eval(tokenizer)
 
         return tokenizer
+    }
+
+    private static func inferNCodebooks(from weights: [String: MLXArray]) -> Int? {
+        var maxIdx = -1
+        for key in weights.keys {
+            if key.hasPrefix("quantizer.quantizers."), key.contains(".codebook.embed") {
+                let suffix = key.dropFirst("quantizer.quantizers.".count)
+                if let dotIdx = suffix.firstIndex(of: ".") {
+                    let numStr = suffix.prefix(upTo: dotIdx)
+                    if let idx = Int(numStr), idx > maxIdx {
+                        maxIdx = idx
+                    }
+                }
+            }
+        }
+        return maxIdx >= 0 ? maxIdx + 1 : nil
     }
 }
 
