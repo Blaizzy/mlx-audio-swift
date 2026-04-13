@@ -419,7 +419,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             // Extract conditional and unconditional logits for the target region
             // logits shape: [B, S, C, V] = [2, 817, 9, 1025]
             let cLogits = logits[0, (condLength - targetLen)..<condLength, 0..., 0...]  // [T, C, V]
-            let uLogits = logits[1, 0..<targetLen, 0..., 0...]  // [T, C, V]
+            let uLogits = logits[1, (condLength - targetLen)..<condLength, 0..., 0...]  // [T, C, V]
             print("DEBUG cLogits.shape=\(cLogits.shape), uLogits.shape=\(uLogits.shape)")
 
             // Add batch dimension back for scoring
@@ -501,8 +501,9 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             )
             batchInputIds[0] = condUpdatedFull
 
-            // Update uncond
-            batchInputIds[1] = tokens[0]
+            // Update uncond: replace target region (suffix) while keeping prefix masks
+            let prefixLen = condLength - targetLen
+            batchInputIds[1, 0..., 0..., prefixLen...] = tokens[0]
 
             eval(tokens)
         }
@@ -578,8 +579,8 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         var filtered = MLXArray.full(logits.shape, values: MLXArray(Float(-Float.infinity)))
         // Fill in top-k values by iterating (simple approach)
         let batchSize = logits.shape[0]
-        let seqLen = logits.shape[1]
-        let numCodebooks = logits.shape[2]
+        let numCodebooks = logits.shape[1]
+        let seqLen = logits.shape[2]
 
         for b in 0..<batchSize {
             for c in 0..<numCodebooks {
