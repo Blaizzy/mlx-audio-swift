@@ -433,14 +433,17 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             let uLogitsBatch = uLogitsT.reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
 
             // Token prediction with CFG
+            print("DEBUG calling predictTokensWithScoring")
             let (predTokens, scores) = predictTokensWithScoring(
                 cLogits: cLogitsBatch,
                 uLogits: uLogitsBatch,
                 guidanceScale: ovParameters.guidanceScale,
                 classTemperature: ovParameters.classTemperature
             )
+            print("DEBUG predTokens.shape=\(predTokens.shape), scores.shape=\(scores.shape)")
 
             // Apply layer penalty
+            print("DEBUG layerIds.shape=\(layerIds.shape)")
             let adjustedScores = scores - (layerIds.asType(.float32) * ovParameters.layerPenaltyFactor)
 
             // Gumbel sampling for position selection
