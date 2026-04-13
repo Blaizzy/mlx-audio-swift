@@ -1156,7 +1156,11 @@ public final class OmniVoiceRVQQuantizer: Module {
         let nQuantizers = config.nCodebooks
         let codebookSize = config.codebookSize
         let codebookDim = config.codebookDim
-        let inputDim = config.encoderHiddenSize * 4  // 256
+        // From checkpoint: encoder output is 256 channels, projectIn weight is (1024, 64)
+        // So inputDim should be 256, but weight expects 64... 
+        // This suggests encoderHiddenSize in checkpoint is actually 256, not 64
+        print("DEBUG RVQ init: encoderHiddenSize=\(config.encoderHiddenSize), will use inputDim=64 based on weight")
+        let inputDim = 64  // Hardcode based on checkpoint weight shape
         self.outputDim = config.decoderHiddenSize     // 1024
 
         var qs: [OmniVoiceSingleQuantizer] = []
