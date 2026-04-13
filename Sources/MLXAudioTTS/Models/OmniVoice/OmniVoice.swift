@@ -468,7 +468,10 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             // Select top-k positions to unmask
             let partitionInput = MLXArray(-1.0) * flatScores.asType(.float32)
             print("DEBUG partitionInput.shape=\(partitionInput.shape), k=\(k)")
-            let topkIndices = MLX.argPartition(partitionInput, kth: k - 1, axis: 0)[0..., ..<k]
+            // Use argsort instead of argPartition for safety
+            let sortedIndices = MLX.argSort(partitionInput, axis: 0)
+            print("DEBUG sortedIndices.shape=\(sortedIndices.shape)")
+            let topkIndices = sortedIndices[0..., ..<k]
             print("DEBUG topkIndices.shape=\(topkIndices.shape)")
 
             // Build update mask: positions in topkIndices get updated
