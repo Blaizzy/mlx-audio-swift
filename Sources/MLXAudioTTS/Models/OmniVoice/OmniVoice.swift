@@ -1173,6 +1173,7 @@ public final class OmniVoiceRVQQuantizer: Module {
 
     /// Quantize: [B, D, T] -> (codes [B, n_quantizers, T], quantized [B, outputDim, T])
     func callAsFunction(_ z: MLXArray) -> (MLXArray, MLXArray) {
+        print("DEBUG RVQQuantizer input z.shape=\(z.shape)")
         let batchSize = z.shape[0]
         let seqLen = z.shape[2]
         let nQuantizers = quantizers.count
@@ -1187,7 +1188,9 @@ public final class OmniVoiceRVQQuantizer: Module {
             let codebookDim = codebook.shape[1]
 
             // Project input to codebook dimension
+            print("DEBUG quantizer qIdx=\(qIdx): z.shape=\(z.shape)")
             let zProj = q.projectIn(z)  // [B, codebookDim, T]
+            print("DEBUG quantizer qIdx=\(qIdx): zProj.shape=\(zProj.shape)")
 
             // [B, codebookDim, T] -> [B, T, codebookDim] for distance computation
             let zPermute = zProj.transposed(0, 2, 1)
@@ -1280,9 +1283,11 @@ public final class OmniVoiceAudioTokenizer: Module {
             // NLC [B, L, C] -> NCL [B, C, L]
             wav = wav.transposed(0, 2, 1)
         }
+        print("DEBUG encode: wav.shape=\(wav.shape)")
 
         // Encoder: [B, 1, T] -> [B, D, T']
         let z = acousticEncoder(wav)
+        print("DEBUG encode: acousticEncoder output z.shape=\(z.shape)")
 
         // RVQ: [B, D, T'] -> (codes [B, n_codebooks, T'], quantized [B, D, T'])
         let (codes, _) = quantizer(z)
