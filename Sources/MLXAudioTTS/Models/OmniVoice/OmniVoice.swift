@@ -1376,9 +1376,9 @@ public final class OmniVoiceAudioTokenizer: Module {
         let z = acousticEncoder(wav)
 
         // Project encoder output (256) to quantizer input dimension (1024)
-        // fc2 maps 1024→256; use its transposed weight to go 256→1024
+        // fc2 is Linear(1024→256), weight shape [256, 1024]. To reverse: x @ W = [B,T',256] @ [256,1024] = [B,T',1024]
         let zNLC = z.transposed(0, 2, 1)  // [B, T', 256]
-        let zProjectedNLC = MLX.matmul(zNLC, fc2.weight.T)  // [B, T', 1024]
+        let zProjectedNLC = MLX.matmul(zNLC, fc2.weight)  // [B, T', 1024]
         let zProjected = zProjectedNLC.transposed(0, 2, 1)  // [B, 1024, T']
 
         // RVQ: [B, D, T'] -> (codes [B, n_codebooks, T'], quantized [B, D, T'])
