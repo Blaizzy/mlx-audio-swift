@@ -864,7 +864,6 @@ final class OmniVoiceConv1d: Module {
         }
         // Convert back to NCL [B, C, L]
         let out = h.transposed(0, 2, 1)
-        print("DEBUG conv1d: in=\(x.shape) w=\(w.shape) pad=\(paddingVal) out=\(out.shape)")
         return out
     }
 }
@@ -913,8 +912,16 @@ public final class OmniVoiceDACResidualUnit: Module {
         let s1 = snake1.callAsFunction(c1)
         let c2 = conv2(s1)
         let h = snake2.callAsFunction(c2)
-        print("DEBUG residual: x=\(x.shape) c1=\(c1.shape) c2=\(c2.shape) h=\(h.shape)")
-        return x + h
+        
+        // Handle potential length mismatch for residual connection
+        let xLen = x.shape[2]
+        let hLen = h.shape[2]
+        var xTrimmed = x
+        if xLen != hLen {
+            let pad = (xLen - hLen) / 2
+            xTrimmed = x[0..., 0..., pad..<(xLen - pad)]
+        }
+        return xTrimmed + h
     }
 }
 
