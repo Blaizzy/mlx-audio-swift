@@ -56,10 +56,6 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     init(config: OmniVoiceConfig) throws {
         self.config = config
         let llmConfig = config.llmConfig
-        print("DEBUG init: llmConfig.hiddenSize=\(llmConfig.hiddenSize)")
-        print("DEBUG init: llmConfig.vocabSize=\(llmConfig.vocabSize)")
-        print("DEBUG init: config.audioVocabSize=\(config.audioVocabSize)")
-        print("DEBUG init: config.numAudioCodebook=\(config.numAudioCodebook)")
 
         // Create the Qwen3 LLM from config
         let llmConfigWrapper = Qwen3Configuration(
@@ -100,30 +96,24 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         inputIds: MLXArray,
         audioMask: MLXArray
     ) -> MLXArray {
-        print("DEBUG prepareEmbedInputs: inputIds.shape=\(inputIds.shape), audioMask.shape=\(audioMask.shape)")
         // Text embeddings from LLM
         let textIds = inputIds[0..., 0, 0...]  // [B, S]
-        print("DEBUG prepareEmbedInputs: textIds.shape=\(textIds.shape)")
         let textEmbeds = llm.getEmbeddings(for: textIds)
-        print("DEBUG prepareEmbedInputs: textEmbeds.shape=\(textEmbeds.shape)")
 
         // Apply audio mask to inputIds
         let maskedIds = inputIds * audioMask.reshaped([inputIds.shape[0], 1, inputIds.shape[2]])
 
         // Embed each codebook separately and sum
         var audioEmbeds: MLXArray?
-        print("DEBUG prepareEmbedInputs: audioEmbeddings.count=\(audioEmbeddings.count)")
         for (i, embedding) in audioEmbeddings.enumerated() {
             let codebookIds = maskedIds[0..., i, 0...]  // [B, S]
             let codebookEmbeds = embedding(codebookIds)  // [B, S, D]
-            print("DEBUG prepareEmbedInputs: codebook \(i) codebookEmbeds.shape=\(codebookEmbeds.shape)")
             if audioEmbeds == nil {
                 audioEmbeds = codebookEmbeds
             } else {
                 audioEmbeds = audioEmbeds! + codebookEmbeds
             }
         }
-        print("DEBUG prepareEmbedInputs: final audioEmbeds.shape=\(audioEmbeds!.shape)")
 
         // Where audio: use audio_embeds, else use text_embeds
         let result = MLX.where(
@@ -131,7 +121,6 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             audioEmbeds!,
             textEmbeds
         )
-        print("DEBUG prepareEmbedInputs: result.shape=\(result.shape)")
         return result
     }
 
@@ -150,32 +139,23 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         cache: [KVCache]? = nil
     ) -> MLXArray {
         let inputsEmbeds = prepareEmbedInputs(inputIds: inputIds, audioMask: audioMask)
-        print("DEBUG forward: inputsEmbeds.shape=\(inputsEmbeds.shape)")
 
         // Run through LLM (causal masking is handled internally by Qwen3Model)
         let hiddenStates = llm.forwardWithEmbeddings(
             inputsEmbeds: inputsEmbeds,
             cache: cache
         )
-        print("DEBUG forward: hiddenStates.shape=\(hiddenStates.shape)")
-        print("DEBUG forward: audioHeads.count=\(audioHeads.count)")
-        print("DEBUG forward: llmConfig.hiddenSize=\(config.llmConfig.hiddenSize)")
-        print("DEBUG forward: audioVocabSize=\(config.audioVocabSize)")
 
         // Project to audio codebook logits via per-codebook heads
         let batchSize = hiddenStates.shape[0]
         let seqLen = hiddenStates.shape[1]
         var logitsPerCodebook: [MLXArray] = []
         for (i, head) in audioHeads.enumerated() {
-            print("DEBUG forward: processing head \(i)")
             let logits = head(hiddenStates)  // [B, S, V]
-            print("DEBUG forward: head \(i) logits.shape=\(logits.shape), size=\(logits.size)")
             let reshaped = logits.reshaped([batchSize, seqLen, 1, config.audioVocabSize])
-            print("DEBUG forward: head \(i) reshaped.shape=\(reshaped.shape)")
             logitsPerCodebook.append(reshaped)
         }
         let audioLogits = MLX.concatenated(logitsPerCodebook, axis: 2)  // [B, S, C, V]
-        print("DEBUG forward returning audioLogits.shape=\(audioLogits.shape)")
 
         return audioLogits
     }
@@ -317,7 +297,6 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         var refAudioTokens: MLXArray?
         if let refAudio {
             refAudioTokens = try audioTok.encode(refAudio)
-            print("DEBUG refAudioTokens.shape=\(refAudioTokens!.shape)")
         }
 
         // 2. Estimate target token count
@@ -330,7 +309,6 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         )
 
         // 3. Prepare inference inputs
-        print("DEBUG preparing inference inputs with numTargetTokens=\(numTargetTokens)")
         let prepared = try prepareInferenceInputs(
             text: text,
             numTargetTokens: numTargetTokens,
@@ -340,7 +318,6 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             instruct: voice,
             denoise: ovParameters.denoise
         )
-        print("DEBUG prepared inputIds.shape=\(prepared.inputIds.shape), audioMask.shape=\(prepared.audioMask.shape)")
 
         let inputIds = prepared.inputIds
         let audioMask = prepared.audioMask
@@ -351,7 +328,6 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         let numCodebooks = config.numAudioCodebook
         let targetLen = numTargetTokens
 
-        print("DEBUG inputIds.shape=\(inputIds.shape), condLength=\(condLength), targetLen=\(targetLen)")
         
         // Unconditional input: pad target with leading masks to match cond length
         // cond: [style, text, ref_audio, target] (length = condLength)
@@ -366,10 +342,8 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         let uncondAudioMaskPrefix = MLXArray.zeros([1, prefixLen], type: Bool.self)
         let uncondAudioMaskTarget = audioMask[0..., prefixLen...]
         let uncondAudioMask = MLX.concatenated([uncondAudioMaskPrefix, uncondAudioMaskTarget], axis: 1)
-        print("DEBUG uncondInputIds.shape=\(uncondInputIds.shape)")
 
         // Concatenate cond + uncond along batch axis
-        print("DEBUG concatenating inputIds and uncondInputIds along axis 0")
         var batchInputIds = MLX.concatenated([inputIds, uncondInputIds], axis: 0)
         let batchAudioMask = MLX.concatenated(
             [audioMask, uncondAudioMask],
@@ -377,12 +351,10 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         )
 
         // 5. Initialize target tokens to all MASK
-        print("DEBUG initializing tokens with shape [\(B), \(numCodebooks), \(targetLen)]")
         var tokens = MLXArray.full(
             [B, numCodebooks, targetLen],
             values: MLXArray(Int32(config.audioMaskId))
         )
-        print("DEBUG tokens.shape=\(tokens.shape)")
 
         // 6. Compute timesteps and unmasking schedule
         let timesteps = getTimeSteps(tStart: 0.0, tEnd: 1.0, numStep: ovParameters.numStep + 1, tShift: ovParameters.tShift)
@@ -415,35 +387,27 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
                 audioMask: batchAudioMask
             ).asType(.float32)
 
-            print("DEBUG logits.shape=\(logits.shape), condLength=\(condLength), targetLen=\(targetLen)")
             // Extract conditional and unconditional logits for the target region
             // logits shape: [B, S, C, V] = [2, 817, 9, 1025]
             let cLogits = logits[0, (condLength - targetLen)..<condLength, 0..., 0...]  // [T, C, V]
             let uLogits = logits[1, (condLength - targetLen)..<condLength, 0..., 0...]  // [T, C, V]
-            print("DEBUG cLogits.shape=\(cLogits.shape), uLogits.shape=\(uLogits.shape)")
 
             // Add batch dimension back for scoring
             // cLogits is [T, C, V], need [1, C, T, V]
-            print("DEBUG cLogits transposing from \(cLogits.shape)")
             let cLogitsT = cLogits.transposed(1, 0, 2)  // [C, T, V]
-            print("DEBUG cLogitsT.shape=\(cLogitsT.shape)")
             let cLogitsBatch = cLogitsT.reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
-            print("DEBUG cLogitsBatch.shape=\(cLogitsBatch.shape)")
             let uLogitsT = uLogits.transposed(1, 0, 2)  // [C, T, V]
             let uLogitsBatch = uLogitsT.reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
 
             // Token prediction with CFG
-            print("DEBUG calling predictTokensWithScoring")
             let (predTokens, scores) = predictTokensWithScoring(
                 cLogits: cLogitsBatch,
                 uLogits: uLogitsBatch,
                 guidanceScale: ovParameters.guidanceScale,
                 classTemperature: ovParameters.classTemperature
             )
-            print("DEBUG predTokens.shape=\(predTokens.shape), scores.shape=\(scores.shape)")
 
             // Apply layer penalty
-            print("DEBUG layerIds.shape=\(layerIds.shape)")
             let adjustedScores = scores - (layerIds.asType(.float32) * ovParameters.layerPenaltyFactor)
 
             // Gumbel sampling for position selection
@@ -453,17 +417,13 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             }
 
             // Mask out already-filled positions
-            print("DEBUG tokens.shape=\(tokens.shape), tokens[0].shape=\(tokens[0].shape)")
             let mask = tokens[0] .!= Int32(config.audioMaskId)
-            print("DEBUG mask.shape=\(mask.shape)")
             let maskInf = MLX.where(mask, MLXArray(Float(-Float.infinity)), finalScores).asType(.float32)
-            print("DEBUG maskInf.shape=\(maskInf.shape)")
 
             // Flatten for top-k selection
             let flatScores = maskInf.reshaped([-1])
             let flatTokens = tokens[0].reshaped([-1])
             let flatPreds = predTokens[0].reshaped([-1])
-            print("DEBUG flatScores.shape=\(flatScores.shape), flatTokens.shape=\(flatTokens.shape), flatPreds.shape=\(flatPreds.shape)")
 
             // Select top-k positions to unmask
             let negScores = MLXArray(-1.0) * flatScores.asType(.float32)
@@ -474,15 +434,12 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
             // Build update mask: positions in topkIndices get updated
             let linearTopkIndices = topkIndices.reshaped([-1])
-            print("DEBUG linearTopkIndices.shape=\(linearTopkIndices.shape)")
 
             // Vectorized update using putAlong to avoid indexed-assignment crashes
             let updateValues = MLX.take(flatPreds, linearTopkIndices, axis: 0)
             let updatedTokens = putAlong(flatTokens, linearTopkIndices, values: updateValues, axis: 0)
 
-            print("DEBUG reshaping updatedTokens to [\(numCodebooks), \(targetLen)]")
             let reshapedTokens = updatedTokens.reshaped([numCodebooks, targetLen])
-            print("DEBUG reshapedTokens.shape=\(reshapedTokens.shape)")
             tokens = reshapedTokens.reshaped([1, numCodebooks, targetLen])
 
             // Update batch inputs for next step using concatenation instead of indexed assignment
@@ -503,9 +460,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         }
 
         // 8. Decode tokens to waveform
-        print("DEBUG tokens.shape=\(tokens.shape), slicing [0, 0..., 0..., 0..<\(targetLen)]")
         let outputTokens = tokens[0, 0..., 0..<targetLen]
-        print("DEBUG outputTokens.shape=\(outputTokens.shape)")
         let audio = try audioTok.decode(outputTokens)
 
         // 9. Post-process
@@ -627,7 +582,6 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         }
 
         let numCodebooks = config.numAudioCodebook
-        print("DEBUG prepareInferenceInputs: numCodebooks=\(numCodebooks)")
 
         // Build style tokens
         var styleText = ""
@@ -640,45 +594,32 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         styleText += "<|instruct_start|>\(instructStr)<|instruct_end|>"
 
         let styleTokenIds = try tokenizeText(styleText)
-        print("DEBUG styleTokenIds.count=\(styleTokenIds.count)")
         var styleIds = MLXArray(styleTokenIds.map { Int32($0) })
         styleIds = styleIds.reshaped([1, -1])
-        print("DEBUG styleIds before broadcast.shape=\(styleIds.shape)")
-        print("DEBUG broadcasting styleIds to [1, \(numCodebooks), \(styleIds.shape[1])]")
         styleIds = MLX.broadcast(styleIds.reshaped([1, 1, -1]), to: [1, numCodebooks, styleIds.shape[1]])
 
         // Build text tokens
         let fullText = combineText(refText: refText, text: text)
         let wrappedText = "<|text_start|>\(fullText)<|text_end|>"
         let textTokenIds = try tokenizeText(wrappedText)
-        print("DEBUG textTokenIds.count=\(textTokenIds.count)")
         var textIds = MLXArray(textTokenIds.map { Int32($0) })
         textIds = textIds.reshaped([1, -1])
-        print("DEBUG textIds before broadcast.shape=\(textIds.shape)")
-        print("DEBUG broadcasting textIds to [1, \(numCodebooks), \(textIds.shape[1])]")
         textIds = MLX.broadcast(textIds.reshaped([1, 1, -1]), to: [1, numCodebooks, textIds.shape[1]])
 
         // Target: all MASK
-        print("DEBUG creating targetIds with shape [1, \(numCodebooks), \(numTargetTokens)]")
         let targetIds = MLXArray.full(
             [1, numCodebooks, numTargetTokens],
             values: MLXArray(Int32(config.audioMaskId))
         )
-        print("DEBUG targetIds.shape=\(targetIds.shape)")
 
         // Concatenate: [style, text, ref_audio (optional), target]
         var parts: [MLXArray] = [styleIds, textIds]
-        print("DEBUG styleIds.shape=\(styleIds.shape), textIds.shape=\(textIds.shape)")
         if let refTok = refAudioTokens {
-            print("DEBUG refTok.shape=\(refTok.shape)")
             let reshaped = refTok.reshaped([1, refTok.shape[0], refTok.shape[1]])
-            print("DEBUG reshaped refTok.shape=\(reshaped.shape)")
             parts.append(reshaped)
         }
-        print("DEBUG targetIds.shape=\(targetIds.shape)")
         parts.append(targetIds)
 
-        print("DEBUG concatenating \(parts.count) parts along axis 2")
         let condInputIds = MLX.concatenated(parts, axis: 2)
         let totalLength = condInputIds.shape[2]
 
@@ -691,14 +632,11 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             audioStartIdx = totalLength - numTargetTokens
         }
 
-        print("DEBUG condInputIds.shape=\(condInputIds.shape)")
         
-        print("DEBUG audioStartIdx=\(audioStartIdx), totalLength=\(totalLength)")
         let zerosPrefix = MLXArray.zeros([audioStartIdx], type: Bool.self)
         let onesSuffix = MLXArray.ones([totalLength - audioStartIdx], type: Bool.self)
         let condAudioMask = MLX.concatenated([zerosPrefix, onesSuffix], axis: 0)
             .reshaped([1, totalLength])
-        print("DEBUG condAudioMask.shape=\(condAudioMask.shape)")
 
         return (condInputIds, condAudioMask)
     }
@@ -782,7 +720,6 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         // Parse and modify main config to use correct num_codebooks
         var configDict = try JSONSerialization.jsonObject(with: configData) as! [String: Any]
         if let currentNum = configDict["num_audio_codebook"] as? Int, currentNum != correctNumCodebooks {
-            print("DEBUG: overriding num_audio_codebook from \(currentNum) to \(correctNumCodebooks) to match tokenizer")
             configDict["num_audio_codebook"] = correctNumCodebooks
             // Also update audio_codebook_weights if needed
             if let weights = configDict["audio_codebook_weights"] as? [Int], weights.count != correctNumCodebooks {
@@ -928,7 +865,6 @@ final class OmniVoiceConvTranspose1d: Module {
         }
         // Convert back to NCL [B, C, L]
         let out = h.transposed(0, 2, 1)
-        print("DEBUG convTranspose1d: in=\(x.shape) w=\(w.shape) pad=\(paddingVal) out=\(out.shape)")
         return out
     }
 }
@@ -1009,15 +945,10 @@ public final class OmniVoiceDACResidualUnit: Module {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        print("DEBUG residual unit input x.shape=\(x.shape)")
         let c1 = conv1(x)
-        print("DEBUG residual unit after conv1 c1.shape=\(c1.shape)")
         let s1 = snake1.callAsFunction(c1)
-        print("DEBUG residual unit after snake1 s1.shape=\(s1.shape)")
         let c2 = conv2(s1)
-        print("DEBUG residual unit after conv2 c2.shape=\(c2.shape)")
         let h = snake2.callAsFunction(c2)
-        print("DEBUG residual unit after snake2 h.shape=\(h.shape)")
         
         // Handle potential length mismatch for residual connection
         let xLen = x.shape[2]
@@ -1160,7 +1091,6 @@ public final class OmniVoiceDACAcousticEncoder: Module {
         self._block.wrappedValue = blocks
 
         self._snake1.wrappedValue = snakeAlpha(channels: currentChannels)
-        print("DEBUG encoder init: currentChannels=\(currentChannels), conv2 will output \(currentChannels / 32)")
         self._conv2.wrappedValue = OmniVoiceConv1d(
             inChannels: currentChannels,
             outChannels: currentChannels / 32,  // 2048 → 64 to match checkpoint
@@ -1176,9 +1106,7 @@ public final class OmniVoiceDACAcousticEncoder: Module {
             h = b(h)
         }
         h = snake1.callAsFunction(h)
-        print("DEBUG encoder: before conv2 h.shape=\(h.shape)")
         h = conv2(h)
-        print("DEBUG encoder: after conv2 h.shape=\(h.shape)")
         return h
     }
 }
@@ -1275,14 +1203,12 @@ public final class OmniVoiceRVQQuantizer: Module {
 
     /// Quantize: [B, D, T] -> (codes [B, n_quantizers, T], quantized [B, outputDim, T])
     func callAsFunction(_ z: MLXArray) -> (MLXArray, MLXArray) {
-        print("DEBUG RVQQuantizer input z.shape=\(z.shape)")
         
         // Pre-project from encoder output (256) to quantizer input (1024)
         // z is [B, C, L] (NCL), need [B, L, C] for Linear
         let zNLC = z.transposed(0, 2, 1)  // [B, L, 256]
         let zProjectedNLC = preProject(zNLC)  // [B, L, 1024]
         let zProjected = zProjectedNLC.transposed(0, 2, 1)  // [B, 1024, L]
-        print("DEBUG RVQQuantizer after preProject: zProjected.shape=\(zProjected.shape)")
         
         let batchSize = zProjected.shape[0]
         let seqLen = zProjected.shape[2]
@@ -1292,24 +1218,20 @@ public final class OmniVoiceRVQQuantizer: Module {
         var quantized = MLXArray.zeros([batchSize, outputDim, seqLen])
 
         for qIdx in 0..<nQuantizers {
-            print("DEBUG quantizer qIdx=\(qIdx)")
             let q = quantizers[qIdx]
             let codebook = q.codebook.embed
             let codebookSize = codebook.shape[0]
             let codebookDim = codebook.shape[1]
-            print("DEBUG codebook.shape=\(codebook.shape)")
 
             // Project input to codebook dimension
             // zProjected is [B, C, L] (NCL) = [1, 1024, 332], Linear expects [B, L, C] (NLC)
             let zNLC = zProjected.transposed(0, 2, 1)  // [B, L, C] = [1, 332, 1024]
             let zProjNLC = q.projectIn(zNLC)  // [B, L, codebookDim] = [1, 332, 64]
             let zProj = zProjNLC.transposed(0, 2, 1)  // [B, codebookDim, L] = [1, 64, 332]
-            print("DEBUG zProj.shape=\(zProj.shape)")
 
             // [B, codebookDim, T] -> [B, T, codebookDim] for distance computation
             let zPermute = zProj.transposed(0, 2, 1)
             let zFlat = zPermute.reshaped([batchSize * seqLen, codebookDim])
-            print("DEBUG zFlat.shape=\(zFlat.shape), codebookSize=\(codebookSize), codebookDim=\(codebookDim)")
 
             // Compute distances: [B*T, K]
             let diff = zFlat.reshaped([zFlat.shape[0], 1, codebookDim])
@@ -1323,21 +1245,15 @@ public final class OmniVoiceRVQQuantizer: Module {
 
             // Gather quantized vectors and project to output dimension
             let qVecs = MLX.take(codebook, codes, axis: 0)  // [B*T, codebookDim]
-            print("DEBUG qIdx=\(qIdx): qVecs.shape=\(qVecs.shape)")
             let qOut = q.projectOut(qVecs)  // [B*T, outputDim]
-            print("DEBUG qIdx=\(qIdx): qOut.shape=\(qOut.shape), outputDim=\(outputDim)")
             let q3d = qOut.reshaped([batchSize, seqLen, -1]).transposed(0, 2, 1)
-            print("DEBUG qIdx=\(qIdx): q3d.shape=\(q3d.shape), quantized.shape=\(quantized.shape)")
 
             quantized = quantized + q3d
         }
 
-        print("DEBUG allCodes.count=\(allCodes.count)")
         for (i, c) in allCodes.enumerated() {
-            print("DEBUG allCodes[\(i)].shape=\(c.shape)")
         }
         let codes = MLX.stacked(allCodes, axis: 1)  // [B, n_quantizers, T]
-        print("DEBUG stacked codes.shape=\(codes.shape)")
         return (codes, quantized)
     }
 
@@ -1406,17 +1322,14 @@ public final class OmniVoiceAudioTokenizer: Module {
             // NLC [B, L, C] -> NCL [B, C, L]
             wav = wav.transposed(0, 2, 1)
         }
-        print("DEBUG encode: wav.shape=\(wav.shape)")
 
         // Encoder: [B, 1, T] -> [B, D, T']
         let z = acousticEncoder(wav)
-        print("DEBUG encode: acousticEncoder output z.shape=\(z.shape)")
 
         // RVQ: [B, D, T'] -> (codes [B, n_codebooks, T'], quantized [B, D, T'])
         let (codes, _) = quantizer(z)
 
         // Return [n_codebooks, T'] (squeeze batch dim)
-        print("DEBUG encode returning codes[0].shape=\(codes[0].shape)")
         return codes[0]
     }
 
@@ -1424,24 +1337,17 @@ public final class OmniVoiceAudioTokenizer: Module {
     /// - Parameter tokens: [num_codebooks, seq_len]
     /// - Returns: [samples]
     public func decode(_ tokens: MLXArray) throws -> MLXArray {
-        print("DEBUG decode input tokens.shape=\(tokens.shape)")
         // Add batch dim: [n_codebooks, T] -> [1, n_codebooks, T]
         let batchedTokens = tokens.reshaped([1, tokens.shape[0], tokens.shape[1]])
-        print("DEBUG decode batchedTokens.shape=\(batchedTokens.shape)")
 
         // RVQ decode: [1, n_codebooks, T] -> [1, D, T]
         let z = quantizer.decode(batchedTokens)
-        print("DEBUG decode z.shape=\(z.shape)")
 
         // fc2 project: [1, D, T] -> [1, D', T]
-        print("DEBUG decode fc2 input shape=\(z.transposed(0, 2, 1).shape)")
         let h = fc2(z.transposed(0, 2, 1)).transposed(0, 2, 1)
-        print("DEBUG decode h.shape=\(h.shape)")
 
         // Decoder: [1, D', T] -> [1, 1, T']
-        print("DEBUG decode calling acousticDecoder with h.shape=\(h.shape)")
         let audio = acousticDecoder(h)
-        print("DEBUG decode audio.shape=\(audio.shape)")
 
         return audio.reshaped([-1])
     }
@@ -1472,15 +1378,7 @@ public final class OmniVoiceAudioTokenizer: Module {
         ).appendingPathComponent("audio_tokenizer/model.safetensors")
 
         let weights = try MLX.loadArrays(url: weightsURL)
-        // Debug: print shapes of key weights
-        for (key, value) in weights {
-            if key.contains("project_in") || key.contains("conv2") || key.contains("acoustic_encoder") || key.contains("fc2") {
-                print("DEBUG checkpoint: \(key) shape=\(value.shape)")
-            }
-        }
         try tokenizer.update(parameters: ModuleParameters.unflattened(weights), verify: .noUnusedKeys)
-        // Check fc2 weight after loading
-        print("DEBUG after loading: fc2 weight shape=\(tokenizer.fc2.weight.shape)")
         eval(tokenizer)
 
         return tokenizer
