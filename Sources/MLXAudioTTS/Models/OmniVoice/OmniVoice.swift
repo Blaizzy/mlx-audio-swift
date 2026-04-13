@@ -718,26 +718,28 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         ).appendingPathComponent("config.json")
 
         let configData = try Data(contentsOf: configURL)
-        
-        // Load tokenizer config first to get correct n_codebooks
-        let tokenizerConfigURL = try await ModelUtils.resolveOrDownloadModel(
+
+        // Load model weights first to infer actual num_audio_codebooks from checkpoint
+        let weightsURL = try await ModelUtils.resolveOrDownloadModel(
             repoID: repo,
-            requiredExtension: "json",
-            additionalMatchingPatterns: ["audio_tokenizer/config.json"]
-        ).appendingPathComponent("audio_tokenizer/config.json")
-        let tokenizerConfigData = try Data(contentsOf: tokenizerConfigURL)
-        let tokenizerConfig = try JSONDecoder().decode(OmniVoiceAudioTokenizerConfig.self, from: tokenizerConfigData)
-        let correctNumCodebooks = tokenizerConfig.nCodebooks
-        
-        // Parse and modify main config to use correct num_codebooks
+            requiredExtension: ".safetensors",
+            additionalMatchingPatterns: ["model.safetensors"]
+        ).appendingPathComponent("model.safetensors")
+        let rawWeights = try MLX.loadArrays(url: weightsURL)
+        let inferredNumCodebooks = Self.inferNumCodebooks(from: rawWeights) ?? 9
+
+        // Parse and modify main config to match checkpoint
         var configDict = try JSONSerialization.jsonObject(with: configData) as! [String: Any]
-        if let currentNum = configDict["num_audio_codebook"] as? Int, currentNum != correctNumCodebooks {
-            configDict["num_audio_codebook"] = correctNumCodebooks
-            // Also update audio_codebook_weights if needed
-            if let weights = configDict["audio_codebook_weights"] as? [Int], weights.count != correctNumCodebooks {
+        if let currentNum = configDict["num_audio_codebook"] as? Int, currentNum != inferredNumCodebooks {
+            print("[OmniVoiceModel] INFO: overriding num_audio_codebook from \(currentNum) to \(inferredNumCodebooks) to match checkpoint")
+            configDict["num_audio_codebook"] = inferredNumCodebooks
+            if let weights = configDict["audio_codebook_weights"] as? [Int], weights.count != inferredNumCodebooks {
                 var newWeights = weights
-                while newWeights.count < correctNumCodebooks {
+                while newWeights.count < inferredNumCodebooks {
                     newWeights.append(newWeights.last ?? 2)
+                }
+                if newWeights.count > inferredNumCodebooks {
+                    newWeights = Array(newWeights.prefix(inferredNumCodebooks))
                 }
                 configDict["audio_codebook_weights"] = newWeights
             }
@@ -746,16 +748,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         let config = try JSONDecoder().decode(OmniVoiceConfig.self, from: modifiedConfigData)
 
         let model = try OmniVoiceModel(config: config)
-
-        // Load weights
-        let weightsURL = try await ModelUtils.resolveOrDownloadModel(
-            repoID: repo,
-            requiredExtension: ".safetensors",
-            additionalMatchingPatterns: ["model.safetensors"]
-        ).appendingPathComponent("model.safetensors")
-
-        let weights = try MLX.loadArrays(url: weightsURL)
-        let sanitizedWeights = model.sanitize(weights: weights)
+        let sanitizedWeights = model.sanitize(weights: rawWeights)
         let moduleParams = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
         let weightKeys = Set(sanitizedWeights.keys)
         let paramKeys = Set(moduleParams.keys)
