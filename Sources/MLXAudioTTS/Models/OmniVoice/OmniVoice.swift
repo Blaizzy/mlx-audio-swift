@@ -820,7 +820,10 @@ final class OmniVoiceConvTranspose1d: Module {
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         var h = MLX.convTransposed1d(x, weight, stride: strideVal, padding: paddingVal)
         if let b = bias {
-            let flatBias = MLX.flatten(b, startAxis: 0)
+            // Squeeze all dimensions: bias might be (C,) or (1,C,1) etc
+            let n = b.size
+            print("DEBUG bias shape=\(b.shape) size=\(n) → flat=\([n])")
+            let flatBias = b.reshaped([n])
             h = h + flatBias
         }
         return h
@@ -856,7 +859,10 @@ final class OmniVoiceConv1d: Module {
         let xConv = isNCL ? x.transposed(0, 2, 1) : x
         var h = MLX.conv1d(xConv, w, stride: strideVal, padding: paddingVal)
         if let b = bias {
-            let flatBias = MLX.flatten(b, startAxis: 0)
+            // Squeeze all dimensions: bias might be (C,) or (1,C,1) etc
+            let n = b.size
+            print("DEBUG bias shape=\(b.shape) size=\(n) → flat=\([n])")
+            let flatBias = b.reshaped([n])
             h = h + flatBias
         }
         return h
