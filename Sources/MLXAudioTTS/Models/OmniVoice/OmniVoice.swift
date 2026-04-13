@@ -1072,6 +1072,7 @@ public final class OmniVoiceDACAcousticEncoder: Module {
         self._block.wrappedValue = blocks
 
         self._snake1.wrappedValue = snakeAlpha(channels: currentChannels)
+        print("DEBUG encoder init: currentChannels=\(currentChannels), conv2 will output \(currentChannels / 32)")
         self._conv2.wrappedValue = OmniVoiceConv1d(
             inChannels: currentChannels,
             outChannels: currentChannels / 32,  // 2048 → 64 to match checkpoint
@@ -1087,7 +1088,9 @@ public final class OmniVoiceDACAcousticEncoder: Module {
             h = b(h)
         }
         h = snake1.callAsFunction(h)
+        print("DEBUG encoder: before conv2 h.shape=\(h.shape)")
         h = conv2(h)
+        print("DEBUG encoder: after conv2 h.shape=\(h.shape)")
         return h
     }
 }
