@@ -423,9 +423,14 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             print("DEBUG cLogits.shape=\(cLogits.shape), uLogits.shape=\(uLogits.shape)")
 
             // Add batch dimension back for scoring
-            // Need to transpose to [C, T, V] for scoring
-            let cLogitsBatch = cLogits.transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
-            let uLogitsBatch = uLogits.transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
+            // cLogits is [T, C, V], need [1, C, T, V]
+            print("DEBUG cLogits transposing from \(cLogits.shape)")
+            let cLogitsT = cLogits.transposed(1, 0, 2)  // [C, T, V]
+            print("DEBUG cLogitsT.shape=\(cLogitsT.shape)")
+            let cLogitsBatch = cLogitsT.reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
+            print("DEBUG cLogitsBatch.shape=\(cLogitsBatch.shape)")
+            let uLogitsT = uLogits.transposed(1, 0, 2)  // [C, T, V]
+            let uLogitsBatch = uLogitsT.reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
 
             // Token prediction with CFG
             let (predTokens, scores) = predictTokensWithScoring(
