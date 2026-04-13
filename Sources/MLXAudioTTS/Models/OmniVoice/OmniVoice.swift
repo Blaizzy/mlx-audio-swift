@@ -818,15 +818,15 @@ final class OmniVoiceConvTranspose1d: Module {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        var h = MLX.convTransposed1d(x, weight, stride: strideVal, padding: paddingVal)
+        // Data flows in NCL [B, C, L]; transpose to NLC for MLX convTransposed1d
+        let xNLC = x.transposed(0, 2, 1)
+        var h = MLX.convTransposed1d(xNLC, weight, stride: strideVal, padding: paddingVal)
         if let b = bias {
-            // Squeeze all dimensions: bias might be (C,) or (1,C,1) etc
             let n = b.size
-            print("DEBUG bias shape=\(b.shape) size=\(n) → flat=\([n])")
-            let flatBias = b.reshaped([n])
-            h = h + flatBias
+            h = h + b.reshaped([n])
         }
-        return h
+        // Convert back to NCL [B, C, L]
+        return h.transposed(0, 2, 1)
     }
 }
 
@@ -853,19 +853,16 @@ final class OmniVoiceConv1d: Module {
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         // Weight stored as [out, in, kernel] (PyTorch) → transpose to [out, kernel, in] (MLX)
         let w = weight.transposed(0, 2, 1)
-        // Only transpose input if it looks like NCL [B, C, L] format
-        // NLC format has large length dim (audio samples), NCL has large channel dim
-        let isNCL = x.shape.count == 3 && x.shape[2] > x.shape[1]
-        let xConv = isNCL ? x.transposed(0, 2, 1) : x
-        var h = MLX.conv1d(xConv, w, stride: strideVal, padding: paddingVal)
+        // Data flows in NCL [B, C, L] format; transpose to NLC for MLX conv1d, then back
+        let xNLC = x.transposed(0, 2, 1)
+        var h = MLX.conv1d(xNLC, w, stride: strideVal, padding: paddingVal)
         if let b = bias {
-            // Squeeze all dimensions: bias might be (C,) or (1,C,1) etc
             let n = b.size
-            print("DEBUG bias shape=\(b.shape) size=\(n) → flat=\([n])")
             let flatBias = b.reshaped([n])
             h = h + flatBias
         }
-        return h
+        // Convert back to NCL [B, C, L]
+        return h.transposed(0, 2, 1)
     }
 }
 
