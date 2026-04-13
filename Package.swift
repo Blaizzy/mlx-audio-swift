@@ -57,10 +57,6 @@ let package = Package(
             name: "mlx-audio-swift-lid",
             targets: ["mlx-audio-swift-lid"],
         ),
-        .executable(
-            name: "mlx-audio-swift-cohere-local",
-            targets: ["mlx-audio-swift-cohere-local"],
-        ),
 
     ],
     dependencies: [
@@ -223,11 +219,6 @@ let package = Package(
             name: "mlx-audio-swift-lid",
             dependencies: ["MLXAudioCore", "MLXAudioLID"],
             path: "Sources/Tools/mlx-audio-swift-lid"
-        ),
-        .executableTarget(
-            name: "mlx-audio-swift-cohere-local",
-            dependencies: ["MLXAudioCore", "MLXAudioSTT", .product(name: "MLX", package: "mlx-swift"), .product(name: "MLXNN", package: "mlx-swift")],
-            path: "Sources/Tools/mlx-audio-swift-cohere-local"
         ),
 
         // MARK: - Tests

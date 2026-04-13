@@ -1506,32 +1506,6 @@ struct CohereTranscribeSTTTests {
         }
     }
 
-    private func assertPythonArtifactLoads(_ artifactPath: String) throws {
-        #expect(FileManager.default.fileExists(atPath: artifactPath))
-
-        let model = try CohereTranscribeModel.fromDirectory(URL(fileURLWithPath: artifactPath, isDirectory: true))
-        let flattened = model.parameters().flattened()
-        #expect(!flattened.isEmpty)
-    }
-
-    private func assertCohereTranscription(
-        modelPath: String,
-        expectedText: String = "intention"
-    ) throws {
-        #expect(FileManager.default.fileExists(atPath: modelPath))
-
-        let model = try CohereTranscribeModel.fromDirectory(URL(fileURLWithPath: modelPath, isDirectory: true))
-        let (_, audio) = try loadAudioArray(
-            from: URL(fileURLWithPath: "/Volumes/DATA/mlx-audio-swift/Tests/media/intention.wav"),
-            sampleRate: 16_000
-        )
-        let output = model.generate(
-            audio: audio,
-            generationParameters: STTGenerateParameters(language: "en")
-        )
-        #expect(output.text.trimmingCharacters(in: .whitespacesAndNewlines) == expectedText)
-    }
-
     @Test func normalizeCohereWeightKeysHandlesPythonAliasesAndQuantizedCompanions() {
         let aliasKeys = [
             "encoder_decoder_proj.weight",
@@ -1691,48 +1665,6 @@ struct CohereTranscribeSTTTests {
         try assertCohereLoadFails(
             at: fixtureDir,
             contains: ["lm_head.weight", "incompatible companion shapes"]
-        )
-    }
-
-    @Test func fromDirectoryLoadsPythonMLX8BitArtifact() throws {
-        try assertPythonArtifactLoads(
-            "/Volumes/DATA/mlx-audio-swift-worktrees/cohere-7b-8bit/python-mlx-8bit"
-        )
-    }
-
-    @Test func fromDirectoryLoadsPythonMLX4BitArtifact() throws {
-        try assertPythonArtifactLoads(
-            "/Volumes/DATA/mlx-audio-swift-worktrees/cohere-7b-4bit/python-mlx-4bit"
-        )
-    }
-
-    @Test func generateMatchesPublicFP16Artifact() throws {
-        try assertCohereTranscription(
-            modelPath: "/Users/akira/.cache/huggingface/hub/mlx-audio/beshkenadze_cohere-transcribe-03-2026-mlx-fp16"
-        )
-    }
-
-    @Test func generateMatchesSwiftExported8BitArtifact() throws {
-        try assertCohereTranscription(
-            modelPath: "/Volumes/DATA/mlx-audio-swift-worktrees/cohere-7b-8bit/artifacts/cohere-transcribe-8bit"
-        )
-    }
-
-    @Test func generateMatchesSwiftExported4BitArtifact() throws {
-        try assertCohereTranscription(
-            modelPath: "/Volumes/DATA/mlx-audio-swift-worktrees/cohere-7b-4bit/artifacts/cohere-transcribe-4bit"
-        )
-    }
-
-    @Test func generateMatchesPythonMLX8BitArtifact() throws {
-        try assertCohereTranscription(
-            modelPath: "/Volumes/DATA/mlx-audio-swift-worktrees/cohere-7b-8bit/python-mlx-8bit"
-        )
-    }
-
-    @Test func generateMatchesPythonMLX4BitArtifact() throws {
-        try assertCohereTranscription(
-            modelPath: "/Volumes/DATA/mlx-audio-swift-worktrees/cohere-7b-4bit/python-mlx-4bit"
         )
     }
 
