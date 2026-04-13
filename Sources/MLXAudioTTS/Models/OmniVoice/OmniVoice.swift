@@ -615,23 +615,31 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         styleText += "<|instruct_start|>\(instructStr)<|instruct_end|>"
 
         let styleTokenIds = try tokenizeText(styleText)
+        print("DEBUG styleTokenIds.count=\(styleTokenIds.count)")
         var styleIds = MLXArray(styleTokenIds.map { Int32($0) })
         styleIds = styleIds.reshaped([1, -1])
+        print("DEBUG styleIds before broadcast.shape=\(styleIds.shape)")
+        print("DEBUG broadcasting styleIds to [1, \(numCodebooks), \(styleIds.shape[0])]")
         styleIds = MLX.broadcast(styleIds.reshaped([1, 1, -1]), to: [1, numCodebooks, styleIds.shape[0]])
 
         // Build text tokens
         let fullText = combineText(refText: refText, text: text)
         let wrappedText = "<|text_start|>\(fullText)<|text_end|>"
         let textTokenIds = try tokenizeText(wrappedText)
+        print("DEBUG textTokenIds.count=\(textTokenIds.count)")
         var textIds = MLXArray(textTokenIds.map { Int32($0) })
         textIds = textIds.reshaped([1, -1])
+        print("DEBUG textIds before broadcast.shape=\(textIds.shape)")
+        print("DEBUG broadcasting textIds to [1, \(numCodebooks), \(textIds.shape[0])]")
         textIds = MLX.broadcast(textIds.reshaped([1, 1, -1]), to: [1, numCodebooks, textIds.shape[0]])
 
         // Target: all MASK
+        print("DEBUG creating targetIds with shape [1, \(numCodebooks), \(numTargetTokens)]")
         let targetIds = MLXArray.full(
             [1, numCodebooks, numTargetTokens],
             values: MLXArray(Int32(config.audioMaskId))
         )
+        print("DEBUG targetIds.shape=\(targetIds.shape)")
 
         // Concatenate: [style, text, ref_audio (optional), target]
         var parts: [MLXArray] = [styleIds, textIds]
