@@ -1042,8 +1042,8 @@ public final class snakeAlpha: Module {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let a = MLX.square(MLX.log(1.0 + MLX.exp(alpha)))
-        return x + (1.0 / a) * MLX.square(MLX.sin(a * x))
+        let a = alpha + 1e-9
+        return x + (1.0 / a) * MLX.square(MLX.sin(alpha * x))
     }
 }
 
