@@ -1159,8 +1159,9 @@ public final class OmniVoiceRVQQuantizer: Module {
         let nQuantizers = config.nCodebooks
         let codebookSize = config.codebookSize
         let codebookDim = config.codebookDim
-        // Encoder outputs 64 channels (2048 / 32 = 64)
-        let inputDim = config.encoderHiddenSize  // 64
+        // Encoder actually outputs 256 channels (from checkpoint weight)
+        // projectIn weight shape will tell us the expected input dim
+        let inputDim = 256  // Actual encoder output, not config.encoderHiddenSize
         self.outputDim = config.decoderHiddenSize     // 1024
 
         var qs: [OmniVoiceSingleQuantizer] = []
