@@ -56,6 +56,10 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     init(config: OmniVoiceConfig) throws {
         self.config = config
         let llmConfig = config.llmConfig
+        print("DEBUG init: llmConfig.hiddenSize=\(llmConfig.hiddenSize)")
+        print("DEBUG init: llmConfig.vocabSize=\(llmConfig.vocabSize)")
+        print("DEBUG init: config.audioVocabSize=\(config.audioVocabSize)")
+        print("DEBUG init: config.numAudioCodebook=\(config.numAudioCodebook)")
 
         // Create the Qwen3 LLM from config
         let llmConfigWrapper = Qwen3Configuration(
@@ -96,31 +100,39 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         inputIds: MLXArray,
         audioMask: MLXArray
     ) -> MLXArray {
+        print("DEBUG prepareEmbedInputs: inputIds.shape=\(inputIds.shape), audioMask.shape=\(audioMask.shape)")
         // Text embeddings from LLM
         let textIds = inputIds[0..., 0, 0...]  // [B, S]
+        print("DEBUG prepareEmbedInputs: textIds.shape=\(textIds.shape)")
         let textEmbeds = llm.getEmbeddings(for: textIds)
+        print("DEBUG prepareEmbedInputs: textEmbeds.shape=\(textEmbeds.shape)")
 
         // Apply audio mask to inputIds
         let maskedIds = inputIds * audioMask.reshaped([inputIds.shape[0], 1, inputIds.shape[2]])
 
         // Embed each codebook separately and sum
         var audioEmbeds: MLXArray?
+        print("DEBUG prepareEmbedInputs: audioEmbeddings.count=\(audioEmbeddings.count)")
         for (i, embedding) in audioEmbeddings.enumerated() {
             let codebookIds = maskedIds[0..., i, 0...]  // [B, S]
             let codebookEmbeds = embedding(codebookIds)  // [B, S, D]
+            print("DEBUG prepareEmbedInputs: codebook \(i) codebookEmbeds.shape=\(codebookEmbeds.shape)")
             if audioEmbeds == nil {
                 audioEmbeds = codebookEmbeds
             } else {
                 audioEmbeds = audioEmbeds! + codebookEmbeds
             }
         }
+        print("DEBUG prepareEmbedInputs: final audioEmbeds.shape=\(audioEmbeds!.shape)")
 
         // Where audio: use audio_embeds, else use text_embeds
-        return MLX.where(
+        let result = MLX.where(
             audioMask.reshaped([audioMask.shape[0], audioMask.shape[1], 1]),
             audioEmbeds!,
             textEmbeds
         )
+        print("DEBUG prepareEmbedInputs: result.shape=\(result.shape)")
+        return result
     }
 
     /// Forward pass through the model.
