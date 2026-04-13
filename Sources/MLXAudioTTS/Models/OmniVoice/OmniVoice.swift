@@ -1118,7 +1118,7 @@ public final class OmniVoiceDACUpBlock: Module {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        var h = snake1.callAsFunction(convT1(x))
+        var h = convT1(snake1.callAsFunction(x))
         h = res_unit1(h)
         h = res_unit2(h)
         h = res_unit3(h)
