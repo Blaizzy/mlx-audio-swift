@@ -819,8 +819,10 @@ final class OmniVoiceConvTranspose1d: Module {
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         var h = MLX.convTransposed1d(x, weight, stride: strideVal, padding: paddingVal)
         if let b = bias {
-            let nChannels = b.shape.isEmpty ? b.size : b.shape.reduce(1, *)
-            h = h + b.reshaped([1, 1, nChannels])
+            print("DEBUG OmniVoiceConvTranspose1d bias shape: \(b.shape), h shape: \(h.shape)")
+            let flatBias = MLX.flatten(b)
+            print("DEBUG flatBias shape: \(flatBias.shape)")
+            h = h + flatBias
         }
         return h
     }
@@ -850,18 +852,11 @@ final class OmniVoiceConv1d: Module {
         let w = weight.transposed(0, 2, 1)
         var h = MLX.conv1d(x, w, stride: strideVal, padding: paddingVal)
         if let b = bias {
-            // Explicitly reshape to (1, 1, outChannels) for NLC broadcasting
-            let bShape = b.shape
-            let nChannels: Int
-            if bShape.count == 1 {
-                nChannels = bShape[0]
-            } else if bShape.count >= 2 {
-                // Handle case where bias might be loaded with extra dims
-                nChannels = bShape.reduce(1, *)
-            } else {
-                nChannels = b.size
-            }
-            h = h + b.reshaped([1, 1, nChannels])
+            // Debug: print bias shape
+            print("DEBUG OmniVoiceConv1d bias shape: \(b.shape), h shape: \(h.shape)")
+            let flatBias = MLX.flatten(b)
+            print("DEBUG flatBias shape: \(flatBias.shape)")
+            h = h + flatBias
         }
         return h
     }
@@ -1232,13 +1227,13 @@ public final class OmniVoiceAudioTokenizer: Module {
     public func encode(_ audio: MLXArray) throws -> MLXArray {
         var wav = audio
         if wav.ndim == 1 {
-            // [T] -> [1, T, 1]  (batch, length, channels) NLC
-            wav = wav.reshaped([1, -1, 1])
+            // [T] -> [1, 1, T]  (batch, channels, length) NCL
+            wav = wav.reshaped([1, 1, -1])
         } else if wav.ndim == 2 {
-            // [B, T] -> [B, T, 1]
-            wav = wav.reshaped([wav.shape[0], wav.shape[1], 1])
-        } else if wav.ndim == 3 && wav.shape[1] < wav.shape[2] {
-            // NCL [B, C, L] -> NLC [B, L, C]
+            // [B, T] -> [B, 1, T]
+            wav = wav.reshaped([wav.shape[0], 1, wav.shape[1]])
+        } else if wav.ndim == 3 && wav.shape[1] > wav.shape[2] {
+            // NLC [B, L, C] -> NCL [B, C, L]
             wav = wav.transposed(0, 2, 1)
         }
 
