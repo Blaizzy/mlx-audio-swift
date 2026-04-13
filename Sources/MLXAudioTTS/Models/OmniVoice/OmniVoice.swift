@@ -169,7 +169,10 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         for (i, head) in audioHeads.enumerated() {
             print("DEBUG forward: processing head \(i)")
             let logits = head(hiddenStates)  // [B, S, V]
-            logitsPerCodebook.append(logits.reshaped([batchSize, seqLen, 1, config.audioVocabSize]))
+            print("DEBUG forward: head \(i) logits.shape=\(logits.shape), size=\(logits.size)")
+            let reshaped = logits.reshaped([batchSize, seqLen, 1, config.audioVocabSize])
+            print("DEBUG forward: head \(i) reshaped.shape=\(reshaped.shape)")
+            logitsPerCodebook.append(reshaped)
         }
         let audioLogits = MLX.concatenated(logitsPerCodebook, axis: 2)  // [B, C, S, V]
 
