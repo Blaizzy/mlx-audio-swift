@@ -13,8 +13,193 @@ private struct CoherePrefillContext {
     let startTime: Date
 }
 
-private func normalizeCohereWeightKeys(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+private let cohereWeightPrefixAliases: [String: String] = [
+    "encoder.pre_encode.": "encoder.subsampling.",
+    "encoder_decoder_proj.": "bridge_proj.",
+    "log_softmax.mlp.layer0.": "lm_head.",
+    "transf_decoder.embedding.": "decoder.embedding.",
+    "transf_decoder._embedding.": "decoder.embedding.",
+    "transf_decoder.decoder.": "decoder.core.",
+    "transf_decoder._decoder.": "decoder.core.",
+]
+
+private struct CohereCheckpointLoadError: LocalizedError {
+    let message: String
+
+    var errorDescription: String? { message }
+}
+
+private func cohereAcceptedAliases(for expectedKey: String) -> [String] {
+    cohereWeightPrefixAliases.compactMap { sourcePrefix, targetPrefix in
+        guard expectedKey.hasPrefix(targetPrefix) else { return nil }
+        return expectedKey.replacingOccurrences(of: targetPrefix, with: sourcePrefix)
+    }
+}
+
+private func isOptionalCohereParameter(_ key: String, config: CohereTranscribeConfig) -> Bool {
+    if key.hasPrefix("bridge_proj.") {
+        return config.encoder.dModel == config.decoder.hiddenSize
+    }
+    return false
+}
+
+private func cohereQuantizationSummary(_ config: CohereTranscribeConfig) -> String {
+    let globalBits = config.quantization.map { String($0.bits) } ?? "none"
+    let globalGroupSize = config.quantization.map { String($0.groupSize) } ?? "none"
+    let perLayer = config.perLayerQuantization != nil ? "present" : "absent"
+    return "model_type=\(config.modelType), bits=\(globalBits), group_size=\(globalGroupSize), per_layer_quantization=\(perLayer)"
+}
+
+private func cohereInventoryContext(for key: String, config: CohereTranscribeConfig) -> String {
+    let acceptedAliases = cohereAcceptedAliases(for: key)
+    let aliasSummary = acceptedAliases.isEmpty
+        ? "accepted_aliases=none"
+        : "accepted_aliases=\(acceptedAliases.joined(separator: ", "))"
+    return "\(aliasSummary); optional_by_config=\(isOptionalCohereParameter(key, config: config)); \(cohereQuantizationSummary(config))"
+}
+
+private func cohereIsFloatingDType(_ dtype: DType) -> Bool {
+    switch dtype {
+    case .float16, .bfloat16, .float32:
+        return true
+    default:
+        return false
+    }
+}
+
+private func cohereCompanionBaseKey(for key: String) -> String? {
+    for suffix in [".scales", ".biases"] {
+        guard key.hasSuffix(suffix) else { continue }
+        return String(key.dropLast(suffix.count)) + ".weight"
+    }
+    return nil
+}
+
+private func cohereCompanionKey(for baseKey: String, suffix: String) -> String {
+    if baseKey.hasSuffix(".weight") {
+        return String(baseKey.dropLast(".weight".count)) + suffix
+    }
+    return baseKey + suffix
+}
+
+private func cohereQKVSpec(for key: String) -> (prefix: String, part: String, suffix: String)? {
+    for (needle, part) in [
+        (".linear_q.", "q"),
+        (".linear_k.", "k"),
+        (".linear_v.", "v"),
+        (".query_net.", "q"),
+        (".key_net.", "k"),
+        (".value_net.", "v"),
+    ] {
+        guard let range = key.range(of: needle) else { continue }
+        let prefix = String(key[..<range.lowerBound])
+        let suffix = String(key[range.upperBound...])
+        if ["weight", "bias", "scales", "biases"].contains(suffix) {
+            return (prefix, part, suffix)
+        }
+    }
+
+    return nil
+}
+
+private func cohereMapWeightKeyName(_ key: String) -> String {
+    let prefixMapped = cohereWeightPrefixAliases.first { key.hasPrefix($0.key) }.map {
+        key.replacingOccurrences(of: $0.key, with: $0.value)
+    } ?? key
+
+    return prefixMapped
+        .replacingOccurrences(of: "self_attn.linear_out.", with: "self_attn.out_proj.")
+        .replacingOccurrences(of: "self_attn.linear_pos.", with: "self_attn.pos_proj.")
+        .replacingOccurrences(of: "first_sub_layer.out_projection.", with: "first_sub_layer.out_proj.")
+        .replacingOccurrences(of: "second_sub_layer.out_projection.", with: "second_sub_layer.out_proj.")
+}
+
+private func cohereValidateWeightInventory(
+    model: CohereTranscribeModel,
+    weights: [String: MLXArray],
+    config: CohereTranscribeConfig
+) throws {
+    let expectedParameters = Dictionary(uniqueKeysWithValues: model.parameters().flattened().map { ($0.0, $0.1) })
+    let quantizationActive = config.quantization != nil || config.perLayerQuantization != nil
+
+    let providedBaseKeys = Set(weights.keys.filter { cohereCompanionBaseKey(for: $0) == nil })
+    let providedCompanionKeys = Set(weights.keys.filter { cohereCompanionBaseKey(for: $0) != nil })
+
+    for companionKey in providedCompanionKeys {
+        guard let baseKey = cohereCompanionBaseKey(for: companionKey) else { continue }
+        guard expectedParameters[baseKey] != nil else {
+            throw CohereCheckpointLoadError(
+                message: "Quantized companion tensor \(companionKey) resolves to no Swift module parameter. \(cohereInventoryContext(for: companionKey, config: config))"
+            )
+        }
+    }
+
+    for baseKey in expectedParameters.keys
+    where !baseKey.hasSuffix(".scales")
+        && !baseKey.hasSuffix(".biases")
+        && !providedBaseKeys.contains(baseKey)
+        && !isOptionalCohereParameter(baseKey, config: config)
+    {
+        throw CohereCheckpointLoadError(
+            message: "Missing required tensor \(baseKey). \(cohereInventoryContext(for: baseKey, config: config))"
+        )
+    }
+
+    for (key, value) in weights where cohereCompanionBaseKey(for: key) == nil {
+        guard let expected = expectedParameters[key] else {
+            throw CohereCheckpointLoadError(
+                message: "Unexpected tensor \(key) does not match any Swift module parameter. \(cohereInventoryContext(for: key, config: config))"
+            )
+        }
+
+        let scalesKey = cohereCompanionKey(for: key, suffix: ".scales")
+        let biasesKey = cohereCompanionKey(for: key, suffix: ".biases")
+        let hasQuantizedCompanion = providedCompanionKeys.contains(scalesKey)
+        let isPackedQuantized = quantizationActive && !cohereIsFloatingDType(value.dtype)
+
+        if hasQuantizedCompanion || isPackedQuantized {
+            if !hasQuantizedCompanion {
+                let siblingPrefix = String(key.dropLast(".weight".count))
+                let siblingKeys = weights.keys.filter { $0.hasPrefix(siblingPrefix) }.sorted()
+                throw CohereCheckpointLoadError(
+                    message: "Packed quantized tensor \(key) is missing matching .scales companion. sibling_keys=\(siblingKeys). \(cohereInventoryContext(for: key, config: config))"
+                )
+            }
+
+            guard let scales = weights[scalesKey] else {
+                throw CohereCheckpointLoadError(
+                    message: "Quantized tensor \(key) is missing required \(scalesKey) companion. \(cohereInventoryContext(for: key, config: config))"
+                )
+            }
+            if let biases = weights[biasesKey], biases.shape != scales.shape {
+                throw CohereCheckpointLoadError(
+                    message: "Quantized tensor \(key) has incompatible companion shapes: scales=\(scales.shape), biases=\(biases.shape). \(cohereInventoryContext(for: key, config: config))"
+                )
+            }
+            continue
+        }
+
+        guard value.shape == expected.shape else {
+            throw CohereCheckpointLoadError(
+                message: "Shape mismatch for \(key): expected \(expected.shape), got \(value.shape). \(cohereInventoryContext(for: key, config: config))"
+            )
+        }
+    }
+}
+
+private func extractMissingCohereKey(from errorDescription: String) -> String? {
+    let marker = "Key "
+    let suffix = " not found"
+
+    guard let markerRange = errorDescription.range(of: marker) else { return nil }
+    let afterMarker = errorDescription[markerRange.upperBound...]
+    guard let suffixRange = afterMarker.range(of: suffix) else { return nil }
+    return String(afterMarker[..<suffixRange.lowerBound])
+}
+
+func normalizeCohereWeightKeys(_ weights: [String: MLXArray]) -> [String: MLXArray] {
     var normalized = [String: MLXArray](minimumCapacity: weights.count)
+    var pendingQKV: [String: [String: MLXArray]] = [:]
     let replacements = [
         "encoder.subsampling.conv.0.": "encoder.subsampling.conv0.",
         "encoder.subsampling.conv.2.": "encoder.subsampling.conv2.",
@@ -31,16 +216,25 @@ private func normalizeCohereWeightKeys(_ weights: [String: MLXArray]) -> [String
     ]
 
     for (key, value) in weights {
-        if key.hasSuffix(".num_batches_tracked")
-            || key.hasPrefix("decoder.embedding.position_embedding")
-            || key.hasPrefix("preprocessor.")
-        {
+        if key.hasSuffix(".num_batches_tracked") || key.hasPrefix("preprocessor.") {
             continue
         }
 
-        let mappedKey = replacements.first { key.hasPrefix($0.key) }.map {
-            key.replacingOccurrences(of: $0.key, with: $0.value)
-        } ?? key
+        if let (prefix, part, suffix) = cohereQKVSpec(for: key) {
+            let mergedPrefix = cohereMapWeightKeyName(prefix)
+            let mergedKey = "\(mergedPrefix).qkv_proj.\(suffix)"
+            pendingQKV[mergedKey, default: [:]][part] = value
+            continue
+        }
+
+        let initiallyMappedKey = cohereMapWeightKeyName(key)
+        let mappedKey = replacements.first { initiallyMappedKey.hasPrefix($0.key) }.map {
+            initiallyMappedKey.replacingOccurrences(of: $0.key, with: $0.value)
+        } ?? initiallyMappedKey
+
+        if mappedKey.hasPrefix("decoder.embedding.position_embedding") {
+            continue
+        }
 
         if mappedKey.hasSuffix(".weight"), value.ndim == 4, let kernelShape = subsamplingKernelShapes[mappedKey] {
             if value.shape[1] == kernelShape[0], value.shape[2] == kernelShape[1] {
@@ -61,6 +255,13 @@ private func normalizeCohereWeightKeys(_ weights: [String: MLXArray]) -> [String
         } else {
             normalized[mappedKey] = value
         }
+    }
+
+    for (mergedKey, parts) in pendingQKV {
+        guard let q = parts["q"], let k = parts["k"], let v = parts["v"] else {
+            continue
+        }
+        normalized[mergedKey] = MLX.concatenated([q, k, v], axis: 0)
     }
 
     return normalized
@@ -523,6 +724,12 @@ public extension CohereTranscribeModel {
         let files = try FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
         let safetensors = files.filter { $0.pathExtension == "safetensors" }
 
+        guard !safetensors.isEmpty else {
+            throw CohereCheckpointLoadError(
+                message: "Failed to load Cohere checkpoint from \(modelDir.path): no .safetensors files found. \(cohereQuantizationSummary(config))"
+            )
+        }
+
         var weights: [String: MLXArray] = [:]
         for file in safetensors {
             let shard = try MLX.loadArrays(url: file)
@@ -546,7 +753,41 @@ public extension CohereTranscribeModel {
             }
         }
 
-        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .all)
+        try cohereValidateWeightInventory(model: model, weights: sanitizedWeights, config: config)
+
+        do {
+            try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .all)
+        } catch {
+            let expectedKeys = Set(model.parameters().flattened().map(\.0))
+            let providedKeys = Set(sanitizedWeights.keys)
+            let missingRequiredKeys = expectedKeys
+                .filter { !providedKeys.contains($0) && !isOptionalCohereParameter($0, config: config) }
+                .sorted()
+            let highlightedKey = extractMissingCohereKey(from: error.localizedDescription)
+                ?? missingRequiredKeys.first
+                ?? expectedKeys.subtracting(providedKeys).sorted().first
+
+            let aliasSummary: String
+            if let highlightedKey {
+                let aliases = cohereAcceptedAliases(for: highlightedKey)
+                aliasSummary = aliases.isEmpty ? "accepted_aliases=none" : "accepted_aliases=\(aliases.joined(separator: ", "))"
+            } else {
+                aliasSummary = "accepted_aliases=unknown"
+            }
+
+            let optionalSummary: String
+            if let highlightedKey {
+                optionalSummary = "optional_by_config=\(isOptionalCohereParameter(highlightedKey, config: config))"
+            } else {
+                optionalSummary = "optional_by_config=unknown"
+            }
+
+            let missingSummary = highlightedKey.map { "missing_key=\($0)" } ?? "missing_key=unknown"
+
+            throw CohereCheckpointLoadError(
+                message: "Failed to load Cohere checkpoint from \(modelDir.path): \(error.localizedDescription). \(missingSummary); \(aliasSummary); \(optionalSummary); \(cohereQuantizationSummary(config))"
+            )
+        }
         model.train(false)
         eval(model)
 
