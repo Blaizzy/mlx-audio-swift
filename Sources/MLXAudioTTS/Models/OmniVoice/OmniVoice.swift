@@ -313,6 +313,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         var refAudioTokens: MLXArray?
         if let refAudio {
             refAudioTokens = try audioTok.encode(refAudio)
+            print("DEBUG refAudioTokens.shape=\(refAudioTokens!.shape)")
         }
 
         // 2. Estimate target token count
@@ -325,6 +326,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         )
 
         // 3. Prepare inference inputs
+        print("DEBUG preparing inference inputs with numTargetTokens=\(numTargetTokens)")
         let prepared = try prepareInferenceInputs(
             text: text,
             numTargetTokens: numTargetTokens,
@@ -334,6 +336,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             instruct: voice,
             denoise: ovParameters.denoise
         )
+        print("DEBUG prepared inputIds.shape=\(prepared.inputIds.shape), audioMask.shape=\(prepared.audioMask.shape)")
 
         let inputIds = prepared.inputIds
         let audioMask = prepared.audioMask
@@ -356,10 +359,12 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         )
 
         // 5. Initialize target tokens to all MASK
+        print("DEBUG initializing tokens with shape [\(B), \(numCodebooks), \(targetLen)]")
         var tokens = MLXArray.full(
             [B, numCodebooks, targetLen],
             values: MLXArray(Int32(config.audioMaskId))
         )
+        print("DEBUG tokens.shape=\(tokens.shape)")
 
         // 6. Compute timesteps and unmasking schedule
         let timesteps = getTimeSteps(tStart: 0.0, tEnd: 1.0, numStep: ovParameters.numStep + 1, tShift: ovParameters.tShift)
@@ -459,7 +464,9 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         }
 
         // 8. Decode tokens to waveform
+        print("DEBUG tokens.shape=\(tokens.shape), slicing [0, 0..., 0..., 0..<\(targetLen)]")
         let outputTokens = tokens[0, 0..., 0..., 0..<targetLen]
+        print("DEBUG outputTokens.shape=\(outputTokens.shape)")
         let audio = try audioTok.decode(outputTokens)
 
         // 9. Post-process
