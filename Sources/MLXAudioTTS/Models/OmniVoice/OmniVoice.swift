@@ -926,10 +926,15 @@ public final class OmniVoiceDACResidualUnit: Module {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
+        print("DEBUG residual unit input x.shape=\(x.shape)")
         let c1 = conv1(x)
+        print("DEBUG residual unit after conv1 c1.shape=\(c1.shape)")
         let s1 = snake1.callAsFunction(c1)
+        print("DEBUG residual unit after snake1 s1.shape=\(s1.shape)")
         let c2 = conv2(s1)
+        print("DEBUG residual unit after conv2 c2.shape=\(c2.shape)")
         let h = snake2.callAsFunction(c2)
+        print("DEBUG residual unit after snake2 h.shape=\(h.shape)")
         
         // Handle potential length mismatch for residual connection
         let xLen = x.shape[2]
