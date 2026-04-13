@@ -826,7 +826,9 @@ final class OmniVoiceConvTranspose1d: Module {
             h = h + b.reshaped([n])
         }
         // Convert back to NCL [B, C, L]
-        return h.transposed(0, 2, 1)
+        let out = h.transposed(0, 2, 1)
+        print("DEBUG convTranspose1d: in=\(x.shape) w=\(weight.shape) pad=\(paddingVal) out=\(out.shape)")
+        return out
     }
 }
 
@@ -858,11 +860,12 @@ final class OmniVoiceConv1d: Module {
         var h = MLX.conv1d(xNLC, w, stride: strideVal, padding: paddingVal)
         if let b = bias {
             let n = b.size
-            let flatBias = b.reshaped([n])
-            h = h + flatBias
+            h = h + b.reshaped([n])
         }
         // Convert back to NCL [B, C, L]
-        return h.transposed(0, 2, 1)
+        let out = h.transposed(0, 2, 1)
+        print("DEBUG conv1d: in=\(x.shape) w=\(w.shape) pad=\(paddingVal) out=\(out.shape)")
+        return out
     }
 }
 
@@ -882,27 +885,35 @@ public final class OmniVoiceDACResidualUnit: Module {
     @ModuleInfo(key: "snake2") var snake2: snakeAlpha
 
     init(channels: Int, kernelSize: Int, dilation: Int) {
+        // Standard "same" padding for stride=1
+        // output_length = input_length - kernel + 2*padding + 1
+        // For same: padding = (kernel - 1) * dilation / 2
+        let padding = (kernelSize - 1) * dilation / 2
+
         self._conv1.wrappedValue = OmniVoiceConv1d(
             inChannels: channels,
             outChannels: channels,
             kernelSize: kernelSize,
             stride: 1,
-            padding: ((kernelSize - 1) * dilation + 1) / 2
+            padding: padding
         )
         self._conv2.wrappedValue = OmniVoiceConv1d(
             inChannels: channels,
             outChannels: channels,
             kernelSize: kernelSize,
             stride: 1,
-            padding: ((kernelSize - 1) * dilation + 1) / 2
+            padding: padding
         )
         self._snake1.wrappedValue = snakeAlpha(channels: channels)
         self._snake2.wrappedValue = snakeAlpha(channels: channels)
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        var h = snake1.callAsFunction(conv1(x))
-        h = snake2.callAsFunction(conv2(h))
+        let c1 = conv1(x)
+        let s1 = snake1.callAsFunction(c1)
+        let c2 = conv2(s1)
+        let h = snake2.callAsFunction(c2)
+        print("DEBUG residual: x=\(x.shape) c1=\(c1.shape) c2=\(c2.shape) h=\(h.shape)")
         return x + h
     }
 }
