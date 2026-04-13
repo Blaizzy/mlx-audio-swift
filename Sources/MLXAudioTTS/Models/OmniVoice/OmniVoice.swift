@@ -1383,11 +1383,13 @@ public final class OmniVoiceAudioTokenizer: Module {
         let weights = try MLX.loadArrays(url: weightsURL)
         // Debug: print shapes of key weights
         for (key, value) in weights {
-            if key.contains("project_in") || key.contains("conv2") || key.contains("acoustic_encoder") {
+            if key.contains("project_in") || key.contains("conv2") || key.contains("acoustic_encoder") || key.contains("fc2") {
                 print("DEBUG checkpoint: \(key) shape=\(value.shape)")
             }
         }
         try tokenizer.update(parameters: ModuleParameters.unflattened(weights), verify: .noUnusedKeys)
+        // Check fc2 weight after loading
+        print("DEBUG after loading: fc2 weight shape=\(tokenizer.fc2.weight.shape)")
         eval(tokenizer)
 
         return tokenizer
