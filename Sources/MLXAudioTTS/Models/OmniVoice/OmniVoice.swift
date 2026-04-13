@@ -1347,6 +1347,12 @@ public final class OmniVoiceAudioTokenizer: Module {
         ).appendingPathComponent("audio_tokenizer/model.safetensors")
 
         let weights = try MLX.loadArrays(url: weightsURL)
+        // Debug: print shapes of key weights
+        for (key, value) in weights {
+            if key.contains("project_in") || key.contains("conv2") || key.contains("acoustic_encoder") {
+                print("DEBUG checkpoint: \(key) shape=\(value.shape)")
+            }
+        }
         try tokenizer.update(parameters: ModuleParameters.unflattened(weights), verify: .noUnusedKeys)
         eval(tokenizer)
 
