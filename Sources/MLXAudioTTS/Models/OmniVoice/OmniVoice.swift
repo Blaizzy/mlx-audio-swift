@@ -602,6 +602,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         }
 
         let numCodebooks = config.numAudioCodebook
+        print("DEBUG prepareInferenceInputs: numCodebooks=\(numCodebooks)")
 
         // Build style tokens
         var styleText = ""
@@ -634,11 +635,17 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
         // Concatenate: [style, text, ref_audio (optional), target]
         var parts: [MLXArray] = [styleIds, textIds]
+        print("DEBUG styleIds.shape=\(styleIds.shape), textIds.shape=\(textIds.shape)")
         if let refTok = refAudioTokens {
-            parts.append(refTok.reshaped([1, refTok.shape[0], refTok.shape[1]]))
+            print("DEBUG refTok.shape=\(refTok.shape)")
+            let reshaped = refTok.reshaped([1, refTok.shape[0], refTok.shape[1]])
+            print("DEBUG reshaped refTok.shape=\(reshaped.shape)")
+            parts.append(reshaped)
         }
+        print("DEBUG targetIds.shape=\(targetIds.shape)")
         parts.append(targetIds)
 
+        print("DEBUG concatenating \(parts.count) parts along axis 2")
         let condInputIds = MLX.concatenated(parts, axis: 2)
         let totalLength = condInputIds.shape[2]
 
@@ -651,8 +658,15 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             audioStartIdx = totalLength - numTargetTokens
         }
 
+        print("DEBUG condInputIds.shape=\(condInputIds.shape)")
+        
         var condAudioMask = MLXArray.zeros([1, totalLength], type: Bool.self)
-        condAudioMask[0..., audioStartIdx...] = MLXArray.ones([totalLength - audioStartIdx], type: Bool.self)
+        print("DEBUG condAudioMask.shape before assignment=\(condAudioMask.shape)")
+        print("DEBUG audioStartIdx=\(audioStartIdx), totalLength=\(totalLength)")
+        let onesArray = MLXArray.ones([totalLength - audioStartIdx], type: Bool.self)
+        print("DEBUG onesArray.shape=\(onesArray.shape)")
+        condAudioMask[0..., audioStartIdx...] = onesArray
+        print("DEBUG condAudioMask.shape after assignment=\(condAudioMask.shape)")
 
         return (condInputIds, condAudioMask)
     }
