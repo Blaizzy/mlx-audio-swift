@@ -13,14 +13,14 @@ private struct CoherePrefillContext {
     let startTime: Date
 }
 
-private let cohereWeightPrefixAliases: [String: String] = [
-    "encoder.pre_encode.": "encoder.subsampling.",
-    "encoder_decoder_proj.": "bridge_proj.",
-    "log_softmax.mlp.layer0.": "lm_head.",
-    "transf_decoder.embedding.": "decoder.embedding.",
-    "transf_decoder._embedding.": "decoder.embedding.",
-    "transf_decoder.decoder.": "decoder.core.",
-    "transf_decoder._decoder.": "decoder.core.",
+private let cohereWeightPrefixAliases: [(source: String, target: String)] = [
+    ("encoder.pre_encode.", "encoder.subsampling."),
+    ("encoder_decoder_proj.", "bridge_proj."),
+    ("log_softmax.mlp.layer0.", "lm_head."),
+    ("transf_decoder.embedding.", "decoder.embedding."),
+    ("transf_decoder._embedding.", "decoder.embedding."),
+    ("transf_decoder.decoder.", "decoder.core."),
+    ("transf_decoder._decoder.", "decoder.core."),
 ]
 
 private struct CohereCheckpointLoadError: LocalizedError {
@@ -30,9 +30,9 @@ private struct CohereCheckpointLoadError: LocalizedError {
 }
 
 private func cohereAcceptedAliases(for expectedKey: String) -> [String] {
-    cohereWeightPrefixAliases.compactMap { sourcePrefix, targetPrefix in
-        guard expectedKey.hasPrefix(targetPrefix) else { return nil }
-        return expectedKey.replacingOccurrences(of: targetPrefix, with: sourcePrefix)
+    cohereWeightPrefixAliases.compactMap { alias in
+        guard expectedKey.hasPrefix(alias.target) else { return nil }
+        return expectedKey.replacingOccurrences(of: alias.target, with: alias.source)
     }
 }
 
@@ -51,7 +51,7 @@ private func cohereQuantizationSummary(_ config: CohereTranscribeConfig) -> Stri
 }
 
 private func cohereInventoryContext(for key: String, config: CohereTranscribeConfig) -> String {
-    let acceptedAliases = cohereAcceptedAliases(for: key)
+    let acceptedAliases = cohereAcceptedAliases(for: key).sorted()
     let aliasSummary = acceptedAliases.isEmpty
         ? "accepted_aliases=none"
         : "accepted_aliases=\(acceptedAliases.joined(separator: ", "))"
@@ -103,8 +103,8 @@ private func cohereQKVSpec(for key: String) -> (prefix: String, part: String, su
 }
 
 private func cohereMapWeightKeyName(_ key: String) -> String {
-    let prefixMapped = cohereWeightPrefixAliases.first { key.hasPrefix($0.key) }.map {
-        key.replacingOccurrences(of: $0.key, with: $0.value)
+    let prefixMapped = cohereWeightPrefixAliases.first { key.hasPrefix($0.source) }.map {
+        key.replacingOccurrences(of: $0.source, with: $0.target)
     } ?? key
 
     return prefixMapped
@@ -769,7 +769,7 @@ public extension CohereTranscribeModel {
 
             let aliasSummary: String
             if let highlightedKey {
-                let aliases = cohereAcceptedAliases(for: highlightedKey)
+                let aliases = cohereAcceptedAliases(for: highlightedKey).sorted()
                 aliasSummary = aliases.isEmpty ? "accepted_aliases=none" : "accepted_aliases=\(aliases.joined(separator: ", "))"
             } else {
                 aliasSummary = "accepted_aliases=unknown"
