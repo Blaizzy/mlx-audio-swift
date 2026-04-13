@@ -349,9 +349,19 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
         print("DEBUG inputIds.shape=\(inputIds.shape), condLength=\(condLength), targetLen=\(targetLen)")
         
-        // Unconditional input: only the target portion
-        let uncondInputIds = inputIds[0..., 0..., (condLength - targetLen)...]
-        let uncondAudioMask = audioMask[0..., (condLength - targetLen)...]
+        // Unconditional input: pad target with leading masks to match cond length
+        // cond: [style, text, ref_audio, target] (length = condLength)
+        // uncond: [mask...mask, target] (same length, but prefix is masked)
+        let prefixLen = condLength - targetLen
+        let prefixMask = MLXArray.full(
+            [1, numCodebooks, prefixLen],
+            values: MLXArray(Int32(config.audioMaskId))
+        )
+        let targetOnly = inputIds[0..., 0..., prefixLen...]
+        let uncondInputIds = MLX.concatenated([prefixMask, targetOnly], axis: 2)
+        let uncondAudioMaskPrefix = MLXArray.zeros([1, prefixLen], type: Bool.self)
+        let uncondAudioMaskTarget = audioMask[0..., prefixLen...]
+        let uncondAudioMask = MLX.concatenated([uncondAudioMaskPrefix, uncondAudioMaskTarget], axis: 1)
         print("DEBUG uncondInputIds.shape=\(uncondInputIds.shape)")
 
         // Concatenate cond + uncond along batch axis
