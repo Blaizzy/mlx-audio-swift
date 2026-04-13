@@ -488,12 +488,12 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             // Update batch inputs for next step using concatenation instead of indexed assignment
             // Update cond: replace target region
             let prefixLen = condLength - targetLen
-            let condHead = batchInputIds[0, 0..., 0..., 0..<prefixLen]
+            let condHead = batchInputIds[0, 0..., 0..<prefixLen]
             let condUpdatedFull = MLX.concatenated([condHead, tokens[0]], axis: 1)
                 .reshaped([1, numCodebooks, condLength])
 
             // Update uncond: replace target region (suffix) while keeping prefix masks
-            let uncondHead = batchInputIds[1, 0..., 0..., 0..<prefixLen]
+            let uncondHead = batchInputIds[1, 0..., 0..<prefixLen]
             let uncondUpdatedFull = MLX.concatenated([uncondHead, tokens[0]], axis: 1)
                 .reshaped([1, numCodebooks, condLength])
 
@@ -504,7 +504,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
         // 8. Decode tokens to waveform
         print("DEBUG tokens.shape=\(tokens.shape), slicing [0, 0..., 0..., 0..<\(targetLen)]")
-        let outputTokens = tokens[0, 0..., 0..., 0..<targetLen]
+        let outputTokens = tokens[0, 0..., 0..<targetLen]
         print("DEBUG outputTokens.shape=\(outputTokens.shape)")
         let audio = try audioTok.decode(outputTokens)
 
