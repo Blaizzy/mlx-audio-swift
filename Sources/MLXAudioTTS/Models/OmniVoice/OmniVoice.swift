@@ -475,37 +475,31 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             // Build update mask: positions in topkIndices get updated
             let linearTopkIndices = topkIndices.reshaped([-1])
             print("DEBUG linearTopkIndices.shape=\(linearTopkIndices.shape)")
-            let updateMask = MLXArray.zeros([flatTokens.shape[0]], type: Bool.self)
-            var updatedTokens = flatTokens
 
-            // Mark positions to update
-            let indicesArray = linearTopkIndices.asArray(Int.self)
-            print("DEBUG indicesArray.count=\(indicesArray.count)")
-            for idx in indicesArray {
-                if idx >= 0 && idx < flatTokens.shape[0] {
-                    updatedTokens[idx] = flatPreds[idx]
-                }
-            }
+            // Vectorized update using putAlong to avoid indexed-assignment crashes
+            let updateValues = MLX.take(flatPreds, linearTopkIndices, axis: 0)
+            let updatedTokens = putAlong(flatTokens, linearTopkIndices, values: updateValues)
 
             print("DEBUG reshaping updatedTokens to [\(numCodebooks), \(targetLen)]")
             let reshapedTokens = updatedTokens.reshaped([numCodebooks, targetLen])
             print("DEBUG reshapedTokens.shape=\(reshapedTokens.shape)")
-            tokens[0] = reshapedTokens
+            tokens = reshapedTokens.reshaped([1, numCodebooks, targetLen])
 
-            // Update batch inputs for next step
+            // Update batch inputs for next step using concatenation instead of indexed assignment
             // Update cond: replace target region
-            let condHead = batchInputIds[0, 0..., 0..., 0..<(condLength - targetLen)]
-            let condUpdatedFull = MLX.concatenated(
-                [condHead, tokens[0]],
-                axis: 1
-            )
-            batchInputIds[0] = condUpdatedFull
+            let prefixLen = condLength - targetLen
+            let condHead = batchInputIds[0, 0..., 0..., 0..<prefixLen]
+            let condUpdatedFull = MLX.concatenated([condHead, tokens[0]], axis: 1)
+                .reshaped([1, numCodebooks, condLength])
 
             // Update uncond: replace target region (suffix) while keeping prefix masks
-            let prefixLen = condLength - targetLen
-            batchInputIds[1, 0..., 0..., prefixLen...] = tokens[0]
+            let uncondHead = batchInputIds[1, 0..., 0..., 0..<prefixLen]
+            let uncondUpdatedFull = MLX.concatenated([uncondHead, tokens[0]], axis: 1)
+                .reshaped([1, numCodebooks, condLength])
 
-            eval(tokens)
+            batchInputIds = MLX.concatenated([condUpdatedFull, uncondUpdatedFull], axis: 0)
+
+            eval(batchInputIds, tokens)
         }
 
         // 8. Decode tokens to waveform
