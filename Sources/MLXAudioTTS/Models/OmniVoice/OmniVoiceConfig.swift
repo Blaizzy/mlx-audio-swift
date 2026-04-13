@@ -216,13 +216,13 @@ public struct OmniVoiceConfig: Codable, Sendable {
         architectures = try c.decodeIfPresent([String].self, forKey: .architectures) ?? ["OmniVoice"]
         dtype = try c.decodeIfPresent(String.self, forKey: .dtype) ?? "bfloat16"
         llmConfig = try c.decode(OmniVoiceLLMConfig.self, forKey: .llmConfig)
-        audioCodebookWeights = try c.decodeIfPresent([Int].self, forKey: .audioCodebookWeights) ?? [8, 8, 6, 6, 4, 4, 2, 2]
+        audioCodebookWeights = try c.decodeIfPresent([Int].self, forKey: .audioCodebookWeights) ?? [8, 8, 8, 6, 6, 4, 4, 2, 2]  // 9 codebooks
         audioMaskId = try c.decodeIfPresent(Int.self, forKey: .audioMaskId) ?? 1024
         audioVocabSize = try c.decodeIfPresent(Int.self, forKey: .audioVocabSize) ?? 1025
         bosTokenId = try c.decodeIfPresent(Int.self, forKey: .bosTokenId)
         eosTokenId = try c.decodeIfPresent(Int.self, forKey: .eosTokenId) ?? 151645
         padTokenId = try c.decodeIfPresent(Int.self, forKey: .padTokenId) ?? 151643
-        numAudioCodebook = try c.decodeIfPresent(Int.self, forKey: .numAudioCodebook) ?? 8
+        numAudioCodebook = try c.decodeIfPresent(Int.self, forKey: .numAudioCodebook) ?? 9  // Match tokenizer nCodebooks
 
         // Try global quantization
         let baseConfig = try? BaseConfiguration(from: decoder)
