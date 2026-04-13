@@ -916,12 +916,16 @@ public final class OmniVoiceDACResidualUnit: Module {
         // Handle potential length mismatch for residual connection
         let xLen = x.shape[2]
         let hLen = h.shape[2]
+        let minLen = min(xLen, hLen)
         var xTrimmed = x
+        var hTrimmed = h
         if xLen != hLen {
-            let pad = (xLen - hLen) / 2
-            xTrimmed = x[0..., 0..., pad..<(xLen - pad)]
+            let xPad = (xLen - minLen) / 2
+            let hPad = (hLen - minLen) / 2
+            xTrimmed = x[0..., 0..., xPad..<(xLen - xPad)]
+            hTrimmed = h[0..., 0..., hPad..<(hLen - hPad)]
         }
-        return xTrimmed + h
+        return xTrimmed + hTrimmed
     }
 }
 
