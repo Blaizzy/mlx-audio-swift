@@ -261,7 +261,7 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
             cache: cache
         )
 
-        return try await fromModelDirectory(modelDir)
+        return try await fromModelDirectory(modelDir, textProcessor: textProcessor)
     }
 
     public static func fromModelDirectory(
