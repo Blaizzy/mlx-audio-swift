@@ -744,6 +744,17 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
         let weights = try MLX.loadArrays(url: weightsURL)
         let sanitizedWeights = model.sanitize(weights: weights)
+        let moduleParams = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
+        let weightKeys = Set(sanitizedWeights.keys)
+        let paramKeys = Set(moduleParams.keys)
+        let missing = paramKeys.subtracting(weightKeys).sorted()
+        let extra = weightKeys.subtracting(paramKeys).sorted()
+        if !missing.isEmpty {
+            print("[OmniVoiceModel] WARNING: \(missing.count) parameters missing from checkpoint: \(missing.prefix(10))")
+        }
+        if !extra.isEmpty {
+            print("[OmniVoiceModel] WARNING: \(extra.count) extra keys after sanitize: \(extra.prefix(10))")
+        }
         try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .noUnusedKeys)
         eval(model)
 
@@ -1251,8 +1262,6 @@ public final class OmniVoiceRVQQuantizer: Module {
             quantized = quantized + q3d
         }
 
-        for (i, c) in allCodes.enumerated() {
-        }
         let codes = MLX.stacked(allCodes, axis: 1)  // [B, n_quantizers, T]
         return (codes, quantized)
     }
@@ -1300,10 +1309,10 @@ public final class OmniVoiceAudioTokenizer: Module {
         self._acousticDecoder.wrappedValue = OmniVoiceDACAcousticDecoder(config: config)
         self._quantizer.wrappedValue = OmniVoiceRVQQuantizer(config: config)
 
-        // fc2 projects quantized features to decoder input
+        // fc2 projects quantized features (decoderHiddenSize) to decoder input (encoderHiddenSize * 4)
         self._fc2.wrappedValue = MLXNN.Linear(
-            inputDimensions: config.codebookDim,
-            outputDimensions: config.decoderHiddenSize
+            inputDimensions: config.decoderHiddenSize,
+            outputDimensions: config.encoderHiddenSize * 4
         )
     }
 
@@ -1378,6 +1387,18 @@ public final class OmniVoiceAudioTokenizer: Module {
         ).appendingPathComponent("audio_tokenizer/model.safetensors")
 
         let weights = try MLX.loadArrays(url: weightsURL)
+        // Verify weight coverage before loading
+        let moduleParams = Dictionary(uniqueKeysWithValues: tokenizer.parameters().flattened())
+        let weightKeys = Set(weights.keys)
+        let paramKeys = Set(moduleParams.keys)
+        let missing = paramKeys.subtracting(weightKeys).sorted()
+        let extra = weightKeys.subtracting(paramKeys).sorted()
+        if !missing.isEmpty {
+            print("[OmniVoiceAudioTokenizer] WARNING: \(missing.count) parameters missing from checkpoint: \(missing.prefix(10))")
+        }
+        if !extra.isEmpty {
+            print("[OmniVoiceAudioTokenizer] WARNING: \(extra.count) extra keys in checkpoint: \(extra.prefix(10))")
+        }
         try tokenizer.update(parameters: ModuleParameters.unflattened(weights), verify: .noUnusedKeys)
         eval(tokenizer)
 
