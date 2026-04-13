@@ -461,8 +461,35 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             eval(batchInputIds, tokens)
         }
 
+        // Safeguard: fill any remaining mask tokens with a final deterministic prediction
+        let finalMask = tokens .== Int32(config.audioMaskId)
+        if finalMask.any().item(Bool.self) {
+            let finalLogits = forward(
+                inputIds: batchInputIds,
+                audioMask: batchAudioMask
+            ).asType(.float32)
+            let finalCLogits = finalLogits[0, (condLength - targetLen)..<condLength, 0..., 0...]
+            let finalULogits = finalLogits[1, (condLength - targetLen)..<condLength, 0..., 0...]
+            let finalCBatch = finalCLogits.transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
+            let finalUBatch = finalULogits.transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
+            let (finalPredTokens, _) = predictTokensWithScoring(
+                cLogits: finalCBatch,
+                uLogits: finalUBatch,
+                guidanceScale: ovParameters.guidanceScale,
+                classTemperature: 0.0
+            )
+            tokens = MLX.where(finalMask, finalPredTokens, tokens)
+        }
+
         // 8. Decode tokens to waveform
         let outputTokens = tokens[0, 0..., 0..<targetLen]
+        
+        // Diagnostic: print token statistics to debug noise issues
+        let tokenVals = outputTokens.asArray(Int32.self)
+        let uniqueVals = Set(tokenVals)
+        let maskCount = tokenVals.filter { $0 == Int32(config.audioMaskId) }.count
+        print("[OmniVoice] Token stats: min=\(uniqueVals.min() ?? -1), max=\(uniqueVals.max() ?? -1), unique=\(uniqueVals.count), maskRemaining=\(maskCount)")
+
         let audio = try audioTok.decode(outputTokens)
 
         // 9. Post-process
