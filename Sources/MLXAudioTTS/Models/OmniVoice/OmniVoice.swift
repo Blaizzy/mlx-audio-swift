@@ -492,6 +492,22 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
         let audio = try audioTok.decode(outputTokens)
 
+        // Temporary diagnostics: save intermediate audio to temp directory
+        do {
+            let tempDir = FileManager.default.temporaryDirectory
+            let rawURL = tempDir.appendingPathComponent("omnivoice_diagnostic_raw.wav")
+            let finalURL = tempDir.appendingPathComponent("omnivoice_diagnostic_final.wav")
+            let rawSamples = audio.asArray(Float.self)
+            try AudioUtils.writeWavFile(samples: rawSamples, sampleRate: Double(config.sampleRate), fileURL: rawURL)
+            print("[OmniVoice] DIAGNOSTIC: saved raw vocoder output to \(rawURL.path)")
+            let processed = postProcessAudio(audio, refRms: nil, postprocessOutput: ovParameters.postprocessOutput)
+            try AudioUtils.writeWavFile(samples: processed.asArray(Float.self), sampleRate: Double(config.sampleRate), fileURL: finalURL)
+            print("[OmniVoice] DIAGNOSTIC: saved post-processed audio to \(finalURL.path)")
+            return processed
+        } catch {
+            print("[OmniVoice] DIAGNOSTIC: failed to save wav: \(error)")
+        }
+
         // 9. Post-process
         return postProcessAudio(audio, refRms: nil, postprocessOutput: ovParameters.postprocessOutput)
     }
@@ -1386,6 +1402,20 @@ public final class OmniVoiceAudioTokenizer: Module {
 
         // RVQ: [B, D, T'] -> (codes [B, n_codebooks, T'], quantized [B, D, T'])
         let (codes, _) = quantizer(zProjected)
+
+        // Temporary diagnostic: encode->decode roundtrip to isolate vocoder issues
+        do {
+            let decoded = try self.decode(codes[0])
+            let tempDir = FileManager.default.temporaryDirectory
+            let originalURL = tempDir.appendingPathComponent("omnivoice_tokenizer_roundtrip_original.wav")
+            let decodedURL = tempDir.appendingPathComponent("omnivoice_tokenizer_roundtrip_decoded.wav")
+            try AudioUtils.writeWavFile(samples: wav[0].asArray(Float.self), sampleRate: Double(config.sampleRate), fileURL: originalURL)
+            try AudioUtils.writeWavFile(samples: decoded.asArray(Float.self), sampleRate: Double(config.sampleRate), fileURL: decodedURL)
+            print("[OmniVoiceAudioTokenizer] DIAGNOSTIC: saved original to \(originalURL.path)")
+            print("[OmniVoiceAudioTokenizer] DIAGNOSTIC: saved roundtrip to \(decodedURL.path)")
+        } catch {
+            print("[OmniVoiceAudioTokenizer] DIAGNOSTIC: roundtrip save failed: \(error)")
+        }
 
         // Return [n_codebooks, T'] (squeeze batch dim)
         return codes[0]

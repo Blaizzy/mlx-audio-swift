@@ -315,6 +315,65 @@ struct OmniVoiceModelTests {
         print("Saved audio to: \(outputURL.path)")
     }
 
+    @Test func testAudioTokenizerRoundTrip() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("⚠️ Skipping network OmniVoice test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
+        let repo = env["MLXAUDIO_OMNIVOICE_REPO"] ?? "mlx-community/OmniVoice-bf16"
+        print("Loading OmniVoice model from \(repo)...")
+        let model = try await TTS.loadModel(modelRepo: repo)
+        guard let audioTokenizer = (model as? OmniVoiceModel)?.audioTokenizer else {
+            print("⚠️ Audio tokenizer not available")
+            return
+        }
+
+        let bundle = Bundle.module
+        guard let audioURL = bundle.url(forResource: "intention", withExtension: "wav") else {
+            print("⚠️ Test audio file not found, skipping test")
+            return
+        }
+
+        let (refSampleRate, refAudio) = try loadAudioArray(from: audioURL, sampleRate: model.sampleRate)
+        print("Loaded reference audio: \(refAudio.shape[0]) samples at \(refSampleRate)Hz")
+
+        // Encode -> Decode roundtrip to isolate vocoder issues
+        let tokens = try audioTokenizer.encode(refAudio)
+        print("Encoded tokens shape: \(tokens.shape)")
+        let tokenMin = tokens.min().item(Int32.self)
+        let tokenMax = tokens.max().item(Int32.self)
+        print("Token range: min=\(tokenMin), max=\(tokenMax)")
+
+        let decodedAudio = try audioTokenizer.decode(tokens)
+        print("Decoded audio shape: \(decodedAudio.shape)")
+
+        let tempDir = FileManager.default.temporaryDirectory
+        let originalURL = tempDir.appendingPathComponent("omnivoice_roundtrip_original.wav")
+        let decodedURL = tempDir.appendingPathComponent("omnivoice_roundtrip_decoded.wav")
+        try writeWavFile(samples: refAudio.asArray(Float.self), sampleRate: Double(model.sampleRate), outputURL: originalURL)
+        try writeWavFile(samples: decodedAudio.asArray(Float.self), sampleRate: Double(model.sampleRate), outputURL: decodedURL)
+        print("Saved original to: \(originalURL.path)")
+        print("Saved decoded to: \(decodedURL.path)")
+
+        // Simple numeric sanity check: correlation should be positive if the codec is working
+        let originalSamples = refAudio.asArray(Float.self)
+        let decodedSamples = decodedAudio.asArray(Float.self)
+        let minLen = min(originalSamples.count, decodedSamples.count)
+        var dot: Float = 0
+        var origNorm: Float = 0
+        var decNorm: Float = 0
+        for i in 0..<minLen {
+            dot += originalSamples[i] * decodedSamples[i]
+            origNorm += originalSamples[i] * originalSamples[i]
+            decNorm += decodedSamples[i] * decodedSamples[i]
+        }
+        let correlation = dot / (sqrt(origNorm) * sqrt(decNorm) + 1e-8)
+        print("Correlation between original and decoded: \(correlation)")
+        #expect(correlation > 0.1, "Decoded audio should correlate with original; low correlation indicates vocoder bug")
+    }
+
     @Test func testStreamingGeneration() async throws {
         let env = ProcessInfo.processInfo.environment
         guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
