@@ -360,13 +360,15 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         // Build explicit batch attention mask for CFG:
         // Python reference uses full attention (not causal) for both the conditional
         // path and the unconditional target region.
-        let condMask = MLXArray.zeros([condLength, condLength], type: .float32)
+        let condMask = MLXArray.full([condLength, condLength], values: MLXArray(Float(0)), type: Float32.self)
         let rowIdx = MLXArray((0..<condLength).map { Int32($0) }).reshaped([condLength, 1])
         let colIdx = MLXArray((0..<condLength).map { Int32($0) }).reshaped([1, condLength])
         let inTargetRegion = (rowIdx .< Int32(targetLen)) .&& (colIdx .< Int32(targetLen))
         let paddingDiagonal = (rowIdx .== colIdx) .&& (rowIdx .>= Int32(targetLen))
         let uncondMaskBool = inTargetRegion .|| paddingDiagonal
-        let uncondMask = MLX.where(uncondMaskBool, MLXArray.zeros([], type: .float32), MLXArray(Float(-Float.infinity)))
+        let zeroScalar = MLXArray(Float(0))
+        let negInfScalar = MLXArray(Float(-Float.greatestFiniteMagnitude))
+        let uncondMask = MLX.where(uncondMaskBool, zeroScalar, negInfScalar)
         let batchMask = MLX.stacked([condMask, uncondMask], axis: 0)
             .reshaped([2, 1, condLength, condLength])
         let batchAttentionMask: MLXFast.ScaledDotProductAttentionMaskMode = .array(batchMask)
