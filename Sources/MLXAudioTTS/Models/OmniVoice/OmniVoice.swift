@@ -408,6 +408,12 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
                 attentionMask: batchAttentionMask
             ).asType(.float32)
 
+            // DIAGNOSTIC: print logits stats on first step
+            if step == 0 {
+                let logitsFlat = logits.reshaped([-1])
+                print("[OmniVoice DIAG] logits min=\(logitsFlat.min().item(Float.self)), max=\(logitsFlat.max().item(Float.self)), mean=\(logitsFlat.mean().item(Float.self))")
+            }
+
             // Extract conditional and unconditional logits for the target region
             // logits shape: [B, S, C, V] = [2, 817, 9, 1025]
             let cLogits = logits[0, (condLength - targetLen)..<condLength, 0..., 0...]  // [T, C, V]
@@ -427,6 +433,14 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
                 guidanceScale: ovParameters.guidanceScale,
                 classTemperature: ovParameters.classTemperature
             )
+
+            // DIAGNOSTIC: print predTokens and scores stats on first step
+            if step == 0 {
+                let predFlat = predTokens.reshaped([-1])
+                let scoresFlat = scores.reshaped([-1])
+                print("[OmniVoice DIAG] predTokens min=\(predFlat.min().item(Int32.self)), max=\(predFlat.max().item(Int32.self)), unique=\(Set(predFlat.asArray(Int32.self)).count)")
+                print("[OmniVoice DIAG] scores min=\(scoresFlat.min().item(Float.self)), max=\(scoresFlat.max().item(Float.self)), mean=\(scoresFlat.mean().item(Float.self))")
+            }
 
             // Apply layer penalty
             let adjustedScores = scores - (layerIds.asType(.float32) * ovParameters.layerPenaltyFactor)
