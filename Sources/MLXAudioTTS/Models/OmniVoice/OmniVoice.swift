@@ -360,12 +360,13 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         // Build explicit batch attention mask for CFG:
         // Python reference uses full attention (not causal) for both the conditional
         // path and the unconditional target region.
-        let condMask = MLXArray.ones([condLength, condLength], type: Bool.self)
+        let condMask = MLXArray.zeros([condLength, condLength], type: .float32)
         let rowIdx = MLXArray((0..<condLength).map { Int32($0) }).reshaped([condLength, 1])
         let colIdx = MLXArray((0..<condLength).map { Int32($0) }).reshaped([1, condLength])
         let inTargetRegion = (rowIdx .< Int32(targetLen)) .&& (colIdx .< Int32(targetLen))
         let paddingDiagonal = (rowIdx .== colIdx) .&& (rowIdx .>= Int32(targetLen))
-        let uncondMask = inTargetRegion .|| paddingDiagonal
+        let uncondMaskBool = inTargetRegion .|| paddingDiagonal
+        let uncondMask = MLX.where(uncondMaskBool, MLXArray.zeros([], type: .float32), MLXArray(Float(-Float.infinity)))
         let batchMask = MLX.stacked([condMask, uncondMask], axis: 0)
             .reshaped([2, 1, condLength, condLength])
         let batchAttentionMask: MLXFast.ScaledDotProductAttentionMaskMode = .array(batchMask)
@@ -523,6 +524,19 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         let uniqueVals = Set(tokenVals)
         let maskCount = tokenVals.filter { $0 == Int32(config.audioMaskId) }.count
         print("[OmniVoice] Token stats: min=\(uniqueVals.min() ?? -1), max=\(uniqueVals.max() ?? -1), unique=\(uniqueVals.count), maskRemaining=\(maskCount)")
+
+        // Diagnostic: bypass diffusion and decode refAudioTokens directly if available
+        if let refTok = refAudioTokens {
+            do {
+                let refDecoded = try audioTok.decode(refTok)
+                let tempDir = FileManager.default.temporaryDirectory
+                let refURL = tempDir.appendingPathComponent("omnivoice_diagnostic_ref_direct.wav")
+                try AudioUtils.writeWavFile(samples: refDecoded.asArray(Float.self), sampleRate: Double(config.sampleRate), fileURL: refURL)
+                print("[OmniVoice] DIAGNOSTIC: saved direct ref decode to \(refURL.path)")
+            } catch {
+                print("[OmniVoice] DIAGNOSTIC: ref direct decode failed: \(error)")
+            }
+        }
 
         let audio = try audioTok.decode(outputTokens)
 
