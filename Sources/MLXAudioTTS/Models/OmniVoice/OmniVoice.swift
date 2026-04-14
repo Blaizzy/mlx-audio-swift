@@ -903,10 +903,12 @@ final class OmniVoiceConvTranspose1d: Module {
 
     let strideVal: Int
     let paddingVal: Int
+    let outputPaddingVal: Int
 
-    init(inChannels: Int, outChannels: Int, kernelSize: Int, stride: Int, padding: Int) {
+    init(inChannels: Int, outChannels: Int, kernelSize: Int, stride: Int, padding: Int, outputPadding: Int = 0) {
         self.strideVal = stride
         self.paddingVal = padding
+        self.outputPaddingVal = outputPadding
 
         let scale = sqrt(1.0 / Float(inChannels * kernelSize))
         // PyTorch format: [in_channels, out_channels, kernel_size]
@@ -921,7 +923,7 @@ final class OmniVoiceConvTranspose1d: Module {
         let w = weight.transposed(1, 2, 0)
         // Data flows in NCL [B, C, L]; transpose to NLC for MLX convTransposed1d
         let xNLC = x.transposed(0, 2, 1)
-        var h = MLX.convTransposed1d(xNLC, w, stride: strideVal, padding: paddingVal)
+        var h = MLX.convTransposed1d(xNLC, w, stride: strideVal, padding: paddingVal, outputPadding: outputPaddingVal)
         if let b = bias {
             let n = b.size
             h = h + b.reshaped([n])
@@ -1102,7 +1104,8 @@ public final class OmniVoiceDACUpBlock: Module {
             outChannels: outputChannels,
             kernelSize: stride * 2,
             stride: stride,
-            padding: stride / 2 + stride % 2
+            padding: stride / 2 + stride % 2,
+            outputPadding: stride % 2
         )
         self._res_unit1.wrappedValue = OmniVoiceDACResidualUnit(
             channels: outputChannels, kernelSize: kernelSize, dilation: 1
@@ -1228,7 +1231,7 @@ public final class OmniVoiceDACAcousticDecoder: Module {
             h = b(h)
         }
         h = snake1.callAsFunction(h)
-        h = MLX.tanh(conv2(h))
+        h = conv2(h)
         return h
     }
 }
