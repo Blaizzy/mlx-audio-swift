@@ -129,19 +129,24 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     /// - Parameters:
     ///   - inputIds: [batch, num_codebooks, seq_len]
     ///   - audioMask: [batch, seq_len]
-    ///   - attentionMask: unused (mask handling done via token unmasking in diffusion loop)
+    ///   - attentionMask: optional custom attention mask (defaults to causal)
     ///   - cache: optional KV cache
     /// - Returns: Audio logits [batch, num_codebooks, seq_len, vocab_size]
     func forward(
         inputIds: MLXArray,
         audioMask: MLXArray,
-        attentionMask: MLXArray? = nil,
+        attentionMask: MLXFast.ScaledDotProductAttentionMaskMode? = nil,
         cache: [KVCache]? = nil
     ) -> MLXArray {
         let inputsEmbeds = prepareEmbedInputs(inputIds: inputIds, audioMask: audioMask)
 
-        // Run through LLM (causal masking is handled internally by Qwen3Model)
-        let mask = createAttentionMask(h: inputsEmbeds, cache: cache)
+        // Run through LLM (use custom mask if provided, else causal)
+        let mask: MLXFast.ScaledDotProductAttentionMaskMode
+        if let attentionMask {
+            mask = attentionMask
+        } else {
+            mask = createAttentionMask(h: inputsEmbeds, cache: cache) ?? .none
+        }
         let hiddenStates = llm.forwardWithEmbeddings(
             inputsEmbeds: inputsEmbeds,
             cache: cache,
@@ -352,6 +357,19 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             axis: 0
         )
 
+        // Build explicit batch attention mask for CFG:
+        // Python reference uses full attention (not causal) for both the conditional
+        // path and the unconditional target region.
+        let condMask = MLXArray.ones([condLength, condLength], type: Bool.self)
+        let rowIdx = MLXArray((0..<condLength).map { Int32($0) }).reshaped([condLength, 1])
+        let colIdx = MLXArray((0..<condLength).map { Int32($0) }).reshaped([1, condLength])
+        let inTargetRegion = (rowIdx .< Int32(targetLen)) .&& (colIdx .< Int32(targetLen))
+        let paddingDiagonal = (rowIdx .== colIdx) .&& (rowIdx .>= Int32(targetLen))
+        let uncondMask = inTargetRegion .|| paddingDiagonal
+        let batchMask = MLX.stacked([condMask, uncondMask], axis: 0)
+            .reshaped([2, 1, condLength, condLength])
+        let batchAttentionMask: MLXFast.ScaledDotProductAttentionMaskMode = .array(batchMask)
+
         // 5. Initialize target tokens to all MASK
         var tokens = MLXArray.full(
             [B, numCodebooks, targetLen],
@@ -386,7 +404,8 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             // Forward pass
             let logits = forward(
                 inputIds: batchInputIds,
-                audioMask: batchAudioMask
+                audioMask: batchAudioMask,
+                attentionMask: batchAttentionMask
             ).asType(.float32)
 
             // Extract conditional and unconditional logits for the target region
@@ -466,7 +485,8 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         if finalMask.any().item(Bool.self) {
             let finalLogits = forward(
                 inputIds: batchInputIds,
-                audioMask: batchAudioMask
+                audioMask: batchAudioMask,
+                attentionMask: batchAttentionMask
             ).asType(.float32)
             let finalCLogits = finalLogits[0, (condLength - targetLen)..<condLength, 0..., 0...]
             let finalULogits = finalLogits[1, (condLength - targetLen)..<condLength, 0..., 0...]
