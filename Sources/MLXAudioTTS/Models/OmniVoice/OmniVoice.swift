@@ -1002,11 +1002,10 @@ public final class OmniVoiceDACResidualUnit: Module {
     @ModuleInfo(key: "snake2") var snake2: snakeAlpha
 
     init(channels: Int, kernelSize: Int, dilation: Int) {
-        // Checkpoint uses kernel_size=7 for conv1 with dilation=1 and same-padding,
+        // Match PyTorch DAC: kernel_size=7 for conv1 with dilation-dependent same-padding,
         // and kernel_size=1 for conv2 (pointwise).
-        // The `kernelSize` parameter from config (3) is NOT what the checkpoint uses.
         let conv1KernelSize = 7
-        let conv1Padding = (conv1KernelSize - 1) / 2  // 3 for same-padding
+        let conv1Padding = ((conv1KernelSize - 1) * dilation) / 2
         let conv2KernelSize = 1
         let conv2Padding = 0
 
