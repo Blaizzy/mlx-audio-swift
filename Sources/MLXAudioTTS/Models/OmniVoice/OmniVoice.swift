@@ -1107,8 +1107,11 @@ public final class snakeAlpha: Module {
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         let x32 = x.asType(.float32)
         let a32 = alpha.asType(.float32)
-        let recip = 1.0 / (a32 + 1e-9)
-        return (x32 + recip * MLX.square(MLX.sin(a32 * x32))).asType(x.dtype)
+        let channels = a32.size
+        // Swift DAC conv layers use NCL [B,C,L]; reshape alpha to [1,C,1] for broadcasting
+        let aExpanded = a32.reshaped([1, channels, 1])
+        let recip = 1.0 / (aExpanded + 1e-9)
+        return (x32 + recip * MLX.square(MLX.sin(aExpanded * x32))).asType(x.dtype)
     }
 }
 
@@ -1517,10 +1520,8 @@ public final class OmniVoiceAudioTokenizer: Module {
                 if k.hasSuffix(".codebook.weight") {
                     k = String(k.dropLast("weight".count)) + "embed"
                 }
-                // Alpha shape correction (checkpoint stores transposed alpha)
-                if k.hasSuffix(".alpha"), v.ndim == 3 {
-                    v = v.transposed(0, 2, 1)
-                }
+                // NOTE: checkpoint alpha is [1,1,C] for NLC; Swift DAC uses NCL,
+                // so we reshape at runtime in snakeAlpha.callAsFunction instead.
                 // NOTE: we do NOT transpose 3D conv weights here because
                 // OmniVoiceConv1d and OmniVoiceConvTranspose1d already
                 // transpose from PyTorch [out,in,k] / [in,out,k] to MLX
