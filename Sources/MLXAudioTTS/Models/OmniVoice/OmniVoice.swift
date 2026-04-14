@@ -1186,9 +1186,13 @@ public final class OmniVoiceDACUpBlock: Module {
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         var h = convT1(snake1.callAsFunction(x))
+        print("[OmniVoice UpBlock] after convT1: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
         h = res_unit1(h)
+        print("[OmniVoice UpBlock] after res_unit1: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
         h = res_unit2(h)
+        print("[OmniVoice UpBlock] after res_unit2: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
         h = res_unit3(h)
+        print("[OmniVoice UpBlock] after res_unit3: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
         return h
     }
 }
@@ -1238,11 +1242,15 @@ public final class OmniVoiceDACAcousticEncoder: Module {
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         var h = conv1(x)
-        for b in block {
+        print("[OmniVoice Decoder] after conv1: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
+        for (i, b) in block.enumerated() {
             h = b(h)
+            print("[OmniVoice Decoder] after upBlock \(i): shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
         }
         h = snake1.callAsFunction(h)
+        print("[OmniVoice Decoder] after snake1: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
         h = conv2(h)
+        print("[OmniVoice Decoder] after conv2: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
         return h
     }
 }
@@ -1480,12 +1488,15 @@ public final class OmniVoiceAudioTokenizer: Module {
 
         // RVQ decode: [1, n_codebooks, T] -> [1, D, T]
         let z = quantizer.decode(batchedTokens)
+        print("[OmniVoice Decode] after quantizer.decode: shape=\(z.shape), min=\(z.min().item(Float.self)), max=\(z.max().item(Float.self)), mean=\(z.mean().item(Float.self))")
 
         // fc2 project: [1, D, T] -> [1, D', T]
         let h = fc2(z.transposed(0, 2, 1)).transposed(0, 2, 1)
+        print("[OmniVoice Decode] after fc2: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
 
         // Decoder: [1, D', T] -> [1, 1, T']
         let audio = acousticDecoder(h)
+        print("[OmniVoice Decode] after acousticDecoder: shape=\(audio.shape), min=\(audio.min().item(Float.self)), max=\(audio.max().item(Float.self)), mean=\(audio.mean().item(Float.self))")
 
         return audio.reshaped([-1])
     }
