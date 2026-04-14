@@ -1015,11 +1015,10 @@ final class OmniVoiceConv1d: Module {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        // Weight stored as [out, in, kernel] (PyTorch) → transpose to [out, kernel, in] (MLX)
-        let w = weight.transposed(0, 2, 1)
-        // Data flows in NCL [B, C, L] format; transpose to NLC for MLX conv1d, then back
+        // Weight stored as [out, kernel, in] (MLX format); data flows in NCL [B, C, L]
+        // MLX.conv1d expects NLC [B, L, C] input and [out, k, in] weight
         let xNLC = x.transposed(0, 2, 1)
-        var h = MLX.conv1d(xNLC, w, stride: strideVal, padding: paddingVal)
+        var h = MLX.conv1d(xNLC, weight, stride: strideVal, padding: paddingVal)
         if let b = bias {
             let n = b.size
             h = h + b.reshaped([n])
