@@ -326,7 +326,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             denoise: ovParameters.denoise
         )
 
-        let inputIds = prepared.inputIds
+        var inputIds = prepared.inputIds
         let audioMask = prepared.audioMask
         let condLength = inputIds.shape[2]
 
@@ -345,7 +345,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             values: MLXArray(Int32(config.audioMaskId))
         )
         let targetOnly = inputIds[0..., 0..., prefixLen...]
-        let uncondInputIds = MLX.concatenated([prefixMask, targetOnly], axis: 2)
+        var uncondInputIds = MLX.concatenated([prefixMask, targetOnly], axis: 2)
         let uncondAudioMaskPrefix = MLXArray.zeros([1, prefixLen], type: Bool.self)
         let uncondAudioMaskTarget = audioMask[0..., prefixLen...]
         let uncondAudioMask = MLX.concatenated([uncondAudioMaskPrefix, uncondAudioMaskTarget], axis: 1)
@@ -392,6 +392,22 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
                 audioMask: uncondAudioMask,
                 attentionMask: .none
             ).asType(.float32)
+
+            // Diagnostic: print logits statistics on step 0
+            if step == 0 {
+                let cMin = condLogits.min().item(Float.self)
+                let cMax = condLogits.max().item(Float.self)
+                let cMean = condLogits.mean().item(Float.self)
+                let cAnyNaN = isNaN(condLogits).any().item(Bool.self)
+                let cAnyInf = isInf(condLogits).any().item(Bool.self)
+                let uMin = uLogitsFull.min().item(Float.self)
+                let uMax = uLogitsFull.max().item(Float.self)
+                let uMean = uLogitsFull.mean().item(Float.self)
+                let uAnyNaN = isNaN(uLogitsFull).any().item(Bool.self)
+                let uAnyInf = isInf(uLogitsFull).any().item(Bool.self)
+                print("[OmniVoice] Step 0 cond logits: min=\(cMin), max=\(cMax), mean=\(cMean), hasNaN=\(cAnyNaN), hasInf=\(cAnyInf)")
+                print("[OmniVoice] Step 0 uncond logits: min=\(uMin), max=\(uMax), mean=\(uMean), hasNaN=\(uAnyNaN), hasInf=\(uAnyInf)")
+            }
 
             // Extract target region logits
             let cLogits = condLogits[0, (condLength - targetLen)..<condLength, 0..., 0...]
@@ -483,7 +499,13 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         }
 
         // 8. Decode tokens to waveform
-        let outputTokens = tokens[0, 0..., 0..<targetLen]
+        var outputTokens = tokens[0, 0..., 0..<targetLen]
+        
+        // Replace any remaining mask tokens with 0 (matching Python reference)
+        let remainingMask = outputTokens .== Int32(config.audioMaskId)
+        if remainingMask.any().item(Bool.self) {
+            outputTokens = MLX.where(remainingMask, MLXArray.zeros(outputTokens.shape, type: Int32.self), outputTokens)
+        }
         
         // Diagnostic: print token statistics to debug noise issues
         let tokenVals = outputTokens.asArray(Int32.self)
@@ -505,6 +527,14 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         }
 
         let audio = try audioTok.decode(outputTokens)
+        
+        // Diagnostic: print vocoder output statistics
+        let audioMin = audio.min().item(Float.self)
+        let audioMax = audio.max().item(Float.self)
+        let audioMean = audio.mean().item(Float.self)
+        let audioNaN = isNaN(audio).any().item(Bool.self)
+        let audioInf = isInf(audio).any().item(Bool.self)
+        print("[OmniVoice] Vocoder decode stats: min=\(audioMin), max=\(audioMax), mean=\(audioMean), hasNaN=\(audioNaN), hasInf=\(audioInf)")
 
         // Temporary diagnostics: save intermediate audio to temp directory
         do {
@@ -1005,7 +1035,9 @@ final class OmniVoiceConv1d: Module {
 /// Snake activation: x + (1/a) * sin(a*x)^2
 func snakeActivation(_ x: MLXArray) -> MLXArray {
     let alpha: Float = 1.0
-    return x + (1.0 / alpha) * MLX.square(MLX.sin(alpha * x))
+    let x32 = x.asType(.float32)
+    let recip = 1.0 / (alpha + 1e-9)
+    return (x32 + recip * MLX.square(MLX.sin(alpha * x32))).asType(x.dtype)
 }
 
 /// DAC-style residual unit with Snake activations.
@@ -1073,8 +1105,10 @@ public final class snakeAlpha: Module {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let a = alpha + 1e-9
-        return x + (1.0 / a) * MLX.square(MLX.sin(alpha * x))
+        let x32 = x.asType(.float32)
+        let a32 = alpha.asType(.float32)
+        let recip = 1.0 / (a32 + 1e-9)
+        return (x32 + recip * MLX.square(MLX.sin(a32 * x32))).asType(x.dtype)
     }
 }
 
