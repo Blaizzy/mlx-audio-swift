@@ -350,29 +350,6 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         let uncondAudioMaskTarget = audioMask[0..., prefixLen...]
         let uncondAudioMask = MLX.concatenated([uncondAudioMaskPrefix, uncondAudioMaskTarget], axis: 1)
 
-        // Concatenate cond + uncond along batch axis
-        var batchInputIds = MLX.concatenated([inputIds, uncondInputIds], axis: 0)
-        let batchAudioMask = MLX.concatenated(
-            [audioMask, uncondAudioMask],
-            axis: 0
-        )
-
-        // Build explicit batch attention mask for CFG:
-        // Python reference uses full attention (not causal) for both the conditional
-        // path and the unconditional target region.
-        let condMask = MLXArray.full([condLength, condLength], values: MLXArray(Float(0)), type: Float32.self).asType(.bfloat16)
-        let rowIdx = MLXArray((0..<condLength).map { Int32($0) }).reshaped([condLength, 1])
-        let colIdx = MLXArray((0..<condLength).map { Int32($0) }).reshaped([1, condLength])
-        let inTargetRegion = (rowIdx .< Int32(targetLen)) .&& (colIdx .< Int32(targetLen))
-        let paddingDiagonal = (rowIdx .== colIdx) .&& (rowIdx .>= Int32(targetLen))
-        let uncondMaskBool = inTargetRegion .|| paddingDiagonal
-        let zeroScalar = MLXArray(Float(0)).asType(.bfloat16)
-        let negInfScalar = MLXArray(Float(-Float.greatestFiniteMagnitude)).asType(.bfloat16)
-        let uncondMask = MLX.where(uncondMaskBool, zeroScalar, negInfScalar)
-        let batchMask = MLX.stacked([condMask, uncondMask], axis: 0)
-            .reshaped([2, 1, condLength, condLength])
-        let batchAttentionMask: MLXFast.ScaledDotProductAttentionMaskMode = .array(batchMask)
-
         // 5. Initialize target tokens to all MASK
         var tokens = MLXArray.full(
             [B, numCodebooks, targetLen],
@@ -404,30 +381,25 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             let k = schedule[step]
             if k <= 0 { continue }
 
-            // Forward pass
-            let logits = forward(
-                inputIds: batchInputIds,
-                audioMask: batchAudioMask,
-                attentionMask: batchAttentionMask
+            // Separate forward passes for cond and uncond to avoid custom batch mask issues
+            let condLogits = forward(
+                inputIds: inputIds,
+                audioMask: audioMask,
+                attentionMask: .none
+            ).asType(.float32)
+            let uLogitsFull = forward(
+                inputIds: uncondInputIds,
+                audioMask: uncondAudioMask,
+                attentionMask: .none
             ).asType(.float32)
 
-            // DIAGNOSTIC: print logits stats on first step
-            if step == 0 {
-                let logitsFlat = logits.reshaped([-1])
-                print("[OmniVoice DIAG] logits min=\(logitsFlat.min().item(Float.self)), max=\(logitsFlat.max().item(Float.self)), mean=\(logitsFlat.mean().item(Float.self))")
-            }
+            // Extract target region logits
+            let cLogits = condLogits[0, (condLength - targetLen)..<condLength, 0..., 0...]
+            let uLogits = uLogitsFull[0, (condLength - targetLen)..<condLength, 0..., 0...]
 
-            // Extract conditional and unconditional logits for the target region
-            // logits shape: [B, S, C, V] = [2, 817, 9, 1025]
-            let cLogits = logits[0, (condLength - targetLen)..<condLength, 0..., 0...]  // [T, C, V]
-            let uLogits = logits[1, (condLength - targetLen)..<condLength, 0..., 0...]  // [T, C, V]
-
-            // Add batch dimension back for scoring
-            // cLogits is [T, C, V], need [1, C, T, V]
-            let cLogitsT = cLogits.transposed(1, 0, 2)  // [C, T, V]
-            let cLogitsBatch = cLogitsT.reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
-            let uLogitsT = uLogits.transposed(1, 0, 2)  // [C, T, V]
-            let uLogitsBatch = uLogitsT.reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
+            // Reshape for scoring: [T, C, V] -> [1, C, T, V]
+            let cLogitsBatch = cLogits.transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
+            let uLogitsBatch = uLogits.transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
 
             // Token prediction with CFG
             let (predTokens, scores) = predictTokensWithScoring(
@@ -436,14 +408,6 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
                 guidanceScale: ovParameters.guidanceScale,
                 classTemperature: ovParameters.classTemperature
             )
-
-            // DIAGNOSTIC: print predTokens and scores stats on first step
-            if step == 0 {
-                let predFlat = predTokens.reshaped([-1])
-                let scoresFlat = scores.reshaped([-1])
-                print("[OmniVoice DIAG] predTokens min=\(predFlat.min().item(Int32.self)), max=\(predFlat.max().item(Int32.self)), unique=\(Set(predFlat.asArray(Int32.self)).count)")
-                print("[OmniVoice DIAG] scores min=\(scoresFlat.min().item(Float.self)), max=\(scoresFlat.max().item(Float.self)), mean=\(scoresFlat.mean().item(Float.self))")
-            }
 
             // Apply layer penalty
             let adjustedScores = scores - (layerIds.asType(.float32) * ovParameters.layerPenaltyFactor)
@@ -465,53 +429,53 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
             // Select top-k positions to unmask
             let negScores = MLXArray(-1.0) * flatScores.asType(.float32)
-            // Use argsort and take instead of slicing
             let sortedIndices = MLX.argSort(negScores, axis: 0)
             let rangeIndices = MLXArray((0..<k).map { Int32($0) })
             let topkIndices = MLX.take(sortedIndices, rangeIndices, axis: 0)
 
-            // Build update mask: positions in topkIndices get updated
+            // Vectorized update using putAlong
             let linearTopkIndices = topkIndices.reshaped([-1])
-
-            // Vectorized update using putAlong to avoid indexed-assignment crashes
             let updateValues = MLX.take(flatPreds, linearTopkIndices, axis: 0)
             let updatedTokens = putAlong(flatTokens, linearTopkIndices, values: updateValues, axis: 0)
 
             let reshapedTokens = updatedTokens.reshaped([numCodebooks, targetLen])
             tokens = reshapedTokens.reshaped([1, numCodebooks, targetLen])
 
-            // Update batch inputs for next step using concatenation instead of indexed assignment
-            // Update cond: replace target region
+            // Update cond and uncond inputs for next step
             let prefixLen = condLength - targetLen
-            let condHead = batchInputIds[0, 0..., 0..<prefixLen]
+            let condHead = inputIds[0, 0..., 0..<prefixLen]
             let condUpdatedFull = MLX.concatenated([condHead, tokens[0]], axis: 1)
                 .reshaped([1, numCodebooks, condLength])
-
-            // Update uncond: replace target region (suffix) while keeping prefix masks
-            let uncondHead = batchInputIds[1, 0..., 0..<prefixLen]
+            let uncondHead = uncondInputIds[0, 0..., 0..<prefixLen]
             let uncondUpdatedFull = MLX.concatenated([uncondHead, tokens[0]], axis: 1)
                 .reshaped([1, numCodebooks, condLength])
 
-            batchInputIds = MLX.concatenated([condUpdatedFull, uncondUpdatedFull], axis: 0)
+            inputIds = condUpdatedFull
+            uncondInputIds = uncondUpdatedFull
 
-            eval(batchInputIds, tokens)
+            eval(inputIds, uncondInputIds, tokens)
         }
 
         // Safeguard: fill any remaining mask tokens with a final deterministic prediction
         let finalMask = tokens .== Int32(config.audioMaskId)
         if finalMask.any().item(Bool.self) {
-            let finalLogits = forward(
-                inputIds: batchInputIds,
-                audioMask: batchAudioMask,
-                attentionMask: batchAttentionMask
+            let finalCondLogits = forward(
+                inputIds: inputIds,
+                audioMask: audioMask,
+                attentionMask: .none
             ).asType(.float32)
-            let finalCLogits = finalLogits[0, (condLength - targetLen)..<condLength, 0..., 0...]
-            let finalULogits = finalLogits[1, (condLength - targetLen)..<condLength, 0..., 0...]
-            let finalCBatch = finalCLogits.transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
-            let finalUBatch = finalULogits.transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
+            let finalULogitsFull = forward(
+                inputIds: uncondInputIds,
+                audioMask: uncondAudioMask,
+                attentionMask: .none
+            ).asType(.float32)
+            let finalC = finalCondLogits[0, (condLength - targetLen)..<condLength, 0..., 0...]
+                .transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
+            let finalU = finalULogitsFull[0, (condLength - targetLen)..<condLength, 0..., 0...]
+                .transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
             let (finalPredTokens, _) = predictTokensWithScoring(
-                cLogits: finalCBatch,
-                uLogits: finalUBatch,
+                cLogits: finalC,
+                uLogits: finalU,
                 guidanceScale: ovParameters.guidanceScale,
                 classTemperature: 0.0
             )
