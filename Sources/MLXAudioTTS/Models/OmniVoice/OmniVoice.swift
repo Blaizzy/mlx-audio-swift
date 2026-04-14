@@ -1487,6 +1487,51 @@ public final class OmniVoiceAudioTokenizer: Module {
         return audio.reshaped([-1])
     }
 
+    /// Sanitize and remap checkpoint weights for the audio tokenizer.
+    /// Mirrors Python HiggsAudioTokenizer.sanitize logic, but skips conv
+    /// weight transposes because Swift's OmniVoiceConv1d/ConvTranspose1d
+    /// already handle PyTorch-to-MLX layout conversion internally.
+    func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+        var result: [String: MLXArray] = [:]
+        let keepPrefixes = [
+            "acoustic_encoder.",
+            "acoustic_decoder.",
+            "quantizer.",
+            "fc2.",
+            "semantic_model.",
+            "encoder_semantic.",
+        ]
+        let keepExact: Set<String> = ["fc.weight", "fc.bias"]
+        let dropPrefixes = ["decoder_semantic.", "fc1."]
+        let dropSuffixes = [".embed_avg", ".cluster_size", ".inited"]
+
+        for (var k, var v) in weights {
+            // Explicit drops
+            if dropPrefixes.contains(where: { k.hasPrefix($0) }) { continue }
+            if !keepPrefixes.contains(where: { k.hasPrefix($0) }) && !keepExact.contains(k) { continue }
+            if dropSuffixes.contains(where: { k.hasSuffix($0) }) { continue }
+
+            // === Acoustic path weight transforms ===
+            if k.hasPrefix("acoustic_encoder.") || k.hasPrefix("acoustic_decoder.") || k.hasPrefix("quantizer.") || k.hasPrefix("fc2.") {
+                // Python uses nn.Embedding with key "weight"; Swift uses MLXArray with key "embed"
+                if k.hasSuffix(".codebook.weight") {
+                    k = String(k.dropLast("weight".count)) + "embed"
+                }
+                // Alpha shape correction (checkpoint stores transposed alpha)
+                if k.hasSuffix(".alpha"), v.ndim == 3 {
+                    v = v.transposed(0, 2, 1)
+                }
+                // NOTE: we do NOT transpose 3D conv weights here because
+                // OmniVoiceConv1d and OmniVoiceConvTranspose1d already
+                // transpose from PyTorch [out,in,k] / [in,out,k] to MLX
+                // [out,k,in] at runtime.
+            }
+
+            result[k] = v
+        }
+        return result
+    }
+
     public static func fromPretrained(
         repoID: String,
         cache: HubCache = .default
@@ -1509,8 +1554,8 @@ public final class OmniVoiceAudioTokenizer: Module {
             requiredExtension: ".safetensors",
             additionalMatchingPatterns: ["audio_tokenizer/model.safetensors"]
         ).appendingPathComponent("audio_tokenizer/model.safetensors")
-        let weights = try MLX.loadArrays(url: weightsURL)
-        let inferredNCodebooks = Self.inferNCodebooks(from: weights) ?? 9
+        let rawWeights = try MLX.loadArrays(url: weightsURL)
+        let inferredNCodebooks = Self.inferNCodebooks(from: rawWeights) ?? 9
 
         var configDict = try JSONSerialization.jsonObject(with: configData) as! [String: Any]
         
@@ -1536,6 +1581,7 @@ public final class OmniVoiceAudioTokenizer: Module {
         let config = try JSONDecoder().decode(OmniVoiceAudioTokenizerConfig.self, from: patchedConfigData)
 
         let tokenizer = OmniVoiceAudioTokenizer(config: config)
+        let weights = tokenizer.sanitize(weights: rawWeights)
 
         // Verify weight coverage before loading
         let moduleParams = Dictionary(uniqueKeysWithValues: tokenizer.parameters().flattened())
@@ -1558,7 +1604,7 @@ public final class OmniVoiceAudioTokenizer: Module {
     private static func inferNCodebooks(from weights: [String: MLXArray]) -> Int? {
         var maxIdx = -1
         for key in weights.keys {
-            if key.hasPrefix("quantizer.quantizers."), key.contains(".codebook.embed") {
+            if key.hasPrefix("quantizer.quantizers."), key.contains(".codebook.") {
                 let suffix = key.dropFirst("quantizer.quantizers.".count)
                 if let dotIdx = suffix.firstIndex(of: ".") {
                     let numStr = suffix.prefix(upTo: dotIdx)
