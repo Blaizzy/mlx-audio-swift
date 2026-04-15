@@ -1494,6 +1494,19 @@ public final class OmniVoiceAudioTokenizer: Module {
         let h = fc2(z.transposed(0, 2, 1)).transposed(0, 2, 1)
         print("[OmniVoice Decode] after fc2: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
 
+        // Verify decoder conv1 weight shape at runtime
+        let paramDict = Dictionary(uniqueKeysWithValues: acousticDecoder.parameters().flattened())
+        if let w = paramDict["conv1.weight"] {
+            print("[OmniVoice Decode] RUNTIME CHECK acousticDecoder.conv1.weight: shape=\(w.shape), min=\(w.min().item(Float.self)), max=\(w.max().item(Float.self))")
+        } else {
+            print("[OmniVoice Decode] RUNTIME CHECK acousticDecoder.conv1.weight: MISSING")
+        }
+        if let w = paramDict["conv2.weight"] {
+            print("[OmniVoice Decode] RUNTIME CHECK acousticDecoder.conv2.weight: shape=\(w.shape), min=\(w.min().item(Float.self)), max=\(w.max().item(Float.self))")
+        } else {
+            print("[OmniVoice Decode] RUNTIME CHECK acousticDecoder.conv2.weight: MISSING")
+        }
+
         // Decoder: [1, D', T] -> [1, 1, T']
         let audio = acousticDecoder(h)
         print("[OmniVoice Decode] after acousticDecoder: shape=\(audio.shape), min=\(audio.min().item(Float.self)), max=\(audio.max().item(Float.self)), mean=\(audio.mean().item(Float.self))")
