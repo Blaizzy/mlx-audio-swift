@@ -336,19 +336,14 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         let targetLen = numTargetTokens
 
         
-        // Unconditional input: pad target with leading masks to match cond length
-        // cond: [style, text, ref_audio, target] (length = condLength)
-        // uncond: [mask...mask, target] (same length, but prefix is masked)
+        // Unconditional input: only the target region, excluding ref audio for true unconditional
         let prefixLen = condLength - targetLen
-        let prefixMask = MLXArray.full(
-            [1, numCodebooks, prefixLen],
-            values: MLXArray(Int32(config.audioMaskId))
-        )
-        let targetOnly = inputIds[0..., 0..., prefixLen...]
-        var uncondInputIds = MLX.concatenated([prefixMask, targetOnly], axis: 2)
-        let uncondAudioMaskPrefix = MLXArray.zeros([1, prefixLen], type: Bool.self)
-        let uncondAudioMaskTarget = audioMask[0..., prefixLen...]
-        let uncondAudioMask = MLX.concatenated([uncondAudioMaskPrefix, uncondAudioMaskTarget], axis: 1)
+        var uncondInputIds = inputIds[0..., 0..., prefixLen...]  // [1, C, T]
+        if refAudioTokens != nil {
+            let refLen = refAudioTokens!.shape[1]
+            uncondInputIds = uncondInputIds[0..., 0..., refLen...]  // exclude ref audio
+        }
+        let uncondAudioMask = MLXArray.ones([1, targetLen], type: Bool.self)
 
         // 5. Initialize target tokens to all MASK
         var tokens = MLXArray.full(
@@ -375,6 +370,25 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         }
 
         let layerIds = MLXArray((0..<numCodebooks).map { Int32($0) }).reshaped([1, numCodebooks, 1])
+
+        // Diagnostic: test backbone reconstruction on reference audio tokens
+        if let refTok = refAudioTokens {
+            let refLen = min(refTok.shape[1], targetLen)
+            let refPrefix = refTok[0..., 0..<refLen]
+            let refPadding = MLXArray.full([numCodebooks, targetLen - refLen], values: MLXArray(Int32(config.audioMaskId)))
+            let refTarget = MLX.concatenated([refPrefix, refPadding], axis: 1).reshaped([1, numCodebooks, targetLen])
+            let prefix = inputIds[0..., 0..., 0..<prefixLen]
+            let diagInputIds = MLX.concatenated([prefix, refTarget], axis: 2)
+            let diagLogits = forward(inputIds: diagInputIds, audioMask: audioMask, attentionMask: .none).asType(.float32)
+            let diagTargetLogits = diagLogits[0, (condLength - targetLen)..<condLength, 0..., 0...]
+            let diagTargetLogitsBatch = diagTargetLogits.transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
+            let diagPreds = MLX.argMax(diagTargetLogitsBatch, axis: -1)[0]
+            let refForCompare = refTarget[0..., 0..., 0..<refLen]
+            let predForCompare = diagPreds[0..., 0..<refLen]
+            let match = (refForCompare .== predForCompare).sum().item(Int32.self)
+            let total = refLen * numCodebooks
+            print("[OmniVoice] DIAGNOSTIC: backbone reconstruction accuracy on ref audio = \(match)/\(total) (\(String(format: "%.1f", Float(match)/Float(total)*100))%)")
+        }
 
         // 7. Iterative diffusion generation
         for step in 0..<ovParameters.numStep {
@@ -411,7 +425,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
             // Extract target region logits
             let cLogits = condLogits[0, (condLength - targetLen)..<condLength, 0..., 0...]
-            let uLogits = uLogitsFull[0, (condLength - targetLen)..<condLength, 0..., 0...]
+            let uLogits = uLogitsFull[0, 0..<targetLen, 0..., 0...]
 
             // Reshape for scoring: [T, C, V] -> [1, C, T, V]
             let cLogitsBatch = cLogits.transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
@@ -458,16 +472,10 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             tokens = reshapedTokens.reshaped([1, numCodebooks, targetLen])
 
             // Update cond and uncond inputs for next step
-            let prefixLen = condLength - targetLen
             let condHead = inputIds[0, 0..., 0..<prefixLen]
-            let condUpdatedFull = MLX.concatenated([condHead, tokens[0]], axis: 1)
+            inputIds = MLX.concatenated([condHead, tokens[0]], axis: 1)
                 .reshaped([1, numCodebooks, condLength])
-            let uncondHead = uncondInputIds[0, 0..., 0..<prefixLen]
-            let uncondUpdatedFull = MLX.concatenated([uncondHead, tokens[0]], axis: 1)
-                .reshaped([1, numCodebooks, condLength])
-
-            inputIds = condUpdatedFull
-            uncondInputIds = uncondUpdatedFull
+            uncondInputIds = tokens  // uncond is just the target region
 
             eval(inputIds, uncondInputIds, tokens)
         }
@@ -487,7 +495,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             ).asType(.float32)
             let finalC = finalCondLogits[0, (condLength - targetLen)..<condLength, 0..., 0...]
                 .transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
-            let finalU = finalULogitsFull[0, (condLength - targetLen)..<condLength, 0..., 0...]
+            let finalU = finalULogitsFull[0, 0..<targetLen, 0..., 0...]
                 .transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
             let (finalPredTokens, _) = predictTokensWithScoring(
                 cLogits: finalC,
@@ -1243,15 +1251,15 @@ public final class OmniVoiceDACAcousticEncoder: Module {
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         var h = conv1(x)
-        print("[OmniVoice Decoder] after conv1: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
+        print("[OmniVoice Encoder] after conv1: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
         for (i, b) in block.enumerated() {
             h = b(h)
-            print("[OmniVoice Decoder] after upBlock \(i): shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
+            print("[OmniVoice Encoder] after downBlock \(i): shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
         }
         h = snake1.callAsFunction(h)
-        print("[OmniVoice Decoder] after snake1: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
+        print("[OmniVoice Encoder] after snake1: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
         h = conv2(h)
-        print("[OmniVoice Decoder] after conv2: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
+        print("[OmniVoice Encoder] after conv2: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
         return h
     }
 }
@@ -1310,6 +1318,7 @@ public final class OmniVoiceDACAcousticDecoder: Module {
         h = snake1.callAsFunction(h)
         print("[OmniVoice Dec] snake1 out: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self))")
         h = conv2(h)
+        h = MLX.tanh(h)
         print("[OmniVoice Dec] conv2 out: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self))")
         return h
     }
