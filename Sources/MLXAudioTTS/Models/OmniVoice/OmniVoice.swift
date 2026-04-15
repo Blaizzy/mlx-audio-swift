@@ -1610,6 +1610,19 @@ public final class OmniVoiceAudioTokenizer: Module {
         try tokenizer.update(parameters: ModuleParameters.unflattened(weights), verify: .noUnusedKeys)
         eval(tokenizer)
 
+        // Post-load diagnostics: verify a few key layer weights to catch transpose/load issues
+        let paramDict = Dictionary(uniqueKeysWithValues: tokenizer.parameters().flattened())
+        for key in ["acoustic_decoder.conv2.weight",
+                    "acoustic_decoder.block.0.conv_t1.weight",
+                    "acoustic_decoder.block.0.res_unit1.conv1.weight",
+                    "acoustic_decoder.block.0.res_unit1.snake1.alpha"] {
+            if let w = paramDict[key] {
+                print("[OmniVoiceAudioTokenizer] LOADCHECK \(key): shape=\(w.shape), min=\(w.min().item(Float.self)), max=\(w.max().item(Float.self)), mean=\(w.mean().item(Float.self))")
+            } else {
+                print("[OmniVoiceAudioTokenizer] LOADCHECK \(key): MISSING")
+            }
+        }
+
         return tokenizer
     }
 
