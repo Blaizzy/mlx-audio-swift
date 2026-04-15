@@ -980,16 +980,16 @@ final class OmniVoiceConvTranspose1d: Module {
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         // Weight stored as [in, out, kernel] (PyTorch) → transpose to [out, kernel, in] (MLX)
-        let w = weight.transposed(1, 2, 0)
+        let w = weight.transposed(1, 2, 0).asType(.float32)
         // Data flows in NCL [B, C, L]; transpose to NLC for MLX convTransposed1d
-        let xNLC = x.transposed(0, 2, 1)
+        let xNLC = x.transposed(0, 2, 1).asType(.float32)
         var h = MLX.convTransposed1d(xNLC, w, stride: strideVal, padding: paddingVal, outputPadding: outputPaddingVal)
         if let b = bias {
             let n = b.size
-            h = h + b.reshaped([n])
+            h = h + b.asType(.float32).reshaped([n])
         }
         // Convert back to NCL [B, C, L]
-        let out = h.transposed(0, 2, 1)
+        let out = h.transposed(0, 2, 1).asType(x.dtype)
         return out
     }
 }
@@ -1016,16 +1016,16 @@ final class OmniVoiceConv1d: Module {
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         // Weight stored as [out, in, kernel] (PyTorch format) → transpose to [out, kernel, in] (MLX)
-        let w = weight.transposed(0, 2, 1)
+        let w = weight.transposed(0, 2, 1).asType(.float32)
         // Data flows in NCL [B, C, L]; transpose to NLC for MLX conv1d, then back
-        let xNLC = x.transposed(0, 2, 1)
+        let xNLC = x.transposed(0, 2, 1).asType(.float32)
         var h = MLX.conv1d(xNLC, w, stride: strideVal, padding: paddingVal)
         if let b = bias {
             let n = b.size
-            h = h + b.reshaped([n])
+            h = h + b.asType(.float32).reshaped([n])
         }
         // Convert back to NCL [B, C, L]
-        let out = h.transposed(0, 2, 1)
+        let out = h.transposed(0, 2, 1).asType(x.dtype)
         return out
     }
 }
@@ -1301,11 +1301,15 @@ public final class OmniVoiceDACAcousticDecoder: Module {
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         var h = conv1(x)
-        for b in block {
+        print("[OmniVoice Dec] conv1 out: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self))")
+        for (i, b) in block.enumerated() {
             h = b(h)
+            print("[OmniVoice Dec] upBlock \(i) out: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self))")
         }
         h = snake1.callAsFunction(h)
+        print("[OmniVoice Dec] snake1 out: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self))")
         h = conv2(h)
+        print("[OmniVoice Dec] conv2 out: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self))")
         return h
     }
 }
