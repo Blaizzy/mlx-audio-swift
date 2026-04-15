@@ -1001,10 +1001,12 @@ final class OmniVoiceConv1d: Module {
 
     let strideVal: Int
     let paddingVal: Int
+    let dilationVal: Int
 
-    init(inChannels: Int, outChannels: Int, kernelSize: Int, stride: Int, padding: Int) {
+    init(inChannels: Int, outChannels: Int, kernelSize: Int, stride: Int, padding: Int, dilation: Int = 1) {
         self.strideVal = stride
         self.paddingVal = padding
+        self.dilationVal = dilation
 
         let scale = sqrt(1.0 / Float(inChannels * kernelSize))
         // MLX format: [out_channels, kernel_size, in_channels]
@@ -1019,7 +1021,7 @@ final class OmniVoiceConv1d: Module {
         let w = weight.transposed(0, 2, 1).asType(.float32)
         // Data flows in NCL [B, C, L]; transpose to NLC for MLX conv1d, then back
         let xNLC = x.transposed(0, 2, 1).asType(.float32)
-        var h = MLX.conv1d(xNLC, w, stride: strideVal, padding: paddingVal)
+        var h = MLX.conv1d(xNLC, w, stride: strideVal, padding: paddingVal, dilation: dilationVal)
         if let b = bias {
             let n = b.size
             h = h + b.asType(.float32).reshaped([n])
@@ -1060,7 +1062,8 @@ public final class OmniVoiceDACResidualUnit: Module {
             outChannels: channels,
             kernelSize: conv1KernelSize,
             stride: 1,
-            padding: conv1Padding
+            padding: conv1Padding,
+            dilation: dilation
         )
         self._conv2.wrappedValue = OmniVoiceConv1d(
             inChannels: channels,
@@ -1186,13 +1189,9 @@ public final class OmniVoiceDACUpBlock: Module {
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         var h = convT1(snake1.callAsFunction(x))
-        print("[OmniVoice UpBlock] after convT1: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
         h = res_unit1(h)
-        print("[OmniVoice UpBlock] after res_unit1: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
         h = res_unit2(h)
-        print("[OmniVoice UpBlock] after res_unit2: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
         h = res_unit3(h)
-        print("[OmniVoice UpBlock] after res_unit3: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
         return h
     }
 }
