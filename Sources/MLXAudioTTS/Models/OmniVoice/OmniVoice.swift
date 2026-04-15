@@ -1518,12 +1518,17 @@ public final class OmniVoiceAudioTokenizer: Module {
         // Add batch dim: [n_codebooks, T] -> [1, n_codebooks, T]
         let batchedTokens = tokens.reshaped([1, tokens.shape[0], tokens.shape[1]])
 
-        // RVQ decode: [1, n_codebooks, T] -> [1, D, T]
+        // RVQ decode: [1, n_codebooks, T] -> [1, D, T] where D=1024
         let z = quantizer.decode(batchedTokens)
         print("[OmniVoice Decode] after quantizer.decode: shape=\(z.shape), min=\(z.min().item(Float.self)), max=\(z.max().item(Float.self)), mean=\(z.mean().item(Float.self))")
 
-        // fc2 project: [1, D, T] -> [1, D', T]
-        let h = fc2(z.transposed(0, 2, 1)).transposed(0, 2, 1)
+        // fc2 project: [1, D, T] -> [1, D', T] where D'=256
+        // fc2.weight shape is [256, 1024] (outputDim x inputDim)
+        // Encode uses: matmul(zNLC, fc2.weight) where zNLC=[B,T,256], weight=[256,1024] -> [B,T,1024]
+        // Decode uses: matmul(zNLC, fc2.weight.T) where zNLC=[B,T,1024], weight.T=[1024,256] -> [B,T,256]
+        let zNLC = z.transposed(0, 2, 1)  // [B, T, 1024]
+        let hNLC = MLX.matmul(zNLC, fc2.weight.transposed(1, 0))  // [B, T, 256]
+        let h = hNLC.transposed(0, 2, 1)  // [B, 256, T]
         print("[OmniVoice Decode] after fc2: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
 
         // Verify decoder conv1 weight shape at runtime
