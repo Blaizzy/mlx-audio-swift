@@ -336,14 +336,10 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         let targetLen = numTargetTokens
 
         
-        // Unconditional input: only the target region, excluding ref audio for true unconditional
+        // Unconditional input: only the target region (matching Python reference)
         let prefixLen = condLength - targetLen
         var uncondInputIds = inputIds[0..., 0..., prefixLen...]  // [1, C, T]
-        if refAudioTokens != nil {
-            let refLen = refAudioTokens!.shape[1]
-            uncondInputIds = uncondInputIds[0..., 0..., refLen...]  // exclude ref audio
-        }
-        let uncondAudioMask = MLXArray.ones([1, targetLen], type: Bool.self)
+        let uncondAudioMask = audioMask[0..., prefixLen...]  // [1, T]
 
         // 5. Initialize target tokens to all MASK
         var tokens = MLXArray.full(
@@ -379,7 +375,23 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             let refTarget = MLX.concatenated([refPrefix, refPadding], axis: 1).reshaped([1, numCodebooks, targetLen])
             let prefix = inputIds[0..., 0..., 0..<prefixLen]
             let diagInputIds = MLX.concatenated([prefix, refTarget], axis: 2)
-            let diagLogits = forward(inputIds: diagInputIds, audioMask: audioMask, attentionMask: .none).asType(.float32)
+            
+            // Step-by-step diagnostic to isolate where predictions break
+            let diagEmbeds = prepareEmbedInputs(inputIds: diagInputIds, audioMask: audioMask)
+            print("[OmniVoice DIAG] embeds: shape=\(diagEmbeds.shape), min=\(diagEmbeds.min().item(Float.self)), max=\(diagEmbeds.max().item(Float.self)), mean=\(diagEmbeds.mean().item(Float.self))")
+            
+            let diagHidden = llm.forwardWithEmbeddings(inputsEmbeds: diagEmbeds, cache: nil, mask: .none).asType(.float32)
+            print("[OmniVoice DIAG] hidden: shape=\(diagHidden.shape), min=\(diagHidden.min().item(Float.self)), max=\(diagHidden.max().item(Float.self)), mean=\(diagHidden.mean().item(Float.self))")
+            
+            var diagLogitsList: [MLXArray] = []
+            for (i, head) in audioHeads.enumerated() {
+                let hLogits = head(diagHidden)  // [B, S, V]
+                let hReshaped = hLogits.reshaped([diagHidden.shape[0], diagHidden.shape[1], 1, config.audioVocabSize])
+                diagLogitsList.append(hReshaped)
+            }
+            let diagLogits = MLX.concatenated(diagLogitsList, axis: 2).asType(.float32)
+            print("[OmniVoice DIAG] logits: shape=\(diagLogits.shape), min=\(diagLogits.min().item(Float.self)), max=\(diagLogits.max().item(Float.self)), mean=\(diagLogits.mean().item(Float.self))")
+            
             let diagTargetLogits = diagLogits[0, (condLength - targetLen)..<condLength, 0..., 0...]
             let diagTargetLogitsBatch = diagTargetLogits.transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
             let diagPreds = MLX.argMax(diagTargetLogitsBatch, axis: -1)[0]
@@ -388,6 +400,12 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             let match = (refForCompare .== predForCompare).sum().item(Int32.self)
             let total = refLen * numCodebooks
             print("[OmniVoice] DIAGNOSTIC: backbone reconstruction accuracy on ref audio = \(match)/\(total) (\(String(format: "%.1f", Float(match)/Float(total)*100))%)")
+            
+            // Extra diagnostic: print top-1 token distribution for first codebook
+            let firstCbPreds = predForCompare[0, 0...].asArray(Int32.self)
+            let uniquePreds = Dictionary(grouping: firstCbPreds, by: { $0 }).mapValues { $0.count }
+            let topPreds = uniquePreds.sorted { $0.value > $1.value }.prefix(5)
+            print("[OmniVoice DIAG] first codebook top-5 predicted tokens: \(Array(topPreds))")
         }
 
         // 7. Iterative diffusion generation
