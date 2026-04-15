@@ -1623,21 +1623,12 @@ public final class OmniVoiceAudioTokenizer: Module {
         if !extra.isEmpty {
             print("[OmniVoiceAudioTokenizer] WARNING: \(extra.count) extra keys in checkpoint: \(extra.prefix(10))")
         }
-        try tokenizer.update(parameters: ModuleParameters.unflattened(weights), verify: .noUnusedKeys)
+        
+        // Test: load all tokenizer weights in float32 to rule out bfloat16 precision issues
+        let float32Weights = weights.mapValues { $0.asType(.float32) }
+        try tokenizer.update(parameters: ModuleParameters.unflattened(float32Weights), verify: .noUnusedKeys)
         eval(tokenizer)
-
-        // Post-load diagnostics: verify a few key layer weights to catch transpose/load issues
-        let paramDict = Dictionary(uniqueKeysWithValues: tokenizer.parameters().flattened())
-        for key in ["acoustic_decoder.conv2.weight",
-                    "acoustic_decoder.block.0.conv_t1.weight",
-                    "acoustic_decoder.block.0.res_unit1.conv1.weight",
-                    "acoustic_decoder.block.0.res_unit1.snake1.alpha"] {
-            if let w = paramDict[key] {
-                print("[OmniVoiceAudioTokenizer] LOADCHECK \(key): shape=\(w.shape), min=\(w.min().item(Float.self)), max=\(w.max().item(Float.self)), mean=\(w.mean().item(Float.self))")
-            } else {
-                print("[OmniVoiceAudioTokenizer] LOADCHECK \(key): MISSING")
-            }
-        }
+        print("[OmniVoiceAudioTokenizer] INFO: loaded all weights as float32 for precision test")
 
         return tokenizer
     }
