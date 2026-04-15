@@ -10,11 +10,12 @@ import MLXLMCommon
 
 // MARK: - Configuration
 
+/// Qwen3 configuration for MLXAudio.
+/// Based on mlx-swift-lm Qwen3Configuration with TTS-specific additions.
 public struct Qwen3Configuration: Codable, Sendable {
     var hiddenSize: Int
     var hiddenLayers: Int
     var intermediateSize: Int
-    var eosTokenId: Int
     var attentionHeads: Int
     var rmsNormEps: Float
     var vocabularySize: Int
@@ -27,11 +28,11 @@ public struct Qwen3Configuration: Codable, Sendable {
     var tieWordEmbeddings = false
     var maxPositionEmbeddings: Int = 32768
     var sampleRate: Int = 24_000
+    var eosTokenId: Int = 151645
     var tokenizer_name: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case hiddenSize = "hidden_size"
-        case eosTokenId = "eos_token_id"
         case hiddenLayers = "num_hidden_layers"
         case intermediateSize = "intermediate_size"
         case attentionHeads = "num_attention_heads"
@@ -44,49 +45,29 @@ public struct Qwen3Configuration: Codable, Sendable {
         case tieWordEmbeddings = "tie_word_embeddings"
         case maxPositionEmbeddings = "max_position_embeddings"
         case sampleRate = "sample_rate"
+        case eosTokenId = "eos_token_id"
         case tokenizer_name = "tokenizer_name"
-        
     }
 
     public init(from decoder: Swift.Decoder) throws {
-        // custom implementation to handle optional keys with required values
-        let container: KeyedDecodingContainer<Qwen3Configuration.CodingKeys> =
-            try decoder.container(
-                keyedBy: Qwen3Configuration.CodingKeys.self)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
 
-        self.hiddenSize = try container.decode(
-            Int.self, forKey: Qwen3Configuration.CodingKeys.hiddenSize)
-        self.eosTokenId = try container.decode(
-            Int.self, forKey: Qwen3Configuration.CodingKeys.eosTokenId)
-        self.hiddenLayers = try container.decode(
-            Int.self, forKey: Qwen3Configuration.CodingKeys.hiddenLayers)
-        self.intermediateSize = try container.decode(
-            Int.self, forKey: Qwen3Configuration.CodingKeys.intermediateSize)
-        
-        self.attentionHeads = try container.decode(
-            Int.self, forKey: Qwen3Configuration.CodingKeys.attentionHeads)
-        self.rmsNormEps = try container.decode(
-            Float.self, forKey: Qwen3Configuration.CodingKeys.rmsNormEps)
-        self.vocabularySize = try container.decode(
-            Int.self, forKey: Qwen3Configuration.CodingKeys.vocabularySize)
-        self.kvHeads = try container.decode(Int.self, forKey: Qwen3Configuration.CodingKeys.kvHeads)
-        self.ropeTheta =
-            try container.decodeIfPresent(
-                Float.self, forKey: Qwen3Configuration.CodingKeys.ropeTheta)
-            ?? 1_000_000
-        self.headDim = try container.decode(
-            Int.self, forKey: Qwen3Configuration.CodingKeys.headDim)
-        self.ropeScaling = try container.decodeIfPresent(
-            [String: StringOrNumber].self, forKey: Qwen3Configuration.CodingKeys.ropeScaling)
-        self.tieWordEmbeddings =
-            try container.decodeIfPresent(Bool.self, forKey: .tieWordEmbeddings) ?? false
-        self.maxPositionEmbeddings =
-            try container.decodeIfPresent(Int.self, forKey: .maxPositionEmbeddings) ?? 32768
-        
+        self.hiddenSize = try container.decode(Int.self, forKey: .hiddenSize)
+        self.hiddenLayers = try container.decode(Int.self, forKey: .hiddenLayers)
+        self.intermediateSize = try container.decode(Int.self, forKey: .intermediateSize)
+        self.attentionHeads = try container.decode(Int.self, forKey: .attentionHeads)
+        self.rmsNormEps = try container.decode(Float.self, forKey: .rmsNormEps)
+        self.vocabularySize = try container.decode(Int.self, forKey: .vocabularySize)
+        self.kvHeads = try container.decode(Int.self, forKey: .kvHeads)
+        self.ropeTheta = try container.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? 1_000_000
+        self.headDim = try container.decode(Int.self, forKey: .headDim)
+        self.ropeScaling = try container.decodeIfPresent([String: StringOrNumber].self, forKey: .ropeScaling)
+        self.tieWordEmbeddings = try container.decodeIfPresent(Bool.self, forKey: .tieWordEmbeddings) ?? false
+        self.maxPositionEmbeddings = try container.decodeIfPresent(Int.self, forKey: .maxPositionEmbeddings) ?? 32768
         self.sampleRate = try container.decodeIfPresent(Int.self, forKey: .sampleRate) ?? 24_000
-        self.tokenizer_name = try container.decodeIfPresent(String.self, forKey: .tokenizer_name) ?? nil
-        
-        // MARK: - Decode Quantization
+        self.eosTokenId = try container.decodeIfPresent(Int.self, forKey: .eosTokenId) ?? 151645
+        self.tokenizer_name = try container.decodeIfPresent(String.self, forKey: .tokenizer_name)
+
         let baseConfig = try? BaseConfiguration(from: decoder)
         self.perLayerQuantization = baseConfig?.perLayerQuantization
     }
@@ -127,9 +108,7 @@ public struct Qwen3Configuration: Codable, Sendable {
 
     public func encode(to encoder: Swift.Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        
         try container.encode(hiddenSize, forKey: .hiddenSize)
-        try container.encode(eosTokenId, forKey: .eosTokenId)
         try container.encode(hiddenLayers, forKey: .hiddenLayers)
         try container.encode(intermediateSize, forKey: .intermediateSize)
         try container.encode(attentionHeads, forKey: .attentionHeads)
@@ -142,7 +121,7 @@ public struct Qwen3Configuration: Codable, Sendable {
         try container.encode(tieWordEmbeddings, forKey: .tieWordEmbeddings)
         try container.encode(maxPositionEmbeddings, forKey: .maxPositionEmbeddings)
         try container.encode(sampleRate, forKey: .sampleRate)
+        try container.encode(eosTokenId, forKey: .eosTokenId)
         try container.encodeIfPresent(tokenizer_name, forKey: .tokenizer_name)
-        
     }
 }
