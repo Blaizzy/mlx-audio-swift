@@ -849,8 +849,10 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         if !extra.isEmpty {
             print("[OmniVoiceModel] WARNING: \(extra.count) extra keys after sanitize: \(extra.prefix(10))")
         }
-        try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .noUnusedKeys)
+        let float32Weights = sanitizedWeights.mapValues { $0.asType(.float32) }
+        try model.update(parameters: ModuleParameters.unflattened(float32Weights), verify: .noUnusedKeys)
         eval(model)
+        print("[OmniVoiceModel] INFO: loaded TTS model weights as float32 for precision test")
 
         // Load text tokenizer
         model.tokenizer = try await AutoTokenizer.from(modelFolder: {
