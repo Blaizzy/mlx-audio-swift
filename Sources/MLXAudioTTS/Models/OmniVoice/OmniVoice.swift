@@ -1336,7 +1336,7 @@ public final class OmniVoiceDACAcousticDecoder: Module {
         h = snake1.callAsFunction(h)
         print("[OmniVoice Dec] snake1 out: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self))")
         h = conv2(h)
-        h = MLX.tanh(h)
+        // Python _adjust_dac_decoder removes final Tanh; keep output unbounded
         print("[OmniVoice Dec] conv2 out: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self))")
         return h
     }
@@ -1524,11 +1524,10 @@ public final class OmniVoiceAudioTokenizer: Module {
 
         // fc2 project: [1, D, T] -> [1, D', T] where D'=256
         // fc2.weight shape is [256, 1024] (outputDim x inputDim)
-        // Encode uses: matmul(zNLC, fc2.weight) where zNLC=[B,T,256], weight=[256,1024] -> [B,T,1024]
-        // Decode uses: matmul(zNLC, fc2.weight.T) where zNLC=[B,T,1024], weight.T=[1024,256] -> [B,T,256]
+        // Decode uses: fc2(zNLC) = zNLC @ W.T + b where zNLC=[B,T,1024], W.T=[1024,256], b=[256]
         let zNLC = z.transposed(0, 2, 1)  // [B, T, 1024]
         let hNLC = MLX.matmul(zNLC, fc2.weight.transposed(1, 0))  // [B, T, 256]
-        let h = hNLC.transposed(0, 2, 1)  // [B, 256, T]
+        let h = (hNLC + (fc2.bias ?? MLXArray.zeros([1]))).transposed(0, 2, 1)  // [B, 256, T]
         print("[OmniVoice Decode] after fc2: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
 
         // Verify decoder conv1 weight shape at runtime
