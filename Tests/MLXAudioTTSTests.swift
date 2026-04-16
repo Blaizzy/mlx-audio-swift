@@ -109,6 +109,146 @@ private func makeTinyFishSpeechConfig() -> FishSpeechConfig {
     )
 }
 
+private func makeTinyEchoTTSConfig(numSteps: Int = 1, sequenceLength: Int = 4) -> EchoTTSConfig {
+    EchoTTSConfig(
+        dit: EchoDiTConfig(
+            latentSize: 8,
+            modelSize: 32,
+            numLayers: 2,
+            numHeads: 4,
+            intermediateSize: 64,
+            normEps: 1e-5,
+            textVocabSize: 256,
+            textModelSize: 32,
+            textNumLayers: 1,
+            textNumHeads: 4,
+            textIntermediateSize: 64,
+            speakerPatchSize: 2,
+            speakerModelSize: 32,
+            speakerNumLayers: 1,
+            speakerNumHeads: 4,
+            speakerIntermediateSize: 64,
+            timestepEmbedSize: 16,
+            adalnRank: 8
+        ),
+        sampler: EchoTTSSamplerConfig(
+            numSteps: numSteps,
+            cfgScaleText: 1,
+            cfgScaleSpeaker: 1,
+            sequenceLength: sequenceLength
+        )
+    )
+}
+
+private final class StreamCancellationState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var producerCancelled = false
+
+    func markCancelled() {
+        lock.lock()
+        producerCancelled = true
+        lock.unlock()
+    }
+
+    var wasCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return producerCancelled
+    }
+}
+
+private final class ProxyCancellationProbeModel: SpeechGenerationModel, @unchecked Sendable {
+    let sampleRate = 24_000
+    let defaultGenerationParameters = GenerateParameters(maxTokens: 1)
+
+    private let state: StreamCancellationState
+
+    init(state: StreamCancellationState) {
+        self.state = state
+    }
+
+    func generate(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters
+    ) async throws -> MLXArray {
+        MLXArray.zeros([0], dtype: .float32)
+    }
+
+    func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
+        let task = Task {
+            do {
+                while true {
+                    try Task.checkCancellation()
+                    continuation.yield(.audio(MLXArray.zeros([8], dtype: .float32)))
+                    try await Task.sleep(nanoseconds: 20_000_000)
+                }
+            } catch is CancellationError {
+                continuation.finish(throwing: CancellationError())
+            } catch {
+                continuation.finish(throwing: error)
+            }
+        }
+        continuation.onTermination = { @Sendable _ in
+            self.state.markCancelled()
+            task.cancel()
+        }
+        return stream
+    }
+
+    func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        streamingInterval: Double
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        generateStream(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: language,
+            generationParameters: generationParameters
+        )
+    }
+}
+
+private final class CountingFishAE: EchoTTSAudioCodec, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _decodeCount = 0
+
+    var decodeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _decodeCount
+    }
+
+    func encodeZQ(_ audioData: MLXArray) -> MLXArray {
+        MLXArray.zeros([audioData.shape[0], 8, max(audioData.shape[2] / 2_048, 1)], dtype: .float32)
+    }
+
+    func decodeZQ(_ zQ: MLXArray) -> MLXArray {
+        lock.lock()
+        _decodeCount += 1
+        lock.unlock()
+        return MLXArray.zeros([zQ.shape[0], 1, zQ.shape[2] * 2_048], dtype: .float32)
+    }
+}
+
 
 // MARK: - Text Cleaning Unit Tests
 
@@ -137,6 +277,33 @@ struct SopranoTextCleaningTests {
 }
 
 struct EchoTTSTests {
+
+    @Test func proxySamplesStreamReleaseCancelsUpstreamProducer() async throws {
+        let state = StreamCancellationState()
+        let model = ProxyCancellationProbeModel(state: state)
+        var stream: AsyncThrowingStream<[Float], Error>? = model.generateSamplesStream(
+            text: "hi",
+            voice: nil,
+            refAudio: nil,
+            refText: nil,
+            language: nil
+        )
+
+        var iterator = stream?.makeAsyncIterator()
+        let consumedOne = try await iterator?.next() != nil
+
+        iterator = nil
+        stream = nil
+
+        var producerCancelled = state.wasCancelled
+        for _ in 0 ..< 20 where !producerCancelled {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            producerCancelled = state.wasCancelled
+        }
+
+        #expect(consumedOne)
+        #expect(producerCancelled)
+    }
 
     @Test func testTextNormalization() {
         let normalized = echoTtsNormalizeTextPrompt("Hello: world\nnew line")
@@ -227,47 +394,10 @@ struct EchoTTSTests {
     }
 
     @Test func testSanitizeAndGenerateSmoke() throws {
-        final class FakeFishAE: EchoTTSAudioCodec {
-            func encodeZQ(_ audioData: MLXArray) -> MLXArray {
-                MLXArray.zeros([audioData.shape[0], 8, max(audioData.shape[2] / 2_048, 1)], dtype: .float32)
-            }
-
-            func decodeZQ(_ zQ: MLXArray) -> MLXArray {
-                MLXArray.zeros([zQ.shape[0], 1, zQ.shape[2] * 2_048], dtype: .float32)
-            }
-        }
-
-        let config = EchoTTSConfig(
-            dit: EchoDiTConfig(
-                latentSize: 8,
-                modelSize: 32,
-                numLayers: 2,
-                numHeads: 4,
-                intermediateSize: 64,
-                normEps: 1e-5,
-                textVocabSize: 256,
-                textModelSize: 32,
-                textNumLayers: 1,
-                textNumHeads: 4,
-                textIntermediateSize: 64,
-                speakerPatchSize: 2,
-                speakerModelSize: 32,
-                speakerNumLayers: 1,
-                speakerNumHeads: 4,
-                speakerIntermediateSize: 64,
-                timestepEmbedSize: 16,
-                adalnRank: 8
-            ),
-            sampler: EchoTTSSamplerConfig(
-                numSteps: 1,
-                cfgScaleText: 1,
-                cfgScaleSpeaker: 1,
-                sequenceLength: 4
-            )
-        )
+        let config = makeTinyEchoTTSConfig()
         let model = EchoTTSModel(
             config: config,
-            fishAE: FakeFishAE(),
+            fishAE: CountingFishAE(),
             pcaState: EchoTTSPCAState(
                 pcaComponents: MLXArray.eye(8, dtype: .float32),
                 pcaMean: MLXArray.zeros([8], dtype: .float32),
@@ -291,6 +421,52 @@ struct EchoTTSTests {
         )
         #expect(model.sampleRate == 44_100)
         #expect(result.audio.shape[0] > 0)
+    }
+
+    @Test func generateDetailedCancellationStopsBeforeDecode() async throws {
+        let codec = CountingFishAE()
+        let model = EchoTTSModel(
+            config: makeTinyEchoTTSConfig(sequenceLength: 32),
+            fishAE: codec,
+            pcaState: EchoTTSPCAState(
+                pcaComponents: MLXArray.eye(8, dtype: .float32),
+                pcaMean: MLXArray.zeros([8], dtype: .float32),
+                latentScale: 1
+            )
+        )
+
+        let task = Task {
+            try model.generateDetailed(
+                text: "hi",
+                refAudio: nil,
+                rngSeed: 0,
+                numSteps: 20_000,
+                sequenceLength: 32
+            )
+        }
+
+        try await Task.sleep(nanoseconds: 10_000_000)
+        task.cancel()
+
+        let cancelled: Bool
+        do {
+            _ = try await task.value
+            cancelled = false
+        } catch is CancellationError {
+            cancelled = true
+        } catch {
+            Issue.record("Unexpected error while cancelling Echo generation: \(error)")
+            cancelled = false
+        }
+
+        var decodeCount = codec.decodeCount
+        for _ in 0 ..< 10 where decodeCount == 0 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            decodeCount = codec.decodeCount
+        }
+
+        #expect(cancelled)
+        #expect(decodeCount == 0)
     }
 
     @Test func testDeleteBlockwiseModules() throws {

@@ -101,7 +101,9 @@ public final class KittenTTSModel: Module, SpeechGenerationModel, @unchecked Sen
     ) async throws -> MLXArray {
         _ = refAudio; _ = refText; _ = generationParameters
         let (inputIds, refS, speed) = try prepareInputs(text: text, voice: voice, language: language)
+        try Task.checkCancellation()
         let (audio, _) = self.callAsFunction(inputIds: inputIds, refS: refS, speed: speed)
+        try Task.checkCancellation()
         return audio.reshaped([-1])
     }
 
@@ -114,16 +116,29 @@ public final class KittenTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         generationParameters: GenerateParameters
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
         _ = refAudio; _ = refText; _ = generationParameters
-        return AsyncThrowingStream { continuation in
+        let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
+        let task = Task { @Sendable [weak self] in
+            guard let self else {
+                continuation.finish(throwing: AudioGenerationError.modelNotInitialized("Model deallocated"))
+                return
+            }
             do {
-                let (inputIds, refS, speed) = try self.prepareInputs(text: text, voice: voice, language: language)
-                let (audio, _) = self.callAsFunction(inputIds: inputIds, refS: refS, speed: speed)
-                continuation.yield(.audio(audio.reshaped([-1])))
+                let audio = try await self.generate(
+                    text: text,
+                    voice: voice,
+                    refAudio: refAudio,
+                    refText: refText,
+                    language: language,
+                    generationParameters: generationParameters
+                )
+                continuation.yield(.audio(audio))
                 continuation.finish()
             } catch {
                 continuation.finish(throwing: error)
             }
         }
+        continuation.onTermination = { @Sendable _ in task.cancel() }
+        return stream
     }
 
     // MARK: - Text Processing

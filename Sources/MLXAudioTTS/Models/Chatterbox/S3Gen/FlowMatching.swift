@@ -732,6 +732,7 @@ class CausalConditionalCFM: Module {
 
         let nSteps = tSpan.dim(0) - 1
         for step in 1 ... nSteps {
+            if Task.isCancelled { break }
             // Duplicate for classifier-free guidance: [conditional, unconditional]
             let xIn = MLX.concatenated([x, x], axis: 0)
             let maskIn = MLX.concatenated([mask, mask], axis: 0)

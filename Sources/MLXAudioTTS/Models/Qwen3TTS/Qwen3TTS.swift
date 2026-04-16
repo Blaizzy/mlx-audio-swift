@@ -58,7 +58,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         // VoiceDesign: voice parameter is the instruct (voice description)
         let instruct = voice
 
-        let audio = generateVoiceDesign(
+        let audio = try generateVoiceDesign(
             text: text,
             instruct: instruct,
             language: language ?? "auto",
@@ -121,7 +121,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                 let repPenalty = generationParameters.repetitionPenalty ?? 1.05
                 let maxTokens = generationParameters.maxTokens ?? 4096
 
-                _ = generateVoiceDesign(
+                _ = try generateVoiceDesign(
                     text: text,
                     instruct: instruct,
                     language: lang,
@@ -197,9 +197,9 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         onToken: ((Int) -> Void)? = nil,
         onInfo: ((AudioGenerationInfo) -> Void)? = nil,
         onAudioChunk: ((MLXArray) -> Void)? = nil
-    ) -> MLXArray {
+    ) throws -> MLXArray {
         guard let speechTokenizer, let tokenizer else {
-            return MLXArray.zeros([1])
+            throw AudioGenerationError.modelNotInitialized("Speech tokenizer or text tokenizer not loaded")
         }
 
         let talkerConfig = config.talkerConfig!
@@ -277,7 +277,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         }
 
         for step in 0 ..< effectiveMaxTokens {
-            if Task.isCancelled { break }
+            try Task.checkCancellation()
             // Forward pass through talker
             let (logits, hidden) = talker(inputEmbeds, cache: cache)
 
@@ -376,6 +376,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             }
         }
 
+        try Task.checkCancellation()
+
         guard !generatedCodes.isEmpty else {
             return MLXArray.zeros([1])
         }
@@ -392,6 +394,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             peakMemoryUsage: Double(Memory.peakMemory) / 1e9
         )
         onInfo?(info)
+        try Task.checkCancellation()
 
         // Streaming path: yield remaining tokens and return early
         if let onAudioChunk {

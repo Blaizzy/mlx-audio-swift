@@ -770,6 +770,7 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
         } else {
             throw AudioGenerationError.modelNotInitialized("Unknown T3 model type")
         }
+        try Task.checkCancellation()
         eval(speechTokens)
         print("[Chatterbox] Stage 1 complete: \(speechTokens.shape) in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - t3Start))s")
 
@@ -809,6 +810,7 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
             embedding: xVector,
             nTimesteps: nTimesteps
         )
+        try Task.checkCancellation()
         eval(mel)
         print("[Chatterbox] Stage 2 complete: mel \(mel.shape) in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - s3Start))s")
 
@@ -816,6 +818,7 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
         let vocStart = CFAbsoluteTimeGetCurrent()
         // Vocoder: mel → waveform via HiFi-GAN
         var (waveform, _) = s3gen.vocoder(mel)
+        try Task.checkCancellation()
 
         // Apply fade-in window to reduce vocoder spillover artifacts at start (matches Python trim_fade)
         // 480 samples silence + 480 samples cosine ramp = 960 samples (40ms at 24kHz)

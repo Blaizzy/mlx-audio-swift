@@ -164,7 +164,9 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
         let refIdx = min(tokens.count, voiceEmb.shape[0] - 1)
         let refS = voiceEmb[refIdx..<(refIdx + 1)]
 
+        try Task.checkCancellation()
         let (audio, _) = self.callAsFunction(inputIds: inputIds, refS: refS, speed: speed)
+        try Task.checkCancellation()
         return audio.reshaped([-1])
     }
 

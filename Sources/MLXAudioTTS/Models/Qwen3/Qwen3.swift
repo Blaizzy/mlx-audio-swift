@@ -654,7 +654,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
 
         // Generate tokens
         for _ in 0..<maxTokens {
-            if Task.isCancelled { break }
+            try Task.checkCancellation()
             let tokenValue: Int = autoreleasepool {
                 var lastLogits = logits
                 lastLogits = processor?.process(logits: lastLogits) ?? lastLogits
@@ -683,6 +683,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         }
 
         Memory.clearCache()
+        try Task.checkCancellation()
 
         // Reconstruct full tokens only once at the end for parsing
         var fullTokens = ContiguousArray<Int32>()
@@ -787,7 +788,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
                 
                 // Generate tokens
                 for _ in 0..<maxTokens {
-                    if Task.isCancelled { break }
+                    try Task.checkCancellation()
                     
                     // Extract token value and advance - minimize intermediate tensor lifetime
                     let tokenValue: Int = autoreleasepool {
@@ -822,6 +823,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
                 }
                 
                 Memory.clearCache()
+                try Task.checkCancellation()
                 
                 let generateTime = Date().timeIntervalSince(generateStartTime)
                 

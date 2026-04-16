@@ -218,6 +218,7 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         let promptNumFrames = getFlowCacheNumFrames(state)
         let chunks = try PocketTTSTextUtils.splitIntoBestSentences(flow_lm.conditioner.tokenizer, text)
         for chunk in chunks {
+            try Task.checkCancellation()
             sliceFlowCache(&state, to: promptNumFrames)
             let (_, guess) = try PocketTTSTextUtils.prepareTextPrompt(chunk)
             let frames = framesAfterEos ?? (guess + 2)
@@ -248,8 +249,9 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         var eosStep: Int?
 
         for step in 0 ..< maxGenLen {
-            if Task.isCancelled { break }
+            try Task.checkCancellation()
             let (nextLatent, isEos) = runFlowLMAndIncrementStep(&state, backboneInputLatents: backboneInput)
+            try Task.checkCancellation()
             if eosStep == nil {
                 let eos = isEos.asArray(Bool.self).first ?? false
                 if eos { eosStep = step }
@@ -264,6 +266,8 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
             outputs.append(audioChunk.squeezed())
             backboneInput = nextLatent
         }
+
+        try Task.checkCancellation()
 
         return outputs
     }

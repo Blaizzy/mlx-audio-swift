@@ -13,6 +13,7 @@ private func pocketLsdDecode(
     var current = x0
     let batch = x0.shape[0]
     for i in 0..<numSteps {
+        if Task.isCancelled { break }
         let s = Float(i) / Float(numSteps)
         let t = Float(i + 1) / Float(numSteps)
         let sT = MLXArray.zeros([batch, 1]) + MLXArray(s)

@@ -712,7 +712,7 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
 
         // Generate tokens
         for i in 0..<maxTokens {
-            if Task.isCancelled { break }
+            try Task.checkCancellation()
             let tokenValue: Int = autoreleasepool {
                 var lastLogits = logits[0..., -1, 0...]
                 lastLogits = processor?.process(logits: lastLogits) ?? lastLogits
@@ -744,6 +744,7 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
         }
 
         Memory.clearCache()
+        try Task.checkCancellation()
 
         let allTokens = MLXArray(generatedTokens).expandedDimensions(axis: 0)
 
@@ -837,7 +838,7 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
                 
                 // Generate tokens
                 for i in 0..<maxTokens {
-                    if Task.isCancelled { break }
+                    try Task.checkCancellation()
                     
                     let tokenValue: Int = autoreleasepool {
                         var lastLogits = logits[0..., -1, 0...]
@@ -871,6 +872,7 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
                     }
                 }
                 
+                try Task.checkCancellation()
                 let generateTime = Date().timeIntervalSince(generateStartTime)
                 
                 let allTokens = MLXArray(generatedTokens).expandedDimensions(axis: 0)

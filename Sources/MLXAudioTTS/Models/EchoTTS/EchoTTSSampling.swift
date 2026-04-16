@@ -83,6 +83,7 @@ func echoTtsSampleEulerCFGIndependentGuidances(
     xT = xT * (truncationFactor ?? echoTtsDefaultTruncationFactor)
 
     for step in 0 ..< numSteps {
+        if Task.isCancelled { break }
         let t = schedule[step].item(Float.self)
         let tNext = schedule[step + 1].item(Float.self)
         let hasCFG = cfgMinT <= t && t <= cfgMaxT
@@ -189,6 +190,7 @@ func echoTtsSampleBlockwiseEulerCFGIndependentGuidances(
     }
 
     for blockSize in blockSizes {
+        try Task.checkCancellation()
         if let speakerKVScale {
             kvSpeakerCond = echoTtsScaleKVCache(kvSpeakerCond, scale: speakerKVScale, maxLayers: speakerKVMaxLayers)
             kvSpeakerFull = echoTtsConcatKVCaches(kvSpeakerCond, kvSpeakerCond, kvSpeakerCond)
@@ -210,6 +212,7 @@ func echoTtsSampleBlockwiseEulerCFGIndependentGuidances(
         xT = xT * (truncationFactor ?? echoTtsDefaultTruncationFactor)
 
         for step in 0 ..< numSteps {
+            try Task.checkCancellation()
             let t = schedule[step].item(Float.self)
             let tNext = schedule[step + 1].item(Float.self)
             let hasCFG = cfgMinT <= t && t <= cfgMaxT
