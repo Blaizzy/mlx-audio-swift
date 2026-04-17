@@ -153,6 +153,9 @@ public class SNAC: Module {
     }
 
     public static func fromPretrained(_ modelRepo: String) async throws -> SNAC {
+        // Ensure SNAC components are registered with Acervo
+        SNAC.ensureComponentsRegistered()
+
         let modelDir = try await ModelResolver.resolve(modelId: modelRepo)
 
         let configPath = modelDir.appendingPathComponent("config.json")
