@@ -143,7 +143,7 @@ public struct Qwen3TTSTalkerConfig: Codable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         codePredictorConfig = try c.decodeIfPresent(Qwen3TTSTalkerCodePredictorConfig.self, forKey: .codePredictorConfig)
         vocabSize = try c.decodeIfPresent(Int.self, forKey: .vocabSize) ?? 3072
-        hiddenSize = try c.decodeIfPresent(Int.self, forKey: .hiddenSize) ?? 1024
+        hiddenSize = try c.decodeIfPresent(Int.self, forKey: .hiddenSize) ?? 2048
         intermediateSize = try c.decodeIfPresent(Int.self, forKey: .intermediateSize) ?? 3072
         numHiddenLayers = try c.decodeIfPresent(Int.self, forKey: .numHiddenLayers) ?? 28
         numAttentionHeads = try c.decodeIfPresent(Int.self, forKey: .numAttentionHeads) ?? 16
@@ -459,7 +459,7 @@ public struct Qwen3TTSSpeakerEncoderConfig: Codable, Sendable {
     public init(from decoder: Swift.Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         melDim = try c.decodeIfPresent(Int.self, forKey: .melDim) ?? 128
-        encDim = try c.decodeIfPresent(Int.self, forKey: .encDim) ?? 1024
+        encDim = try c.decodeIfPresent(Int.self, forKey: .encDim) ?? 2048
         encChannels = try c.decodeIfPresent([Int].self, forKey: .encChannels) ?? [512, 512, 512, 512, 1536]
         encKernelSizes = try c.decodeIfPresent([Int].self, forKey: .encKernelSizes) ?? [5, 3, 3, 3, 1]
         encDilations = try c.decodeIfPresent([Int].self, forKey: .encDilations) ?? [1, 2, 3, 4, 1]

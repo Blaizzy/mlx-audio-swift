@@ -4701,3 +4701,75 @@ struct Qwen3TTSSpeakerEncoderSmokeTests {
         print("\u{001B}[32m✓ End-to-end pipeline test PASSED\u{001B}[0m")
     }
 }
+
+// MARK: - Qwen3-TTS Config Dimension Consistency Tests
+
+struct Qwen3TTSConfigDimensionTests {
+    /// Test that TalkerConfig defaults use 2048 for hiddenSize (not 1024)
+    /// This prevents dimension mismatch errors during voice conditioning
+    @Test func testTalkerConfigHiddenSizeDimension() throws {
+        // Decode from empty JSON to trigger defaults
+        let emptyConfigJson = "{}".data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSTalkerConfig.self, from: emptyConfigJson)
+
+        // The fix: hiddenSize default should be 2048, not 1024
+        #expect(config.hiddenSize == 2048,
+                "TalkerConfig.hiddenSize default should be 2048 (actual model spec), not 1024")
+    }
+
+    /// Test that SpeakerEncoderConfig defaults use 2048 for encDim
+    /// Ensures embedding concatenation doesn't fail due to dimension mismatch
+    @Test func testSpeakerEncoderConfigDimension() throws {
+        let emptyConfigJson = "{}".data(using: .utf8)!
+        let config = try JSONDecoder().decode(Qwen3TTSSpeakerEncoderConfig.self, from: emptyConfigJson)
+
+        // The fix: encDim default should be 2048, not 1024
+        #expect(config.encDim == 2048,
+                "SpeakerEncoderConfig.encDim default should be 2048 (actual model spec), not 1024")
+    }
+
+    /// Test that text and hidden dimensions match in talker config
+    /// Prevents "concatenate: all dimensions must match" errors
+    @Test func testTalkerConfigDimensionConsistency() throws {
+        let configJson = """
+        {
+            "hidden_size": 2048,
+            "text_hidden_size": 2048
+        }
+        """.data(using: .utf8)!
+
+        let config = try JSONDecoder().decode(Qwen3TTSTalkerConfig.self, from: configJson)
+
+        // When both are present, they should match (or at least both be 2048)
+        #expect(config.hiddenSize == 2048, "hiddenSize should be 2048")
+        #expect(config.textHiddenSize == 2048, "textHiddenSize should be 2048")
+
+        // They should be the same to avoid concatenation errors
+        #expect(config.hiddenSize == config.textHiddenSize,
+                "Hidden dimensions must match for embedding concatenation")
+    }
+
+    /// Test config with actual CDN model spec values
+    /// Simulates loading a real Qwen3-TTS model config
+    @Test func testActualQwen3TTSModelConfig() throws {
+        let modelConfigJson = """
+        {
+            "talker_config": {
+                "hidden_size": 2048,
+                "text_hidden_size": 2048,
+                "vocab_size": 3072,
+                "text_vocab_size": 151936,
+                "num_hidden_layers": 28
+            }
+        }
+        """.data(using: .utf8)!
+
+        let modelConfig = try JSONDecoder().decode(Qwen3TTSModelConfig.self, from: modelConfigJson)
+
+        #expect(modelConfig.talkerConfig != nil, "talkerConfig should be present in model config")
+        let talkerConfig = modelConfig.talkerConfig!
+
+        #expect(talkerConfig.hiddenSize == 2048, "Should load correct hiddenSize from config")
+        #expect(talkerConfig.textHiddenSize == 2048, "Should load correct textHiddenSize from config")
+    }
+}
