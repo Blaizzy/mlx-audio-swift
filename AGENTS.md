@@ -167,6 +167,73 @@ The `<namespace>_<repo>` directory name is the HuggingFace repo ID with `/` repl
 
 Model resolution uses `ModelResolver.resolve(modelId:)` which delegates to SwiftAcervo. Legacy cache paths are auto-migrated on first use via `Acervo.migrateFromLegacyPaths()`.
 
+### ComponentDescriptor pattern (SNAC, Mimi)
+
+Audio codec modules (SNAC, Mimi) use **ComponentDescriptor** to register model variants with the Acervo Component Registry at module initialization time. This declarative approach allows Acervo to manage downloads without tight coupling to model loading code.
+
+#### Pattern structure
+
+Each codec with multiple variants defines:
+
+1. **Enum for model repos** (e.g., `SNACModelRepo`, `MimiModelRepo`)
+   - Declares HuggingFace repo IDs and component IDs
+   - Provides `displayName` and `componentId` computed properties
+
+2. **File lists** (e.g., `snac24kHzRequiredFiles`)
+   - Array of `ComponentFile(relativePath:)` for required model files
+   - Used by `Acervo.ensureComponentReady()` to verify downloads
+
+3. **Component descriptors** (e.g., `snacComponentDescriptors`)
+   - Array of `ComponentDescriptor` with:
+     - `id`: Acervo component ID (e.g., `"snac-24khz"`)
+     - `type`: Component type (e.g., `.decoder`)
+     - `displayName`: Human-readable name
+     - `repoId`: HuggingFace repo URL
+     - `files`: Required files (from step 2)
+     - `estimatedSizeBytes`: Download size
+     - `minimumMemoryBytes`: Minimum RAM required
+     - `metadata`: Optional codec-specific data (sample rate, bitrate, etc.)
+
+4. **Module-level registration trigger** (e.g., `_registerSNACComponents`)
+   - A `let` that evaluates once (lazily) on first access
+   - Calls `Acervo.register()` with descriptors from step 3
+   - Referenced by `fromPretrained()` to ensure early registration
+
+#### Usage in model loading
+
+```swift
+// In SNACModelManager.swift or MimiModelManager.swift
+extension SNAC {
+  public static func ensureComponentsRegistered() {
+    _ = _registerSNACComponents  // Triggers lazy initialization
+  }
+}
+
+// In SNAC.swift or Mimi.swift fromPretrained()
+public static func fromPretrained(_ modelRepo: String) async throws -> SNAC {
+  Self.ensureComponentsRegistered()  // Register before any Acervo call
+  
+  let resolved = try await Acervo.ensureComponentReady(
+    componentId: SNACModelRepo(rawValue: modelRepo)?.componentId ?? modelRepo
+  )
+  // ... load weights from resolved.path
+}
+```
+
+#### Benefits
+
+- **Declarative**: Component metadata lives in one place
+- **Discoverable**: Acervo knows what to download without model code running
+- **Testable**: ComponentDescriptor structs can be unit tested independently
+- **Resilient**: Graceful fallback if registration fails (model loading still works)
+
+#### Models using ComponentDescriptors
+
+| Model | Repo | ComponentIds | File |
+|-------|------|--------------|------|
+| SNAC | `mlx-community/snac_24khz` | `snac-24khz` | `Sources/MLXAudioCodecs/SNAC/SNACModelManager.swift` |
+| Mimi | `kyutai/moshiko-pytorch-bf16` | `mimi-pytorch-bf16` | `Sources/MLXAudioCodecs/Mimi/MimiModelManager.swift` |
+
 ### Model loading
 
 Models are loaded from HuggingFace via `fromPretrained()`. Internally this calls `ModelResolver.resolve()` (SwiftAcervo) which caches to `~/Library/SharedModels/`.

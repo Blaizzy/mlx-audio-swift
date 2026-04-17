@@ -26,11 +26,20 @@ We maintain compatibility with upstream's core architecture while expanding capa
 MLXAudio follows a modular design allowing you to import only what you need:
 
 - **MLXAudioCore**: Base types, protocols, and utilities
-- **MLXAudioCodecs**: Audio codec implementations (SNAC, Vocos, Mimi)
+- **MLXAudioCodecs**: Audio codec implementations (SNAC, Vocos, Mimi) with SwiftAcervo integration
 - **MLXAudioTTS**: Text-to-Speech models (Soprano, VyvoTTS, Orpheus, Marvis TTS, Pocket TTS)
 - **MLXAudioSTT**: Speech-to-Text models (GLMASR)
 - **MLXAudioSTS**: Speech-to-Speech (future)
 - **MLXAudioUI**: SwiftUI components for audio interfaces
+
+### Acervo Component Integration
+
+Audio codecs (SNAC, Mimi) register their model variants with the **SwiftAcervo Component Registry** at module initialization via `ComponentDescriptor`. This enables:
+
+- **Centralized component metadata**: HuggingFace repo IDs, required files, memory requirements stored in one place
+- **Intelligent downloads**: Acervo knows exactly what files to fetch before model code runs
+- **Shared model cache**: All `intrusive-memory` projects share codecs and TTS models at `~/Library/SharedModels/`
+- **Graceful fallback**: Model loading continues if component registration fails
 
 ## Installation
 
@@ -167,6 +176,39 @@ let tokens = try snac.encode(audio)
 // Decode tokens back to audio
 let reconstructed = try snac.decode(tokens)
 ```
+
+### ComponentDescriptor Pattern (Codec Registration)
+
+SNAC and Mimi codecs use **ComponentDescriptor** to declare model variants with Acervo at module initialization. This enables intelligent model discovery and download management.
+
+Each codec defines:
+- **Component ID**: Unique identifier (e.g., `snac-24khz`)
+- **Required files**: Exact files to download from HuggingFace
+- **Memory requirements**: Minimum RAM needed for inference
+- **Metadata**: Sample rate, bitrate, codebook info
+
+Example from SNAC:
+
+```swift
+// In SNACModelManager.swift
+private let snacComponentDescriptors: [ComponentDescriptor] = [
+  ComponentDescriptor(
+    id: "snac-24khz",
+    type: .decoder,
+    displayName: "SNAC 24 kHz Audio Codec",
+    repoId: "mlx-community/snac_24khz",
+    files: [
+      ComponentFile(relativePath: "config.json"),
+      ComponentFile(relativePath: "model.safetensors"),
+    ],
+    estimatedSizeBytes: 158_809_902,
+    minimumMemoryBytes: 200_000_000,
+    metadata: ["sampleRate": "24000", "bitrate": "0.98 kbps", "rvqLevels": "3"]
+  ),
+]
+```
+
+See [AGENTS.md](AGENTS.md) for the full ComponentDescriptor pattern documentation.
 
 ### Voice Selection for Multi-Voice Models
 
