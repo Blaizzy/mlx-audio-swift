@@ -184,7 +184,7 @@ private class SopranoModelInner: Module {
 public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationModel, @unchecked Sendable {
     public let vocabularySize: Int
     public let kvHeads: [Int]
-    public var tokenizer: Tokenizer?
+    public var tokenizer: Tokenizers.Tokenizer?
 
     private let model: SopranoModelInner
     let configuration: SopranoConfiguration

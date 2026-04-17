@@ -323,7 +323,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
 
     public let vocabularySize: Int
     public let kvHeads: [Int]
-    public var tokenizer: Tokenizer?
+    public var tokenizer: Tokenizers.Tokenizer?
     public var _snacModel: SNAC?
 
     private let model: Qwen3ModelInner

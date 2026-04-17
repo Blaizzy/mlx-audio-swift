@@ -68,7 +68,7 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
     // MARK: - State
 
     /// Text tokenizer loaded from tokenizer.json.
-    public var tokenizer: Tokenizer?
+    public var tokenizer: Tokenizers.Tokenizer?
 
     /// S3TokenizerV2: converts audio → speech token IDs (loaded separately).
     public var s3Tokenizer: S3TokenizerV2?

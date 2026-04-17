@@ -340,7 +340,7 @@ public class Qwen3ForcedAlignerModel: Module {
     @ModuleInfo(key: "model") var model: Qwen3ASRTextModel
     @ModuleInfo(key: "lm_head") var lmHead: Linear
 
-    public var tokenizer: Tokenizer?
+    public var tokenizer: Tokenizers.Tokenizer?
     let alignerProcessor = ForceAlignProcessor()
 
     public init(_ config: Qwen3ASRConfig) {

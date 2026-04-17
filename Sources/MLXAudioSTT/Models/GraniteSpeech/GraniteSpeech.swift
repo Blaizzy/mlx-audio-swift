@@ -675,7 +675,7 @@ class GraniteSpeechLanguageModel: Module, KVCacheDimensionProvider {
 // MARK: - Generation Context
 
 private struct GenerationContext {
-    let tokenizer: Tokenizer
+    let tokenizer: Tokenizers.Tokenizer
     let cache: [KVCache]
     let eosTokenId: Int
     var logits: MLXArray
@@ -711,7 +711,7 @@ public class GraniteSpeechModel: Module {
     @ModuleInfo(key: "language_model") var languageModel: GraniteSpeechLanguageModel
 
     let audioTokenId: Int
-    public var tokenizer: Tokenizer?
+    public var tokenizer: Tokenizers.Tokenizer?
 
     public init(_ config: GraniteSpeechModelConfig) {
         self.config = config
