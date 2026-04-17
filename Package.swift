@@ -110,7 +110,20 @@ let package = Package(
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "Transformers", package: "swift-transformers"),
             ],
-            path: "Sources/MLXAudioTTS"
+            path: "Sources/MLXAudioTTS",
+            exclude: [
+                "Models/Chatterbox/README.md",
+                "Models/EchoTTS/README.md",
+                "Models/FishSpeech/README.md",
+                "Models/Llama/README.md",
+                "Models/Marvis/README.md",
+                "Models/PocketTTS/README.md",
+                "Models/Qwen3/README.md",
+                "Models/Qwen3TTS/README.md",
+                "Models/Soprano/README.md",
+                "Models/StyleTTS2/KittenTTS/README.md",
+                "Models/StyleTTS2/Kokoro/README.md",
+            ]
         ),
 
         // MARK: - MLXAudioSTT
@@ -127,7 +140,17 @@ let package = Package(
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "Transformers", package: "swift-transformers"),
             ],
-            path: "Sources/MLXAudioSTT"
+            path: "Sources/MLXAudioSTT",
+            exclude: [
+                "Models/CohereTranscribe/README.md",
+                "Models/FireRedASR2/README.md",
+                "Models/GLMASR/README.md",
+                "Models/GraniteSpeech/README.md",
+                "Models/Parakeet/README.md",
+                "Models/Qwen3ASR/README.md",
+                "Models/SenseVoice/README.md",
+                "Models/VoxtralRealtime/README.md",
+            ]
         ),
 
         // MARK: - MLXAudioVAD
@@ -140,7 +163,11 @@ let package = Package(
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
             ],
-            path: "Sources/MLXAudioVAD"
+            path: "Sources/MLXAudioVAD",
+            exclude: [
+                "Models/SmartTurn/README.md",
+                "Models/Sortformer/README.md",
+            ]
         ),
 
         // MARK: - MLXAudioLID
@@ -153,7 +180,10 @@ let package = Package(
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
             ],
-            path: "Sources/MLXAudioLID"
+            path: "Sources/MLXAudioLID",
+            exclude: [
+                "README.md",
+            ]
         ),
 
         // MARK: - MLXAudioSTS
@@ -172,7 +202,11 @@ let package = Package(
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "Transformers", package: "swift-transformers"),
             ],
-            path: "Sources/MLXAudioSTS"
+            path: "Sources/MLXAudioSTS",
+            exclude: [
+                "Models/LFMAudio/README.md",
+                "Models/SAMAudio/README.md",
+            ]
         ),
 
         // MARK: - MLXAudioG2P
@@ -199,27 +233,42 @@ let package = Package(
         .executableTarget(
             name: "mlx-audio-swift-tts",
             dependencies: ["MLXAudioCore", "MLXAudioTTS", "MLXAudioSTT"],
-            path: "Sources/Tools/mlx-audio-swift-tts"
+            path: "Sources/Tools/mlx-audio-swift-tts",
+            exclude: [
+                "README.md",
+            ]
         ),
         .executableTarget(
             name: "mlx-audio-swift-codec",
             dependencies: ["MLXAudioCore", "MLXAudioCodecs"],
-            path: "Sources/Tools/mlx-audio-swift-codec"
+            path: "Sources/Tools/mlx-audio-swift-codec",
+            exclude: [
+                "README.md",
+            ]
         ),
         .executableTarget(
             name: "mlx-audio-swift-sts",
             dependencies: ["MLXAudioCore", "MLXAudioSTS"],
-            path: "Sources/Tools/mlx-audio-swift-sts"
+            path: "Sources/Tools/mlx-audio-swift-sts",
+            exclude: [
+                "README.md",
+            ]
         ),
         .executableTarget(
             name: "mlx-audio-swift-stt",
             dependencies: ["MLXAudioCore", "MLXAudioSTT"],
-            path: "Sources/Tools/mlx-audio-swift-stt"
+            path: "Sources/Tools/mlx-audio-swift-stt",
+            exclude: [
+                "README.md",
+            ]
         ),
         .executableTarget(
             name: "mlx-audio-swift-lid",
             dependencies: ["MLXAudioCore", "MLXAudioLID"],
-            path: "Sources/Tools/mlx-audio-swift-lid"
+            path: "Sources/Tools/mlx-audio-swift-lid",
+            exclude: [
+                "README.md",
+            ]
         ),
 
         // MARK: - Tests
