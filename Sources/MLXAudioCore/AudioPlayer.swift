@@ -34,8 +34,10 @@ public class AudioPlayer: NSObject, ObservableObject {
         super.init()
     }
 
-    @MainActor deinit {
-        stop()
+    deinit {
+        MainActor.assumeIsolated {
+            stop()
+        }
     }
 
     // MARK: - Playback Control
@@ -389,16 +391,32 @@ public class AudioPlayer: NSObject, ObservableObject {
 @available(*, deprecated, renamed: "AudioPlayer", message: "Use AudioPlayer instead.")
 public typealias AudioPlayerManager = AudioPlayer
 
-extension AudioPlayer: @MainActor AVAudioPlayerDelegate {
-    public func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+extension AudioPlayer: AVAudioPlayerDelegate {
+    public nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor [weak self] in
+            self?.handleAudioPlayerDidFinishPlaying()
+        }
+    }
+
+    public nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        let message = error?.localizedDescription ?? "unknown"
+        Task { @MainActor [weak self] in
+            self?.handleAudioPlayerDecodeError(message: message)
+        }
+    }
+}
+
+@MainActor
+private extension AudioPlayer {
+    func handleAudioPlayerDidFinishPlaying() {
         isPlaying = false
         setSpeaking(false)
         stopTimer()
         currentTime = 0
     }
 
-    public func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
-        print("Audio decode error: \(error?.localizedDescription ?? "unknown")")
+    func handleAudioPlayerDecodeError(message: String) {
+        print("Audio decode error: \(message)")
         isPlaying = false
         setSpeaking(false)
         stopTimer()
