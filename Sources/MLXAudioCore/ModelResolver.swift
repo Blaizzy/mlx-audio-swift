@@ -38,6 +38,21 @@ public enum ModelResolver {
     ) async throws -> URL {
         runMigrationIfNeeded()
 
+        // P1 Optimization: Check if model is registered with Acervo
+        if let componentId = AudioModelManager.componentId(for: modelId) {
+            print("Model \(modelId) is registered (component: \(componentId)), using Acervo fast path...")
+            AudioModelManager.ensureComponentsRegistered()
+
+            // Ensure component is available (downloads if needed)
+            try await Acervo.ensureComponentReady(componentId)
+
+            // Return the model directory
+            let dir = try Acervo.modelDirectory(for: modelId)
+            print("Using cached model at: \(dir.path)")
+            return dir
+        }
+
+        // Fallback: Non-registered models use HuggingFace discovery
         let token = hfToken ?? resolveHFToken()
 
         // Fast path: model already available with valid config.json

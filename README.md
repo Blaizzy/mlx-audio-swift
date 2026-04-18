@@ -162,12 +162,45 @@ let parameters = GenerateParameters(
 let audio = try await model.generate(text: "Your text here", parameters: parameters)
 ```
 
-### Audio Codec Usage
+### Audio Model Management
+
+All audio models and codecs are managed through **SwiftAcervo**, providing automatic downloads and shared caching across intrusive-memory projects.
+
+#### Model Storage
+
+Models download automatically on first use to:
+```
+~/Library/SharedModels/<namespace>_<repo>/
+```
+
+For example, `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16` becomes:
+```
+~/Library/SharedModels/mlx-community_Qwen3-TTS-12Hz-1.7B-Base-bf16/
+```
+
+All intrusive-memory projects share this directory, so models downloaded by one app are immediately available to others without re-downloading.
+
+#### Primary Audio Models (P1)
+
+P1 models register with Acervo at module initialization via `ComponentDescriptor`:
+
+| Model | Type | Component ID | HuggingFace Repo |
+|-------|------|--------------|------------------|
+| SNAC 24 kHz | Audio Codec | `snac-24khz` | `mlx-community/snac_24khz` |
+| Mimi | Audio Codec | `mimi-pytorch-bf16` | `kyutai/moshiko-pytorch-bf16` |
+
+Each descriptor declares:
+- **Required files** for download (config.json, model.safetensors, etc.)
+- **Estimated size** and **minimum memory** requirements
+- **Metadata** (sample rate, bitrate, codebook structure)
+
+#### Audio Codec Usage
 
 ```swift
 import MLXAudioCodecs
 
 // Load SNAC codec
+// ComponentDescriptor registration happens automatically
 let snac = try await SNAC.fromPretrained("mlx-community/snac_24khz")
 
 // Encode audio to tokens
@@ -177,38 +210,13 @@ let tokens = try snac.encode(audio)
 let reconstructed = try snac.decode(tokens)
 ```
 
-### ComponentDescriptor Pattern (Codec Registration)
+ComponentDescriptor registration enables Acervo to:
+- Verify required files before model code runs
+- Show download progress with accurate size estimates
+- Cache models efficiently in the shared directory
+- Fail gracefully if component registration encounters errors (models still load via fallback)
 
-SNAC and Mimi codecs use **ComponentDescriptor** to declare model variants with Acervo at module initialization. This enables intelligent model discovery and download management.
-
-Each codec defines:
-- **Component ID**: Unique identifier (e.g., `snac-24khz`)
-- **Required files**: Exact files to download from HuggingFace
-- **Memory requirements**: Minimum RAM needed for inference
-- **Metadata**: Sample rate, bitrate, codebook info
-
-Example from SNAC:
-
-```swift
-// In SNACModelManager.swift
-private let snacComponentDescriptors: [ComponentDescriptor] = [
-  ComponentDescriptor(
-    id: "snac-24khz",
-    type: .decoder,
-    displayName: "SNAC 24 kHz Audio Codec",
-    repoId: "mlx-community/snac_24khz",
-    files: [
-      ComponentFile(relativePath: "config.json"),
-      ComponentFile(relativePath: "model.safetensors"),
-    ],
-    estimatedSizeBytes: 158_809_902,
-    minimumMemoryBytes: 200_000_000,
-    metadata: ["sampleRate": "24000", "bitrate": "0.98 kbps", "rvqLevels": "3"]
-  ),
-]
-```
-
-See [AGENTS.md](AGENTS.md) for the full ComponentDescriptor pattern documentation.
+See [AGENTS.md](AGENTS.md) for the full ComponentDescriptor pattern documentation and integration examples.
 
 ### Voice Selection for Multi-Voice Models
 

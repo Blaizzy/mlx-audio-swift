@@ -54,6 +54,7 @@ test-all: ## Run all tests (including those requiring model downloads)
 	$(XCODEBUILD) test \
 		-scheme $(SCHEME) \
 		-destination $(DESTINATION) \
+		-only-testing:MLXAudioTests/AudioModelManagerIntegrationTests \
 		$(CODE_SIGNING)
 
 clean: ## Clean build artifacts

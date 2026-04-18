@@ -233,6 +233,9 @@ public final class MimiStreamingDecoder {
 
 public extension Mimi {
     static func fromPretrained(repoId: String = "kyutai/moshiko-pytorch-bf16", filename: String = "tokenizer-e351c8d8-checkpoint125.safetensors", progressHandler: @escaping (Progress) -> Void = { _ in }) async throws -> Mimi {
+        // Ensure Mimi components are registered with Acervo before loading
+        ensureComponentsRegistered()
+
         print("[Mimi] Starting Mimi model loading from \(repoId)")
 
         print("[Mimi] Creating configuration...")
