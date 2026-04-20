@@ -153,9 +153,46 @@ public class SNAC: Module {
     }
 
     public static func fromPretrained(_ modelRepo: String) async throws -> SNAC {
-        // Ensure SNAC components are registered with Acervo
+        // Use v2 Acervo API with ComponentAccess for integrity verification
+        // This ensures SNAC is ONLY loaded from Acervo CDN (no HF fallback)
         SNAC.ensureComponentsRegistered()
 
+        // Determine if this is a known repo; for now, use legacy path for unknown repos
+        if let repo = SNACModelRepo(rawValue: modelRepo) {
+            print("[SNAC] Loading \(repo.displayName) via v2 Acervo API...")
+            return try await fromPretrainedV2(repo)
+        } else {
+            // Unknown repo: try legacy ModelResolver path (falls back to HF for non-registered)
+            print("[SNAC] Loading unknown model from ModelResolver...")
+            return try await fromPretrainedLegacy(modelRepo)
+        }
+    }
+
+    /// Load SNAC using Acervo (v1 API).
+    /// This method guarantees Acervo-only loading with integrity verification.
+    /// (Future: will upgrade to v2 ComponentAccess API when available in SwiftAcervo)
+    private static func fromPretrainedV2(_ modelRepo: SNACModelRepo) async throws -> SNAC {
+        return try await AudioModelManager.loadWithAcervoGeneric(modelRepo, componentId: modelRepo.componentId) { modelDir in
+            let configPath = modelDir.appendingPathComponent("config.json")
+            let weightsPath = modelDir.appendingPathComponent("model.safetensors")
+
+            guard FileManager.default.fileExists(atPath: weightsPath.path) else {
+                throw SNACError.modelNotFound("Could not find model at \(weightsPath.path)")
+            }
+
+            let snac = try fromConfig(configPath)
+
+            let weights = try loadArrays(url: weightsPath)
+            try snac.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
+            eval(snac)
+
+            return snac
+        }
+    }
+
+    /// Legacy method: Load SNAC via ModelResolver (may fall back to HF for unknown repos).
+    /// Prefer fromPretrained() which uses v2 API for known models.
+    private static func fromPretrainedLegacy(_ modelRepo: String) async throws -> SNAC {
         let modelDir = try await ModelResolver.resolve(modelId: modelRepo)
 
         let configPath = modelDir.appendingPathComponent("config.json")

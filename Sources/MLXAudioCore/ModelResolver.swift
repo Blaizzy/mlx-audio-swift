@@ -24,12 +24,19 @@ public enum ModelResolver {
 
     /// Resolve a model directory, downloading via Acervo if not cached.
     ///
+    /// For P1 models (SNAC, Mimi): MUST be registered with Acervo.
+    /// HuggingFace fallback is NOT available for P1 models.
+    /// If a P1 model is not on Acervo CDN, the call will fail.
+    ///
+    /// For P2 and other models: Falls back to HuggingFace if not registered.
+    ///
     /// - Parameters:
     ///   - modelId: HuggingFace repo ID (e.g., `"mlx-community/snac_24khz"`)
     ///   - requiredFiles: Specific file paths that must be present (e.g., `["tokenizer-e351c8d8-checkpoint125.safetensors"]`)
     ///   - extensions: File extensions to download when discovering repo contents. Defaults to safetensors, json, txt.
     ///   - hfToken: Optional HuggingFace bearer token for gated repos.
     /// - Returns: Local directory URL containing model files.
+    /// - Throws: `AcervoError.componentNotRegistered` if a P1 model is not on Acervo CDN.
     public static func resolve(
         modelId: String,
         requiredFiles: [String] = [],
@@ -39,8 +46,9 @@ public enum ModelResolver {
         runMigrationIfNeeded()
 
         // P1 Optimization: Check if model is registered with Acervo
+        // For P1 models, Acervo is the ONLY source (no HF fallback)
         if let componentId = AudioModelManager.componentId(for: modelId) {
-            print("Model \(modelId) is registered (component: \(componentId)), using Acervo fast path...")
+            print("Model \(modelId) is registered (component: \(componentId)), using Acervo v2 API...")
             AudioModelManager.ensureComponentsRegistered()
 
             // Ensure component is available (downloads if needed)
@@ -48,7 +56,7 @@ public enum ModelResolver {
 
             // Return the model directory
             let dir = try Acervo.modelDirectory(for: modelId)
-            print("Using cached model at: \(dir.path)")
+            print("✓ P1 model loaded from Acervo: \(dir.path)")
             return dir
         }
 

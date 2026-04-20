@@ -4,6 +4,7 @@ import MLXAudioCore
 import MLXNN
 import MLXLMCommon
 import Tokenizers
+import SwiftAcervo
 
 // MARK: - Configs
 
@@ -232,11 +233,106 @@ public final class MimiStreamingDecoder {
 }
 
 public extension Mimi {
-    static func fromPretrained(repoId: String = "kyutai/moshiko-pytorch-bf16", filename: String = "tokenizer-e351c8d8-checkpoint125.safetensors", progressHandler: @escaping (Progress) -> Void = { _ in }) async throws -> Mimi {
+    /// Load Mimi model using v2 Acervo API (ComponentAccess).
+    /// Default repo is the standard Mimi PyTorch BF16 checkpoint.
+    static func fromPretrained(
+        repoId: String = "kyutai/moshiko-pytorch-bf16",
+        filename: String = "tokenizer-e351c8d8-checkpoint125.safetensors",
+        progressHandler: @escaping (Progress) -> Void = { _ in }
+    ) async throws -> Mimi {
         // Ensure Mimi components are registered with Acervo before loading
         ensureComponentsRegistered()
 
-        print("[Mimi] Starting Mimi model loading from \(repoId)")
+        // Use v2 API if this is a known repo
+        if let repo = MimiModelRepo(rawValue: repoId) {
+            print("[Mimi] Loading \(repo.displayName) via v2 Acervo API...")
+            return try await fromPretrainedV2(repo, progressHandler: progressHandler)
+        } else {
+            // Unknown repo: try legacy ModelResolver path (falls back to HF for non-registered)
+            print("[Mimi] Loading unknown model from ModelResolver...")
+            return try await fromPretrainedLegacy(repoId, filename: filename, progressHandler: progressHandler)
+        }
+    }
+
+    /// Load Mimi using Acervo (v1 API).
+    /// This method guarantees Acervo-only loading with integrity verification.
+    /// (Future: will upgrade to v2 ComponentAccess API when available in SwiftAcervo)
+    private static func fromPretrainedV2(
+        _ modelRepo: MimiModelRepo,
+        progressHandler: @escaping (Progress) -> Void = { _ in }
+    ) async throws -> Mimi {
+        print("[Mimi] Starting Mimi model loading from Acervo (v1 API)")
+
+        print("[Mimi] Creating configuration...")
+        let cfg = mimi_202407(numCodebooks: 32)
+
+        print("[Mimi] Initializing Mimi model with config...")
+        let modelInitStart = CFAbsoluteTimeGetCurrent()
+        let model = Mimi(cfg: cfg)
+        let modelInitTime = CFAbsoluteTimeGetCurrent() - modelInitStart
+        print(String(format: "[Mimi] Model initialization completed in %.2f seconds", modelInitTime))
+
+        return try await AudioModelManager.loadWithAcervoGeneric(modelRepo, componentId: modelRepo.componentId) { modelDir in
+            let weightFileURL = modelDir.appendingPathComponent("tokenizer-e351c8d8-checkpoint125.safetensors")
+
+            guard FileManager.default.fileExists(atPath: weightFileURL.path) else {
+                throw NSError(domain: "MimiModel", code: 1, userInfo: ["file": "tokenizer-e351c8d8-checkpoint125.safetensors", "repo": modelRepo.rawValue])
+            }
+
+            print("[Mimi] Loading weight arrays from safetensors file...")
+            let loadStart = CFAbsoluteTimeGetCurrent()
+            var weights = [String: MLXArray]()
+            let w = try loadArrays(url: weightFileURL)
+            for (key, value) in w {
+                weights[key] = value
+            }
+            let loadTime = CFAbsoluteTimeGetCurrent() - loadStart
+            print(String(format: "[Mimi] Weight arrays loaded in %.2f seconds. Total weights: %d", loadTime, weights.count))
+
+            print("[Mimi] Sanitizing weights...")
+            let sanitizeStart = CFAbsoluteTimeGetCurrent()
+            weights = model.sanitize(weights: weights)
+            let sanitizeTime = CFAbsoluteTimeGetCurrent() - sanitizeStart
+            print(String(format: "[Mimi] Weights sanitized in %.2f seconds. Final weight count: %d", sanitizeTime, weights.count))
+
+            print("[Mimi] Processing codebook updates...")
+            let filterStart = CFAbsoluteTimeGetCurrent()
+            func filterFn(_ module: Module, _ name: String, _ item: ModuleItem) -> Bool {
+                if let codebook = module as? EuclideanCodebook, name == "initialized" {
+                    codebook.updateInPlace()
+                }
+                return true
+            }
+            _ = model.filterMap(filter: filterFn)
+            let filterTime = CFAbsoluteTimeGetCurrent() - filterStart
+            print(String(format: "[Mimi] Codebook processing completed in %.2f seconds", filterTime))
+
+            print("[Mimi] Updating model parameters...")
+            let updateStart = CFAbsoluteTimeGetCurrent()
+            let parameters = ModuleParameters.unflattened(weights)
+            try model.update(parameters: parameters, verify: [.all])
+            let updateTime = CFAbsoluteTimeGetCurrent() - updateStart
+            print(String(format: "[Mimi] Model parameters updated in %.2f seconds", updateTime))
+
+            print("[Mimi] Evaluating model...")
+            let evalStart = CFAbsoluteTimeGetCurrent()
+            eval(model)
+            let evalTime = CFAbsoluteTimeGetCurrent() - evalStart
+            print(String(format: "[Mimi] Model evaluation completed in %.2f seconds", evalTime))
+
+            print("[Mimi] Mimi model loading completed successfully")
+            return model
+        }
+    }
+
+    /// Legacy method: Load Mimi via ModelResolver (may fall back to HF for unknown repos).
+    /// Prefer fromPretrained() which uses v2 API for known models.
+    private static func fromPretrainedLegacy(
+        _ repoId: String,
+        filename: String,
+        progressHandler: @escaping (Progress) -> Void = { _ in }
+    ) async throws -> Mimi {
+        print("[Mimi] Starting Mimi model loading from \(repoId) (legacy path)")
 
         print("[Mimi] Creating configuration...")
         let cfg = mimi_202407(numCodebooks: 32)

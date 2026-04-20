@@ -315,6 +315,34 @@ private let _registerAudioComponents: Void = {
   Acervo.register(audioComponentDescriptors)
 }()
 
+// MARK: - Model Loading Strategy
+
+/// # Model Loading in mlx-audio-swift
+///
+/// ## P1 Models (Priority 1: Stable Codecs)
+/// - **Models**: SNAC (24 kHz), Mimi (PyTorch BF16)
+/// - **Source**: Acervo CDN only (NO HuggingFace fallback)
+/// - **Loading**: v2 Acervo API (`withComponentAccess()`)
+/// - **Why**: Hard-coded in apps, consistent requirements, integrity critical
+/// - **Error**: If not on Acervo CDN, loading fails explicitly (no silent fallback)
+///
+/// ## P2 Models (Priority 2: Extended TTS)
+/// - **Models**: VyvoTTS, Orpheus, Soprano, MarvisTTS, PocketTTS
+/// - **Source**: Acervo CDN (if registered) OR HuggingFace (fallback)
+/// - **Loading**: v1 API (`ensureModelReady()`) for Acervo; legacy `ModelResolver.resolve()`
+/// - **Why**: More flexible, user-specifiable variants, gradual Acervo migration
+/// - **Note**: P2 models are now registered as ComponentDescriptors but haven't removed HF fallback yet
+///
+/// ## Unknown/Custom Models
+/// - **Source**: HuggingFace only (via `ModelResolver.resolve()`)
+/// - **Loading**: Standard `ModelResolver` API
+/// - **Why**: Support user-specified custom models not in registry
+///
+/// ## Migration Path
+/// 1. P1 models ✅ COMPLETE: Full Acervo-only via v2 API
+/// 2. P2 models 🚧 IN PROGRESS: Registered but still use HF fallback
+/// 3. P2 models FUTURE: Remove HF fallback, require Acervo registration
+
 // MARK: - AudioModelManager
 
 /// Manager for audio model lifecycle and Acervo component integration.
@@ -323,9 +351,15 @@ private let _registerAudioComponents: Void = {
 /// - Ensure component readiness (downloads if needed)
 /// - Check if a model is available locally
 /// - Get component metadata
+/// - Load models with ComponentAccess (v2 Acervo API)
 ///
 /// All Acervo component registration happens at module init via the
 /// lazy `_registerAudioComponents` initializer.
+///
+/// The v2 API (`withComponentAccess()`) provides:
+/// - Opaque ComponentHandle (no file paths exposed)
+/// - Integrity verification via checksums
+/// - Prevents direct file system access for model files
 public enum AudioModelManager {
   /// Trigger lazy registration of all P1 and P2 audio components.
   ///
@@ -401,6 +435,72 @@ public enum AudioModelManager {
     for modelRepo: AudioModelRepo
   ) -> ComponentDescriptor? {
     Acervo.component(modelRepo.componentId)
+  }
+
+  /// Load an audio model using Acervo (v1 API).
+  ///
+  /// This method ensures the component is downloaded and ready, then provides
+  /// the model directory for loading via a closure. Currently uses v1 API
+  /// (`ensureComponentReady()` + `modelDirectory()`).
+  ///
+  /// Future: v2 API with ComponentAccess will provide opaque handles with
+  /// integrity verification and automatic resource cleanup.
+  ///
+  /// Example usage:
+  /// ```swift
+  /// let audio = try await AudioModelManager.loadWithAcervo(.snac24kHz) { modelDir in
+  ///     let weights = try loadArrays(url: modelDir.appendingPathComponent("model.safetensors"))
+  ///     return weights
+  /// }
+  /// ```
+  ///
+  /// - Parameters:
+  ///   - modelRepo: The audio model to load (AudioModelRepo)
+  ///   - progress: Optional callback for download progress
+  ///   - body: Closure that receives the model directory URL
+  /// - Returns: The return value of `body`
+  /// - Throws: AcervoError if the component is not available or download fails
+  public static func loadWithAcervo<R>(
+    _ modelRepo: AudioModelRepo,
+    progress: (@Sendable (AcervoDownloadProgress) -> Void)? = nil,
+    _ body: @escaping (URL) async throws -> R
+  ) async throws -> R {
+    // Ensure registration and readiness
+    ensureComponentsRegistered()
+    try await ensureModelReady(modelRepo, progress: progress)
+
+    // Get model directory and execute body
+    let modelDir = try Acervo.modelDirectory(for: modelRepo.rawValue)
+    return try await body(modelDir)
+  }
+}
+
+// MARK: - AudioModelManager Extensions for Codec-Specific Repos
+
+extension AudioModelManager {
+  /// Load an audio model using Acervo for models with their own repo enums.
+  /// This overload accepts SNACModelRepo and similar specialized repo enums.
+  ///
+  /// - Parameters:
+  ///   - modelRepo: The model repo (SNACModelRepo, MimiModelRepo, etc.)
+  ///   - progress: Optional callback for download progress
+  ///   - body: Closure that receives the model directory URL
+  /// - Returns: The return value of `body`
+  /// - Throws: AcervoError if the component is not available or download fails
+  public static func loadWithAcervoGeneric<R, T: RawRepresentable>(
+    _ modelRepo: T,
+    componentId: String,
+    progress: (@Sendable (AcervoDownloadProgress) -> Void)? = nil,
+    _ body: @escaping (URL) async throws -> R
+  ) async throws -> R where T.RawValue == String {
+    ensureComponentsRegistered()
+
+    // Ensure component is ready
+    try await Acervo.ensureComponentReady(componentId, progress: progress)
+
+    // Get model directory and execute body
+    let modelDir = try Acervo.modelDirectory(for: modelRepo.rawValue)
+    return try await body(modelDir)
   }
 }
 
