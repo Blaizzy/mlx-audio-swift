@@ -1,0 +1,99 @@
+name: Ensure Model on CDN (Midnight)
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Midnight UTC
+  workflow_dispatch:
+
+jobs:
+  ensure-model-cdn:
+    name: Upload Model to CDN
+    runs-on: macos-26
+    timeout-minutes: 240
+
+    strategy:
+      matrix:
+        model:
+          - {id: snac-24khz, repo: mlx-community/snac_24khz, slug: mlx-community_snac_24khz}
+          - {id: mimi-pytorch-bf16, repo: kyutai/moshiko-pytorch-bf16, slug: kyutai_moshiko-pytorch-bf16}
+          - {id: vyvo-tts-beta-4bit, repo: mlx-community/VyvoTTS-EN-Beta-4bit, slug: mlx-community_VyvoTTS-EN-Beta-4bit}
+          - {id: orpheus-tts-3b, repo: mlx-community/orpheus-3b-0.1-ft-bf16, slug: mlx-community_orpheus-3b-0.1-ft-bf16}
+          - {id: soprano-tts-80m, repo: mlx-community/Soprano-80M-bf16, slug: mlx-community_Soprano-80M-bf16}
+          - {id: marvis-tts-250m-8bit, repo: Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit, slug: Marvis-AI_marvis-tts-250m-v0.2-MLX-8bit}
+          - {id: pocket-tts, repo: mlx-community/pocket-tts, slug: mlx-community_pocket-tts}
+
+    env:
+      MODEL_ID: ${{ matrix.model.id }}
+      MODEL_REPO: ${{ matrix.model.repo }}
+      MODEL_SLUG: ${{ matrix.model.slug }}
+      CDN_BASE: ${{ secrets.CDN_BASE_URL }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install acervo CLI
+        run: |
+          brew tap intrusive-memory/tools
+          brew install acervo
+
+      - name: Check if model exists on CDN
+        id: check_model
+        run: |
+          if acervo manifest "$CDN_BASE/$MODEL_SLUG" 2>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+        continue-on-error: true
+
+      - name: Download from HuggingFace
+        if: steps.check_model.outputs.exists != 'true'
+        run: |
+          huggingface-cli download "$MODEL_REPO" \
+            --repo-type model \
+            --cache-dir /tmp/hf-cache \
+            --local-dir "/tmp/$MODEL_SLUG"
+
+      - name: Compute SHA-256
+        if: steps.check_model.outputs.exists != 'true'
+        run: |
+          MANIFEST_FILE="/tmp/$MODEL_SLUG/manifest.json"
+          CHECKSUM=$(find "/tmp/$MODEL_SLUG" -type f \( -name "*.safetensors" -o -name "*.json" \) | \
+            sort | xargs cat | shasum -a 256 | awk '{print $1}')
+
+          jq -n \
+            --arg id "$MODEL_ID" \
+            --arg checksum "$CHECKSUM" \
+            --arg size "$(du -sh "/tmp/$MODEL_SLUG" | awk '{print $1}')" \
+            '{
+              id: $id,
+              checksum: $checksum,
+              size: $size,
+              uploadedAt: now | strftime("%Y-%m-%dT%H:%M:%SZ")
+            }' > "$MANIFEST_FILE"
+
+      - name: Upload to CDN
+        if: steps.check_model.outputs.exists != 'true'
+        run: |
+          acervo upload \
+            --bucket "$R2_BUCKET" \
+            --account-id "$R2_ACCOUNT_ID" \
+            --access-key "$R2_ACCESS_KEY_ID" \
+            --secret-key "$R2_SECRET_ACCESS_KEY" \
+            --source "/tmp/$MODEL_SLUG" \
+            --destination "$MODEL_SLUG" \
+            --manifest "/tmp/$MODEL_SLUG/manifest.json"
+
+      - name: Verify upload
+        if: steps.check_model.outputs.exists != 'true'
+        run: |
+          acervo verify "$CDN_BASE/$MODEL_SLUG"
+
+      - name: Model already on CDN
+        if: steps.check_model.outputs.exists == 'true'
+        run: echo "✓ Model $MODEL_ID already exists on CDN"
