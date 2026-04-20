@@ -14,10 +14,12 @@ final class CSMLlama3ScaledRoPE: Module {
     let highFreqFactor: Float
     let oldContextLen: Float
 
-    private var cosF32: MLXArray?
-    private var sinF32: MLXArray?
-    private var cosByDType: [DType: MLXArray] = [:]
-    private var sinByDType: [DType: MLXArray] = [:]
+    // Keep runtime-only RoPE caches underscore-prefixed so MLX Module reflection
+    // does not treat them as checkpoint-backed parameters during strict verify.
+    private var _cosF32: MLXArray?
+    private var _sinF32: MLXArray?
+    private var _cosByDType: [DType: MLXArray] = [:]
+    private var _sinByDType: [DType: MLXArray] = [:]
     private var isCacheBuilt = false
 
     init(
@@ -74,11 +76,11 @@ final class CSMLlama3ScaledRoPE: Module {
 
         let seq = MLXArray(stride(from: 0, to: maxSeqLen, by: 1)).asType(.float32).reshaped([maxSeqLen, 1])
         let idxTheta = seq * theta.reshaped([1, d2])
-        cosF32 = cos(idxTheta)
-        sinF32 = sin(idxTheta)
+        _cosF32 = cos(idxTheta)
+        _sinF32 = sin(idxTheta)
 
-        cosByDType.removeAll()
-        sinByDType.removeAll()
+        _cosByDType.removeAll()
+        _sinByDType.removeAll()
         isCacheBuilt = true
     }
 
@@ -103,7 +105,7 @@ final class CSMLlama3ScaledRoPE: Module {
 
     private func getCache(dtype: DType, seqLen: Int, offset: Int?) -> (MLXArray, MLXArray) {
         precondition(isCacheBuilt, "RoPE cache is not built. Call ropeInit() first.")
-        guard let cosF32, let sinF32 else { return (MLXArray(0), MLXArray(0)) }
+        guard let _cosF32, let _sinF32 else { return (MLXArray(0), MLXArray(0)) }
 
         let start = max(offset ?? 0, 0)
         let end = start + seqLen
@@ -113,15 +115,15 @@ final class CSMLlama3ScaledRoPE: Module {
         let cosSrc: MLXArray
         let sinSrc: MLXArray
         if dtype == .float32 {
-            cosSrc = cosF32
-            sinSrc = sinF32
+            cosSrc = _cosF32
+            sinSrc = _sinF32
         } else {
-            if cosByDType[dtype] == nil {
-                cosByDType[dtype] = cosF32.asType(dtype)
-                sinByDType[dtype] = sinF32.asType(dtype)
+            if _cosByDType[dtype] == nil {
+                _cosByDType[dtype] = _cosF32.asType(dtype)
+                _sinByDType[dtype] = _sinF32.asType(dtype)
             }
-            cosSrc = cosByDType[dtype]!
-            sinSrc = sinByDType[dtype]!
+            cosSrc = _cosByDType[dtype]!
+            sinSrc = _sinByDType[dtype]!
         }
 
         let cosHead = split(cosSrc, indices: [start], axis: 0)[1]
