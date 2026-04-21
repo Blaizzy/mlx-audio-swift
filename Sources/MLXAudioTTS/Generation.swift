@@ -18,6 +18,16 @@ public protocol SpeechGenerationModel: AnyObject {
         generationParameters: GenerateParameters
     ) async throws -> MLXArray
 
+    func generate(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        seed: UInt64?
+    ) async throws -> MLXArray
+
     func generateStream(
         text: String,
         voice: String?,
@@ -34,6 +44,27 @@ public protocol SpeechGenerationModel: AnyObject {
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters,
+        seed: UInt64?
+    ) -> AsyncThrowingStream<AudioGeneration, Error>
+
+    func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        streamingInterval: Double
+    ) -> AsyncThrowingStream<AudioGeneration, Error>
+
+    func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        seed: UInt64?,
         streamingInterval: Double
     ) -> AsyncThrowingStream<AudioGeneration, Error>
 }
@@ -45,9 +76,88 @@ public extension SpeechGenerationModel {
         refAudio: MLXArray?,
         refText: String?,
         language: String?,
+        generationParameters: GenerateParameters,
+        seed: UInt64?
+    ) async throws -> MLXArray {
+        try await generate(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: language,
+            generationParameters: generationParameters
+        )
+    }
+
+    func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        seed: UInt64?
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        generateStream(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: language,
+            generationParameters: generationParameters
+        )
+    }
+
+    func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        seed: UInt64?,
+        streamingInterval: Double
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        generateStream(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: language,
+            generationParameters: generationParameters,
+            streamingInterval: streamingInterval
+        )
+    }
+
+    func generate(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
         generationParameters: GenerateParameters? = nil
     ) async throws -> MLXArray {
         try await generate(text: text, voice: voice, refAudio: refAudio, refText: refText, language: language, generationParameters: generationParameters ?? defaultGenerationParameters)
+    }
+
+    func generate(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters? = nil,
+        seed: UInt64?
+    ) async throws -> MLXArray {
+        try await generate(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: language,
+            generationParameters: generationParameters ?? defaultGenerationParameters,
+            seed: seed
+        )
     }
 
     func generateSamplesStream(

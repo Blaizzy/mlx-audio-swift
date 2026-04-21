@@ -58,6 +58,26 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         language: String?,
         generationParameters: GenerateParameters
     ) async throws -> MLXArray {
+        try await generate(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: language,
+            generationParameters: generationParameters,
+            seed: nil
+        )
+    }
+
+    public func generate(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        seed: UInt64?
+    ) async throws -> MLXArray {
         guard speechTokenizer != nil else {
             throw AudioGenerationError.modelNotInitialized("Speech tokenizer not loaded")
         }
@@ -79,7 +99,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             topP: generationParameters.topP,
             repetitionPenalty: generationParameters.repetitionPenalty ?? 1.05,
             minP: 0.0,
-            maxTokens: generationParameters.maxTokens ?? 4096
+            maxTokens: generationParameters.maxTokens ?? 4096,
+            seed: seed
         )
         return audio
     }
@@ -110,6 +131,49 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters,
+        seed: UInt64?
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        generateStream(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: language,
+            generationParameters: generationParameters,
+            seed: seed,
+            streamingInterval: 2.0
+        )
+    }
+
+    public func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        streamingInterval: Double
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        generateStream(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: language,
+            generationParameters: generationParameters,
+            seed: nil,
+            streamingInterval: streamingInterval
+        )
+    }
+
+    public func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        seed: UInt64?,
         streamingInterval: Double
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
@@ -143,6 +207,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                     repetitionPenalty: repPenalty,
                     minP: 0.0,
                     maxTokens: maxTokens,
+                    seed: seed,
                     streamingInterval: streamingInterval,
                     onToken: { tokenId in
                         continuation.yield(.token(tokenId))
@@ -274,6 +339,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         repetitionPenalty: Float,
         minP: Float,
         maxTokens: Int,
+        seed: UInt64? = nil,
         streamingInterval: Double = 2.0,
         onToken: ((Int) -> Void)? = nil,
         onInfo: ((AudioGenerationInfo) -> Void)? = nil,
@@ -343,8 +409,16 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
         var trailingIdx = 0
         var inputEmbeds = inputEmbedsInit
+        var samplingKey = seed.map(MLXRandom.key)
         let eosTokenArray = MLXArray([Int32(eosTokenId)]).reshaped(1, 1)
         let codeCache = talker.codePredictor.makeCache()
+
+        func nextSamplingKey() -> MLXArray? {
+            guard let key = samplingKey else { return nil }
+            let splitKeys = MLXRandom.split(key: key, into: 2)
+            samplingKey = splitKeys[0]
+            return splitKeys[1]
+        }
 
         if onAudioChunk != nil {
             speechTokenizer.decoder.resetStreamingState()
@@ -370,7 +444,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                 generatedTokens: generatedCodebookTokens,
                 suppressTokens: suppressTokens,
                 eosTokenId: eosTokenId,
-                minP: minP
+                minP: minP,
+                key: nextSamplingKey()
             )
 
             // Defer sync to the eval boundary with inputEmbeds.
@@ -401,7 +476,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                     temperature: temperature,
                     topP: topP,
                     topK: topK,
-                    minP: minP
+                    minP: minP,
+                    key: nextSamplingKey()
                 )
                 codeTokens.append(nextCode)
             }
@@ -793,7 +869,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         generatedTokens: [Int]? = nil,
         suppressTokens: [Int]? = nil,
         eosTokenId: Int? = nil,
-        minP: Float = 0.0
+        minP: Float = 0.0,
+        key: MLXArray? = nil
     ) -> MLXArray {
         var logitsSlice = logits[0..., (-1)..., 0...].squeezed(axis: 1) // [batch, vocab_size]
 
@@ -897,7 +974,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         }
 
         // Sample with temperature
-        let token = categorical(filteredLogits / temperature)
+        let token = categorical(filteredLogits / temperature, key: key)
         return token.reshaped(1, 1)
     }
 

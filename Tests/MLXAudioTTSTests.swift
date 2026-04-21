@@ -136,6 +136,73 @@ struct SopranoTextCleaningTests {
     }
 }
 
+struct Qwen3TTSSeededSamplingTests {
+
+    @Test func sameSeedProducesSameSampleSequence() throws {
+        let model = try makeModel()
+        let first = sampleSequence(model: model, seed: 42)
+        let second = sampleSequence(model: model, seed: 42)
+
+        #expect(first == second)
+    }
+
+    @Test func differentSeedsCanProduceDifferentSampleSequences() throws {
+        let model = try makeModel()
+        let first = sampleSequence(model: model, seed: 42)
+        let second = sampleSequence(model: model, seed: 43)
+
+        #expect(first != second)
+    }
+
+    @Test func greedySamplingIgnoresSeed() throws {
+        let model = try makeModel()
+        let logits = MLXArray([-1.0 as Float, 4.0, 0.0, 2.0]).reshaped(1, 1, 4)
+        let first = model.sampleToken(logits, temperature: 0, key: MLXRandom.key(1))
+        let second = model.sampleToken(logits, temperature: 0, key: MLXRandom.key(2))
+        eval(first, second)
+
+        #expect(Int(first.item(Int32.self)) == 1)
+        #expect(Int(second.item(Int32.self)) == 1)
+    }
+
+    @Test func unseededSamplingStillUsesImplicitRandomState() throws {
+        let model = try makeModel()
+        let logits = MLXArray([0.0 as Float, 0.5, 1.0, 1.5]).reshaped(1, 1, 4)
+        let token = model.sampleToken(logits, temperature: 1.0, topP: 1.0, topK: 0)
+        eval(token)
+        let tokenID = Int(token.item(Int32.self))
+
+        #expect((0 ..< 4).contains(tokenID))
+    }
+
+    private func sampleSequence(model: Qwen3TTSModel, seed: UInt64) -> [Int] {
+        let logits = MLXArray([0.0 as Float, 0.5, 1.0, 1.5]).reshaped(1, 1, 4)
+        var key = MLXRandom.key(seed)
+
+        return (0 ..< 24).map { _ in
+            let splitKeys = MLXRandom.split(key: key, into: 2)
+            key = splitKeys[0]
+            let token = model.sampleToken(
+                logits,
+                temperature: 1.0,
+                topP: 1.0,
+                topK: 0,
+                key: splitKeys[1]
+            )
+            eval(token)
+            return Int(token.item(Int32.self))
+        }
+    }
+
+    private func makeModel() throws -> Qwen3TTSModel {
+        let config = try JSONDecoder().decode(
+            Qwen3TTSModelConfig.self,
+            from: Data("{}".utf8)
+        )
+        return Qwen3TTSModel(config: config)
+    }
+}
+
 struct EchoTTSTests {
 
     @Test func testTextNormalization() {
