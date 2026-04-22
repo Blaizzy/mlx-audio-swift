@@ -675,8 +675,33 @@ private struct ParakeetQuantizationConfig: Decodable {
     let perLayerQuantization: BaseConfiguration.PerLayerQuantization?
 
     init(from decoder: Decoder) throws {
-        let base = try? BaseConfiguration(from: decoder)
-        self.perLayerQuantization = base?.perLayerQuantization
+        // BaseConfiguration requires model_type, but Parakeet configs use 'target'
+        // instead, so BaseConfiguration decoding fails. Try it first for future
+        // compatibility, then fall back to reading 'quantization' directly.
+        if let base = try? BaseConfiguration(from: decoder) {
+            self.perLayerQuantization = base.perLayerQuantization
+            return
+        }
+
+        // Parakeet config has: "quantization": { "group_size": N, "bits": N, "mode": "..." }
+        struct FlatQuantization: Decodable {
+            let groupSize: Int
+            let bits: Int
+            enum CodingKeys: String, CodingKey {
+                case groupSize = "group_size"
+                case bits
+            }
+        }
+        enum Keys: String, CodingKey { case quantization }
+        let container = try decoder.container(keyedBy: Keys.self)
+        if let q = try? container.decode(FlatQuantization.self, forKey: .quantization) {
+            self.perLayerQuantization = BaseConfiguration.PerLayerQuantization(
+                quantization: BaseConfiguration.Quantization(groupSize: q.groupSize, bits: q.bits),
+                perLayerQuantization: [:]
+            )
+        } else {
+            self.perLayerQuantization = nil
+        }
     }
 }
 

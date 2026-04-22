@@ -184,7 +184,7 @@ private class SopranoModelInner: Module {
 public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationModel, @unchecked Sendable {
     public let vocabularySize: Int
     public let kvHeads: [Int]
-    public var tokenizer: Tokenizer?
+    public var tokenizer: Tokenizers.Tokenizer?
 
     private let model: SopranoModelInner
     let configuration: SopranoConfiguration
@@ -911,6 +911,10 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
             cache: cache
         )
 
+        return try await fromModelDirectory(modelDir, repo: modelRepo)
+    }
+
+    public static func fromModelDirectory(_ modelDir: URL, repo modelRepo: String) async throws -> SopranoModel {
         // Load config
         let configPath = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configPath)

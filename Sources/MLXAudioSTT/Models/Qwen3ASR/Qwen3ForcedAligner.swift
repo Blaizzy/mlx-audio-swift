@@ -340,7 +340,7 @@ public class Qwen3ForcedAlignerModel: Module {
     @ModuleInfo(key: "model") var model: Qwen3ASRTextModel
     @ModuleInfo(key: "lm_head") var lmHead: Linear
 
-    public var tokenizer: Tokenizer?
+    public var tokenizer: Tokenizers.Tokenizer?
     let alignerProcessor = ForceAlignProcessor()
 
     public init(_ config: Qwen3ASRConfig) {
@@ -550,6 +550,10 @@ public class Qwen3ForcedAlignerModel: Module {
             cache: cache
         )
 
+        return try await fromModelDirectory(modelDir)
+    }
+
+    public static func fromModelDirectory(_ modelDir: URL) async throws -> Qwen3ForcedAlignerModel {
         // Load config
         let configPath = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configPath)

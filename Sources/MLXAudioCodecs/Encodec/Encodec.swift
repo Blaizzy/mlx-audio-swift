@@ -417,6 +417,10 @@ public class Encodec: Module {
             cache: cache
         )
 
+        return try fromModelDirectory(modelURL)
+    }
+
+    public static func fromModelDirectory(_ modelURL: URL) throws -> Encodec {
         // Load config
         let configURL = modelURL.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configURL)

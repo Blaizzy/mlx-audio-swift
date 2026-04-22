@@ -44,6 +44,7 @@ extension Qwen3ASRModel: STTGenerationModel {
             audio: audio,
             maxTokens: generationParameters.maxTokens,
             temperature: generationParameters.temperature,
+            context: "",
             language: generationParameters.language,
             chunkDuration: generationParameters.chunkDuration,
             minChunkDuration: generationParameters.minChunkDuration
@@ -58,6 +59,7 @@ extension Qwen3ASRModel: STTGenerationModel {
             audio: audio,
             maxTokens: generationParameters.maxTokens,
             temperature: generationParameters.temperature,
+            context: "",
             language: generationParameters.language,
             chunkDuration: generationParameters.chunkDuration,
             minChunkDuration: generationParameters.minChunkDuration
@@ -914,7 +916,7 @@ public class Qwen3ASRModel: Module {
     @ModuleInfo(key: "model") var model: Qwen3ASRTextModel
     @ModuleInfo(key: "lm_head") var lmHead: Linear?
 
-    public var tokenizer: Tokenizer?
+    public var tokenizer: Tokenizers.Tokenizer?
 
     /// Sample rate expected by the model (16kHz).
     public let sampleRate: Int = 16000
@@ -1138,10 +1140,12 @@ public class Qwen3ASRModel: Module {
         return merged.isEmpty ? nil : merged.joined(separator: ",")
     }
 
-    public func buildPrompt(numAudioTokens: Int, language: String? = nil) -> MLXArray {
-        guard let tokenizer = tokenizer else {
-            fatalError("Tokenizer not loaded")
-        }
+    func buildPromptText(
+        numAudioTokens: Int,
+        context: String = "",
+        language: String? = nil
+    ) -> String {
+        let systemContext = context.isEmpty ? "" : context
 
         let assistantPrefix: String
         if let langName = normalizeLanguageName(language) {
@@ -1150,13 +1154,28 @@ public class Qwen3ASRModel: Module {
             assistantPrefix = ""
         }
 
-        let prompt = "<|im_start|>system\n<|im_end|>\n"
+        return "<|im_start|>system\n\(systemContext)<|im_end|>\n"
             + "<|im_start|>user\n<|audio_start|>"
             + String(repeating: "<|audio_pad|>", count: numAudioTokens)
             + "<|audio_end|><|im_end|>\n"
             + "<|im_start|>assistant\n"
             + assistantPrefix
+    }
 
+    public func buildPrompt(
+        numAudioTokens: Int,
+        context: String = "",
+        language: String? = nil
+    ) -> MLXArray {
+        guard let tokenizer = tokenizer else {
+            fatalError("Tokenizer not loaded")
+        }
+
+        let prompt = buildPromptText(
+            numAudioTokens: numAudioTokens,
+            context: context,
+            language: language
+        )
         let tokenIds = tokenizer.encode(text: prompt)
         return MLXArray(tokenIds.map { Int32($0) }).expandedDimensions(axis: 0)
     }
@@ -1175,6 +1194,7 @@ public class Qwen3ASRModel: Module {
         audio: MLXArray,
         maxTokens: Int,
         temperature: Float,
+        context: String,
         language: String?
     ) -> (text: String, language: String?, promptTokens: Int, generationTokens: Int) {
         guard let tokenizer = tokenizer else {
@@ -1184,7 +1204,11 @@ public class Qwen3ASRModel: Module {
         let eosTokenIds = [151645, 151643]
 
         let (inputFeatures, featureAttentionMask, numAudioTokens) = preprocessAudio(audio)
-        let inputIds = buildPrompt(numAudioTokens: numAudioTokens, language: language)
+        let inputIds = buildPrompt(
+            numAudioTokens: numAudioTokens,
+            context: context,
+            language: language
+        )
         let promptTokenCount = inputIds.dim(1)
 
         let audioFeatures = getAudioFeatures(inputFeatures, featureAttentionMask: featureAttentionMask)
@@ -1238,6 +1262,7 @@ public class Qwen3ASRModel: Module {
         audio: MLXArray,
         maxTokens: Int = 8192,
         temperature: Float = 0.0,
+        context: String = "",
         language: String? = nil,
         chunkDuration: Float = 1200.0,
         minChunkDuration: Float = 1.0
@@ -1269,6 +1294,7 @@ public class Qwen3ASRModel: Module {
                 audio: chunkAudio,
                 maxTokens: remainingTokens,
                 temperature: temperature,
+                context: context,
                 language: forcedLanguage
             )
 
@@ -1315,6 +1341,7 @@ public class Qwen3ASRModel: Module {
         audio: MLXArray,
         maxTokens: Int = 8192,
         temperature: Float = 0.0,
+        context: String = "",
         language: String? = nil,
         chunkDuration: Float = 1200.0,
         minChunkDuration: Float = 1.0
@@ -1355,6 +1382,7 @@ public class Qwen3ASRModel: Module {
                         let (inputFeatures, featureAttentionMask, numAudioTokens) = model.preprocessAudio(chunkAudio)
                         let inputIds = model.buildPrompt(
                             numAudioTokens: numAudioTokens,
+                            context: context,
                             language: resolvedLanguage
                         )
                         let promptTokenCount = inputIds.dim(1)
@@ -1646,6 +1674,10 @@ public class Qwen3ASRModel: Module {
             cache: cache
         )
 
+        return try await fromModelDirectory(modelDir)
+    }
+
+    public static func fromModelDirectory(_ modelDir: URL) async throws -> Qwen3ASRModel {
         // Load config
         let configPath = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configPath)

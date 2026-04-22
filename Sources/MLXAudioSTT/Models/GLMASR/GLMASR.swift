@@ -284,7 +284,7 @@ public class GLMASRLanguageModel: Module, KVCacheDimensionProvider {
 
 /// Internal context for managing generation state.
 private struct GenerationContext {
-    let tokenizer: Tokenizer
+    let tokenizer: Tokenizers.Tokenizer
     let cache: [KVCache]
     let eosTokenIds: [Int]
     var logits: MLXArray
@@ -329,7 +329,7 @@ public class GLMASRModel: Module {
     @ModuleInfo(key: "audio_encoder") var audioEncoder: AudioEncoder
     @ModuleInfo(key: "language_model") var languageModel: GLMASRLanguageModel
 
-    public var tokenizer: Tokenizer?
+    public var tokenizer: Tokenizers.Tokenizer?
 
     public init(config: GLMASRModelConfig) {
         self.config = config
@@ -612,6 +612,10 @@ public class GLMASRModel: Module {
             cache: cache
         )
 
+        return try await fromModelDirectory(modelDir)
+    }
+
+    public static func fromModelDirectory(_ modelDir: URL) async throws -> GLMASRModel {
         // Load config
         let configPath = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configPath)
@@ -716,7 +720,7 @@ public class GLMASRModel: Module {
     }
 
     /// Prepare generation context with audio encoding and prompt setup.
-    private func prepareGeneration(audio: MLXArray, tokenizer: Tokenizer) -> (GenerationContext, Int) {
+    private func prepareGeneration(audio: MLXArray, tokenizer: Tokenizers.Tokenizer) -> (GenerationContext, Int) {
         // Preprocess audio to mel spectrogram
         let mel = preprocessAudio(audio)
 

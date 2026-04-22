@@ -488,7 +488,7 @@ public final class T5TextEncoder {
     public let config: T5EncoderConfig
 
     private var model: T5Encoder?
-    private var tokenizer: Tokenizer?
+    private var tokenizer: Tokenizers.Tokenizer?
 
     public init(config: T5EncoderConfig) {
         self.config = config

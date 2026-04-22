@@ -115,6 +115,86 @@ public struct Qwen3TTSSpeakerEncoderConfig: Codable, Sendable {
     }
 }
 
+// MARK: - Flexible spk_id value (Int or [Int])
+//
+// The Base model has spk_id: {} (empty), so the bug was never hit.
+// The CustomVoice model has spk_id: {"ryan": 3061, ...} — a single Int per
+// speaker, NOT an array. This enum handles both forms transparently.
+
+public enum SpkIdValue: Codable, Sendable {
+    case single(Int)
+    case array([Int])
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if let v = try? c.decode(Int.self) {
+            self = .single(v)
+            return
+        }
+        self = .array(try c.decode([Int].self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .single(let v): try c.encode(v)
+        case .array(let a): try c.encode(a)
+        }
+    }
+
+    /// Returns the first (or only) integer value.
+    public var intValue: Int {
+        switch self {
+        case .single(let v): return v
+        case .array(let a): return a.first ?? 0
+        }
+    }
+}
+
+// MARK: - Flexible spk_is_dialect value (Bool or String)
+//
+// The CustomVoice model has mixed types:
+//   {"ryan": false, "eric": "sichuan_dialect", ...}
+// The Base model has spk_is_dialect: {} (empty), masking the bug.
+
+public enum SpkDialectValue: Codable, Sendable {
+    case bool(Bool)
+    case string(String)
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if let v = try? c.decode(Bool.self) {
+            self = .bool(v)
+            return
+        }
+        self = .string(try c.decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .bool(let v): try c.encode(v)
+        case .string(let s): try c.encode(s)
+        }
+    }
+
+    /// true if this speaker uses a dialect (non-false value).
+    public var isDialect: Bool {
+        switch self {
+        case .bool(let v): return v
+        case .string: return true
+        }
+    }
+
+    /// The dialect name, or nil if not a dialect.
+    public var dialectName: String? {
+        switch self {
+        case .bool: return nil
+        case .string(let s): return s
+        }
+    }
+}
+
 // MARK: - Talker Config
 
 public struct Qwen3TTSTalkerConfig: Codable, Sendable {
@@ -145,8 +225,10 @@ public struct Qwen3TTSTalkerConfig: Codable, Sendable {
     var codecPadId: Int
     var codecBosId: Int
     var codecLanguageId: [String: Int]?
-    var spkId: [String: [Int]]?
-    var spkIsDialect: [String: String]?
+    /// Speaker ID map. Values may be a single Int or an array of Ints.
+    var spkId: [String: SpkIdValue]?
+    /// Dialect flags. Values may be Bool (false = not a dialect) or String (dialect name).
+    var spkIsDialect: [String: SpkDialectValue]?
 
     enum CodingKeys: String, CodingKey {
         case codePredictorConfig = "code_predictor_config"
@@ -209,8 +291,8 @@ public struct Qwen3TTSTalkerConfig: Codable, Sendable {
         codecPadId = try c.decodeIfPresent(Int.self, forKey: .codecPadId) ?? 2148
         codecBosId = try c.decodeIfPresent(Int.self, forKey: .codecBosId) ?? 2149
         codecLanguageId = try c.decodeIfPresent([String: Int].self, forKey: .codecLanguageId)
-        spkId = try c.decodeIfPresent([String: [Int]].self, forKey: .spkId)
-        spkIsDialect = try c.decodeIfPresent([String: String].self, forKey: .spkIsDialect)
+        spkId = try c.decodeIfPresent([String: SpkIdValue].self, forKey: .spkId)
+        spkIsDialect = try c.decodeIfPresent([String: SpkDialectValue].self, forKey: .spkIsDialect)
     }
 
     var mropeSection: [Int]? {

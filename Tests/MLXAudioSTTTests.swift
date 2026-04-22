@@ -15,6 +15,8 @@
 //      -only-testing:MLXAudioTests/SenseVoiceNetworkTests \
 //      -only-testing:MLXAudioTests/ParakeetSTTTests \
 //      -only-testing:MLXAudioTests/VoxtralRealtimeSTTTests \
+//      -only-testing:MLXAudioTests/CohereTranscribeModuleSetupTests \
+//      -only-testing:MLXAudioTests/CohereTranscribeSTTTests \
 //      CODE_SIGNING_ALLOWED=NO
 //
 //  Run a single category:
@@ -30,6 +32,8 @@
 //    -only-testing:'MLXAudioTests/SenseVoiceNetworkTests'
 //    -only-testing:'MLXAudioTests/ParakeetSTTTests'
 //    -only-testing:'MLXAudioTests/VoxtralRealtimeSTTTests'
+//    -only-testing:'MLXAudioTests/CohereTranscribeModuleSetupTests'
+//    -only-testing:'MLXAudioTests/CohereTranscribeSTTTests'
 //
 //  Run a single test (note the trailing parentheses for Swift Testing):
 //    -only-testing:'MLXAudioTests/GLMASRModuleSetupTests/whisperConfigDefaults()'
@@ -97,6 +101,56 @@ private func makeSentencePieceModelData(_ pieces: [(token: String, score: Float,
         data.append(pieceData)
     }
     return data
+}
+
+private func makeCohereFixtureConfigJSON(
+    vocabSize: Int = 32,
+    hiddenSize: Int = 16,
+    numLayers: Int = 0,
+    maxSequenceLength: Int = 32,
+    quantizationConfig: (bits: Int, groupSize: Int)? = nil
+) -> String {
+    let quantizationSection: String
+    if let quantizationConfig {
+        quantizationSection = """
+        ,
+        "quantization_config": {
+          "bits": \(quantizationConfig.bits),
+          "group_size": \(quantizationConfig.groupSize)
+        }
+        """
+    } else {
+        quantizationSection = ""
+    }
+
+    return """
+    {
+      "model_type": "cohere_asr",
+      "vocab_size": \(vocabSize),
+      "sample_rate": 16000,
+      "max_audio_clip_s": 35,
+      "encoder": {
+        "d_model": \(hiddenSize),
+        "ff_expansion_factor": 2,
+        "n_heads": 2,
+        "conv_kernel_size": 9,
+        "n_layers": \(numLayers),
+        "pos_emb_max_len": 64,
+        "subsampling_conv_channels": 8,
+        "subsampling_factor": 8,
+        "feat_in": 128
+      },
+      "transf_decoder": {
+        "config_dict": {
+          "hidden_size": \(hiddenSize),
+          "inner_size": \(hiddenSize * 2),
+          "num_attention_heads": 2,
+          "num_layers": \(numLayers),
+          "max_sequence_length": \(maxSequenceLength)
+        }
+      }\(quantizationSection)
+    }
+    """
 }
 
 
@@ -1245,6 +1299,417 @@ struct Qwen3ASRModuleSetupTests {
     }
 }
 
+struct CohereTranscribeModuleSetupTests {
+
+    @Test func cohereConfigDecoding() throws {
+        let json = """
+        {
+          "model_type": "cohere_asr",
+          "vocab_size": 16384,
+          "sample_rate": 16000,
+          "max_audio_clip_s": 35,
+          "quantization_config": {
+            "group_size": 64,
+            "bits": 8
+          },
+          "encoder": {
+            "d_model": 1280,
+            "ff_expansion_factor": 4,
+            "n_heads": 8,
+            "conv_kernel_size": 9,
+            "n_layers": 48,
+            "pos_emb_max_len": 5000,
+            "subsampling_conv_channels": 256,
+            "subsampling_factor": 8,
+            "feat_in": 128
+          },
+          "transf_decoder": {
+            "config_dict": {
+              "hidden_size": 1024,
+              "inner_size": 4096,
+              "num_attention_heads": 8,
+              "num_layers": 8,
+              "max_sequence_length": 1024
+            }
+          }
+        }
+        """
+
+        let config = try JSONDecoder().decode(CohereTranscribeConfig.self, from: Data(json.utf8))
+        #expect(config.modelType == "cohere_asr")
+        #expect(config.vocabSize == 16384)
+        #expect(config.sampleRate == 16000)
+        #expect(config.encoder.dModel == 1280)
+        #expect(config.encoder.featIn == 128)
+        #expect(config.decoder.hiddenSize == 1024)
+        #expect(config.decoder.numLayers == 8)
+        #expect(config.decoder.maxSequenceLength == 1024)
+        #expect(config.quantization?.bits == 8)
+    }
+
+    @Test func cohereAudioFeaturesShape() {
+        let audio = MLXArray(Array(repeating: Float(0), count: 16_000))
+        let filters = CohereTranscribeAudio.computeMelFilters()
+        let features = CohereTranscribeAudio.computeFeatures(audio: audio, melFilters: filters)
+
+        #expect(features.ndim == 3)
+        #expect(features.shape[0] == 1)
+        #expect(features.shape[1] == 128)
+        #expect(features.shape[2] > 0)
+        #expect(features.reshaped(-1)[0].item(Float.self).isFinite)
+    }
+
+    @Test func cohereTokenizerBuildsPromptTokens() throws {
+        let fixtureDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cohere-tokenizer-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtureDir) }
+
+        let tokenizerData = makeSentencePieceModelData([
+            ("<unk>", 0, 2),
+            ("<s>", 0, 3),
+            ("</s>", 0, 3),
+            ("▁hello", -0.1, 1),
+            ("▁world", -0.2, 1),
+        ])
+        try tokenizerData.write(to: fixtureDir.appendingPathComponent("tokenizer.model"))
+
+        let tokenizerConfig = """
+        {
+          "added_tokens_decoder": {
+            "3": {"content": "<|endoftext|>"},
+            "4": {"content": "<|startofcontext|>"},
+            "5": {"content": "<|startoftranscript|>"},
+            "6": {"content": "<|en|>"},
+            "7": {"content": "<|pnc|>"},
+            "8": {"content": "<|notimestamp|>"},
+            "9": {"content": "<|nodiarize|>"},
+            "10": {"content": "<|noitn|>"},
+            "11": {"content": "<|emo:undefined|>"},
+            "12": {"content": "<|timestamp|>"},
+            "13": {"content": "<|nopnc|>"}
+          }
+        }
+        """
+        try tokenizerConfig.write(
+            to: fixtureDir.appendingPathComponent("tokenizer_config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let config = try JSONDecoder().decode(
+            CohereTranscribeConfig.self,
+            from: Data(makeCohereFixtureConfigJSON().utf8)
+        )
+
+        let tokenizer = try CohereTranscribeTokenizer(modelDir: fixtureDir, config: config)
+        let prompt = tokenizer.buildPromptTokens(language: "en")
+
+        #expect(prompt.count == 9)
+        #expect(prompt[0] == 4)
+        #expect(prompt[1] == 5)
+        #expect(prompt[2] == 11)
+        #expect(prompt[3] == 6)
+        #expect(prompt[4] == 6)
+        #expect(prompt[5] == 7)
+        #expect(prompt[6] == 10)
+        #expect(prompt[7] == 8)
+        #expect(prompt[8] == 9)
+        #expect(tokenizer.encode(text: "<|endoftext|>") == [3])
+        #expect(tokenizer.decode(tokens: [3, 3]).isEmpty)
+    }
+}
+
+@Suite(.serialized)
+struct CohereTranscribeSTTTests {
+
+    private func makeCohereFixtureDirectory(
+        quantizationConfig: (bits: Int, groupSize: Int)? = nil,
+        hiddenSizeOverride: Int? = nil,
+        decoderHiddenSizeOverride: Int? = nil,
+        mutateWeights: (inout [String: MLXArray]) throws -> Void
+    ) throws -> URL {
+        let fixtureDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cohere-diagnostics-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
+
+        let hiddenSize = hiddenSizeOverride ?? 16
+        var configJSON = makeCohereFixtureConfigJSON(
+            hiddenSize: hiddenSize,
+            quantizationConfig: quantizationConfig
+        )
+        if let decoderHiddenSizeOverride {
+            configJSON = configJSON.replacingOccurrences(
+                of: "\"hidden_size\": \(hiddenSize)",
+                with: "\"hidden_size\": \(decoderHiddenSizeOverride)"
+            )
+            configJSON = configJSON.replacingOccurrences(
+                of: "\"inner_size\": \(hiddenSize * 2)",
+                with: "\"inner_size\": \(decoderHiddenSizeOverride * 2)"
+            )
+        }
+        try configJSON.write(
+            to: fixtureDir.appendingPathComponent("config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let tokenizerData = makeSentencePieceModelData([
+            ("<unk>", 0, 2),
+            ("<s>", 0, 3),
+            ("</s>", 0, 3),
+            ("▁a", -0.1, 1),
+        ])
+        try tokenizerData.write(to: fixtureDir.appendingPathComponent("tokenizer.model"))
+
+        let tokenizerConfig = """
+        {
+          "added_tokens_decoder": {
+            "3": {"content": "<|endoftext|>"},
+            "4": {"content": "<|startofcontext|>"},
+            "5": {"content": "<|startoftranscript|>"},
+            "6": {"content": "<|en|>"},
+            "7": {"content": "<|pnc|>"},
+            "8": {"content": "<|notimestamp|>"},
+            "9": {"content": "<|nodiarize|>"},
+            "10": {"content": "<|noitn|>"},
+            "11": {"content": "<|emo:undefined|>"}
+          }
+        }
+        """
+        try tokenizerConfig.write(
+            to: fixtureDir.appendingPathComponent("tokenizer_config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let seedModel = CohereTranscribeModel(try JSONDecoder().decode(
+            CohereTranscribeConfig.self,
+            from: Data(configJSON.utf8)
+        ))
+        var weights = Dictionary(uniqueKeysWithValues: seedModel.parameters().flattened().map { key, value in
+            (key, MLXArray.zeros(value.shape, type: Float.self).asType(value.dtype))
+        })
+
+        try mutateWeights(&weights)
+        try MLX.save(arrays: weights, url: fixtureDir.appendingPathComponent("model.safetensors"))
+
+        return fixtureDir
+    }
+
+    private func assertCohereLoadFails(
+        at fixtureDir: URL,
+        contains expectedSubstrings: [String]
+    ) throws {
+        do {
+            _ = try CohereTranscribeModel.fromDirectory(fixtureDir)
+            Issue.record("Expected Cohere checkpoint at \(fixtureDir.path) to fail validation")
+        } catch {
+            let message = error.localizedDescription
+            for substring in expectedSubstrings {
+                #expect(message.contains(substring))
+            }
+        }
+    }
+
+    @Test func normalizeCohereWeightKeysHandlesPythonAliasesAndQuantizedCompanions() {
+        let aliasKeys = [
+            "encoder_decoder_proj.weight",
+            "encoder_decoder_proj.bias",
+            "encoder_decoder_proj.scales",
+            "encoder_decoder_proj.biases",
+            "log_softmax.mlp.layer0.weight",
+            "log_softmax.mlp.layer0.bias",
+            "log_softmax.mlp.layer0.scales",
+            "log_softmax.mlp.layer0.biases",
+        ]
+        let weights = Dictionary(uniqueKeysWithValues: aliasKeys.map { key in
+            (key, MLXArray([Float(aliasKeys.firstIndex(of: key) ?? 0)]))
+        })
+
+        let normalized = normalizeCohereWeightKeys(weights)
+
+        #expect(normalized["bridge_proj.weight"] != nil)
+        #expect(normalized["bridge_proj.bias"] != nil)
+        #expect(normalized["bridge_proj.scales"] != nil)
+        #expect(normalized["bridge_proj.biases"] != nil)
+        #expect(normalized["lm_head.weight"] != nil)
+        #expect(normalized["lm_head.bias"] != nil)
+        #expect(normalized["lm_head.scales"] != nil)
+        #expect(normalized["lm_head.biases"] != nil)
+        #expect(normalized["encoder_decoder_proj.weight"] == nil)
+        #expect(normalized["log_softmax.mlp.layer0.weight"] == nil)
+    }
+
+    @Test func fromDirectoryReportsActionableMissingKeyDiagnostics() throws {
+        let fixtureDir = try makeCohereFixtureDirectory(
+            quantizationConfig: (bits: 4, groupSize: 64),
+            decoderHiddenSizeOverride: 24
+        ) { weights in
+            weights.removeValue(forKey: "bridge_proj.weight")
+        }
+        defer { try? FileManager.default.removeItem(at: fixtureDir) }
+
+        do {
+            _ = try CohereTranscribeModel.fromDirectory(fixtureDir)
+            Issue.record("Expected loader to fail for incomplete Cohere checkpoint")
+        } catch {
+            let message = error.localizedDescription
+            #expect(message.contains("bridge_proj.weight"))
+            #expect(message.contains("accepted_aliases=encoder_decoder_proj.weight"))
+            #expect(message.contains("optional_by_config=false"))
+            #expect(message.contains("model_type=cohere_asr"))
+            #expect(message.contains("bits=4"))
+            #expect(message.contains("group_size=64"))
+        }
+    }
+
+    @Test func fromDirectoryRejectsMissingQuantizedCompanionsBeforeUpdate() throws {
+        let fixtureDir = try makeCohereFixtureDirectory(
+            quantizationConfig: (bits: 4, groupSize: 64),
+            decoderHiddenSizeOverride: 24
+        ) { weights in
+            let key = "bridge_proj.weight"
+            weights[key] = MLXArray.zeros(weights[key]!.shape, dtype: .int32)
+        }
+        defer { try? FileManager.default.removeItem(at: fixtureDir) }
+
+        try assertCohereLoadFails(
+            at: fixtureDir,
+            contains: ["quantized", "bridge_proj.weight", "scales"]
+        )
+    }
+
+    @Test func fromDirectoryRejectsPackedQuantizedTensorWithoutMatchingScales() throws {
+        let fixtureDir = try makeCohereFixtureDirectory(quantizationConfig: (bits: 4, groupSize: 64)) { weights in
+            let key = "lm_head.weight"
+            weights[key] = MLXArray.zeros(weights[key]!.shape, dtype: .int32)
+        }
+        defer { try? FileManager.default.removeItem(at: fixtureDir) }
+
+        try assertCohereLoadFails(
+            at: fixtureDir,
+            contains: ["Packed quantized tensor", "lm_head.weight", "scales"]
+        )
+    }
+
+    @Test func fromDirectoryRejectsOrphanScalesTensor() throws {
+        let fixtureDir = try makeCohereFixtureDirectory(quantizationConfig: (bits: 4, groupSize: 64)) { weights in
+            weights["does_not_exist.scales"] = MLXArray([Float(1)])
+        }
+        defer { try? FileManager.default.removeItem(at: fixtureDir) }
+
+        try assertCohereLoadFails(
+            at: fixtureDir,
+            contains: ["does_not_exist.scales", "no Swift module parameter"]
+        )
+    }
+
+    @Test func fromDirectoryRejectsAliasNormalizedShapeMismatchBeforeUpdate() throws {
+        let fixtureDir = try makeCohereFixtureDirectory(
+            quantizationConfig: (bits: 4, groupSize: 64),
+            decoderHiddenSizeOverride: 24
+        ) { weights in
+            weights.removeValue(forKey: "bridge_proj.weight")
+            weights["encoder_decoder_proj.weight"] = MLXArray.zeros([1, 1], dtype: .float32)
+        }
+        defer { try? FileManager.default.removeItem(at: fixtureDir) }
+
+        try assertCohereLoadFails(
+            at: fixtureDir,
+            contains: ["bridge_proj.weight", "Shape mismatch", "encoder_decoder_proj.weight"]
+        )
+    }
+
+    @Test func fromDirectoryRejectsIncompatibleQuantizedCompanionShapesBeforeUpdate() throws {
+        let fixtureDir = try makeCohereFixtureDirectory(
+            quantizationConfig: (bits: 4, groupSize: 32),
+            hiddenSizeOverride: 32
+        ) { weights in
+            let key = "lm_head.weight"
+            weights[key] = MLXArray.zeros(weights[key]!.shape, dtype: .int32)
+            weights["lm_head.scales"] = MLXArray.zeros([weights[key]!.shape[0], 1], dtype: .float32)
+            weights["lm_head.biases"] = MLXArray.zeros([weights[key]!.shape[0], 2], dtype: .float32)
+        }
+        defer { try? FileManager.default.removeItem(at: fixtureDir) }
+
+        try assertCohereLoadFails(
+            at: fixtureDir,
+            contains: ["lm_head.weight", "incompatible companion shapes"]
+        )
+    }
+
+    @Test func fromDirectoryFixtureSmokeTest() throws {
+        let fixtureDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cohere-fixture-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtureDir) }
+
+        let configJSON = makeCohereFixtureConfigJSON()
+        try configJSON.write(
+            to: fixtureDir.appendingPathComponent("config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let tokenizerData = makeSentencePieceModelData([
+            ("<unk>", 0, 2),
+            ("<s>", 0, 3),
+            ("</s>", 0, 3),
+            ("▁a", -0.1, 1),
+            ("▁b", -0.2, 1),
+            ("▁c", -0.3, 1),
+        ])
+        try tokenizerData.write(to: fixtureDir.appendingPathComponent("tokenizer.model"))
+
+        let tokenizerConfig = """
+        {
+          "added_tokens_decoder": {
+            "3": {"content": "<|endoftext|>"},
+            "4": {"content": "<|startofcontext|>"},
+            "5": {"content": "<|startoftranscript|>"},
+            "6": {"content": "<|en|>"},
+            "7": {"content": "<|pnc|>"},
+            "8": {"content": "<|notimestamp|>"},
+            "9": {"content": "<|nodiarize|>"},
+            "10": {"content": "<|noitn|>"},
+            "11": {"content": "<|emo:undefined|>"},
+            "12": {"content": "<|timestamp|>"},
+            "13": {"content": "<|nopnc|>"}
+          }
+        }
+        """
+        try tokenizerConfig.write(
+            to: fixtureDir.appendingPathComponent("tokenizer_config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let seedModel = CohereTranscribeModel(try JSONDecoder().decode(
+            CohereTranscribeConfig.self,
+            from: Data(configJSON.utf8)
+        ))
+        var weights = Dictionary(uniqueKeysWithValues: seedModel.parameters().flattened().map { key, value in
+            (key, MLXArray.zeros(value.shape, type: Float.self).asType(value.dtype))
+        })
+        weights["lm_head.bias"] = MLXArray(
+            (0..<32).map { $0 == 3 ? Float(1000) : Float(0) }
+        )
+        try MLX.save(arrays: weights, url: fixtureDir.appendingPathComponent("model.safetensors"))
+
+        let model = try CohereTranscribeModel.fromDirectory(fixtureDir)
+        let output = model.generate(
+            audio: MLXArray(Array(repeating: Float(0), count: 16_000)),
+            generationParameters: STTGenerateParameters(language: "en")
+        )
+
+        #expect(output.text.isEmpty)
+        #expect(output.promptTokens == 9)
+        #expect(output.generationTokens == 0)
+        #expect(output.totalTokens == 9)
+    }
+}
+
 // MARK: - Force Align Processor Tests
 
 struct ForceAlignProcessorTests {
@@ -1447,6 +1912,22 @@ struct ForcedAlignResultTests {
 // MARK: - Helper Function Tests
 
 struct Qwen3ASRHelperTests {
+
+    @Test func qwen3ASRPromptTextIncludesContextAndAssistantPrefix() {
+        let model = Qwen3ASRModel(
+            Qwen3ASRConfig(supportLanguages: ["Chinese", "English", "Japanese"])
+        )
+
+        let prompt = model.buildPromptText(
+            numAudioTokens: 3,
+            context: "Prefer product names over pronouns.",
+            language: "en"
+        )
+
+        #expect(prompt.hasPrefix("<|im_start|>system\nPrefer product names over pronouns.<|im_end|>\n"))
+        #expect(prompt.contains("<|audio_start|><|audio_pad|><|audio_pad|><|audio_pad|><|audio_end|>"))
+        #expect(prompt.hasSuffix("<|im_start|>assistant\nlanguage English<asr_text>"))
+    }
 
     @Test func getFeatExtractOutputLengthsBasic() {
         // Test with a known input length
@@ -2316,94 +2797,6 @@ struct FireRedASR2Tests {
         #expect(sanitized["encoder.layer_stack.0.ffn1.net_1.weight"] != nil)
         #expect(sanitized["encoder.layer_stack.0.conv.pointwise_conv1.weight"]?.shape == [8, 3, 4])
         #expect(sanitized["decoder.tgt_word_prj.weight"]?.shape == [6, 8])
-    }
-
-    @Test func fromDirectoryFixtureSmokeTest() throws {
-        let fixtureDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("firered-fixture-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: fixtureDir) }
-
-        let configJSON = """
-        {
-          "model_type": "fireredasr2",
-          "idim": 80,
-          "odim": 6,
-          "d_model": 8,
-          "sos_id": 3,
-          "eos_id": 4,
-          "pad_id": 2,
-          "blank_id": 0,
-          "encoder": {
-            "n_layers": 0,
-            "n_head": 2,
-            "d_model": 8,
-            "kernel_size": 15,
-            "pe_maxlen": 64
-          },
-          "decoder": {
-            "n_layers": 0,
-            "n_head": 2,
-            "d_model": 8,
-            "pe_maxlen": 64
-          }
-        }
-        """
-        try configJSON.write(
-            to: fixtureDir.appendingPathComponent("config.json"),
-            atomically: true,
-            encoding: .utf8
-        )
-
-        let cmvnJSON = """
-        {
-          "means": \(Array(repeating: 0.0, count: 80)),
-          "istd": \(Array(repeating: 1.0, count: 80))
-        }
-        """
-        try cmvnJSON.write(
-            to: fixtureDir.appendingPathComponent("cmvn.json"),
-            atomically: true,
-            encoding: .utf8
-        )
-
-        let dict = """
-        <blank> 0
-        ▁a 1
-        ▁b 2
-        <sos/eos> 3
-        <eos> 4
-        ▁c 5
-        """
-        try dict.write(
-            to: fixtureDir.appendingPathComponent("dict.txt"),
-            atomically: true,
-            encoding: .utf8
-        )
-
-        let weights: [String: MLXArray] = [
-            "encoder.input_preprocessor.conv1.weight": MLXArray.zeros([32, 1, 3, 3], type: Float.self),
-            "encoder.input_preprocessor.conv1.bias": MLXArray.zeros([32], type: Float.self),
-            "encoder.input_preprocessor.conv2.weight": MLXArray.zeros([32, 32, 3, 3], type: Float.self),
-            "encoder.input_preprocessor.conv2.bias": MLXArray.zeros([32], type: Float.self),
-            "encoder.input_preprocessor.out.weight": MLXArray.zeros([8, 608], type: Float.self),
-            "encoder.input_preprocessor.out.bias": MLXArray.zeros([8], type: Float.self),
-            "decoder.tgt_word_emb.weight": MLXArray.zeros([6, 8], type: Float.self),
-            "decoder.layer_norm_out.weight": MLXArray.ones([8], type: Float.self),
-            "decoder.layer_norm_out.bias": MLXArray.zeros([8], type: Float.self),
-        ]
-        try MLX.save(arrays: weights, url: fixtureDir.appendingPathComponent("model.safetensors"))
-
-        let model = try FireRedASR2Model.fromDirectory(fixtureDir)
-        let audio = MLXArray(Array(repeating: Float(0), count: 16000))
-        let output = model.generate(
-            audio: audio,
-            generationParameters: STTGenerateParameters(maxTokens: 2, temperature: 0.0)
-        )
-
-        #expect(model.vocabulary.count == 6)
-        #expect(output.generationTokens >= 0)
-        #expect(output.totalTime >= 0)
     }
 }
 

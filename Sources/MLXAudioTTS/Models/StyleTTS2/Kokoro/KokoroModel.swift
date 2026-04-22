@@ -73,15 +73,27 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
         let d = predictor.textEncoder(dEn, style: globalStyle, textLengths: inputLengths, mask: textMask)
         let (x, _) = predictor.lstm(d)
         let duration = predictor.durationProj(x)
-        let durSigmoid = MLX.sigmoid(duration).sum(axis: -1) / speed
-        let predDur = MLX.clip(MLX.round(durSigmoid), min: 1).asType(.int32)[0]
+        // Defensive: quantized encoders may produce NaN durations for certain inputs.
+        // Cap at maxFramesPerPhoneme to prevent OOM from garbage int32 casts.
+        let maxFramesPerPhoneme = 100
+        let durRaw = MLX.sigmoid(duration).sum(axis: -1) / speed
+        let durSafe = nanToNum(durRaw, nan: 1.0)
+        let predDur = MLX.clip(MLX.round(durSafe), min: 1, max: Float(maxFramesPerPhoneme))
+            .asType(.int32)[0]
 
         let durArray: [Int32] = predDur.asArray(Int32.self)
         var indices = [MLXArray]()
         for (i, n) in durArray.enumerated() {
-            if n > 0 {
-                indices.append(MLXArray(Array(repeating: Int32(i), count: Int(n))))
+            let count = min(max(Int(n), 0), maxFramesPerPhoneme)
+            if count > 0 {
+                indices.append(MLX.repeated(MLXArray(Int32(i)), count: count))
             }
+        }
+
+        // All durations collapsed to zero — return silence instead of crashing on empty concat
+        guard !indices.isEmpty else {
+            let silence = MLXArray.zeros([1, 1])
+            return (silence, predDur)
         }
         let allIndices = MLX.concatenated(indices, axis: 0)
 
@@ -249,6 +261,13 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
             cache: cache
         )
 
+        return try await fromModelDirectory(modelDir, textProcessor: textProcessor)
+    }
+
+    public static func fromModelDirectory(
+        _ modelDir: URL,
+        textProcessor: TextProcessor? = nil
+    ) async throws -> KokoroModel {
         let configURL = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configURL)
         let config = try JSONDecoder().decode(KokoroConfig.self, from: configData)
@@ -276,6 +295,11 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
     // MARK: - Weight Sanitization
 
     func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+        let hasPackedQuantizedWeights = weights.keys.contains {
+            $0.hasSuffix(".scales") || $0.hasSuffix(".biases")
+        }
+        let needsConvTranspose = !hasPackedQuantizedWeights
+
         var result = [String: MLXArray]()
         for (k, v) in weights {
             if k.contains("position_ids") { continue }
@@ -298,15 +322,16 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
             nk = nk.replacingOccurrences(of: ".alpha2.", with: ".alpha2_")
 
             var value = v
-            if (nk.contains("F0_proj.weight") || nk.contains("N_proj.weight")) && v.ndim == 3 {
-                value = v.transposed(0, 2, 1)
-            } else if nk.contains("noise_convs") && nk.hasSuffix(".weight") && v.ndim == 3 {
-                value = v.transposed(0, 2, 1)
-            } else if nk.hasSuffix("weight_v") && v.ndim == 3 {
-                // Transpose non-canonical [outCh, kH, kW] layout
-                let (o, h, w) = (v.shape[0], v.shape[1], v.shape[2])
-                if !(o >= h && o >= w && h == w) {
+            if needsConvTranspose {
+                if (nk.contains("F0_proj.weight") || nk.contains("N_proj.weight")) && v.ndim == 3 {
                     value = v.transposed(0, 2, 1)
+                } else if nk.contains("noise_convs") && nk.hasSuffix(".weight") && v.ndim == 3 {
+                    value = v.transposed(0, 2, 1)
+                } else if nk.hasSuffix("weight_v") && v.ndim == 3 {
+                    let (o, h, w) = (v.shape[0], v.shape[1], v.shape[2])
+                    if !(o >= h && o >= w && h == w) {
+                        value = v.transposed(0, 2, 1)
+                    }
                 }
             }
 
