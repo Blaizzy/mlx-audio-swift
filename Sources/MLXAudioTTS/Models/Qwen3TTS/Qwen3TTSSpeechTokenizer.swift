@@ -1024,7 +1024,7 @@ final class Qwen3TTSSpeechTokenizerDecoder: Module {
 
 // MARK: - Speech Tokenizer (wrapper)
 
-final class Qwen3TTSSpeechTokenizer: Module {
+public final class Qwen3TTSSpeechTokenizer: Module {
     let config: Qwen3TTSTokenizerConfig
     let decodeUpsampleRate: Int
     @ModuleInfo var decoder: Qwen3TTSSpeechTokenizerDecoder
@@ -1046,7 +1046,7 @@ final class Qwen3TTSSpeechTokenizer: Module {
         }
     }
 
-    var hasEncoder: Bool {
+    public var hasEncoder: Bool {
         encoderModel != nil
     }
 
