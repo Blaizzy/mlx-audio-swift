@@ -66,7 +66,8 @@ public enum ModelUtils {
         cache: HubCache = .default,
         repoID: Repo.ID,
         requiredExtension: String,
-        additionalMatchingPatterns: [String] = []
+        additionalMatchingPatterns: [String] = [],
+        progressHandler: (@MainActor @Sendable (Progress) -> Void)? = nil
     ) async throws -> URL {
         let normalizedRequiredExtension = requiredExtension.hasPrefix(".")
             ? String(requiredExtension.dropFirst())
@@ -125,7 +126,7 @@ public enum ModelUtils {
             to: modelDir,
             revision: "main",
             matching: Array(allowedExtensions),
-            progressHandler: { progress in
+            progressHandler: progressHandler ?? { progress in
                 print("\(progress.completedUnitCount)/\(progress.totalUnitCount) files")
             }
         )
