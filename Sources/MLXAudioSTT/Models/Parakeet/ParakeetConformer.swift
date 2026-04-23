@@ -204,7 +204,7 @@ final class ParakeetConformerBlock: Module {
     }
 
     func callAsFunction(_ x: MLXArray, posEmb: MLXArray? = nil, mask: MLXArray? = nil) -> MLXArray {
-        var y = x + 0.5 * feedForward1(normFeedForward1(x))
+        var y = x + MLXArray(Float(0.5)).asType(x.dtype) * feedForward1(normFeedForward1(x))
 
         let xNorm = normSelfAtt(y)
         if usesRelPos {
@@ -220,14 +220,14 @@ final class ParakeetConformerBlock: Module {
         }
 
         y = y + conv(normConv(y))
-        y = y + 0.5 * feedForward2(normFeedForward2(y))
+        y = y + MLXArray(Float(0.5)).asType(y.dtype) * feedForward2(normFeedForward2(y))
         return normOut(y)
     }
 }
 
 final class ParakeetConformer: Module {
     let args: ParakeetConformerConfig
-    let posEnc: ParakeetRelPositionalEncoding?
+    @ModuleInfo(key: "pos_enc") var posEnc: ParakeetRelPositionalEncoding?
 
     @ModuleInfo(key: "pre_encode") var preEncodeDw: ParakeetDwStridingSubsampling?
     let preEncodeLinear: Linear?
@@ -236,13 +236,13 @@ final class ParakeetConformer: Module {
     init(args: ParakeetConformerConfig) {
         self.args = args
         if args.selfAttentionModel == "rel_pos" {
-            self.posEnc = ParakeetRelPositionalEncoding(
+            self._posEnc.wrappedValue = ParakeetRelPositionalEncoding(
                 dModel: args.dModel,
                 maxLen: args.posEmbMaxLen,
                 scaleInput: args.xscaling
             )
         } else {
-            self.posEnc = nil
+            self._posEnc.wrappedValue = nil
         }
 
         if args.subsamplingFactor > 1 && args.subsampling == "dw_striding" && !args.causalDownsampling {

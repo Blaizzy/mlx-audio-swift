@@ -30,7 +30,7 @@ final class ParakeetStackedLSTM: Module {
     }
 
     func callAsFunction(_ x: MLXArray, state: ParakeetLSTMState? = nil) -> (MLXArray, ParakeetLSTMState) {
-        var output = batchFirst ? x.transposed(1, 0, 2) : x
+        var output = x
 
         var hiddenByLayer: [MLXArray?] = Array(repeating: nil, count: numLayers)
         var cellByLayer: [MLXArray?] = Array(repeating: nil, count: numLayers)
@@ -55,12 +55,8 @@ final class ParakeetStackedLSTM: Module {
             let layer = layers[i]
             let (allH, allC) = layer(output, hidden: hiddenByLayer[i], cell: cellByLayer[i])
             output = allH
-            nextHidden.append(allH[allH.shape[0] - 1])
-            nextCell.append(allC[allC.shape[0] - 1])
-        }
-
-        if batchFirst {
-            output = output.transposed(1, 0, 2)
+            nextHidden.append(allH[0..., (allH.shape[1] - 1), 0...])
+            nextCell.append(allC[0..., (allC.shape[1] - 1), 0...])
         }
 
         return (
@@ -106,6 +102,27 @@ final class ParakeetPredictNetwork: Module {
             embedded = MLXArray.zeros([batch, 1, predHidden], type: Float.self)
         }
         return prediction.decRnn(embedded, state: state)
+    }
+
+    func callAsFunction(
+        _ tokenIds: MLXArray,
+        state: ParakeetLSTMState? = nil,
+        blankToken: Int32
+    ) -> (MLXArray, ParakeetLSTMState) {
+        predictBatched(tokenIds, state: state, blankToken: blankToken)
+    }
+
+    func predictBatched(
+        _ tokenIds: MLXArray,
+        state: ParakeetLSTMState? = nil,
+        blankToken: Int32
+    ) -> (MLXArray, ParakeetLSTMState) {
+        let batchSize = tokenIds.shape[0]
+        let blankMask = tokenIds.reshaped([batchSize, 1, 1]) .== MLXArray(blankToken)
+        let safeTokenIds = MLX.where(blankMask.reshaped([batchSize, 1]), MLXArray(Int32(0)), tokenIds).asType(.int32)
+        let embedded = prediction.embed(safeTokenIds).reshaped([batchSize, 1, predHidden])
+        let maskedEmbedding = MLX.where(blankMask, MLXArray(Float(0)).asType(embedded.dtype), embedded)
+        return prediction.decRnn(maskedEmbedding, state: state)
     }
 }
 

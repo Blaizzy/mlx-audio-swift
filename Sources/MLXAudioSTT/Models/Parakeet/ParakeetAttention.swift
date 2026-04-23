@@ -60,8 +60,8 @@ class ParakeetMultiHeadAttention: Module {
 final class ParakeetRelPositionMultiHeadAttention: ParakeetMultiHeadAttention {
     @ModuleInfo(key: "linear_pos") var linearPos: Linear
 
-    var posBiasU: MLXArray
-    var posBiasV: MLXArray
+    @ParameterInfo var posBiasU: MLXArray
+    @ParameterInfo var posBiasV: MLXArray
 
     init(
         nHead: Int,
@@ -71,8 +71,8 @@ final class ParakeetRelPositionMultiHeadAttention: ParakeetMultiHeadAttention {
         posBiasV: MLXArray? = nil
     ) {
         self._linearPos.wrappedValue = Linear(nFeat, nFeat, bias: false)
-        self.posBiasU = posBiasU ?? MLXArray.zeros([nHead, nFeat / nHead], type: Float.self)
-        self.posBiasV = posBiasV ?? MLXArray.zeros([nHead, nFeat / nHead], type: Float.self)
+        self._posBiasU.wrappedValue = posBiasU ?? MLXArray.zeros([nHead, nFeat / nHead], type: Float.self)
+        self._posBiasV.wrappedValue = posBiasV ?? MLXArray.zeros([nHead, nFeat / nHead], type: Float.self)
         super.init(nHead: nHead, nFeat: nFeat, bias: bias)
     }
 
@@ -98,16 +98,23 @@ final class ParakeetRelPositionMultiHeadAttention: ParakeetMultiHeadAttention {
         let qProj = linearQ(q)
         let kProj = linearK(k)
         let vProj = linearV(v)
-        let pProj = linearPos(posEmb)
+        var pProj = linearPos(posEmb)
 
         let batch = qProj.shape[0]
         let qSeq = qProj.shape[1]
         let kSeq = kProj.shape[1]
         let posLen = pProj.shape[1]
 
+        if pProj.shape[0] == 1 && batch > 1 {
+            pProj = MLX.broadcast(pProj, to: [batch, posLen, nFeat])
+        }
+
         let qHeads = qProj.reshaped(batch, qSeq, nHead, headDim)
-        let qU = (qHeads + posBiasU).transposed(0, 2, 1, 3)
-        let qV = (qHeads + posBiasV).transposed(0, 2, 1, 3)
+        // Cast posBiasU/V to qHeads.dtype at use-site to prevent dtype promotion
+        // if params fall out of sync with activations (defense in depth alongside
+        // the @ParameterInfo registration + model-wide cast pass at load).
+        let qU = (qHeads + posBiasU.asType(qHeads.dtype)).transposed(0, 2, 1, 3)
+        let qV = (qHeads + posBiasV.asType(qHeads.dtype)).transposed(0, 2, 1, 3)
 
         let kHeads = kProj.reshaped(batch, kSeq, nHead, headDim).transposed(0, 2, 1, 3)
         let vHeads = vProj.reshaped(batch, kSeq, nHead, headDim).transposed(0, 2, 1, 3)
@@ -115,7 +122,7 @@ final class ParakeetRelPositionMultiHeadAttention: ParakeetMultiHeadAttention {
 
         var matrixBD = MLX.matmul(qV, pHeads.swappedAxes(-2, -1))
         matrixBD = relShift(matrixBD)
-        matrixBD = matrixBD[0..., 0..., 0..., ..<kSeq] * scale
+        matrixBD = matrixBD[0..., 0..., 0..., ..<kSeq] * MLXArray(scale).asType(matrixBD.dtype)
 
         if let mask {
             matrixBD = matrixBD + mask
@@ -175,7 +182,7 @@ final class ParakeetRelPositionalEncoding {
             calculatePE()
         }
 
-        let scaledX = x * scaleInput
+        let scaledX = x * MLXArray(scaleInput).asType(x.dtype)
         let bufferLen = pe.shape[1]
         let start = bufferLen / 2 - (inputLength - 1)
         let end = bufferLen / 2 + (inputLength - 1) + 1
