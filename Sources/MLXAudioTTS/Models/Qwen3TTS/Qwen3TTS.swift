@@ -94,7 +94,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             refAudio: refAudio,
             refText: refText,
             temperature: generationParameters.temperature,
-            topK: 50,
+            topK: generationParameters.topK,
             topP: generationParameters.topP,
             repetitionPenalty: generationParameters.repetitionPenalty ?? 1.05,
             minP: 0.0,
@@ -122,6 +122,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         )
     }
 
+    /// Streaming generation with voiceKey control.
+    /// voiceKey identifies the voice for multi-voice reference audio cache lookup.
     public func generateStream(
         text: String,
         voice: String?,
@@ -129,32 +131,6 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters,
-        streamingInterval: Double
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
-        generateStream(
-            text: text,
-            voice: voice,
-            refAudio: refAudio,
-            refText: refText,
-            language: language,
-            generationParameters: generationParameters,
-            topK: 50,
-            streamingInterval: streamingInterval
-        )
-    }
-
-    /// Streaming generation with explicit topK and voiceKey control.
-    /// GenerateParameters (from mlx-swift-lm) doesn't carry topK,
-    /// so this overload lets callers pass it directly.
-    /// voiceKey identifies the voice for multi-voice cache lookup.
-    public func generateStream(
-        text: String,
-        voice: String?,
-        refAudio: MLXArray?,
-        refText: String?,
-        language: String?,
-        generationParameters: GenerateParameters,
-        topK: Int,
         voiceKey: String? = nil,
         streamingInterval: Double
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
@@ -173,6 +149,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                 let instruct = voice
                 let lang = language ?? "auto"
                 let temp = generationParameters.temperature
+                let topK = generationParameters.topK
                 let topP = generationParameters.topP
                 let repPenalty = generationParameters.repetitionPenalty ?? 1.05
                 let maxTokens = generationParameters.maxTokens ?? 4096
