@@ -51,7 +51,7 @@ public enum TTS {
         }
 
         switch resolvedType {
-        case "moss_tts_nano", "moss-tts-nano", "moss_tts":
+        case "moss_tts_nano":
             return try await MossTTSNanoModel.fromPretrained(modelRepo, cache: cache)
         case "echo_tts", "echo":
             return try await EchoTTSModel.fromPretrained(modelRepo, cache: cache)
