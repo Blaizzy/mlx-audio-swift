@@ -369,6 +369,7 @@ struct CLI {
             case "--language", "-l":
                 guard let v = it.next() else { throw CLIError.missingValue(arg) }
                 language = v
+
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -403,10 +404,10 @@ struct CLI {
     }
 
     static func printUsage() {
-        let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "marvis-tts-cli"
+        let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "mlx-audio-swift-tts"
         print("""
         Usage:
-          \(exe) --text "Hello world" [--voice conversational_b] [--model <hf-repo>] [--output <path>] [--ref_audio <path>] [--ref_text <string>] [--max_tokens <int>] [--temperature <float>] [--top_p <float>] [--timestamps] [--benchmark]
+          \(exe) --text "Hello world" [--voice conversational_b] [--model <hf-repo>] [--output <path>] [--ref_audio <path>] [--ref_text <string>] [--max_tokens <int>] [--temperature <float>] [--top_p <float>] [--timestamps] [--benchmark] [--raw-ipa] [--language <code>]
 
         Options:
           -t, --text <string>           Text to synthesize (required if not passed as trailing arg)
