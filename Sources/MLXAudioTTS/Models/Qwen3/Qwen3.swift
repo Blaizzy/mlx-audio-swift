@@ -654,6 +654,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
 
         // Generate tokens
         for _ in 0..<maxTokens {
+            try Task.checkCancellation()
             let tokenValue: Int = autoreleasepool {
                 var lastLogits = logits
                 lastLogits = processor?.process(logits: lastLogits) ?? lastLogits
@@ -682,6 +683,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         }
 
         Memory.clearCache()
+        try Task.checkCancellation()
 
         // Reconstruct full tokens only once at the end for parsing
         var fullTokens = ContiguousArray<Int32>()
@@ -732,10 +734,10 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         )
     ) -> AsyncThrowingStream<Qwen3Generation, Error> {
         let (stream, continuation) = AsyncThrowingStream<Qwen3Generation, Error>.makeStream()
-        
-        Task { @Sendable [weak self, continuation] in
+
+        let task = Task { @Sendable [weak self, continuation] in
             guard let self else { return }
-            
+
             do {
                 guard let snacModel = self._snacModel else {
                     throw Qwen3Error.modelNotInitialized("SNAC model not loaded")
@@ -786,7 +788,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
                 
                 // Generate tokens
                 for _ in 0..<maxTokens {
-                    if Task.isCancelled { break }
+                    try Task.checkCancellation()
                     
                     // Extract token value and advance - minimize intermediate tensor lifetime
                     let tokenValue: Int = autoreleasepool {
@@ -821,6 +823,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
                 }
                 
                 Memory.clearCache()
+                try Task.checkCancellation()
                 
                 let generateTime = Date().timeIntervalSince(generateStartTime)
                 
@@ -861,6 +864,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
                 continuation.finish(throwing: error)
             }
         }
+        continuation.onTermination = { @Sendable _ in task.cancel() }
         return stream
     }
 

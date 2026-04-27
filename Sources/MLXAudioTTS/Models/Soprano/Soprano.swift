@@ -629,6 +629,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
 
         // Process each chunk separately
         for promptChunk in prompts {
+            try Task.checkCancellation()
             let sentenceData = self.preprocessText([promptChunk])
 
 
@@ -650,6 +651,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
                         totalTokens += 1
                     }
                 }
+                try Task.checkCancellation()
 
                 let tokenCount = allHiddenStates.count
 
@@ -671,6 +673,8 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
                 audioParts.append(audio)
             }
         }
+
+        try Task.checkCancellation()
 
         // Concatenate all audio parts
         let finalAudio: MLXArray
@@ -698,9 +702,9 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
         )
     ) -> AsyncThrowingStream<SopranoGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<SopranoGeneration, Error>.makeStream()
-        Task { @Sendable [weak self, continuation] in
+        let task = Task { @Sendable [weak self, continuation] in
             guard let self else { return }
-            
+
             do {
                 guard self.tokenizer != nil else {
                     throw SopranoError.modelNotInitialized("Tokenizer not loaded")
@@ -717,6 +721,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
                 let maxTokens = parameters.maxTokens ?? 512
                 
                 for (promptText, _, _) in sentenceData {
+                    try Task.checkCancellation()
                     let inputIds = self.tokenize(promptText)
                     var allHiddenStates: [MLXArray] = []
                     
@@ -734,6 +739,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
                             continuation.yield(.token(tokenVal))
                         }
                     }
+                    try Task.checkCancellation()
                     
                     let tokenCount = allHiddenStates.count
                     totalTokens += tokenCount
@@ -756,6 +762,8 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
                     audioParts.append(audio)
                 }
                 
+                try Task.checkCancellation()
+
                 // Concatenate audio
                 let finalAudio: MLXArray
                 if audioParts.count > 1 {
@@ -785,6 +793,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
                 continuation.finish(throwing: error)
             }
         }
+        continuation.onTermination = { @Sendable _ in task.cancel() }
         return stream
     }
 
@@ -798,7 +807,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
         repetitionContextSize: Int = 30
     ) -> AsyncStream<(Int?, MLXArray)> {
         AsyncStream { continuation in
-            Task {
+            let task = Task {
                 var ids = inputIds
                 if ids.ndim == 1 {
                     ids = ids.expandedDimensions(axis: 0)
@@ -825,6 +834,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
                 var currentLogits = logits
 
                 for _ in 0..<maxTokens {
+                    if Task.isCancelled { break }
                     // Get last logits
                     var lastLogits = currentLogits[0..., -1, 0...]
                     eval(lastLogits)
@@ -870,6 +880,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
 
                 continuation.finish()
             }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
         }
     }
 

@@ -317,6 +317,7 @@ public class T3GPT2Model: Module {
 
         // Generation loop
         for step in 0 ..< maxNewTokens {
+            if Task.isCancelled { break }
             var logits = speechLogits.squeezed(axis: 1) // (1, vocab)
 
             // Apply repetition penalty

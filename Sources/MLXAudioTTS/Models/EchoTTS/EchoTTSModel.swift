@@ -265,6 +265,7 @@ public final class EchoTTSModel: Module, @unchecked Sendable {
     ) throws -> (audio: MLXArray, info: AudioGenerationInfo) {
         let started = CFAbsoluteTimeGetCurrent()
         let preparedText = prepareText(text)
+        try Task.checkCancellation()
 
         var speakerLatent: MLXArray?
         var speakerMask: MLXArray?
@@ -299,7 +300,9 @@ public final class EchoTTSModel: Module, @unchecked Sendable {
             numSteps: numSteps,
             sequenceLength: sequenceLength
         )
+        try Task.checkCancellation()
         let decoded = try decodeLatents(latents)
+        try Task.checkCancellation()
         let cropped = echoTtsCropAudioToFlatteningPoint(
             audio: decoded,
             latent: latents[0, 0..., 0...],
@@ -408,12 +411,17 @@ extension EchoTTSModel: SpeechGenerationModel {
         language: String?,
         generationParameters: GenerateParameters
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
-        AsyncThrowingStream { continuation in
+        let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
+        let task = Task { @Sendable [weak self] in
+            guard let self else {
+                continuation.finish(throwing: AudioGenerationError.modelNotInitialized("Model deallocated"))
+                return
+            }
             do {
                 _ = voice
                 _ = refText
                 _ = language
-                let result = try generateDetailed(
+                let result = try self.generateDetailed(
                     text: text,
                     refAudio: refAudio,
                     rngSeed: 0,
@@ -426,5 +434,7 @@ extension EchoTTSModel: SpeechGenerationModel {
                 continuation.finish(throwing: error)
             }
         }
+        continuation.onTermination = { @Sendable _ in task.cancel() }
+        return stream
     }
 }

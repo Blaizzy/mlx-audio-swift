@@ -552,6 +552,7 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
             speed: 1.0,
             chunkLength: 300
         )
+        try Task.checkCancellation()
         return concatenateAudioSegments(segments)
     }
 
@@ -588,7 +589,7 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
         _ = streamingInterval
 
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
-        Task { @Sendable [weak self] in
+        let task = Task { @Sendable [weak self] in
             guard let self else {
                 continuation.finish()
                 return
@@ -606,6 +607,7 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
                     speed: 1.0,
                     chunkLength: 300
                 )
+                try Task.checkCancellation()
                 let audio = self.concatenateAudioSegments(segments)
                 let totalPromptTokens = segments.reduce(into: 0) { $0 += $1.promptTokenCount }
                 let totalGenerationTokens = segments.reduce(into: 0) { $0 += $1.generationTokenCount }
@@ -626,6 +628,7 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
                 continuation.finish(throwing: error)
             }
         }
+        continuation.onTermination = { @Sendable _ in task.cancel() }
         return stream
     }
 
@@ -810,6 +813,7 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
         generatedSteps.reserveCapacity(semanticBudget)
 
         for _ in 0 ..< semanticBudget {
+            try Task.checkCancellation()
             let semanticToken = try sampleSemantic(
                 logits: logits,
                 previousSemanticTokens: previousSemanticTokens,
@@ -868,6 +872,8 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
             hiddenState = result.hiddenStates[0..., (result.hiddenStates.dim(1) - 1)..<result.hiddenStates.dim(1), 0...]
                 .squeezed(axis: 1)
         }
+
+        try Task.checkCancellation()
 
         guard !generatedSteps.isEmpty else {
             throw AudioGenerationError.generationFailed(
@@ -941,6 +947,7 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
         segments.reserveCapacity(batches.count)
 
         for batchText in batches {
+            try Task.checkCancellation()
             conversation.append(FishSpeechMessage(
                 role: .user,
                 parts: [.text(FishSpeechTextPart(text: batchText))],
@@ -958,6 +965,7 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
                 topK: topK,
                 temperature: temperature
             )
+            try Task.checkCancellation()
             var audio = try decodeCodes(codes)
             if abs(speed - 1.0) > 1e-6 {
                 audio = fishSpeechAdjustSpeed(audio, speed: speed)

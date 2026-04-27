@@ -423,6 +423,7 @@ public class T3Model: Module {
 
         // Generation loop
         for step in 0 ..< maxNewTokens {
+            if Task.isCancelled { break }
             // Get logits for last position
             var logits = speechHead(hidden[0..., (-1)..., 0...]) // (B, 1, vocab)
             logits = logits.squeezed(axis: 1) // (B, vocab)
