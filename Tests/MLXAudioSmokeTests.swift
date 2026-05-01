@@ -554,6 +554,94 @@ struct TTSSmokeTests {
         print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
     }
 
+    @Test func voxcpm2Generate() async throws {
+        testHeader("voxcpm2Generate")
+        defer { testCleanup("voxcpm2Generate") }
+
+        guard let audioURL = Bundle.module.url(
+            forResource: "conversational_a", withExtension: "wav", subdirectory: "media"
+        ) else {
+            Issue.record("Test audio file 'conversational_a.wav' not found in bundle")
+            return
+        }
+        let (_, refAudio) = try loadAudioArray(from: audioURL)
+        print("\u{001B}[36mLoaded reference audio: \(refAudio.shape)\u{001B}[0m")
+
+        print("\u{001B}[33mLoading VoxCPM2 model...\u{001B}[0m")
+        let model = try await VoxCPM2Model.fromPretrained("mlx-community/VoxCPM2-4bit")
+        print("\u{001B}[32mVoxCPM2 model loaded!\u{001B}[0m")
+
+        #expect(model.tokenizer != nil, "Tokenizer should be loaded")
+        #expect(model.sampleRate == 48000, "Sample rate should be 48kHz")
+
+        let text = "Hello, this is a test of the VoxCPM2 model."
+        print("\u{001B}[33mGenerating audio for: \"\(text)\"...\u{001B}[0m")
+
+        let audio = try await model.generate(
+            text: text, voice: nil, refAudio: refAudio, refText: nil, language: nil,
+            generationParameters: GenerateParameters(maxTokens: 100, temperature: 1.0)
+        )
+
+        print("\u{001B}[32mGenerated audio shape: \(audio.shape)\u{001B}[0m")
+        let sampleCount = audio.shape[audio.ndim - 1]
+        #expect(sampleCount > 0, "Audio should have samples")
+        let duration = Float(sampleCount) / Float(model.sampleRate)
+        print("\u{001B}[32mGenerated \(String(format: "%.2f", duration))s of audio\u{001B}[0m")
+        #expect(duration > 0.1, "Audio duration should be > 0.1s")
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voxcpm2_test_output.wav")
+        try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+        print("\u{001B}[32mSaved generated audio to\u{001B}[0m: \(outputURL.path)")
+    }
+
+    @Test func voxcpm2GenerateStream() async throws {
+        testHeader("voxcpm2GenerateStream")
+        defer { testCleanup("voxcpm2GenerateStream") }
+
+        guard let audioURL = Bundle.module.url(
+            forResource: "conversational_a", withExtension: "wav", subdirectory: "media"
+        ) else {
+            Issue.record("Test audio file 'conversational_a.wav' not found in bundle")
+            return
+        }
+        let (_, refAudio) = try loadAudioArray(from: audioURL)
+
+        print("\u{001B}[33mLoading VoxCPM2 model...\u{001B}[0m")
+        let model = try await VoxCPM2Model.fromPretrained("mlx-community/VoxCPM2-4bit")
+        print("\u{001B}[32mVoxCPM2 model loaded!\u{001B}[0m")
+
+        let text = "Streaming test for VoxCPM2 model."
+        print("\u{001B}[33mStreaming audio for: \"\(text)\"...\u{001B}[0m")
+
+        var finalAudio: MLXArray?
+        for try await event in model.generateStream(
+            text: text, voice: nil, refAudio: refAudio, refText: nil, language: nil,
+            generationParameters: GenerateParameters(maxTokens: 100, temperature: 1.0)
+        ) {
+            switch event {
+            case .audio(let audio):
+                finalAudio = audio
+                print("\u{001B}[32mReceived audio chunk: \(audio.shape)\u{001B}[0m")
+            case .info(let info):
+                print("\u{001B}[36mGeneration info: \(String(format: "%.2f", info.generateTime))s\u{001B}[0m")
+            case .token(_):
+                break
+            }
+        }
+
+        #expect(finalAudio != nil, "Should receive audio from stream")
+        if let audio = finalAudio {
+            let sampleCount = audio.shape[audio.ndim - 1]
+            #expect(sampleCount > 0, "Audio should have samples")
+
+            let outputURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("voxcpm2_stream_test_output.wav")
+            try saveAudioArray(audio, sampleRate: Double(model.sampleRate), to: outputURL)
+            print("\u{001B}[32mSaved streamed audio to\u{001B}[0m: \(outputURL.path)")
+        }
+    }
+
     @Test func chatterboxRegularGenerateStream() async throws {
         testHeader("chatterboxRegularGenerateStream")
         defer { testCleanup("chatterboxRegularGenerateStream") }
