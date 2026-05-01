@@ -51,8 +51,6 @@ public enum TTS {
         }
 
         switch resolvedType {
-        case "moss_tts_nano":
-            return try await MossTTSNanoModel.fromPretrained(modelRepo, cache: cache)
         case "echo_tts", "echo":
             return try await EchoTTSModel.fromPretrained(modelRepo, cache: cache)
         case "qwen3_tts":
@@ -76,6 +74,8 @@ public enum TTS {
         case "kokoro", "kokoro_tts":
             let processor = textProcessor ?? KokoroMultilingualProcessor()
             return try await KokoroModel.fromPretrained(modelRepo, textProcessor: processor, cache: cache)
+        case "voxcpm2", "vox_cpm2":
+            return try await VoxCPM2Model.fromPretrained(modelRepo, cache: cache)
         default:
             throw TTSModelError.unsupportedModelType(modelType ?? resolvedType)
         }
@@ -108,9 +108,6 @@ public enum TTS {
         if lower.contains("echo") {
             return "echo_tts"
         }
-        if lower.contains("moss") && lower.contains("tts") {
-            return "moss_tts_nano"
-        }
         if lower.contains("qwen3") || lower.contains("qwen") {
             return "qwen3"
         }
@@ -134,6 +131,9 @@ public enum TTS {
         }
         if lower.contains("kokoro") {
             return "kokoro"
+        }
+        if lower.contains("voxcpm") {
+            return "voxcpm2"
         }
         return nil
     }
