@@ -9,6 +9,8 @@ public struct STTGenerateParameters: Sendable {
     public let language: String?
     public let chunkDuration: Float
     public let minChunkDuration: Float
+    public let repetitionPenalty: Float
+    public let repetitionContextSize: Int
 
     public init(
         maxTokens: Int = 8192,
@@ -18,7 +20,9 @@ public struct STTGenerateParameters: Sendable {
         verbose: Bool = false,
         language: String? = nil,
         chunkDuration: Float = 1200.0,
-        minChunkDuration: Float = 1.0
+        minChunkDuration: Float = 1.0,
+        repetitionPenalty: Float = 1.0,
+        repetitionContextSize: Int = 32
     ) {
         self.maxTokens = maxTokens
         self.temperature = temperature
@@ -28,6 +32,8 @@ public struct STTGenerateParameters: Sendable {
         self.language = language
         self.chunkDuration = chunkDuration
         self.minChunkDuration = minChunkDuration
+        self.repetitionPenalty = repetitionPenalty
+        self.repetitionContextSize = repetitionContextSize
     }
 }
 
