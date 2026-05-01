@@ -281,7 +281,6 @@ class VoxMiniCPMModel: Module {
             fatalError("MiniCPMModel requires either inputsEmbeds or inputIds")
         }
 
-        let B = h.dim(0)
         let L = h.dim(1)
 
         var offset = 0

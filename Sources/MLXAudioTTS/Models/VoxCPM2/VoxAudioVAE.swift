@@ -566,7 +566,7 @@ class VoxAudioVAE: Module {
     }
 
     func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
-        var filtered = weights.filter { !$0.key.contains("fc_logvar") }
+        let filtered = weights.filter { !$0.key.contains("fc_logvar") }
 
         // Fuse weight_norm: weight_g + weight_v → weight
         var fused = [String: MLXArray]()

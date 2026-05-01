@@ -67,7 +67,7 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
 
     // MARK: - State
 
-    public var tokenizer: Tokenizer?
+    public var tokenizer: Tokenizers.Tokenizer?
 
     // MARK: - Special tokens (defined in VoxCPM2 tokenizer config, ids 101-104)
 
@@ -270,7 +270,7 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
         let latentDim = audioVAE.latentDim
 
         // Tokenize text
-        var textIds = try tokenize(text)
+        let textIds = try tokenize(text)
 
         // Determine mode: reference cloning vs zero-shot
         let textToken: MLXArray
