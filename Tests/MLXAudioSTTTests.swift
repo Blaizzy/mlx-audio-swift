@@ -48,6 +48,7 @@ import MLXNN
 
 @testable import MLXAudioCore
 @testable import MLXAudioSTT
+@testable import MLXAudioVAD
 
 private func loadSTTNetworkFixture(sampleRate: Int, maxSamples: Int? = nil) throws -> MLXArray {
     let audioURL = Bundle.module.url(
@@ -3172,10 +3173,182 @@ struct GraniteSpeechModuleTests {
         let input = MLXArray.zeros([1, 30, 1024])
         let output = projector(input)
         // 30 frames / window_size(15) = 2 blocks, 2 * 3 queries = 6 tokens
-        #expect(output.shape[0] == 1)
-        #expect(output.shape[1] == 6)
-        #expect(output.shape[2] == 2048)
+         #expect(output.shape[0] == 1)
+         #expect(output.shape[1] == 6)
+         #expect(output.shape[2] == 2048)
+     }
+
+
+}
+
+// MARK: - Cohere Transcribe + VAD Network Tests
+
+@Suite(.serialized)
+struct CohereTranscribeVADNetworkTests {
+
+    private func loadInputs() throws -> (sampleRate: Int, audio: MLXArray, durationS: Double)? {
+        let env = ProcessInfo.processInfo.environment
+        let audioPath = env["MLXAUDIO_COHERE_VAD_AUDIO"]
+            ?? "/tmp/playback-eng-16k_slice.wav"
+        let url = URL(fileURLWithPath: audioPath)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            print("Skipping CohereTranscribeVAD network test. Audio missing at \(audioPath).")
+            return nil
+        }
+        let (sr, audio) = try loadAudioArray(from: url, sampleRate: 16000)
+        let dur = Double(audio.shape[0]) / Double(sr)
+        return (sr, audio, dur)
     }
 
+    @Test func cohereWithVADTranscribesLongAudio() async throws {
+        guard let (sr, audio, dur) = try loadInputs() else { return }
 
+        let env = ProcessInfo.processInfo.environment
+        let cohereRepo = env["MLXAUDIO_COHERE_REPO"]
+            ?? "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"
+        let vadRepo = env["MLXAUDIO_SILEROVAD_REPO"] ?? "mlx-community/silero-vad"
+
+        let coh = try await CohereTranscribeModel.fromPretrained(cohereRepo)
+        let vad = try await SileroVAD.fromPretrained(vadRepo)
+        let vadConfig = CohereVADConfig()
+        let params = STTGenerateParameters(maxTokens: 8192, language: "en")
+
+        let t0 = Date()
+        let outVAD = coh.generate(
+            audio: audio,
+            generationParameters: params,
+            vad: (model: vad, config: vadConfig)
+        )
+        let dtVAD = Date().timeIntervalSince(t0)
+
+        let words = outVAD.text.split(separator: " ").count
+        let head = outVAD.text.split(separator: " ").prefix(15).joined(separator: " ")
+
+        print(String(
+            format: "[VAD] %.1fs audio | wall=%.2fs | %.0fx realtime | %d words | head=%@",
+            dur, dtVAD, dur / dtVAD, words, head
+        ))
+        #expect(words > 100)
+        #expect(dtVAD < dur)
+    }
+
+    @Test func cohereVADvsBaselineOnSameAudio() async throws {
+        guard let (sr, audio, dur) = try loadInputs() else { return }
+
+        let env = ProcessInfo.processInfo.environment
+        let cohereRepo = env["MLXAUDIO_COHERE_REPO"]
+            ?? "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"
+        let vadRepo = env["MLXAUDIO_SILEROVAD_REPO"] ?? "mlx-community/silero-vad"
+
+        let coh = try await CohereTranscribeModel.fromPretrained(cohereRepo)
+        let vad = try await SileroVAD.fromPretrained(vadRepo)
+        let params = STTGenerateParameters(
+            maxTokens: 8192,
+            language: "en",
+            chunkDuration: 30.0,
+            minChunkDuration: 1.0
+        )
+
+        let t0 = Date()
+        let baseline = coh.generate(audio: audio, generationParameters: params)
+        let dtBase = Date().timeIntervalSince(t0)
+
+        let t1 = Date()
+        let withVAD = coh.generate(
+            audio: audio,
+            generationParameters: params,
+            vad: (model: vad, config: CohereVADConfig())
+        )
+        let dtVAD = Date().timeIntervalSince(t1)
+
+        let baseWords = baseline.text.split(separator: " ").count
+        let vadWords = withVAD.text.split(separator: " ").count
+
+        print(String(
+            format: "[BASELINE] wall=%.2fs words=%d | [VAD] wall=%.2fs words=%d | delta=%+.1fs (%+.1f%%)",
+            dtBase, baseWords, dtVAD, vadWords,
+            dtVAD - dtBase, (dtVAD / dtBase - 1) * 100
+        ))
+
+        try? baseline.text.write(toFile: "/tmp/cohere_baseline.txt", atomically: true, encoding: .utf8)
+        try? withVAD.text.write(toFile: "/tmp/cohere_vad.txt", atomically: true, encoding: .utf8)
+
+        func threeGramRepeats(_ text: String) -> [(String, Int)] {
+            let words = text.split(separator: " ").map(String.init)
+            guard words.count >= 3 else { return [] }
+            var counts: [String: Int] = [:]
+            for i in 0 ..< (words.count - 2) {
+                let key = "\(words[i].lowercased()) \(words[i+1].lowercased()) \(words[i+2].lowercased())"
+                counts[key, default: 0] += 1
+            }
+            return counts.filter { $0.value >= 3 }
+                .sorted { $0.value > $1.value }
+        }
+
+        let baseRepeats = threeGramRepeats(baseline.text)
+        let vadRepeats = threeGramRepeats(withVAD.text)
+        print("[BASELINE] 3-gram repeats (>=3): \(baseRepeats.count)")
+        for (g, c) in baseRepeats.prefix(5) { print("  '\(g)' x\(c)") }
+        print("[VAD] 3-gram repeats (>=3): \(vadRepeats.count)")
+        for (g, c) in vadRepeats.prefix(5) { print("  '\(g)' x\(c)") }
+
+        let baseHead = baseline.text.split(separator: " ").prefix(40).joined(separator: " ")
+        let vadHead = withVAD.text.split(separator: " ").prefix(40).joined(separator: " ")
+        print("\n[BASELINE head]: \(baseHead)")
+        print("\n[VAD head]:      \(vadHead)")
+
+        #expect(baseWords > 100)
+        #expect(vadWords > 100)
+    }
+
+    @Test func wer30MinLibrispeechBaselineVsVAD() async throws {
+        let audioPath = "/Volumes/DATA/audio_test_data/eng/librispeech_concat/librispeech_01800s.wav"
+        let goldPath = "/Volumes/DATA/audio_test_data/eng/librispeech_concat/librispeech_01800s.gold.txt"
+        guard FileManager.default.fileExists(atPath: audioPath),
+              FileManager.default.fileExists(atPath: goldPath) else {
+            print("Skipping WER bench. LibriSpeech-concat fixture missing.")
+            return
+        }
+        let (sr, audio) = try loadAudioArray(from: URL(fileURLWithPath: audioPath), sampleRate: 16000)
+        let dur = Double(audio.shape[0]) / Double(sr)
+        eval(audio)
+
+        let coh = try await CohereTranscribeModel.fromPretrained(
+            "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"
+        )
+        let vad = try await SileroVAD.fromPretrained("mlx-community/silero-vad")
+        let params = STTGenerateParameters(
+            maxTokens: 16384,
+            language: "en",
+            chunkDuration: 30.0,
+            minChunkDuration: 1.0
+        )
+
+        let t0 = Date()
+        let baseline = coh.generate(audio: audio, generationParameters: params)
+        let dtBase = Date().timeIntervalSince(t0)
+
+        let t1 = Date()
+        let withVAD = coh.generate(
+            audio: audio,
+            generationParameters: params,
+            vad: (model: vad, config: CohereVADConfig())
+        )
+        let dtVAD = Date().timeIntervalSince(t1)
+
+        try? baseline.text.write(toFile: "/tmp/cohere_libri_baseline.txt", atomically: true, encoding: .utf8)
+        try? withVAD.text.write(toFile: "/tmp/cohere_libri_vad.txt", atomically: true, encoding: .utf8)
+
+        let baseWords = baseline.text.split(separator: " ").count
+        let vadWords = withVAD.text.split(separator: " ").count
+
+        print(String(
+            format: "[LIBRI %.0fs] [BASELINE] wall=%.2fs words=%d | [VAD] wall=%.2fs words=%d | delta=%+.1fs (%+.1f%%)",
+            dur, dtBase, baseWords, dtVAD, vadWords,
+            dtVAD - dtBase, (dtVAD / dtBase - 1) * 100
+        ))
+
+        #expect(baseWords > 1000)
+        #expect(vadWords > 1000)
+    }
 }
