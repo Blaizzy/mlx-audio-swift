@@ -48,6 +48,7 @@ import MLXNN
 
 @testable import MLXAudioCore
 @testable import MLXAudioSTT
+@testable import MLXAudioVAD
 
 private func loadSTTNetworkFixture(sampleRate: Int, maxSamples: Int? = nil) throws -> MLXArray {
     let audioURL = Bundle.module.url(
@@ -3178,4 +3179,59 @@ struct GraniteSpeechModuleTests {
     }
 
 
+}
+
+// MARK: - Voxtral Realtime + VAD Network Tests
+
+@Suite(.serialized)
+struct VoxtralRealtimeVADNetworkTests {
+
+    private func loadInputs() throws -> (sampleRate: Int, audio: MLXArray, durationS: Double)? {
+        let env = ProcessInfo.processInfo.environment
+        let audioPath = env["MLXAUDIO_VOXTRAL_VAD_AUDIO"]
+            ?? "/tmp/playback-eng-16k_slice.wav"
+        let url = URL(fileURLWithPath: audioPath)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            print("Skipping VoxtralVAD network test. Audio missing at \(audioPath).")
+            return nil
+        }
+        let (sr, audio) = try loadAudioArray(from: url, sampleRate: 16000)
+        let dur = Double(audio.shape[0]) / Double(sr)
+        return (sr, audio, dur)
+    }
+
+    @Test func voxtralVADvsBaselineOnSameAudio() async throws {
+        guard let (_, audio, dur) = try loadInputs() else { return }
+
+        let env = ProcessInfo.processInfo.environment
+        let voxtralRepo = env["MLXAUDIO_VOXTRAL_REPO"]
+            ?? "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
+        let vadRepo = env["MLXAUDIO_SILEROVAD_REPO"] ?? "mlx-community/silero-vad"
+
+        let vox = try await VoxtralRealtimeModel.fromPretrained(voxtralRepo)
+        let vad = try await SileroVAD.fromPretrained(vadRepo)
+        let params = STTGenerateParameters(maxTokens: 8192, language: "en")
+
+        let t0 = Date()
+        let baseline = vox.generate(audio: audio, generationParameters: params)
+        let dtBase = Date().timeIntervalSince(t0)
+
+        let t1 = Date()
+        let withVAD = vox.generate(
+            audio: audio,
+            generationParameters: params,
+            vad: (model: vad, config: VoxtralVADConfig())
+        )
+        let dtVAD = Date().timeIntervalSince(t1)
+
+        let baseWords = baseline.text.split(separator: " ").count
+        let vadWords = withVAD.text.split(separator: " ").count
+
+        print(String(
+            format: "[VOXTRAL audio=%.0fs] BASELINE wall=%.2fs words=%d | VAD wall=%.2fs words=%d | delta=%+.1fs (%+.1f%%)",
+            dur, dtBase, baseWords, dtVAD, vadWords,
+            dtVAD - dtBase, (dtVAD / dtBase - 1) * 100
+        ))
+        #expect(baseWords + vadWords > 0)
+    }
 }

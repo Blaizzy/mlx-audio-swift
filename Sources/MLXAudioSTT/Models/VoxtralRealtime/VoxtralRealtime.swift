@@ -2,6 +2,7 @@ import Foundation
 import MLX
 import MLXNN
 import MLXAudioCore
+import MLXAudioVAD
 import MLXLMCommon
 import HuggingFace
 
@@ -119,6 +120,80 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
             generationTps: decodeTime > 0 ? Double(generated.count) / decodeTime : 0,
             totalTime: totalTime,
             peakMemoryUsage: Double(Memory.peakMemory) / 1e9
+        )
+    }
+
+    public func generate(
+        audio: MLXArray,
+        generationParameters: STTGenerateParameters,
+        vad: (model: SileroVAD, config: VoxtralVADConfig)?
+    ) -> STTOutput {
+        guard let vad else {
+            return generate(audio: audio, generationParameters: generationParameters)
+        }
+        let audio1D = audio.ndim > 1 ? audio.mean(axis: -1) : audio
+        let chunks: [(MLXArray, Float)]
+        do {
+            chunks = try voxtralVADSegment(
+                audio: audio1D,
+                sampleRate: VoxtralRealtimeConstants.sampleRate,
+                vadModel: vad.model,
+                config: vad.config
+            )
+        } catch {
+            if generationParameters.verbose {
+                print("VAD pre-processing failed (\(error)); falling back to single-pass generate")
+            }
+            return generate(audio: audio1D, generationParameters: generationParameters)
+        }
+        if chunks.count <= 1 {
+            return generate(audio: audio1D, generationParameters: generationParameters)
+        }
+
+        var outputs: [STTOutput] = []
+        outputs.reserveCapacity(chunks.count)
+        var remainingTokens = generationParameters.maxTokens
+        for (chunkAudio, offsetSeconds) in chunks {
+            if remainingTokens <= 0 { break }
+            if generationParameters.verbose {
+                print("Voxtral VAD chunk at \(String(format: "%.1f", offsetSeconds))s")
+            }
+            let chunkParameters = STTGenerateParameters(
+                maxTokens: remainingTokens,
+                temperature: generationParameters.temperature,
+                topP: generationParameters.topP,
+                topK: generationParameters.topK,
+                verbose: generationParameters.verbose,
+                language: generationParameters.language,
+                chunkDuration: generationParameters.chunkDuration,
+                minChunkDuration: generationParameters.minChunkDuration
+            )
+            let out = generate(audio: chunkAudio, generationParameters: chunkParameters)
+            outputs.append(out)
+            remainingTokens = max(0, remainingTokens - out.generationTokens)
+        }
+
+        let combinedText = outputs
+            .map(\.text)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        let promptTokens = outputs.reduce(0) { $0 + $1.promptTokens }
+        let generationTokens = outputs.reduce(0) { $0 + $1.generationTokens }
+        let totalTokens = outputs.reduce(0) { $0 + $1.totalTokens }
+        let totalTime = outputs.reduce(0.0) { $0 + $1.totalTime }
+        let peakMemoryUsage = outputs.map(\.peakMemoryUsage).max() ?? 0
+
+        return STTOutput(
+            text: combinedText,
+            language: generationParameters.language,
+            promptTokens: promptTokens,
+            generationTokens: generationTokens,
+            totalTokens: totalTokens,
+            promptTps: totalTime > 0 ? Double(promptTokens) / totalTime : 0,
+            generationTps: totalTime > 0 ? Double(generationTokens) / totalTime : 0,
+            totalTime: totalTime,
+            peakMemoryUsage: peakMemoryUsage
         )
     }
 
