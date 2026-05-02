@@ -493,6 +493,8 @@ class VoxSequential: Module {
 // MARK: - AudioVAE
 
 class VoxAudioVAE: Module {
+    private static let blocksLayersPattern = try! NSRegularExpression(pattern: #"\bblocks\.layers\.(\d+)"#)
+
     let config: VoxCPM2AudioVAEConfig
     let hopLength: Int
     let latentDim: Int
@@ -609,10 +611,9 @@ class VoxAudioVAE: Module {
         // Swift uses plain [Module] arrays → no "layers" level.
         // Strip "blocks.layers.N" → "blocks.N" for both encoder and decoder.
         var stripped = [String: MLXArray]()
-        let blocksLayersPattern = try! NSRegularExpression(pattern: #"\bblocks\.layers\.(\d+)"#)
         for (key, value) in remapped {
             let range = NSRange(key.startIndex..., in: key)
-            let newKey = blocksLayersPattern.stringByReplacingMatches(
+            let newKey = Self.blocksLayersPattern.stringByReplacingMatches(
                 in: key, range: range, withTemplate: "blocks.$1"
             )
             stripped[newKey] = value

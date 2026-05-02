@@ -182,11 +182,11 @@ class VoxUnifiedCFM: Module {
                 let muIn = MLX.concatenated([mu, MLXArray.zeros(like: mu)], axis: 0)
 
                 let n = xIn.dim(0)
-                let tVal = MLXArray(Array(repeating: t, count: n))
+                let tVal = MLX.broadcast(MLXArray(t), to: [n])
 
                 let dtValIn: MLXArray
                 if meanMode {
-                    dtValIn = MLXArray(Array(repeating: dt, count: n))
+                    dtValIn = MLX.broadcast(MLXArray(dt), to: [n])
                 } else {
                     dtValIn = MLXArray.zeros([n])
                 }
