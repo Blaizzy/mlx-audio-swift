@@ -346,9 +346,11 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
         var residualHidden = residualOutputs[0..., -1, 0...]
 
         var predFeatSeq: [MLXArray] = []
+        predFeatSeq.reserveCapacity(maxTokens)
 
         // Generation loop
         for i in 0 ..< maxTokens {
+            try Task.checkCancellation()
             // V2: DiT hidden is concatenation
             let ditH1 = lmToDitProj(lmHidden)
             let ditH2 = resToDitProj(residualHidden)
@@ -395,7 +397,7 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
 
             prefixFeatCond = predFeat
 
-            eval(lmHidden, residualHidden)
+            eval(lmHidden, residualHidden, predFeat)
         }
 
         guard !predFeatSeq.isEmpty else {
