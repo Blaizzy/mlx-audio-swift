@@ -13,7 +13,7 @@ import MLXNN
 class VoxCPMLocEnc: Module {
     let config: VoxCPM2LMConfig
 
-    var specialToken: MLXArray
+    let specialToken: MLXArray
     @ModuleInfo(key: "in_proj") var inProj: Linear
     @ModuleInfo var encoder: VoxMiniCPMModel
 

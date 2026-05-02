@@ -241,7 +241,7 @@ class VoxMiniCPMModel: Module {
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding?
     let layers: [VoxMiniCPMDecoderLayer]
     @ModuleInfo var norm: VoxRMSNorm
-    var rope: VoxCPMLongRoPE?
+    let rope: VoxCPMLongRoPE?
 
     init(_ config: VoxCPM2LMConfig) {
         self.config = config
@@ -258,9 +258,7 @@ class VoxMiniCPMModel: Module {
         self.layers = (0 ..< config.numHiddenLayers).map { _ in VoxMiniCPMDecoderLayer(config) }
         self._norm.wrappedValue = VoxRMSNorm(dims: config.hiddenSize, eps: config.rmsNormEps)
 
-        if !config.noRope {
-            self.rope = VoxCPMLongRoPE(config)
-        }
+        self.rope = config.noRope ? nil : VoxCPMLongRoPE(config)
 
         super.init()
     }
@@ -305,6 +303,7 @@ class VoxMiniCPMModel: Module {
         }
 
         var newCaches: [(MLXArray, MLXArray)] = []
+        newCaches.reserveCapacity(layers.count)
         for (i, layer) in layers.enumerated() {
             let layerCache = cache?[i]
             let c: (MLXArray, MLXArray)
