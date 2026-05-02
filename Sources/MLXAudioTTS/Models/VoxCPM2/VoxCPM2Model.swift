@@ -67,7 +67,7 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
 
     // MARK: - State
 
-    public var tokenizer: Tokenizers.Tokenizer?
+    public let tokenizer: Tokenizers.Tokenizer?
 
     // MARK: - Special tokens (defined in VoxCPM2 tokenizer config, ids 101-104)
 
@@ -86,8 +86,9 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
 
     // MARK: - Initialization
 
-    public init(_ config: VoxCPM2Configuration) {
+    public init(_ config: VoxCPM2Configuration, tokenizer: Tokenizers.Tokenizer? = nil) {
         self.config = config
+        self.tokenizer = tokenizer
         self.patchSize = config.patchSize
         self.featDim = config.featDim
 
@@ -424,7 +425,7 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
 
-        Task { @Sendable [weak self] in
+        let task = Task { @Sendable [weak self] in
             guard let self else {
                 continuation.finish(throwing: AudioGenerationError.modelNotInitialized("Model deallocated"))
                 return
@@ -453,6 +454,10 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
             } catch {
                 continuation.finish(throwing: error)
             }
+        }
+
+        continuation.onTermination = { @Sendable _ in
+            task.cancel()
         }
 
         return stream
@@ -518,6 +523,15 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
             }
         }
 
+        let modelParamKeys = Set(flatParams.map(\.0))
+        let quantSuffixes = [".scales", ".biases"]
+        let unmappedKeys = result.keys.filter { key in
+            !modelParamKeys.contains(key) && !quantSuffixes.contains(where: { key.hasSuffix($0) })
+        }
+        if !unmappedKeys.isEmpty {
+            print("[VoxCPM2] \(unmappedKeys.count) weight key(s) not mapped to model parameters: \(unmappedKeys.sorted().prefix(10))")
+        }
+
         return result
     }
 
@@ -558,7 +572,16 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
             config = VoxCPM2Configuration()
         }
 
-        let model = VoxCPM2Model(config)
+        // Load tokenizer before model construction (tokenizer is let)
+        let tokenizer: Tokenizers.Tokenizer?
+        do {
+            tokenizer = try await AutoTokenizer.from(modelFolder: modelDir)
+        } catch {
+            print("[VoxCPM2] Warning: Could not load tokenizer: \(error)")
+            tokenizer = nil
+        }
+
+        let model = VoxCPM2Model(config, tokenizer: tokenizer)
 
         // Load weights (single or sharded)
         let weights = try loadWeights(modelDir: modelDir)
@@ -582,13 +605,6 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
         // Update model parameters
         try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: [])
         eval(model)
-
-        // Load tokenizer
-        do {
-            model.tokenizer = try await AutoTokenizer.from(modelFolder: modelDir)
-        } catch {
-            print("[VoxCPM2] Warning: Could not load tokenizer: \(error)")
-        }
 
         return model
     }
