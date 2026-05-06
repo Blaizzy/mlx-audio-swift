@@ -3,6 +3,7 @@ import HuggingFace
 import MLX
 import MLXNN
 import MLXAudioCore
+import MLXAudioVAD
 import MLXLMCommon
 
 private struct CoherePrefillContext {
@@ -303,13 +304,43 @@ public final class CohereTranscribeModel: Module, STTGenerationModel {
         audio: MLXArray,
         generationParameters: STTGenerateParameters
     ) -> STTOutput {
+        return generate(audio: audio, generationParameters: generationParameters, vad: nil)
+    }
+
+    public func generate(
+        audio: MLXArray,
+        generationParameters: STTGenerateParameters,
+        vad: (model: SileroVAD, config: CohereVADConfig)?
+    ) -> STTOutput {
         let audio1D = audio.ndim > 1 ? audio.mean(axis: -1) : audio
-        let chunks = splitAudioIntoChunks(
-            audio1D,
-            sampleRate: config.sampleRate,
-            chunkDuration: generationParameters.chunkDuration,
-            minChunkDuration: generationParameters.minChunkDuration
-        )
+        let chunks: [(MLXArray, Float)]
+        if let vad {
+            do {
+                chunks = try cohereVADSegment(
+                    audio: audio1D,
+                    sampleRate: config.sampleRate,
+                    vadModel: vad.model,
+                    config: vad.config
+                )
+            } catch {
+                if generationParameters.verbose {
+                    print("VAD pre-processing failed (\(error)); falling back to fixed chunking")
+                }
+                chunks = splitAudioIntoChunks(
+                    audio1D,
+                    sampleRate: config.sampleRate,
+                    chunkDuration: generationParameters.chunkDuration,
+                    minChunkDuration: generationParameters.minChunkDuration
+                )
+            }
+        } else {
+            chunks = splitAudioIntoChunks(
+                audio1D,
+                sampleRate: config.sampleRate,
+                chunkDuration: generationParameters.chunkDuration,
+                minChunkDuration: generationParameters.minChunkDuration
+            )
+        }
 
         guard chunks.count > 1 else {
             return generateSingleChunk(audio: audio1D, generationParameters: generationParameters)
