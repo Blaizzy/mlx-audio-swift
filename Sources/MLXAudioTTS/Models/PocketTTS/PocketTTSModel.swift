@@ -211,10 +211,27 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         framesAfterEos: Int?,
         maxFrames: Int?
     ) throws -> [MLXArray] {
+        var outputs: [MLXArray] = []
+        try generateAudioStream(
+            state: state,
+            text: text,
+            framesAfterEos: framesAfterEos,
+            maxFrames: maxFrames,
+            onAudioChunk: { outputs.append($0) }
+        )
+        return outputs
+    }
+
+    private func generateAudioStream(
+        state: PocketTTSState?,
+        text: String,
+        framesAfterEos: Int?,
+        maxFrames: Int?,
+        onAudioChunk: (MLXArray) throws -> Void
+    ) throws {
         guard var state else {
             throw NSError(domain: "PocketTTSModel", code: 3, userInfo: [NSLocalizedDescriptionKey: "Missing generation state"])
         }
-        var outputs: [MLXArray] = []
         let promptNumFrames = getFlowCacheNumFrames(state)
         let chunks = try PocketTTSTextUtils.splitIntoBestSentences(flow_lm.conditioner.tokenizer, text)
         for chunk in chunks {
@@ -222,10 +239,14 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
             sliceFlowCache(&state, to: promptNumFrames)
             let (_, guess) = try PocketTTSTextUtils.prepareTextPrompt(chunk)
             let frames = framesAfterEos ?? (guess + 2)
-            let audioChunks = try generateAudioStreamShortText(state: &state, text: chunk, framesAfterEos: frames, maxFrames: maxFrames)
-            outputs.append(contentsOf: audioChunks)
+            try generateAudioStreamShortText(
+                state: &state,
+                text: chunk,
+                framesAfterEos: frames,
+                maxFrames: maxFrames,
+                onAudioChunk: onAudioChunk
+            )
         }
-        return outputs
     }
 
     private func generateAudioStreamShortText(
@@ -234,8 +255,25 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         framesAfterEos: Int,
         maxFrames: Int?
     ) throws -> [MLXArray] {
-        mimi.resetState()
         var outputs: [MLXArray] = []
+        try generateAudioStreamShortText(
+            state: &state,
+            text: text,
+            framesAfterEos: framesAfterEos,
+            maxFrames: maxFrames,
+            onAudioChunk: { outputs.append($0) }
+        )
+        return outputs
+    }
+
+    private func generateAudioStreamShortText(
+        state: inout PocketTTSState,
+        text: String,
+        framesAfterEos: Int,
+        maxFrames: Int?,
+        onAudioChunk: (MLXArray) throws -> Void
+    ) throws {
+        mimi.resetState()
 
         let words = text.split(separator: " ").count
         let genLenSec = Double(words) * 1.0 + 2.0
@@ -263,13 +301,12 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
             let decodingInput = nextLatent * flow_lm.emb_std + flow_lm.emb_mean
             let quantized = mimi.quantizer(decodingInput.transposed(0, 2, 1))
             let audioChunk = mimi.decodeStep(quantized)
-            outputs.append(audioChunk.squeezed())
+            let squeezedChunk = audioChunk.squeezed()
+            try onAudioChunk(squeezedChunk)
             backboneInput = nextLatent
         }
 
         try Task.checkCancellation()
-
-        return outputs
     }
 
     // MARK: - SpeechGenerationModel
@@ -313,20 +350,83 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         language: String?,
         generationParameters: GenerateParameters
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        generateStream(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: language,
+            generationParameters: generationParameters,
+            streamingInterval: 2.0
+        )
+    }
+
+    public func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        streamingInterval: Double
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
 
         let task = Task { @Sendable [weak self] in
             guard let self else { return }
             do {
-                let audio = try await self.generate(
+                _ = refText
+                _ = language
+
+                let prompt = try await self.resolveAudioPrompt(voice: voice, refAudio: refAudio)
+                let state = self.getStateForAudioPrompt(prompt)
+
+                let prevTemp = self.temp
+                let prevLsd = self.lsd_decode_steps
+                let prevNoise = self.noise_clamp
+                let prevEos = self.eos_threshold
+
+                self.temp = generationParameters.temperature
+
+                defer {
+                    self.temp = prevTemp
+                    self.lsd_decode_steps = prevLsd
+                    self.noise_clamp = prevNoise
+                    self.eos_threshold = prevEos
+                }
+
+                let chunkFrameCount = max(1, Int((max(streamingInterval, 0) * self.mimi.frameRate).rounded(.up)))
+                var pendingChunks: [MLXArray] = []
+                var pendingFrameCount = 0
+
+                func yieldPendingChunks() throws {
+                    guard pendingChunks.isEmpty == false else {
+                        return
+                    }
+
+                    try Task.checkCancellation()
+                    let audio = pendingChunks.count == 1 ? pendingChunks[0] : concatenated(pendingChunks, axis: 0)
+                    eval(audio)
+                    continuation.yield(.audio(audio))
+                    pendingChunks.removeAll(keepingCapacity: true)
+                    pendingFrameCount = 0
+                }
+
+                try self.generateAudioStream(
+                    state: state,
                     text: text,
-                    voice: voice,
-                    refAudio: refAudio,
-                    refText: refText,
-                    language: language,
-                    generationParameters: generationParameters
+                    framesAfterEos: nil,
+                    maxFrames: generationParameters.maxTokens,
+                    onAudioChunk: { audioChunk in
+                        pendingChunks.append(audioChunk)
+                        pendingFrameCount += 1
+                        if pendingFrameCount >= chunkFrameCount {
+                            try yieldPendingChunks()
+                        }
+                    }
                 )
-                continuation.yield(.audio(audio))
+
+                try yieldPendingChunks()
                 continuation.finish()
             } catch {
                 continuation.finish(throwing: error)
