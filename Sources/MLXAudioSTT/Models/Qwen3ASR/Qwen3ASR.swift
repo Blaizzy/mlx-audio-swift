@@ -47,7 +47,9 @@ extension Qwen3ASRModel: STTGenerationModel {
             context: "",
             language: generationParameters.language,
             chunkDuration: generationParameters.chunkDuration,
-            minChunkDuration: generationParameters.minChunkDuration
+            minChunkDuration: generationParameters.minChunkDuration,
+            repetitionPenalty: generationParameters.repetitionPenalty,
+            repetitionContextSize: generationParameters.repetitionContextSize
         )
     }
 
@@ -62,7 +64,9 @@ extension Qwen3ASRModel: STTGenerationModel {
             context: "",
             language: generationParameters.language,
             chunkDuration: generationParameters.chunkDuration,
-            minChunkDuration: generationParameters.minChunkDuration
+            minChunkDuration: generationParameters.minChunkDuration,
+            repetitionPenalty: generationParameters.repetitionPenalty,
+            repetitionContextSize: generationParameters.repetitionContextSize
         )
     }
 }
@@ -1195,13 +1199,16 @@ public class Qwen3ASRModel: Module {
         maxTokens: Int,
         temperature: Float,
         context: String,
-        language: String?
+        language: String?,
+        repetitionPenalty: Float = 1.0,
+        repetitionContextSize: Int = 32
     ) -> (text: String, language: String?, promptTokens: Int, generationTokens: Int) {
         guard let tokenizer = tokenizer else {
             fatalError("Tokenizer not loaded")
         }
 
         let eosTokenIds = [151645, 151643]
+        let prefillStepSize = 2048
 
         let (inputFeatures, featureAttentionMask, numAudioTokens) = preprocessAudio(audio)
         let inputIds = buildPrompt(
@@ -1222,31 +1229,97 @@ public class Qwen3ASRModel: Module {
         )
 
         let cache = makeCache()
-        var logits = callAsFunction(
-            inputIds: inputIds,
-            inputEmbeddings: inputsEmbeds,
+
+        // Chunked prefill (mlx-lm.generate_step pattern): keeps lazy graph small,
+        // materializes cache state between chunks, frees intermediate buffers.
+        let totalTokens = inputIds.dim(1)
+        var processedTokens = 0
+        while totalTokens - processedTokens > 1 {
+            let remaining = (totalTokens - processedTokens) - 1
+            let n = min(prefillStepSize, remaining)
+            let chunkIds = inputIds[0..., processedTokens..<(processedTokens + n)]
+            let chunkEmbeds = inputsEmbeds[0..., processedTokens..<(processedTokens + n), 0...]
+            let chunkLogits = callAsFunction(
+                inputIds: chunkIds,
+                inputEmbeddings: chunkEmbeds,
+                cache: cache
+            )
+            eval(chunkLogits)
+            Memory.clearCache()
+            processedTokens += n
+        }
+
+        let lastIds = inputIds[0..., processedTokens..<totalTokens]
+        let lastEmbeds = inputsEmbeds[0..., processedTokens..<totalTokens, 0...]
+        let firstLogits = callAsFunction(
+            inputIds: lastIds,
+            inputEmbeddings: lastEmbeds,
             cache: cache
         )
-        eval(logits)
+
+        var firstLast = firstLogits[0..., -1, 0...]
+        if temperature > 0 {
+            firstLast = firstLast / temperature
+        }
+        var prevTokenArr = firstLast.argMax(axis: -1)
+        asyncEval(prevTokenArr)
 
         var generatedTokens: [Int] = []
 
-        for _ in 0..<maxTokens {
-            var lastLogits = logits[0..., -1, 0...]
-            if temperature > 0 {
-                lastLogits = lastLogits / temperature
-            }
-            let nextToken = lastLogits.argMax(axis: -1).item(Int.self)
+        // AR loop with asyncEval pipelining: while CPU is consuming token N
+        // (item() blocks briefly), GPU computes token N+1 in the background.
+        for tokenIndex in 0..<maxTokens {
+            let prevTokenInt = prevTokenArr.item(Int.self)
 
-            if eosTokenIds.contains(nextToken) {
+            if eosTokenIds.contains(prevTokenInt) {
+                break
+            }
+            generatedTokens.append(prevTokenInt)
+
+            // Backstop for greedy callers (penalty == 1.0): if last 24 tokens have
+            // <=3 unique IDs, force-stop to prevent multi-GB KV cache growth and
+            // minutes-long stalls. Disabled when caller opts into repetitionPenalty
+            // (the proper fix) to avoid truncating legitimately repetitive speech.
+            if repetitionPenalty == 1.0 && generatedTokens.count >= 24 {
+                let tail = generatedTokens.suffix(24)
+                if Set(tail).count <= 3 {
+                    break
+                }
+            }
+
+            if tokenIndex == maxTokens - 1 {
                 break
             }
 
-            generatedTokens.append(nextToken)
+            let nextInArr = MLXArray([Int32(prevTokenInt)]).expandedDimensions(axis: 0)
+            let nextLogits = callAsFunction(inputIds: nextInArr, cache: cache)
+            var nextLast = nextLogits[0..., -1, 0...]
+            if temperature > 0 {
+                nextLast = nextLast / temperature
+            }
+            // Sign-aware repetition penalty (mlx-lm style): downweight recently-seen
+            // tokens so the model can escape greedy local minima.
+            if repetitionPenalty != 1.0 && !generatedTokens.isEmpty {
+                let contextSize = max(1, repetitionContextSize)
+                let recent = Array(generatedTokens.suffix(contextSize)).map { Int32($0) }
+                let recentArr = MLXArray(recent)
+                let logitsForRecent = nextLast[0..., recentArr]
+                let penalty = MLXArray(repetitionPenalty)
+                let penalized = MLX.where(
+                    logitsForRecent .> 0,
+                    logitsForRecent / penalty,
+                    logitsForRecent * penalty
+                )
+                nextLast[0..., recentArr] = penalized
+            }
+            let nextTokenArr = nextLast.argMax(axis: -1)
+            asyncEval(nextTokenArr)
 
-            let nextTokenArray = MLXArray([Int32(nextToken)]).expandedDimensions(axis: 0)
-            logits = callAsFunction(inputIds: nextTokenArray, cache: cache)
-            eval(logits)
+            prevTokenArr = nextTokenArr
+
+            if tokenIndex > 0 && tokenIndex % 256 == 0 {
+                Memory.clearCache()
+            }
         }
 
         let decodedText = tokenizer.decode(tokens: generatedTokens)
@@ -1265,7 +1338,9 @@ public class Qwen3ASRModel: Module {
         context: String = "",
         language: String? = nil,
         chunkDuration: Float = 1200.0,
-        minChunkDuration: Float = 1.0
+        minChunkDuration: Float = 1.0,
+        repetitionPenalty: Float = 1.0,
+        repetitionContextSize: Int = 32
     ) -> STTOutput {
         let startTime = Date()
         let forcedLanguage = normalizeLanguageName(language)
@@ -1295,7 +1370,9 @@ public class Qwen3ASRModel: Module {
                 maxTokens: remainingTokens,
                 temperature: temperature,
                 context: context,
-                language: forcedLanguage
+                language: forcedLanguage,
+                repetitionPenalty: repetitionPenalty,
+                repetitionContextSize: repetitionContextSize
             )
 
             allTexts.append(result.text)
@@ -1344,7 +1421,9 @@ public class Qwen3ASRModel: Module {
         context: String = "",
         language: String? = nil,
         chunkDuration: Float = 1200.0,
-        minChunkDuration: Float = 1.0
+        minChunkDuration: Float = 1.0,
+        repetitionPenalty: Float = 1.0,
+        repetitionContextSize: Int = 32
     ) -> AsyncThrowingStream<STTGeneration, Error> {
         let sendableModel = UncheckedSendableBox(self)
         let sendableAudio = UncheckedSendableBox(audio)
@@ -1419,6 +1498,22 @@ public class Qwen3ASRModel: Module {
                             if temperature > 0 {
                                 lastLogits = lastLogits / temperature
                             }
+                            // Sign-aware repetition penalty (mlx-lm style): downweight
+                            // recently-seen tokens so greedy decoding can escape local
+                            // minima. Mirrors generateSingleChunk; see there for rationale.
+                            if repetitionPenalty != 1.0 && !chunkTokens.isEmpty {
+                                let contextSize = max(1, repetitionContextSize)
+                                let recent = Array(chunkTokens.suffix(contextSize)).map { Int32($0) }
+                                let recentArr = MLXArray(recent)
+                                let logitsForRecent = lastLogits[0..., recentArr]
+                                let penalty = MLXArray(repetitionPenalty)
+                                let penalized = MLX.where(
+                                    logitsForRecent .> 0,
+                                    logitsForRecent / penalty,
+                                    logitsForRecent * penalty
+                                )
+                                lastLogits[0..., recentArr] = penalized
+                            }
                             let nextToken = lastLogits.argMax(axis: -1).item(Int.self)
 
                             if eosTokenIds.contains(nextToken) {
@@ -1427,6 +1522,16 @@ public class Qwen3ASRModel: Module {
 
                             chunkTokens.append(nextToken)
                             allGeneratedTokens.append(nextToken)
+
+                            // Backstop for greedy callers (penalty == 1.0): same contract
+                            // as generateSingleChunk. Disabled when penalty is set so legit
+                            // repetitive speech is not truncated.
+                            if repetitionPenalty == 1.0 && chunkTokens.count >= 24 {
+                                let tail = chunkTokens.suffix(24)
+                                if Set(tail).count <= 3 {
+                                    break
+                                }
+                            }
 
                             let tokenText = tokenizer.decode(tokens: [nextToken])
                             if resolvedLanguage == nil {

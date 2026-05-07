@@ -807,3 +807,238 @@ struct SmartTurnNetworkTests {
         #expect(resultFalse.probability >= 0.0 && resultFalse.probability < 0.5)
     }
 }
+
+// MARK: - Silero VAD Tests
+
+struct SileroVADConfigTests {
+
+    @Test func branchDefaults16k() {
+        let c = SileroVADBranchConfig.default16k
+        #expect(c.sampleRate == 16000)
+        #expect(c.filterLength == 256)
+        #expect(c.hopLength == 128)
+        #expect(c.pad == 64)
+        #expect(c.cutoff == 129)
+        #expect(c.contextSize == 64)
+        #expect(c.chunkSize == 512)
+    }
+
+    @Test func branchDefaults8k() {
+        let c = SileroVADBranchConfig.default8k
+        #expect(c.sampleRate == 8000)
+        #expect(c.filterLength == 128)
+        #expect(c.hopLength == 64)
+        #expect(c.pad == 32)
+        #expect(c.cutoff == 65)
+        #expect(c.contextSize == 32)
+        #expect(c.chunkSize == 256)
+    }
+
+    @Test func modelConfigDecodesEmptyJSON() throws {
+        let json = "{}".data(using: .utf8)!
+        let config = try JSONDecoder().decode(SileroVADConfig.self, from: json)
+        #expect(config.modelType == "silero_vad")
+        #expect(config.threshold == 0.5)
+        #expect(config.branch16k.chunkSize == 512)
+        #expect(config.branch8k.chunkSize == 256)
+    }
+
+    @Test func modelConfigDecodesUpstreamFormat() throws {
+        let json = #"""
+        {
+          "model_type": "silero_vad",
+          "architecture": "silero_vad",
+          "dtype": "float32",
+          "threshold": 0.5,
+          "min_speech_duration_ms": 250,
+          "min_silence_duration_ms": 100,
+          "speech_pad_ms": 30,
+          "branch_16k": {
+            "sample_rate": 16000,
+            "filter_length": 256,
+            "hop_length": 128,
+            "pad": 64,
+            "cutoff": 129,
+            "context_size": 64,
+            "chunk_size": 512
+          }
+        }
+        """#.data(using: .utf8)!
+        let config = try JSONDecoder().decode(SileroVADConfig.self, from: json)
+        #expect(config.minSpeechDurationMs == 250)
+        #expect(config.branch16k.cutoff == 129)
+        #expect(config.branch8k.chunkSize == 256)
+    }
+}
+
+struct SileroVADModelTests {
+
+    @Test func initialStateShape16k() throws {
+        let model = SileroVAD(SileroVADConfig())
+        let st = try model.initialState(sampleRate: 16000)
+        #expect(st.sampleRate == 16000)
+        #expect(st.context.shape == [1, 64])
+        #expect(st.lstmState == nil)
+    }
+
+    @Test func initialStateShape8k() throws {
+        let model = SileroVAD(SileroVADConfig())
+        let st = try model.initialState(sampleRate: 8000)
+        #expect(st.sampleRate == 8000)
+        #expect(st.context.shape == [1, 32])
+    }
+
+    @Test func unsupportedSampleRateThrows() {
+        let model = SileroVAD(SileroVADConfig())
+        #expect(throws: SileroVADError.self) {
+            _ = try model.initialState(sampleRate: 22050)
+        }
+    }
+
+    @Test func feedRejectsWrongChunkSize() throws {
+        let model = SileroVAD(SileroVADConfig())
+        let chunk = MLXArray.zeros([1, 256], type: Float.self)
+        #expect(throws: SileroVADError.self) {
+            _ = try model.feed(chunk: chunk, sampleRate: 16000)
+        }
+    }
+
+    @Test func probsToTimestampsAllSpeech() {
+        let probs = MLXArray((0 ..< 100).map { _ in Float(0.9) })
+        let ts = SileroVAD.probsToTimestamps(
+            probs,
+            audioLen: 100 * 512,
+            sampleRate: 16000,
+            threshold: 0.5,
+            minSpeechDurationMs: 250,
+            minSilenceDurationMs: 100,
+            speechPadMs: 30
+        )
+        #expect(ts.count == 1)
+        #expect(ts.first?.start == 0)
+        #expect(ts.first?.end == 100 * 512)
+    }
+
+    @Test func probsToTimestampsAllSilence() {
+        let probs = MLXArray((0 ..< 100).map { _ in Float(0.01) })
+        let ts = SileroVAD.probsToTimestamps(
+            probs,
+            audioLen: 100 * 512,
+            sampleRate: 16000,
+            threshold: 0.5,
+            minSpeechDurationMs: 250,
+            minSilenceDurationMs: 100,
+            speechPadMs: 30
+        )
+        #expect(ts.isEmpty)
+    }
+
+    @Test func probsToTimestampsTwoSegments() {
+        var values = [Float](repeating: 0.01, count: 100)
+        for i in 5 ..< 30 { values[i] = 0.9 }
+        for i in 50 ..< 80 { values[i] = 0.9 }
+        let probs = MLXArray(values)
+        let ts = SileroVAD.probsToTimestamps(
+            probs,
+            audioLen: 100 * 512,
+            sampleRate: 16000,
+            threshold: 0.5,
+            minSpeechDurationMs: 250,
+            minSilenceDurationMs: 100,
+            speechPadMs: 30
+        )
+        #expect(ts.count == 2)
+    }
+
+    @Test func sanitizeDropsValPrefixAndRemapsBranchKeys() {
+        let weights: [String: MLXArray] = [
+            "vad_16k.lstm.Wx": MLXArray.zeros([4]),
+            "vad_8k.conv1.bias": MLXArray.zeros([4]),
+            "val_loss": MLXArray.zeros([1]),
+            "val_acc": MLXArray.zeros([1]),
+        ]
+        let cleaned = SileroVAD.sanitize(weights: weights)
+        #expect(cleaned.keys.contains("branch16k.lstm.Wx"))
+        #expect(cleaned.keys.contains("branch8k.conv1.bias"))
+        #expect(!cleaned.keys.contains("vad_16k.lstm.Wx"))
+        #expect(!cleaned.keys.contains("vad_8k.conv1.bias"))
+        #expect(!cleaned.keys.contains("val_loss"))
+        #expect(!cleaned.keys.contains("val_acc"))
+    }
+}
+
+struct SileroVADNetworkTests {
+
+    @Test func loadV5AndPredictOnSilence() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network SileroVAD test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
+        let repo = env["MLXAUDIO_SILEROVAD_REPO"] ?? "mlx-community/silero-vad"
+        let model = try await SileroVAD.fromPretrained(repo)
+        let silence = MLXArray.zeros([16000], type: Float.self)
+        let probs = try model.predictProba(silence, sampleRate: 16000)
+        eval(probs)
+        let arr = probs.asArray(Float.self)
+        #expect(arr.count > 0)
+        #expect(arr.allSatisfy { $0 < 0.5 })
+    }
+
+    @Test func parityWithPythonReferenceOnRealAudio() async throws {
+        let env = ProcessInfo.processInfo.environment
+        let audioPath = env["MLXAUDIO_SILEROVAD_AUDIO"]
+            ?? "/tmp/playback-eng-16k_slice.wav"
+        let refPath = env["MLXAUDIO_SILEROVAD_REF"]
+            ?? "/tmp/silero_vad_python_ref.json"
+        let audioURL = URL(fileURLWithPath: audioPath)
+        let refURL = URL(fileURLWithPath: refPath)
+        guard FileManager.default.fileExists(atPath: audioURL.path),
+              FileManager.default.fileExists(atPath: refURL.path) else {
+            print("Skipping parity test. Audio or reference file missing at \(audioPath) / \(refPath).")
+            return
+        }
+
+        let (sr, full) = try loadAudioArray(from: audioURL, sampleRate: 16000)
+        #expect(sr == 16000)
+        let limit = 5 * sr
+        let totalSamples = full.shape[0]
+        let take = min(limit, totalSamples)
+        let audio5s = full[0 ..< take]
+        eval(audio5s)
+
+        let refData = try Data(contentsOf: refURL)
+        struct Ref: Decodable {
+            let probs: [Float]
+            let n_probs: Int
+            let max: Float
+            let mean: Float
+            let timestamps: [Stamp]
+            struct Stamp: Decodable { let start: Int; let end: Int }
+        }
+        let ref = try JSONDecoder().decode(Ref.self, from: refData)
+
+        let repo = env["MLXAUDIO_SILEROVAD_REPO"] ?? "mlx-community/silero-vad"
+        let model = try await SileroVAD.fromPretrained(repo)
+        let probsMx = try model.predictProba(audio5s, sampleRate: 16000)
+        eval(probsMx)
+        let probs = probsMx.asArray(Float.self)
+
+        #expect(probs.count == ref.n_probs)
+        var maxDelta: Float = 0
+        for i in 0 ..< min(ref.probs.count, probs.count) {
+            let d = abs(probs[i] - ref.probs[i])
+            if d > maxDelta { maxDelta = d }
+        }
+        print("parity max|Δ| over first \(ref.probs.count) probs = \(maxDelta)")
+        #expect(maxDelta < 1e-3)
+
+        let ts = try model.getSpeechTimestamps(audio5s, sampleRate: 16000)
+        #expect(ts.count == ref.timestamps.count)
+        for (a, b) in zip(ts, ref.timestamps) {
+            #expect(a.start == b.start)
+            #expect(a.end == b.end)
+        }
+    }
+}

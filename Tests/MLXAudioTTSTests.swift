@@ -71,6 +71,57 @@ private struct MossFakeTokenizer: MossTextTokenizing {
     }
 }
 
+private struct MossTTSFullFakeTokenizer: MossTTSTextTokenizing {
+    private let tokenIDsByString: [String: Int] = [
+        "<|im_start|>": 151_644,
+        "<|im_end|>": 151_645,
+        "<|audio_start|>": 151_652,
+        "<|audio_end|>": 151_653,
+        "<|audio_user_slot|>": 151_654,
+        "<|audio_assistant_gen_slot|>": 151_656,
+        "<|audio_assistant_delay_slot|>": 151_662,
+    ]
+
+    private var tokenStringsByID: [Int: String] {
+        Dictionary(uniqueKeysWithValues: tokenIDsByString.map { ($0.value, $0.key) })
+    }
+
+    private var orderedSpecialTokens: [(String, Int)] {
+        tokenIDsByString.sorted { lhs, rhs in
+            lhs.key.count == rhs.key.count ? lhs.key < rhs.key : lhs.key.count > rhs.key.count
+        }
+    }
+
+    func encode(_ text: String) -> [Int] {
+        var result: [Int] = []
+        var index = text.startIndex
+        while index < text.endIndex {
+            var matched = false
+            let suffix = text[index...]
+            for (token, id) in orderedSpecialTokens where suffix.hasPrefix(token) {
+                result.append(id)
+                index = text.index(index, offsetBy: token.count)
+                matched = true
+                break
+            }
+            if !matched {
+                let scalar = text[index].unicodeScalars.first?.value ?? 0
+                result.append(1_000 + Int(scalar % 500))
+                index = text.index(after: index)
+            }
+        }
+        return result
+    }
+
+    func decode(_ tokenIDs: [Int]) -> String {
+        tokenIDs.map { tokenStringsByID[$0] ?? "<\($0)>" }.joined()
+    }
+
+    func tokenString(for tokenID: Int) -> String? {
+        tokenStringsByID[tokenID]
+    }
+}
+
 private func makeTinyMossConfig(nVQ: Int = 2) throws -> MossTTSNanoConfig {
     try MossTTSNanoConfig(
         gpt2Config: MossGPT2Config(
@@ -319,6 +370,174 @@ struct MossTTSNanoTests {
     @Test func ttsModelResolutionIncludesMossNano() {
         #expect(TTS.resolveModelType(modelRepo: "mlx-community/MOSS-TTS-Nano") == "moss_tts_nano")
         #expect(TTS.resolveModelType(modelRepo: "anything", modelType: "moss_tts_nano") == "moss_tts_nano")
+    }
+}
+
+@Suite("MOSS TTS Full Tests")
+struct MossTTSFullTests {
+    @Test func configDecodesDelayAndLocalVariants() throws {
+        let delayJSON = """
+        {
+          "model_type": "moss_tts_delay",
+          "n_vq": 16,
+          "audio_vocab_size": 1024,
+          "sampling_rate": 24000,
+          "language_config": {
+            "vocab_size": 151936,
+            "hidden_size": 2048,
+            "num_hidden_layers": 2,
+            "intermediate_size": 6144,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 4,
+            "head_dim": 128,
+            "rope_parameters": { "rope_theta": 1000000.0 }
+          }
+        }
+        """
+        let delay = try JSONDecoder().decode(MossTTSConfig.self, from: Data(delayJSON.utf8))
+        #expect(delay.nVQ == 16)
+        #expect(delay.samplingRate == 24_000)
+        #expect(delay.languageConfig.ropeTheta == 1_000_000)
+        #expect(delay.isLocalTransformer == false)
+
+        let localJSON = """
+        {
+          "model_type": "moss_tts_delay",
+          "n_vq": 32,
+          "audio_vocab_size": 1024,
+          "sample_rate": 24000,
+          "additional_mlp_ffn_hidden_size": 4096,
+          "local_ffn_hidden_size": 4096,
+          "local_hidden_size": 1536,
+          "local_num_layers": 4,
+          "language_config": {
+            "vocab_size": 151936,
+            "hidden_size": 2048,
+            "num_hidden_layers": 2,
+            "intermediate_size": 6144,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 4,
+            "head_dim": 128
+          }
+        }
+        """
+        let local = try JSONDecoder().decode(MossTTSConfig.self, from: Data(localJSON.utf8))
+        #expect(local.isLocalTransformer)
+        #expect(local.samplingRate == 24_000)
+        let localTransformer = try local.localTransformerConfig()
+        #expect(localTransformer.hiddenSize == 1536)
+        #expect(localTransformer.intermediateSize == 4096)
+        #expect(localTransformer.numHiddenLayers == 4)
+    }
+
+    @Test func audioTokenizerMissingChannelCountDefaultsToMono() throws {
+        let directory = try makeTemporaryArtifactDirectory(prefix: "full-moss-audio-tokenizer")
+        defer { cleanupTemporaryArtifactDirectory(directory) }
+        let configJSON = """
+        {
+          "sample_rate": 24000,
+          "sampling_rate": 24000,
+          "downsample_rate": 1920,
+          "enable_channel_interleave": true,
+          "quantizer_type": "rlfq",
+          "quantizer_kwargs": {
+            "num_quantizers": 32,
+            "codebook_size": 1024,
+            "codebook_dim": 8
+          }
+        }
+        """
+        try writeTestFile(directory.appendingPathComponent("config.json"), contents: configJSON)
+        let parsed = try MossAudioTokenizerConfig.fromFile(directory.appendingPathComponent("config.json"))
+        #expect(parsed.numberChannels == 1)
+        #expect(parsed.downsampleRate == 1_920)
+    }
+
+    @Test func delayPatternRoundTripsAudioCodes() throws {
+        let codes = MLXArray([Int32(1), 2, 3, 4, 5, 6], [2, 3]).asType(.int32)
+        let delayed = try mossTTSApplyDelayPattern(codes, padCode: 99)
+        #expect(delayed.asArray(Int32.self) == [
+            1, 99, 99,
+            4, 2, 99,
+            99, 5, 3,
+            99, 99, 6,
+        ])
+        let restored = try mossTTSApplyDeDelayPattern(delayed)
+        #expect(restored.asArray(Int32.self) == codes.asArray(Int32.self))
+    }
+
+    @Test func delayProcessorBuildsReferencePromptRows() throws {
+        let config = MossTTSConfig(nVQ: 3, audioPadCode: 99)
+        let tokenizer = MossTTSFullFakeTokenizer()
+        let processor = try MossTTSDelayProcessor(tokenizer: tokenizer, config: config)
+        let reference = MLXArray([Int32(1), 2, 3, 4, 5, 6], [2, 3]).asType(.int32)
+        let user = processor.buildUserMessage(text: "target", reference: [reference], language: "English")
+
+        let batch = try processor([[user]], mode: "generation")
+        #expect(batch.inputIDs.dim(0) == 1)
+        #expect(batch.inputIDs.dim(2) == 4)
+
+        let textColumn = batch.inputIDs[0, 0..., 0].asArray(Int32.self).map(Int.init)
+        #expect(textColumn.contains(config.audioStartTokenID))
+        #expect(textColumn.contains(config.audioEndTokenID))
+        #expect(textColumn.contains(config.audioUserSlotTokenID))
+
+        let audioColumns = batch.inputIDs[0, 0..., 1...].asArray(Int32.self)
+        #expect(audioColumns.contains(1))
+        #expect(audioColumns.contains(6))
+    }
+
+    @Test func standardPromptOmitsSceneField() throws {
+        let config = MossTTSConfig(nVQ: 32)
+        let processor = try MossTTSDelayProcessor(tokenizer: MossTTSFullFakeTokenizer(), config: config)
+        let user = processor.buildUserMessage(text: "target", language: "English", scene: "studio")
+
+        #expect(!user.content.contains("- Scene:"))
+        #expect(user.content.contains("- Text:\ntarget"))
+    }
+
+    @Test func dialoguePromptKeepsSceneField() throws {
+        let config = MossTTSConfig(nVQ: 16)
+        let processor = try MossTTSDelayProcessor(tokenizer: MossTTSFullFakeTokenizer(), config: config)
+        let user = processor.buildUserMessage(text: "target", language: "English", scene: "studio")
+
+        #expect(user.content.contains("- Scene:\nstudio"))
+        #expect(user.content.contains("- Text:\ntarget"))
+    }
+
+    @Test func localProcessorAppendsAudioStartWithoutDelayPattern() throws {
+        let language = MossQwen3Config(
+            vocabSize: 151_936,
+            hiddenSize: 64,
+            numHiddenLayers: 1,
+            intermediateSize: 128,
+            numAttentionHeads: 4,
+            numKeyValueHeads: 4,
+            headDim: 16
+        )
+        let config = MossTTSConfig(
+            languageConfig: language,
+            nVQ: 3,
+            audioPadCode: 99,
+            additionalMLPFFNHiddenSize: 128,
+            localFFNHiddenSize: 128,
+            localHiddenSize: 64,
+            localNumLayers: 1
+        )
+        let processor = try MossTTSLocalProcessor(tokenizer: MossTTSFullFakeTokenizer(), config: config)
+        let user = processor.buildUserMessage(text: "target", language: "English")
+
+        let batch = try processor([[user]], mode: "generation")
+        let textColumn = batch.inputIDs[0, 0..., 0].asArray(Int32.self).map(Int.init)
+        #expect(textColumn.last == config.audioStartTokenID)
+        #expect(batch.inputIDs[0, -1, 1...].asArray(Int32.self).allSatisfy { $0 == Int32(config.audioPadCode) })
+    }
+
+    @Test func ttsModelResolutionIncludesFullMossVariants() {
+        #expect(TTS.resolveModelType(modelRepo: "OpenMOSS-Team/MOSS-TTS") == "moss_tts_delay")
+        #expect(TTS.resolveModelType(modelRepo: "OpenMOSS-Team/MOSS-TTSD-v1.0") == "moss_tts_delay")
+        #expect(TTS.resolveModelType(modelRepo: "OpenMOSS-Team/MOSS-TTS-Local-Transformer") == "moss_tts_local")
+        #expect(TTS.resolveModelType(modelRepo: "anything", modelType: "moss_tts_delay") == "moss_tts_delay")
     }
 }
 

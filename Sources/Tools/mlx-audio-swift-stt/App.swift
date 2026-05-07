@@ -83,6 +83,8 @@ private struct Options {
     var topP: Float? = nil
     var topK: Int? = nil
     var minChunkDuration: Float? = nil
+    var repetitionPenalty: Float? = nil
+    var repetitionContextSize: Int? = nil
 
     static func parse() throws -> Options {
         var options = Options()
@@ -197,6 +199,10 @@ private struct Options {
                 if let v = asInt(value) { prefillStepSize = v }
             case "frame_threshold":
                 if let v = asInt(value) { frameThreshold = v }
+            case "repetition_penalty":
+                if let v = asFloat(value) { repetitionPenalty = v }
+            case "repetition_context_size":
+                if let v = asInt(value) { repetitionContextSize = v }
             default:
                 continue
             }
@@ -228,7 +234,13 @@ private struct Options {
               --stream                      Stream token output while generating
               --context <text>              Accepted for compatibility (currently unused)
               --prefill-step-size <int>     Accepted for compatibility (currently unused). Default: 2048
-              --gen-kwargs <json>           Additional kwargs JSON (e.g. '{"min_chunk_duration":1.0}')
+              --gen-kwargs <json>           Additional kwargs JSON.
+                                            Recognized keys: max_tokens, language, chunk_duration,
+                                            min_chunk_duration, temperature, top_p, top_k,
+                                            repetition_penalty (Float, default 1.0 = greedy),
+                                            repetition_context_size (Int, default 32),
+                                            stream, text, verbose, context, prefill_step_size,
+                                            frame_threshold
               --text <text>                 Alignment text (required for forced aligner models)
               -h, --help                    Show this help
             """
@@ -292,7 +304,9 @@ enum App {
                 verbose: options.verbose,
                 language: normalizeLanguage(options.language),
                 chunkDuration: options.chunkDuration,
-                minChunkDuration: options.minChunkDuration ?? params.minChunkDuration
+                minChunkDuration: options.minChunkDuration ?? params.minChunkDuration,
+                repetitionPenalty: options.repetitionPenalty ?? params.repetitionPenalty,
+                repetitionContextSize: options.repetitionContextSize ?? params.repetitionContextSize
             )
 
             if options.stream {
