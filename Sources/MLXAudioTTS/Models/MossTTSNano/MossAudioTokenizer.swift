@@ -64,7 +64,7 @@ public struct MossAudioTokenizerConfig: Sendable {
             samplingRate: json.mossInt("sampling_rate", fallback: json.mossInt("sample_rate", fallback: 48_000)),
             downsampleRate: json.mossInt("downsample_rate", fallback: 3_840),
             causalTransformerContextDuration: json.mossFloat("causal_transformer_context_duration", fallback: 10),
-            numberChannels: json.mossInt("number_channels", fallback: 2),
+            numberChannels: json.mossInt("number_channels", fallback: 1),
             enableChannelInterleave: json.mossBool("enable_channel_interleave", fallback: true),
             encoderKwargs: encoderKwargs,
             decoderKwargs: decoderKwargs,
@@ -230,7 +230,14 @@ private final class MossLayerScale: Module {
     }
 }
 
-private final class MossAudioIdentity: Module {}
+private final class MossAudioIdentity: Module, UnaryLayer {
+    func callAsFunction(_ x: MLXArray) -> MLXArray { x }
+}
+
+@inline(__always)
+private func mossAudioCallUnary(_ module: Module, _ x: MLXArray) -> MLXArray {
+    (module as! UnaryLayer).callAsFunction(x)
+}
 
 private func mossApplyLayerScale(_ module: Module, to x: MLXArray) -> MLXArray {
     if let scale = module as? MossLayerScale {
@@ -470,15 +477,17 @@ private final class MossAudioTransformer: Module {
 private final class MossProjectedTransformer: Module, MossAudioTokenizerStage {
     let downsampleRatio = 1
 
-    @ModuleInfo(key: "input_proj") var inputProj: Linear
+    @ModuleInfo(key: "input_proj") var inputProj: Module
     @ModuleInfo var transformer: MossAudioTransformer
-    @ModuleInfo(key: "output_proj") var outputProj: Linear
+    @ModuleInfo(key: "output_proj") var outputProj: Module
 
     init(kwargs: [String: SendableValue], context: Int) throws {
         let inputDimension = kwargs.int("input_dimension", fallback: 0)
         let outputDimension = kwargs.int("output_dimension", fallback: 0)
         let dModel = kwargs.int("d_model", fallback: 0)
-        _inputProj.wrappedValue = Linear(inputDimension, dModel, bias: false)
+        _inputProj.wrappedValue = inputDimension == dModel
+            ? MossAudioIdentity()
+            : Linear(inputDimension, dModel, bias: false)
         _transformer.wrappedValue = try MossAudioTransformer(
             dModel: dModel,
             numHeads: kwargs.int("num_heads", fallback: 1),
@@ -493,13 +502,15 @@ private final class MossProjectedTransformer: Module, MossAudioTokenizerStage {
             norm: kwargs.string("norm", fallback: "layer_norm"),
             gating: kwargs.string("gating", fallback: "none")
         )
-        _outputProj.wrappedValue = Linear(dModel, outputDimension, bias: false)
+        _outputProj.wrappedValue = outputDimension == dModel
+            ? MossAudioIdentity()
+            : Linear(dModel, outputDimension, bias: false)
     }
 
     func callAsFunction(_ x: MLXArray, inputLengths: MLXArray) throws -> (MLXArray, MLXArray) {
-        var hidden = inputProj(x.transposed(0, 2, 1))
+        var hidden = mossAudioCallUnary(inputProj, x.transposed(0, 2, 1))
         hidden = transformer(hidden, inputLengths: inputLengths)
-        let output = outputProj(hidden)
+        let output = mossAudioCallUnary(outputProj, hidden)
         return (output.transposed(0, 2, 1), inputLengths)
     }
 }
@@ -744,9 +755,31 @@ public final class MLXMossAudioTokenizer: Module, MossAudioTokenizing, @unchecke
         let config = try MossAudioTokenizerConfig.fromFile(modelDir.appendingPathComponent("config.json"))
         let model = try MLXMossAudioTokenizer(config: config)
         let weights = try loadWeights(from: modelDir)
-        try model.update(parameters: ModuleParameters.unflattened(weights), verify: .all)
+        try model.update(parameters: ModuleParameters.unflattened(sanitize(weights: weights)), verify: .all)
         eval(model)
         return model
+    }
+
+    private static func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+        var result = weights
+        for (key, value) in weights {
+            var mappedKey: String?
+            if key.contains(".self_attn.in_projs.0.") {
+                mappedKey = key.replacingOccurrences(of: ".self_attn.in_projs.0.", with: ".self_attn.in_proj.")
+            } else if key.contains(".self_attn.out_projs.0.") {
+                mappedKey = key.replacingOccurrences(of: ".self_attn.out_projs.0.", with: ".self_attn.out_proj.")
+            } else if key.contains(".transformer.layers.") && key.contains(".linear1.") {
+                mappedKey = key.replacingOccurrences(of: ".linear1.", with: ".ffn.0.")
+            } else if key.contains(".transformer.layers.") && key.contains(".linear2.") {
+                mappedKey = key.replacingOccurrences(of: ".linear2.", with: ".ffn.2.")
+            }
+
+            if let mappedKey {
+                result[mappedKey] = value
+                result.removeValue(forKey: key)
+            }
+        }
+        return result
     }
 
     public static func fromPretrained(
