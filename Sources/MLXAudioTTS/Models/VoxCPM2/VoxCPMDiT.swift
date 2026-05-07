@@ -31,7 +31,7 @@ class SinusoidalPosEmb: Module {
             inp = inp.reshaped([1])
         }
 
-        let scaled = scale * inp.expandedDimensions(axis: 1) * freqs.expandedDimensions(axis: 0)
+        let scaled = MLXArray(scale) * inp.expandedDimensions(axis: 1) * freqs.expandedDimensions(axis: 0)
 
         return MLX.concatenated([MLX.sin(scaled), MLX.cos(scaled)], axis: -1)
     }
