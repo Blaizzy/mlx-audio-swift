@@ -17,7 +17,7 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
         case .inputFileNotFound(let path):
             "Input audio file not found: \(path)"
         case .unsupportedModelRepo(let repo):
-            "Unsupported STT model repo: \(repo). Expected FireRedASR2, SenseVoice, GLMASR, Qwen3ASR, VoxtralRealtime, CohereTranscribe, Parakeet, or Qwen3ForcedAligner."
+            "Unsupported STT model repo: \(repo). Expected FireRedASR2, SenseVoice, GLM-ASR, Qwen3-ASR, MiMo-V2.5-ASR, VoxtralRealtime, CohereTranscribe, Parakeet, or Qwen3-ForcedAligner."
         case .missingTextForForcedAlignment:
             "--text is required when using a forced aligner model."
         case .streamUnsupportedForForcedAligner:
@@ -222,7 +222,7 @@ private struct Options {
             Options:
               --model <repo>                Model repo id.
                                             Default: mlx-community/Qwen3-ASR-0.6B-4bit
-                                            Supported families: FireRedASR2, SenseVoice, Qwen3-ASR, GLM-ASR, Voxtral, Cohere, Parakeet, Qwen3-ForcedAligner
+                                            Supported families: FireRedASR2, SenseVoice, Qwen3-ASR, GLM-ASR, MiMo-V2.5-ASR, Voxtral, Cohere, Parakeet, Qwen3-ForcedAligner
               --audio <path>                Input audio file (required if not passed as trailing arg)
               --output-path <path>          Output path stem (required). Extension is appended from --format.
               --format <txt|srt|vtt|json>   Output format. Default: txt
@@ -269,7 +269,18 @@ enum App {
 
         let model = try await loadModel(repo: options.model)
         let (inputSampleRate, inputAudio) = try loadAudioArray(from: inputURL)
-        let audio = try prepareAudioForSTT(inputAudio, inputSampleRate: inputSampleRate, targetSampleRate: 16000)
+        let targetSampleRate: Int
+        switch model {
+        case .stt(let sttModel) where sttModel is MiMoV2ASRModel:
+            targetSampleRate = 24_000
+        default:
+            targetSampleRate = 16000
+        }
+        let audio = try prepareAudioForSTT(
+            inputAudio,
+            inputSampleRate: inputSampleRate,
+            targetSampleRate: targetSampleRate
+        )
 
         let startTime = CFAbsoluteTimeGetCurrent()
 
@@ -278,8 +289,8 @@ enum App {
             print("Audio path: \(inputURL.path)")
             print("Output path: \(options.outputPath!).\(options.format.rawValue)")
             print("Format: \(options.format.rawValue)")
-            if inputSampleRate != 16000 {
-                print("Resampled audio: \(inputSampleRate) Hz -> 16000 Hz")
+            if inputSampleRate != targetSampleRate {
+                print("Resampled audio: \(inputSampleRate) Hz -> \(targetSampleRate) Hz")
             }
             if options.frameThreshold != 25 {
                 print("Warning: --frame-threshold is currently ignored by this CLI.")
@@ -418,6 +429,9 @@ enum App {
         }
         if lower.contains("sensevoice") {
             return .stt(try await SenseVoiceModel.fromPretrained(repo))
+        }
+        if lower.contains("mimo") {
+            return .stt(try await MiMoV2ASRModel.fromPretrained(repo))
         }
 
         throw AppError.unsupportedModelRepo(repo)
