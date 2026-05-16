@@ -916,6 +916,19 @@ private final class CountingFishAE: EchoTTSAudioCodec, @unchecked Sendable {
 @Suite("Qwen3TTS")
 struct Qwen3TTSTests {
 
+    @Test func customVoicePromptSplitsSpeakerAndInstruction() {
+        let combined = Qwen3TTSModel.parseCustomVoicePrompt("Vivian, very happy and excited.")
+        #expect(combined?.speaker == "Vivian")
+        #expect(combined?.instruction == "very happy and excited.")
+
+        let speakerOnly = Qwen3TTSModel.parseCustomVoicePrompt(" Vivian ")
+        #expect(speakerOnly?.speaker == "Vivian")
+        #expect(speakerOnly?.instruction == nil)
+
+        #expect(Qwen3TTSModel.parseCustomVoicePrompt(nil)?.speaker == nil)
+        #expect(Qwen3TTSModel.parseCustomVoicePrompt("   ")?.speaker == nil)
+    }
+
     @Test func prepareReferenceConditioningBuildsReusableReferenceState() async throws {
         let fixture = try await makeTinyQwen3TTSModel(
             ttsModelType: "voice_design",
