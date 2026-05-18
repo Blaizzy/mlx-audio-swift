@@ -2800,6 +2800,30 @@ struct FireRedASR2Tests {
     }
 }
 
+@Suite("FireRed ASR 2 Cached Tests", .serialized)
+struct FireRedASR2CachedTests {
+
+    /// Loads the model from a pre-existing on-disk snapshot pointed to by
+    /// MLXAUDIO_FIRERED_DIR. Useful for verifying load behaviour without
+    /// touching the network or HubCache.default. Set MLXAUDIO_FIRERED_DIR=/path
+    /// to enable; otherwise this test is a no-op.
+    @Test func fireredLoadsFromLocalDirectory() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let dirPath = env["MLXAUDIO_FIRERED_DIR"], !dirPath.isEmpty else {
+            print("Skipping FireRed cached test. Set MLXAUDIO_FIRERED_DIR=<path> to enable.")
+            return
+        }
+
+        let url = URL(fileURLWithPath: dirPath, isDirectory: true)
+        let model = try FireRedASR2Model.fromDirectory(url)
+
+        #expect(model.config.modelType == "fireredasr2")
+        #expect(model.cmvnMeans != nil)
+        #expect(model.cmvnIstd != nil)
+        #expect(!model.vocabulary.isEmpty)
+    }
+}
+
 @Suite("FireRed ASR 2 Network Tests", .serialized)
 struct FireRedASR2NetworkTests {
 
