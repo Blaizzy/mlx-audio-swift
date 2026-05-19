@@ -355,7 +355,12 @@ public final class MossTTSModel: Module, SpeechGenerationModel, @unchecked Senda
     private static func findCachedHubSnapshot(repo: String) -> URL? {
         let components = repo.split(separator: "/", maxSplits: 1).map(String.init)
         guard components.count == 2 else { return nil }
+        #if os(macOS)
         let home = FileManager.default.homeDirectoryForCurrentUser
+        #else
+        let home = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        #endif
         let snapshotsDir = home
             .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
             .appendingPathComponent("models--\(components[0])--\(components[1])", isDirectory: true)
