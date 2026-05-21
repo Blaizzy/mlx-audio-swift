@@ -17,7 +17,7 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
         case .inputFileNotFound(let path):
             "Input audio file not found: \(path)"
         case .unsupportedModelRepo(let repo):
-            "Unsupported STT model repo: \(repo). Expected FireRedASR2, SenseVoice, GLMASR, Qwen3ASR, VoxtralRealtime, CohereTranscribe, Parakeet, or Qwen3ForcedAligner."
+            "Unsupported STT model repo: \(repo). Expected FireRedASR2, SenseVoice, GLM-ASR, Qwen3-ASR, MiMo-V2.5-ASR, VoxtralRealtime, CohereTranscribe, Parakeet, or Qwen3-ForcedAligner."
         case .missingTextForForcedAlignment:
             "--text is required when using a forced aligner model."
         case .streamUnsupportedForForcedAligner:
@@ -222,7 +222,7 @@ private struct Options {
             Options:
               --model <repo>                Model repo id.
                                             Default: mlx-community/Qwen3-ASR-0.6B-4bit
-                                            Supported families: FireRedASR2, SenseVoice, Qwen3-ASR, GLM-ASR, Voxtral, Cohere, Parakeet, Qwen3-ForcedAligner
+                                            Supported families: FireRedASR2, SenseVoice, Qwen3-ASR, GLM-ASR, MiMo-V2.5-ASR, Voxtral, Cohere, Parakeet, Qwen3-ForcedAligner
               --audio <path>                Input audio file (required if not passed as trailing arg)
               --output-path <path>          Output path stem (required). Extension is appended from --format.
               --format <txt|srt|vtt|json>   Output format. Default: txt
@@ -267,9 +267,25 @@ enum App {
             throw AppError.inputFileNotFound(inputURL.path)
         }
 
+        let loadStartTime = CFAbsoluteTimeGetCurrent()
         let model = try await loadModel(repo: options.model)
+        let modelLoadTime = CFAbsoluteTimeGetCurrent() - loadStartTime
+
+        let audioPrepStartTime = CFAbsoluteTimeGetCurrent()
         let (inputSampleRate, inputAudio) = try loadAudioArray(from: inputURL)
-        let audio = try prepareAudioForSTT(inputAudio, inputSampleRate: inputSampleRate, targetSampleRate: 16000)
+        let targetSampleRate: Int
+        switch model {
+        case .stt(let sttModel) where sttModel is MiMoV2ASRModel:
+            targetSampleRate = 24_000
+        default:
+            targetSampleRate = 16000
+        }
+        let audio = try prepareAudioForSTT(
+            inputAudio,
+            inputSampleRate: inputSampleRate,
+            targetSampleRate: targetSampleRate
+        )
+        let audioPrepTime = CFAbsoluteTimeGetCurrent() - audioPrepStartTime
 
         let startTime = CFAbsoluteTimeGetCurrent()
 
@@ -278,8 +294,8 @@ enum App {
             print("Audio path: \(inputURL.path)")
             print("Output path: \(options.outputPath!).\(options.format.rawValue)")
             print("Format: \(options.format.rawValue)")
-            if inputSampleRate != 16000 {
-                print("Resampled audio: \(inputSampleRate) Hz -> 16000 Hz")
+            if inputSampleRate != targetSampleRate {
+                print("Resampled audio: \(inputSampleRate) Hz -> \(targetSampleRate) Hz")
             }
             if options.frameThreshold != 25 {
                 print("Warning: --frame-threshold is currently ignored by this CLI.")
@@ -348,7 +364,10 @@ enum App {
             let elapsed = CFAbsoluteTimeGetCurrent() - startTime
             print("\n==========")
             print("Saved file to: \(options.outputPath!).\(options.format.rawValue)")
-            print(String(format: "Processing time: %.2f seconds", elapsed))
+            print(String(format: "Model load time: %.2f seconds", modelLoadTime))
+            print(String(format: "Audio prep time: %.2f seconds", audioPrepTime))
+            print(String(format: "Model generation time: %.2f seconds", output.totalTime))
+            print(String(format: "End-to-end post-load time: %.2f seconds", elapsed))
             print(String(format: "Prompt: %d tokens, %.3f tokens-per-sec", output.promptTokens, output.promptTps))
             print(String(format: "Generation: %d tokens, %.3f tokens-per-sec", output.generationTokens, output.generationTps))
             print(String(format: "Peak memory: %.2f GB", output.peakMemoryUsage))
@@ -418,6 +437,9 @@ enum App {
         }
         if lower.contains("sensevoice") {
             return .stt(try await SenseVoiceModel.fromPretrained(repo))
+        }
+        if lower.contains("mimo") {
+            return .stt(try await MiMoV2ASRModel.fromPretrained(repo))
         }
 
         throw AppError.unsupportedModelRepo(repo)
