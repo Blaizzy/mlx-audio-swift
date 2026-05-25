@@ -95,10 +95,13 @@ public func loadAudioArray(from url: URL, sampleRate: Int? = nil) throws -> (Int
 }
 
 /// Save audio data to a WAV file.
-func saveAudioArray(_ audio: MLXArray, sampleRate: Double, to url: URL) throws {
+public func saveAudioArray(_ audio: MLXArray, sampleRate: Double, to url: URL) throws {
     let samples = audio.asArray(Float.self)
 
-    let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+    guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else {
+        throw AudioUtils.AudioUtilsErrors.cannotCreateAVAudioFormat
+    }
+
     let audioFile = try AVAudioFile(forWriting: url, settings: format.settings)
 
     let frameCount = AVAudioFrameCount(samples.count)
