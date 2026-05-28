@@ -17,6 +17,8 @@
 //      -only-testing:MLXAudioTests/VoxtralRealtimeSTTTests \
 //      -only-testing:MLXAudioTests/CohereTranscribeModuleSetupTests \
 //      -only-testing:MLXAudioTests/CohereTranscribeSTTTests \
+//      -only-testing:MLXAudioTests/WhisperTests \
+//      -only-testing:MLXAudioTests/WhisperNetworkTests \
 //      CODE_SIGNING_ALLOWED=NO
 //
 //  Run a single category:
@@ -34,6 +36,8 @@
 //    -only-testing:'MLXAudioTests/VoxtralRealtimeSTTTests'
 //    -only-testing:'MLXAudioTests/CohereTranscribeModuleSetupTests'
 //    -only-testing:'MLXAudioTests/CohereTranscribeSTTTests'
+//    -only-testing:'MLXAudioTests/WhisperTests'
+//    -only-testing:'MLXAudioTests/WhisperNetworkTests'
 //
 //  Run a single test (note the trailing parentheses for Swift Testing):
 //    -only-testing:'MLXAudioTests/GLMASRModuleSetupTests/whisperConfigDefaults()'
@@ -159,7 +163,7 @@ struct GLMASRModuleSetupTests {
     // MARK: - Configuration Tests
 
     @Test func whisperConfigDefaults() {
-        let config = WhisperConfig()
+        let config = GLMASRWhisperConfig()
 
         #expect(config.modelType == "whisper")
         #expect(config.activationFunction == "gelu")
@@ -173,7 +177,7 @@ struct GLMASRModuleSetupTests {
     }
 
     @Test func whisperConfigCustom() {
-        let config = WhisperConfig(
+        let config = GLMASRWhisperConfig(
             dModel: 512,
             encoderAttentionHeads: 8,
             encoderLayers: 6,
@@ -223,7 +227,7 @@ struct GLMASRModuleSetupTests {
     }
 
     @Test func glmASRModelConfigWithNestedConfigs() {
-        let whisperConfig = WhisperConfig(dModel: 512, encoderLayers: 6)
+        let whisperConfig = GLMASRWhisperConfig(dModel: 512, encoderLayers: 6)
         let llamaConfig = LlamaConfig(hiddenSize: 1024, numHiddenLayers: 12)
 
         let config = GLMASRModelConfig(
@@ -242,13 +246,13 @@ struct GLMASRModuleSetupTests {
     // MARK: - Layer Tests
 
     @Test func whisperAttentionShape() {
-        let config = WhisperConfig(
+        let config = GLMASRWhisperConfig(
             dModel: 256,
             encoderAttentionHeads: 4,
             encoderLayers: 2
         )
 
-        let attention = WhisperAttention(config: config, useRope: false)
+        let attention = GLMASRWhisperAttention(config: config, useRope: false)
 
         let batchSize = 2
         let seqLen = 10
@@ -260,14 +264,14 @@ struct GLMASRModuleSetupTests {
     }
 
     @Test func whisperAttentionWithRoPE() {
-        let config = WhisperConfig(
+        let config = GLMASRWhisperConfig(
             dModel: 256,
             encoderAttentionHeads: 4,
             encoderLayers: 2,
             ropeTraditional: true
         )
 
-        let attention = WhisperAttention(config: config, useRope: true)
+        let attention = GLMASRWhisperAttention(config: config, useRope: true)
 
         let batchSize = 2
         let seqLen = 10
@@ -279,14 +283,14 @@ struct GLMASRModuleSetupTests {
     }
 
     @Test func whisperEncoderLayerShape() {
-        let config = WhisperConfig(
+        let config = GLMASRWhisperConfig(
             dModel: 256,
             encoderAttentionHeads: 4,
             encoderFfnDim: 1024,
             encoderLayers: 1
         )
 
-        let layer = WhisperEncoderLayer(config: config, useRope: false)
+        let layer = GLMASRWhisperEncoderLayer(config: config, useRope: false)
 
         let batchSize = 2
         let seqLen = 10
@@ -298,7 +302,7 @@ struct GLMASRModuleSetupTests {
     }
 
     @Test func whisperEncoderShape() {
-        let config = WhisperConfig(
+        let config = GLMASRWhisperConfig(
             dModel: 256,
             encoderAttentionHeads: 4,
             encoderFfnDim: 1024,
@@ -307,7 +311,7 @@ struct GLMASRModuleSetupTests {
             maxSourcePositions: 100
         )
 
-        let encoder = WhisperEncoder(config: config, useRope: false)
+        let encoder = GLMASRWhisperEncoder(config: config, useRope: false)
 
         let batchSize = 2
         let seqLen = 100
@@ -339,7 +343,7 @@ struct GLMASRModuleSetupTests {
     }
 
     @Test func audioEncoderShape() {
-        let whisperConfig = WhisperConfig(
+        let whisperConfig = GLMASRWhisperConfig(
             dModel: 256,
             encoderAttentionHeads: 4,
             encoderFfnDim: 1024,
@@ -374,7 +378,7 @@ struct GLMASRModuleSetupTests {
     }
 
     @Test func audioEncoderBoaEoaTokens() {
-        let whisperConfig = WhisperConfig(dModel: 256, encoderAttentionHeads: 4, encoderLayers: 1)
+        let whisperConfig = GLMASRWhisperConfig(dModel: 256, encoderAttentionHeads: 4, encoderLayers: 1)
         let llamaConfig = LlamaConfig(hiddenSize: 512)
         let config = GLMASRModelConfig(whisperConfig: whisperConfig, lmConfig: llamaConfig)
 
@@ -452,7 +456,7 @@ struct GLMASRModuleSetupTests {
         """
 
         let data = json.data(using: .utf8)!
-        let config = try JSONDecoder().decode(WhisperConfig.self, from: data)
+        let config = try JSONDecoder().decode(GLMASRWhisperConfig.self, from: data)
 
         #expect(config.modelType == "whisper")
         #expect(config.dModel == 512)
@@ -3202,4 +3206,157 @@ struct GraniteSpeechModuleTests {
     }
 
 
+}
+
+// MARK: - Whisper Tests
+
+@Suite("Whisper Tests", .serialized)
+struct WhisperTests {
+
+    @Test func configDefaultsMatchOpenAIWhisperTiny() {
+        let defaults = WhisperConfig()
+        #expect(defaults.modelType == "whisper")
+        #expect(defaults.dModel == 384)
+        #expect(defaults.encoderLayers == 4)
+        #expect(defaults.decoderLayers == 4)
+        #expect(defaults.numMelBins == 80)
+        #expect(defaults.maxSourcePositions == 1500)
+        #expect(defaults.maxTargetPositions == 448)
+        #expect(defaults.decoderStartTokenId == 50258)
+    }
+
+    @Test func configDecodingMatchesHuggingFaceLayout() throws {
+        let json = """
+        {
+          "model_type": "whisper",
+          "vocab_size": 51866,
+          "num_mel_bins": 128,
+          "d_model": 1280,
+          "encoder_layers": 32,
+          "encoder_attention_heads": 20,
+          "encoder_ffn_dim": 5120,
+          "max_source_positions": 1500,
+          "decoder_layers": 4,
+          "decoder_attention_heads": 20,
+          "decoder_ffn_dim": 5120,
+          "max_target_positions": 448,
+          "decoder_start_token_id": 50258,
+          "eos_token_id": 50257,
+          "pad_token_id": 50257,
+          "bos_token_id": 50257
+        }
+        """
+        let cfg = try JSONDecoder().decode(WhisperConfig.self, from: Data(json.utf8))
+        // This is the turbo shape — 32 encoder layers, 4 decoder layers.
+        #expect(cfg.dModel == 1280)
+        #expect(cfg.encoderLayers == 32)
+        #expect(cfg.decoderLayers == 4)
+        #expect(cfg.numMelBins == 128)
+    }
+
+    @Test func encoderFeaturesProduceCanonicalWindow() {
+        // 5 s of zeros should still pad to the 30 s window and produce 3000
+        // mel frames — Whisper's encoder expects exactly that shape.
+        let audio = MLXArray.zeros([5 * 16000], type: Float.self)
+        let features = WhisperAudio.encoderFeatures(audio: audio, nMels: 80)
+        #expect(features.shape == [1, 3000, 80])
+    }
+
+    @Test func encoderForwardShapeMatchesEncoderHidden() {
+        let config = WhisperConfig()
+        let encoder = WhisperEncoder(config: config)
+        let features = MLXArray.zeros([1, 3000, config.numMelBins], type: Float.self)
+        let hidden = encoder(features)
+        // Conv2 has stride 2, so 3000 -> 1500.
+        #expect(hidden.shape == [1, config.maxSourcePositions, config.dModel])
+    }
+}
+
+@Suite("Whisper Network Tests", .serialized)
+struct WhisperNetworkTests {
+
+    @Test func whisperFromPretrainedTranscribesShortAudio() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network Whisper test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
+        let repo = env["MLXAUDIO_WHISPER_REPO"] ?? "openai/whisper-tiny"
+        let model = try await WhisperModel.fromPretrained(repo)
+        let audio = try loadSTTNetworkFixture(sampleRate: 16000)
+        let output = model.generate(
+            audio: audio,
+            generationParameters: STTGenerateParameters(language: "en")
+        )
+
+        #expect(model.config.modelType == "whisper")
+        #expect(!output.text.isEmpty)
+        #expect(output.generationTokens > 0)
+    }
+
+    @Test func whisperStreamingYieldsIncrementalTokens() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network Whisper streaming test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
+        let repo = env["MLXAUDIO_WHISPER_REPO"] ?? "openai/whisper-tiny"
+        let model = try await WhisperModel.fromPretrained(repo)
+        let audio = try loadSTTNetworkFixture(sampleRate: 16000)
+
+        var streamedTokens: [String] = []
+        var finalOutput: STTOutput?
+        for try await event in model.generateStream(
+            audio: audio,
+            generationParameters: STTGenerateParameters(language: "en")
+        ) {
+            switch event {
+            case .token(let token):
+                streamedTokens.append(token)
+            case .result(let output):
+                finalOutput = output
+            case .info:
+                break
+            }
+        }
+
+        #expect(streamedTokens.count > 1)
+        #expect(finalOutput != nil)
+        // Streamed deltas should reconstruct the final transcript (single chunk).
+        let assembled = streamedTokens.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+        let final = finalOutput?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        #expect(assembled == final)
+    }
+
+    @Test func whisperHandlesLongAudioWithChunking() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network Whisper long-audio test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
+        let repo = env["MLXAUDIO_WHISPER_REPO"] ?? "openai/whisper-tiny"
+        let model = try await WhisperModel.fromPretrained(repo)
+
+        // Tile a short clip to force ≥ 2 chunk windows.
+        let baseAudio = try loadSTTNetworkFixture(sampleRate: 16000)
+        let baseSamples = baseAudio.dim(0)
+        let targetSamples = 45 * 16000
+        var pieces: [MLXArray] = []
+        var produced = 0
+        while produced < targetSamples {
+            pieces.append(baseAudio)
+            produced += baseSamples
+        }
+        let longAudio = MLX.concatenated(pieces, axis: 0)[0..<targetSamples]
+        let output = model.generate(
+            audio: longAudio,
+            generationParameters: STTGenerateParameters(language: "en")
+        )
+
+        #expect((output.segments?.count ?? 0) >= 2)
+        #expect(!output.text.isEmpty)
+    }
 }
