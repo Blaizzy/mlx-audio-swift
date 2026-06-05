@@ -201,7 +201,7 @@ final class NemotronASRConformerBlock: Module {
     @ModuleInfo(key: "feed_forward1") var feedForward1: NemotronASRFeedForward
 
     @ModuleInfo(key: "norm_self_att") var normSelfAtt: LayerNorm
-    @ModuleInfo(key: "self_attn") var selfAttn: ParakeetRelPositionMultiHeadAttention
+    @ModuleInfo(key: "self_attn") var selfAttn: NemoRelPositionMultiHeadAttention
 
     @ModuleInfo(key: "norm_conv") var normConv: LayerNorm
     @ModuleInfo(key: "conv") var conv: NemotronASRConvolution
@@ -218,7 +218,7 @@ final class NemotronASRConformerBlock: Module {
         self._feedForward1.wrappedValue = NemotronASRFeedForward(dModel: args.dModel, dFF: ffHidden, useBias: args.useBias)
 
         self._normSelfAtt.wrappedValue = LayerNorm(dimensions: args.dModel)
-        self._selfAttn.wrappedValue = ParakeetRelPositionMultiHeadAttention(
+        self._selfAttn.wrappedValue = NemoRelPositionMultiHeadAttention(
             nHead: args.nHeads,
             nFeat: args.dModel,
             bias: args.useBias
@@ -245,13 +245,13 @@ final class NemotronASRConformerBlock: Module {
 final class NemotronASRConformer: Module {
     let args: NemotronASRConformerConfig
 
-    @ModuleInfo(key: "pos_enc") var posEnc: ParakeetRelPositionalEncoding
+    @ModuleInfo(key: "pos_enc") var posEnc: NemoRelPositionalEncoding
     @ModuleInfo(key: "pre_encode") var preEncode: NemotronASRCausalDwStridingSubsampling
     @ModuleInfo(key: "layers") var layers: [NemotronASRConformerBlock]
 
     init(args: NemotronASRConformerConfig) {
         self.args = args
-        self._posEnc.wrappedValue = ParakeetRelPositionalEncoding(
+        self._posEnc.wrappedValue = NemoRelPositionalEncoding(
             dModel: args.dModel,
             maxLen: args.posEmbMaxLen,
             scaleInput: args.xscaling

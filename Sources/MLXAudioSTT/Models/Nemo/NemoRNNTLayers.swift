@@ -2,9 +2,9 @@ import Foundation
 import MLX
 import MLXNN
 
-typealias ParakeetLSTMState = (hidden: MLXArray?, cell: MLXArray?)
+typealias NemoLSTMState = (hidden: MLXArray?, cell: MLXArray?)
 
-final class ParakeetStackedLSTM: Module {
+final class NemoStackedLSTM: Module {
     let numLayers: Int
     let batchFirst: Bool
 
@@ -29,7 +29,7 @@ final class ParakeetStackedLSTM: Module {
         self._layers.wrappedValue = lstmLayers
     }
 
-    func callAsFunction(_ x: MLXArray, state: ParakeetLSTMState? = nil) -> (MLXArray, ParakeetLSTMState) {
+    func callAsFunction(_ x: MLXArray, state: NemoLSTMState? = nil) -> (MLXArray, NemoLSTMState) {
         var output = x
 
         var hiddenByLayer: [MLXArray?] = Array(repeating: nil, count: numLayers)
@@ -69,14 +69,14 @@ final class ParakeetStackedLSTM: Module {
     }
 }
 
-final class ParakeetRNNTPrediction: Module {
+final class NemoRNNTPrediction: Module {
     @ModuleInfo(key: "embed") var embed: Embedding
-    @ModuleInfo(key: "dec_rnn") var decRnn: ParakeetStackedLSTM
+    @ModuleInfo(key: "dec_rnn") var decRnn: NemoStackedLSTM
 
-    init(args: ParakeetPredictConfig) {
+    init(args: NemoPredictConfig) {
         let embeddingCount = args.blankAsPad ? args.vocabSize + 1 : args.vocabSize
         self._embed.wrappedValue = Embedding(embeddingCount: embeddingCount, dimensions: args.prednet.predHidden)
-        self._decRnn.wrappedValue = ParakeetStackedLSTM(
+        self._decRnn.wrappedValue = NemoStackedLSTM(
             inputSize: args.prednet.predHidden,
             hiddenSize: args.prednet.rnnHiddenSize ?? args.prednet.predHidden,
             numLayers: args.prednet.predRnnLayers
@@ -84,16 +84,16 @@ final class ParakeetRNNTPrediction: Module {
     }
 }
 
-final class ParakeetPredictNetwork: Module {
+final class NemoPredictNetwork: Module {
     let predHidden: Int
-    @ModuleInfo(key: "prediction") var prediction: ParakeetRNNTPrediction
+    @ModuleInfo(key: "prediction") var prediction: NemoRNNTPrediction
 
-    init(args: ParakeetPredictConfig) {
+    init(args: NemoPredictConfig) {
         self.predHidden = args.prednet.predHidden
-        self._prediction.wrappedValue = ParakeetRNNTPrediction(args: args)
+        self._prediction.wrappedValue = NemoRNNTPrediction(args: args)
     }
 
-    func callAsFunction(_ token: MLXArray?, state: ParakeetLSTMState? = nil) -> (MLXArray, ParakeetLSTMState) {
+    func callAsFunction(_ token: MLXArray?, state: NemoLSTMState? = nil) -> (MLXArray, NemoLSTMState) {
         let embedded: MLXArray
         if let token {
             embedded = prediction.embed(token)
@@ -106,17 +106,17 @@ final class ParakeetPredictNetwork: Module {
 
     func callAsFunction(
         _ tokenIds: MLXArray,
-        state: ParakeetLSTMState? = nil,
+        state: NemoLSTMState? = nil,
         blankToken: Int32
-    ) -> (MLXArray, ParakeetLSTMState) {
+    ) -> (MLXArray, NemoLSTMState) {
         predictBatched(tokenIds, state: state, blankToken: blankToken)
     }
 
     func predictBatched(
         _ tokenIds: MLXArray,
-        state: ParakeetLSTMState? = nil,
+        state: NemoLSTMState? = nil,
         blankToken: Int32
-    ) -> (MLXArray, ParakeetLSTMState) {
+    ) -> (MLXArray, NemoLSTMState) {
         let batchSize = tokenIds.shape[0]
         let blankMask = tokenIds.reshaped([batchSize, 1, 1]) .== MLXArray(blankToken)
         let safeTokenIds = MLX.where(blankMask.reshaped([batchSize, 1]), MLXArray(Int32(0)), tokenIds).asType(.int32)
@@ -126,7 +126,7 @@ final class ParakeetPredictNetwork: Module {
     }
 }
 
-final class ParakeetJointNetwork: Module {
+final class NemoJointNetwork: Module {
     let numClasses: Int
 
     @ModuleInfo(key: "pred") var pred: Linear
@@ -135,7 +135,7 @@ final class ParakeetJointNetwork: Module {
 
     let activationName: String
 
-    init(args: ParakeetJointConfig) {
+    init(args: NemoJointConfig) {
         self.numClasses = args.numClasses + 1 + args.numExtraOutputs
         self.activationName = args.jointnet.activation.lowercased()
 
