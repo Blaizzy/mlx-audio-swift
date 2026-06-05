@@ -136,71 +136,83 @@ public final class NemotronASRModel: Module, STTGenerationModel {
         AsyncThrowingStream { continuation in
             let audio1D = self.normalizeAudioToMono(audio).asType(.float32)
             let sampleRate = self.preprocessConfig.sampleRate
-            let totalSamples = audio1D.shape[0]
-            let audioDuration = Double(totalSamples) / Double(sampleRate)
-            let requestedChunk = Double(generationParameters.chunkDuration)
-            let chunkDuration = requestedChunk >= 1199 ? 5.0 : max(0.5, requestedChunk)
-            let overlapDuration = 1.0
+            let audioDuration = Double(audio1D.shape[0]) / Double(sampleRate)
+            let mel = NemotronASRAudio.logMelSpectrogram(audio1D, config: self.preprocessConfig)
+            let frameSeconds = Double(self.encoderConfig.subsamplingFactor * self.preprocessConfig.hopLength)
+                / Double(sampleRate)
 
-            let chunkSamples = max(1, Int(chunkDuration * Double(sampleRate)))
-            let overlapSamples = max(0, min(chunkSamples - 1, Int(overlapDuration * Double(sampleRate))))
-            let stepSamples = max(1, chunkSamples - overlapSamples)
-
-            var allTokens: [ParakeetAlignedToken] = []
+            var results: [ParakeetAlignedToken] = []
+            var lastToken = self.blankTokenID
+            var decoderState: ParakeetLSTMState?
             var previousText = ""
-            var start = 0
+            var globalTime = 0
 
-            while start < totalSamples {
-                let end = min(start + chunkSamples, totalSamples)
-                let isLast = end >= totalSamples
-                let chunkResult = self.decodeChunk(audio1D[start..<end], language: generationParameters.language)
-                var chunkTokens = self.flattenTokens(from: chunkResult)
-                let chunkOffset = Double(start) / Double(sampleRate)
-                for i in chunkTokens.indices {
-                    chunkTokens[i].start += chunkOffset
+            // Cache-aware streaming: incremental subsampling + per-layer attn/conv
+            // caches. Token-identical to decode() at the native chunk size.
+            self.cacheAwareStreamEncode(mel, language: generationParameters.language) { prompted in
+                let chunkLen = prompted.shape[1]
+                var time = 0
+                var newSymbols = 0
+                while time < chunkLen {
+                    let frame = prompted[0..., time..<(time + 1), 0...]
+                    let currentToken: MLXArray? = lastToken == self.blankTokenID
+                        ? nil
+                        : MLXArray(Int32(lastToken)).reshaped([1, 1]).asType(.int32)
+                    let decoderOutput = self.decoder(currentToken, state: decoderState)
+                    let pred = decoderOutput.0.asType(frame.dtype)
+                    let proposedState: ParakeetLSTMState = (
+                        hidden: decoderOutput.1.hidden?.asType(frame.dtype),
+                        cell: decoderOutput.1.cell?.asType(frame.dtype)
+                    )
+                    let jointOutput = self.joint(frame, pred)
+                    let token = jointOutput.argMax(axis: -1).item(Int.self)
+                    let step = ParakeetDecodingLogic.rnntStep(
+                        predictedToken: token,
+                        blankToken: self.blankTokenID,
+                        time: time,
+                        newSymbols: newSymbols,
+                        maxSymbols: self.maxSymbols
+                    )
+                    if step.emittedToken {
+                        lastToken = token
+                        decoderState = proposedState
+                        if !NemotronASRTokenizer.isSpecialToken(token, vocabulary: self.vocabulary) {
+                            results.append(
+                                ParakeetAlignedToken(
+                                    id: token,
+                                    text: NemotronASRTokenizer.decode(tokens: [token], vocabulary: self.vocabulary),
+                                    start: Double(globalTime + time) * frameSeconds,
+                                    duration: frameSeconds
+                                )
+                            )
+                        }
+                    }
+                    time = step.nextTime
+                    newSymbols = step.nextNewSymbols
                 }
-
-                allTokens = self.mergeTokenSequences(
-                    existing: allTokens,
-                    incoming: chunkTokens,
-                    overlapDuration: overlapDuration
-                )
+                globalTime += chunkLen
 
                 let currentResult = ParakeetAlignment.sentencesToResult(
-                    ParakeetAlignment.tokensToSentences(allTokens)
+                    ParakeetAlignment.tokensToSentences(results)
                 )
                 let fullText = currentResult.text
                 let nextText = fullText.hasPrefix(previousText)
                     ? String(fullText.dropFirst(previousText.count))
                     : fullText
                 previousText = fullText
-
                 if !nextText.isEmpty {
                     continuation.yield(.token(nextText))
                 }
-
-                if isLast {
-                    continuation.yield(
-                        .result(
-                            STTOutput(
-                                text: currentResult.text,
-                                segments: currentResult.segments,
-                                language: generationParameters.language,
-                                totalTime: audioDuration
-                            )
-                        )
-                    )
-                    continuation.finish()
-                    return
-                }
-
-                start += stepSamples
             }
 
+            let finalResult = ParakeetAlignment.sentencesToResult(
+                ParakeetAlignment.tokensToSentences(results)
+            )
             continuation.yield(
                 .result(
                     STTOutput(
-                        text: previousText,
+                        text: finalResult.text,
+                        segments: finalResult.segments,
                         language: generationParameters.language,
                         totalTime: audioDuration
                     )
@@ -343,8 +355,8 @@ public final class NemotronASRModel: Module, STTGenerationModel {
 }
 
 final class NemotronASRPromptKernel: Module {
-    @ModuleInfo(key: "0") var linear0: Linear
-    @ModuleInfo(key: "2") var linear2: Linear
+    @ModuleInfo(key: "linear0") var linear0: Linear
+    @ModuleInfo(key: "linear2") var linear2: Linear
 
     init(dModel: Int, numPrompts: Int, promptHidden: Int) {
         self._linear0.wrappedValue = Linear(dModel + numPrompts, promptHidden)
@@ -460,6 +472,10 @@ private extension NemotronASRModel {
         newKey = newKey.replacingOccurrences(of: "joint.joint_net.2.", with: "joint.joint_net.")
         newKey = newKey.replacingOccurrences(of: ".pos_bias_u", with: ".posBiasU")
         newKey = newKey.replacingOccurrences(of: ".pos_bias_v", with: ".posBiasV")
+        // prompt_kernel.{0,2} are integer-keyed; MLX-swift would treat them as an
+        // array (gap at index 1) and fail to load. Remap to explicit child keys.
+        newKey = newKey.replacingOccurrences(of: "prompt_kernel.0.", with: "prompt_kernel.linear0.")
+        newKey = newKey.replacingOccurrences(of: "prompt_kernel.2.", with: "prompt_kernel.linear2.")
 
         if let converted = remapPreEncodeConvListKey(newKey) {
             newKey = converted
