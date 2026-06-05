@@ -14,6 +14,7 @@
 //      -only-testing:MLXAudioTests/SenseVoiceTests \
 //      -only-testing:MLXAudioTests/SenseVoiceNetworkTests \
 //      -only-testing:MLXAudioTests/ParakeetSTTTests \
+//      -only-testing:MLXAudioTests/NemotronASRTests \
 //      -only-testing:MLXAudioTests/VoxtralRealtimeSTTTests \
 //      -only-testing:MLXAudioTests/CohereTranscribeModuleSetupTests \
 //      -only-testing:MLXAudioTests/CohereTranscribeSTTTests \
@@ -31,6 +32,7 @@
 //    -only-testing:'MLXAudioTests/SenseVoiceTests'
 //    -only-testing:'MLXAudioTests/SenseVoiceNetworkTests'
 //    -only-testing:'MLXAudioTests/ParakeetSTTTests'
+//    -only-testing:'MLXAudioTests/NemotronASRTests'
 //    -only-testing:'MLXAudioTests/VoxtralRealtimeSTTTests'
 //    -only-testing:'MLXAudioTests/CohereTranscribeModuleSetupTests'
 //    -only-testing:'MLXAudioTests/CohereTranscribeSTTTests'
@@ -2485,6 +2487,158 @@ struct ParakeetSTTTests {
 
         #expect(mel.ndim == 3)
         #expect(mel.reshaped(-1)[0].item(Float.self).isFinite)
+    }
+}
+
+struct NemotronASRTests {
+    private var mlxRuntimeEnabled: Bool {
+        ProcessInfo.processInfo.environment["MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS"] == "1"
+    }
+
+    private func tinyConfigJSON() -> String {
+        """
+        {
+          "model_type": "nemotron_asr",
+          "preprocessor": {
+            "sample_rate": 16000,
+            "features": 16,
+            "n_fft": 64,
+            "window_size": 0.004,
+            "window_stride": 0.002,
+            "window": "hann",
+            "preemph": 0.97,
+            "dither": 0.0,
+            "normalize": "NA"
+          },
+          "encoder": {
+            "feat_in": 16,
+            "n_layers": 1,
+            "d_model": 16,
+            "n_heads": 2,
+            "ff_expansion_factor": 2,
+            "subsampling_factor": 4,
+            "subsampling_conv_channels": 4,
+            "conv_kernel_size": 3,
+            "causal_downsampling": true,
+            "conv_context_size": "causal",
+            "conv_norm_type": "layer_norm",
+            "self_attention_model": "rel_pos",
+            "att_context_style": "chunked_limited",
+            "att_context_size": [[4, 1]],
+            "pos_emb_max_len": 64,
+            "use_bias": false,
+            "xscaling": false
+          },
+          "prompt": {
+            "num_prompts": 4,
+            "prompt_hidden": 16,
+            "prompt_dictionary": {"en-US": 0, "auto": 1}
+          },
+          "decoder": {
+            "pred_hidden": 8,
+            "pred_rnn_layers": 1,
+            "vocab_size": 6,
+            "blank_as_pad": true
+          },
+          "joint": {
+            "joint_hidden": 8,
+            "activation": "relu",
+            "encoder_hidden": 16,
+            "pred_hidden": 8,
+            "num_classes": 6
+          },
+          "vocabulary": ["<unk>", "<en-US>", "▁hello", "▁world", "!", "a"],
+          "default_language": "auto",
+          "default_att_context_size": [4, 1],
+          "max_symbols": 3
+        }
+        """
+    }
+
+    private func tinyModel() throws -> NemotronASRModel {
+        let config = try JSONDecoder().decode(NemotronASRConfig.self, from: Data(tinyConfigJSON().utf8))
+        let model = NemotronASRModel(config)
+        eval(model.parameters())
+        model.train(false)
+        return model
+    }
+
+    @Test func configDecodesPromptAndStreamingContext() throws {
+        let config = try JSONDecoder().decode(NemotronASRConfig.self, from: Data(tinyConfigJSON().utf8))
+        #expect(config.modelType == "nemotron_asr")
+        #expect(config.encoder.causalDownsampling == true)
+        #expect(config.encoder.attContextSize == [[4, 1]])
+        #expect(config.prompt.promptDictionary["en-US"] == 0)
+        #expect(config.defaultLanguage == "auto")
+    }
+
+    @Test func chunkedLimitedMaskMatchesNeMoVisibility() {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+
+        let mask = NemotronASRAttentionMask.createChunkedLimitedMask(seqLen: 6, leftContext: 2, rightContext: 1)
+        let values = mask[0, 0].asArray(Float.self)
+
+        func visibleRow(_ row: Int) -> [Bool] {
+            let start = row * 6
+            return (0..<6).map { values[start + $0] == 0 }
+        }
+
+        #expect(visibleRow(0) == [true, true, false, false, false, false])
+        #expect(visibleRow(2) == [true, true, true, true, false, false])
+        #expect(visibleRow(5) == [false, false, true, true, true, true])
+    }
+
+    @Test func encoderAndPromptShapes() throws {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+
+        let model = try tinyModel()
+        let values = (0..<(1 * 40 * 16)).map { Float($0 % 17) / 17.0 }
+        let mel = MLXArray(values).reshaped([1, 40, 16])
+
+        let encoded = model.encoder(mel, attContextSize: [4, 1])
+        let prompted = model.applyPrompt(encoded.0, language: "en-US")
+
+        #expect(encoded.0.shape[0] == 1)
+        #expect(encoded.0.shape[2] == model.encoderConfig.dModel)
+        #expect(prompted.shape == encoded.0.shape)
+        #expect(encoded.0.shape[1] == Int(encoded.1[0].item(Int32.self)))
+    }
+
+    @Test func decodeRunsWithoutLeakingLanguageTags() throws {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+
+        let model = try tinyModel()
+        let sampleCount = 48 * 16
+        let values: [Float] = (0..<sampleCount).map { index in
+            Float((index * 7) % 23) / 23.0
+        }
+        let mel = MLXArray(values).reshaped([1, 48, 16])
+        let result = model.decode(mel: mel, language: "auto", attContextSize: [4, 1])
+
+        #expect(result.text.contains("<") == false)
+    }
+
+    @Test func tokenizerStripsLanguageTags() {
+        let vocab = ["<unk>", "<en-US>", "▁hello", "▁world", "!", "<"]
+        #expect(NemotronASRTokenizer.isLanguageTag("<en-US>") == true)
+        #expect(NemotronASRTokenizer.isLanguageTag("<") == false)
+        #expect(NemotronASRTokenizer.isSpecialToken(1, vocabulary: vocab) == true)
+        #expect(NemotronASRTokenizer.isSpecialToken(2, vocabulary: vocab) == false)
+        #expect(NemotronASRTokenizer.decode(tokens: [1, 2, 3, 4], vocabulary: vocab) == " hello world!")
+        #expect(
+            NemotronASRTokenizer.decode(tokens: [1, 2, 3, 4], vocabulary: vocab, stripLanguageTags: false)
+            == "<en-US> hello world!"
+        )
+        #expect(NemotronASRTokenizer.detectedLanguage(tokens: [1, 2, 3], vocabulary: vocab) == "en-US")
     }
 }
 

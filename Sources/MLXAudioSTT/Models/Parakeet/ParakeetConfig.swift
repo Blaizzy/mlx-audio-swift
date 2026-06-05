@@ -147,6 +147,12 @@ public struct ParakeetPredictNetworkConfig: Codable, Sendable {
         case predRnnLayers = "pred_rnn_layers"
         case rnnHiddenSize = "rnn_hidden_size"
     }
+
+    public init(predHidden: Int, predRnnLayers: Int, rnnHiddenSize: Int? = nil) {
+        self.predHidden = predHidden
+        self.predRnnLayers = predRnnLayers
+        self.rnnHiddenSize = rnnHiddenSize
+    }
 }
 
 public struct ParakeetJointNetworkConfig: Codable, Sendable {
@@ -161,6 +167,13 @@ public struct ParakeetJointNetworkConfig: Codable, Sendable {
         case encoderHidden = "encoder_hidden"
         case predHidden = "pred_hidden"
     }
+
+    public init(jointHidden: Int, activation: String, encoderHidden: Int, predHidden: Int) {
+        self.jointHidden = jointHidden
+        self.activation = activation
+        self.encoderHidden = encoderHidden
+        self.predHidden = predHidden
+    }
 }
 
 public struct ParakeetPredictConfig: Codable, Sendable {
@@ -172,6 +185,12 @@ public struct ParakeetPredictConfig: Codable, Sendable {
         case blankAsPad = "blank_as_pad"
         case vocabSize = "vocab_size"
         case prednet
+    }
+
+    public init(blankAsPad: Bool, vocabSize: Int, prednet: ParakeetPredictNetworkConfig) {
+        self.blankAsPad = blankAsPad
+        self.vocabSize = vocabSize
+        self.prednet = prednet
     }
 }
 
@@ -194,6 +213,18 @@ public struct ParakeetJointConfig: Codable, Sendable {
         vocabulary = try container.decode([String].self, forKey: .vocabulary)
         jointnet = try container.decode(ParakeetJointNetworkConfig.self, forKey: .jointnet)
         numExtraOutputs = try container.decodeIfPresent(Int.self, forKey: .numExtraOutputs) ?? 0
+    }
+
+    public init(
+        numClasses: Int,
+        vocabulary: [String],
+        jointnet: ParakeetJointNetworkConfig,
+        numExtraOutputs: Int = 0
+    ) {
+        self.numClasses = numClasses
+        self.vocabulary = vocabulary
+        self.jointnet = jointnet
+        self.numExtraOutputs = numExtraOutputs
     }
 }
 

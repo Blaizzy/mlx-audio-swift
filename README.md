@@ -15,7 +15,7 @@ MLXAudio follows a modular design allowing you to import only what you need:
 - **MLXAudioCore**: Base types, protocols, and utilities
 - **MLXAudioCodecs**: Audio codec implementations (SNAC, Encodec, Vocos, Mimi, DACVAE)
 - **MLXAudioTTS**: Text-to-Speech models (Qwen3-TTS, Fish Audio S2 Pro, Soprano, VyvoTTS, Orpheus, Marvis TTS, Pocket TTS)
-- **MLXAudioSTT**: Speech-to-Text models (Qwen3-ASR, Voxtral Realtime, Cohere Transcribe, Parakeet, GLMASR)
+- **MLXAudioSTT**: Speech-to-Text models (Qwen3-ASR, Voxtral Realtime, Cohere Transcribe, Parakeet, Nemotron ASR, GLMASR)
 - **MLXAudioVAD**: Voice Activity Detection & Speaker Diarization (Sortformer, SmartTurn)
 - **MLXAudioSTS**: Speech-to-Speech models (LFM2.5-Audio, SAM-Audio, MossFormer2-SE, DeepFilterNet)
 - **MLXAudioUI**: SwiftUI components for audio interfaces
@@ -136,6 +136,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | Voxtral Realtime | [Voxtral README](Sources/MLXAudioSTT/Models/VoxtralRealtime/README.md) | [mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16) |
 | Cohere Transcribe | [Cohere Transcribe README](Sources/MLXAudioSTT/Models/CohereTranscribe/README.md) | [beshkenadze/cohere-transcribe-03-2026-mlx-fp16](https://huggingface.co/beshkenadze/cohere-transcribe-03-2026-mlx-fp16) |
 | Parakeet | [Parakeet README](Sources/MLXAudioSTT/Models/Parakeet/README.md) | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
+| Nemotron ASR | [Nemotron ASR README](Sources/MLXAudioSTT/Models/NemotronASR/README.md) | [mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit) |
 | GLMASR | [GLMASR README](Sources/MLXAudioSTT/Models/GLMASR/README.md) | [mlx-community/GLM-ASR-Nano-2512-4bit](https://huggingface.co/mlx-community/GLM-ASR-Nano-2512-4bit) |
 
 ### STS Models
