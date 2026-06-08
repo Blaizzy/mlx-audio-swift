@@ -4,8 +4,19 @@ Convert a NeMo Parakeet **Conformer encoder** to a CoreML `.mlpackage` so the Sw
 pipeline can run it on the **ANE** while the TDT decoder stays in MLX:
 
 ```bash
-mlx-audio-swift-stt --model <parakeet-repo> --audio in.wav --output-path out \
-    --coreml-encoder path/to/parakeet_enc.mlpackage --chunk-duration 9.95
+# Easiest — auto-downloads the prebuilt encoder from Hugging Face:
+mlx-audio-swift-stt --model beshkenadze/parakeet-tdt-0.6b-v3-mlx-fp16 \
+    --audio in.wav --output-path out --ane --chunk-duration 9.95
+
+# Or point at a specific .mlpackage:
+mlx-audio-swift-stt ... --coreml-encoder path/to/parakeet_enc.mlpackage --chunk-duration 9.95
+```
+
+From Swift:
+
+```swift
+// .off (default) · .on (default HF repo) · .repo("id") · .package(localURL)
+let model = try await ParakeetModel.fromPretrained(repo, aneEncoder: .on)
 ```
 
 The encoder is fixed-shape (a fixed mel-frame count) — a dynamic shape drops ANE

@@ -79,6 +79,7 @@ private struct Options {
     var genKwargsRaw: String? = nil
     var text = ""
     var coremlEncoder: String? = nil
+    var ane = false
 
     var temperature: Float? = nil
     var topP: Float? = nil
@@ -143,6 +144,8 @@ private struct Options {
             case "--coreml-encoder":
                 guard let v = it.next() else { throw CLIError.missingValue(arg) }
                 options.coremlEncoder = v
+            case "--ane":
+                options.ane = true
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -276,9 +279,14 @@ enum App {
         let audio = try prepareAudioForSTT(inputAudio, inputSampleRate: inputSampleRate, targetSampleRate: 16000)
 
         #if canImport(CoreML)
-        if let coremlPath = options.coremlEncoder, case .stt(let m) = model, let parakeet = m as? ParakeetModel {
-            try parakeet.enableCoreMLEncoder(modelURL: resolveURL(path: coremlPath))
-            if options.verbose { print("CoreML/ANE encoder enabled: \(coremlPath)") }
+        if case .stt(let m) = model, let parakeet = m as? ParakeetModel {
+            if let coremlPath = options.coremlEncoder {
+                try parakeet.enableCoreMLEncoder(modelURL: resolveURL(path: coremlPath))
+                if options.verbose { print("CoreML/ANE encoder enabled: \(coremlPath)") }
+            } else if options.ane {
+                try await parakeet.enableCoreMLEncoder(repo: ParakeetModel.defaultANEEncoderRepo)
+                if options.verbose { print("ANE encoder enabled: \(ParakeetModel.defaultANEEncoderRepo)") }
+            }
         }
         #endif
 

@@ -24,5 +24,18 @@ struct ParakeetCoreMLEncoderTests {
                 modelURL: bogus, featIn: 128, fixedFrames: 1000, subsamplingFactor: 8)
         }
     }
+
+    /// Resolving the downloaded encoder picks the `.mlpackage` (or `.mlmodelc`) directory.
+    @Test func findsEncoderPackageInDirectory() throws {
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory.appendingPathComponent("parakeet-coreml-findtest")
+        try? fm.removeItem(at: base)
+        let pkg = base.appendingPathComponent("enc.mlpackage")
+        try fm.createDirectory(at: pkg, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+
+        #expect(ParakeetModel.findEncoderPackage(in: base)?.lastPathComponent == "enc.mlpackage")
+        #expect(ParakeetModel.findEncoderPackage(in: pkg) == nil)  // empty dir → nothing
+    }
 }
 #endif
