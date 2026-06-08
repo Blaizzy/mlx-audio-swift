@@ -40,11 +40,15 @@ public final class ParakeetCoreMLEncoder: @unchecked Sendable {
     }
 
     /// Matches `ParakeetModel.computeEncodedLengths`: `floor((L-1)/2)+1`, log2(factor) times.
-    private func encodedLength(for frames: Int) -> Int {
+    static func subsampledLength(frames: Int, subsamplingFactor: Int) -> Int {
         var l = frames
         let steps = Int(log2(Double(subsamplingFactor)))
         for _ in 0..<steps { l = (l - 1) / 2 + 1 }
         return l
+    }
+
+    private func encodedLength(for frames: Int) -> Int {
+        Self.subsampledLength(frames: frames, subsamplingFactor: subsamplingFactor)
     }
 
     /// Encode one chunk. `features`: `[1, T, featIn]` (any float dtype).
