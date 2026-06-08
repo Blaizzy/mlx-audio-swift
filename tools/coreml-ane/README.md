@@ -14,6 +14,18 @@ residency to 0% — so keep `--chunk-duration` at or below the converted length
 each chunk to the fixed length and crops the output back. Only public `MLModel` +
 `MLComputeUnits` APIs are used.
 
+## Prebuilt artifact
+
+Skip the conversion — download the `.mlpackage` from
+[`beshkenadze/parakeet-tdt-0.6b-v3-coreml-ane`](https://huggingface.co/beshkenadze/parakeet-tdt-0.6b-v3-coreml-ane):
+
+```bash
+hf download beshkenadze/parakeet-tdt-0.6b-v3-coreml-ane \
+    --include "parakeet_enc_0.6b_v3.mlpackage/*" --local-dir .
+```
+
+Then pass `parakeet_enc_0.6b_v3.mlpackage` to `--coreml-encoder`.
+
 ## Converting the encoder
 
 Needs a PyTorch/NeMo environment (`nemo-toolkit[asr]`, `torch`). The trace and the
