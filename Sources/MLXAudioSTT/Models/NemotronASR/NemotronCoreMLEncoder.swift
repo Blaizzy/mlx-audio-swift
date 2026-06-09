@@ -62,5 +62,16 @@ public extension NemotronASRModel {
             convCache: encoderConfig.convKernelSize - 1
         )
     }
+
+    /// Hugging Face repo with the prebuilt cache-aware **streaming** CoreML/ANE encoder
+    /// `.mlpackage` (matched to the MLX weights of `nemotron-3.5-asr-streaming-0.6b`).
+    static var defaultANEStreamingEncoderRepo: String { "beshkenadze/nemotron-3.5-asr-streaming-0.6b-coreml-ane-stream" }
+
+    /// Download the streaming CoreML encoder `.mlpackage` from a Hugging Face repo and route the
+    /// `generateStream` path through it. Reuses Parakeet's downloader (the package is the same shape).
+    func enableCoreMLStreamingEncoder(repo: String, cache: HubCache = .default) async throws {
+        let url = try await ParakeetModel.downloadANEEncoderPackage(repo: repo, cache: cache)
+        try enableCoreMLStreamingEncoder(modelURL: url)
+    }
 }
 #endif

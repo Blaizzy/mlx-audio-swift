@@ -55,7 +55,11 @@ public final class NemotronCoreMLStreamingEncoder: @unchecked Sendable {
         layers: Int,
         attnCache: Int,
         convCache: Int,
-        computeUnits: MLComputeUnits = .all
+        // Force CPU+ANE, NOT .all: the streaming graph's int32 mask/cache-length ops nudge `.all`
+        // to place the WHOLE model on the GPU (anemll-profile: 1.9% ANE) — no power win. With
+        // .cpuAndNeuralEngine the conformer is 100% ANE-resident (the few int32 mask ops drop to
+        // CPU as one negligible island). The offline encoder has no such masks, so it uses .all.
+        computeUnits: MLComputeUnits = .cpuAndNeuralEngine
     ) throws {
         let compiledURL: URL = modelURL.pathExtension == "mlmodelc"
             ? modelURL

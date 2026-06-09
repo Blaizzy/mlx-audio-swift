@@ -56,7 +56,20 @@ Env: alex-mac (M-series, ANE), uv venv NeMo 2.x + coremltools + torch 2.10. Clip
 - Swift derives all stream params from the loaded config (`attnCache = defaultAttContextSize.first` = 56),
   so the same code matches both EN (70) and 3.5 (56). `--coreml-stream-encoder` CLI flag added.
 
+## ANE residency — FIXED (the critical catch, M1 Max anemll-profile 0.4.1)
+- With `MLComputeUnits.all` the stream model runs **1.9% ANE / focus GPU** — the int32 mask /
+  cache-length ops (`pad_mask`, `logical_and`, casts on `cache_last_channel_len`) nudge `.all` to place
+  the WHOLE graph on the GPU → **no power win** (silent). The offline model dodges this (no cache-len masks).
+- With **`MLComputeUnits.cpuAndNeuralEngine`**: **100% ANE** (cost-weighted; 1585 ANE / 15 CPU ops,
+  1 negligible mask island ~0.005 ms), ~25 ms/chunk (~45× RTF). → streaming encoder default changed to
+  `.cpuAndNeuralEngine`. Forced-ANE transcript: word-identical to MLX, punctuation at the fp16 floor.
+
+## HF upload + --ane streaming auto-download — DONE
+- Uploaded https://huggingface.co/beshkenadze/nemotron-3.5-asr-streaming-0.6b-coreml-ane-stream (1.1G).
+- `defaultANEStreamingEncoderRepo` + `enableCoreMLStreamingEncoder(repo:)` (reuses the offline downloader).
+- `mlx-audio-swift-stt --stream --ane` auto-downloads + runs 100% on ANE — **validated live**
+  (downloaded from HF, transcribed conversational_a.wav, words identical to MLX).
+
 ## Remaining
-- ANE runtime residency % of the stream model (convert was CPU_AND_NE; offline sibling 99% ANE).
-- HF upload of the 3.5 stream `.mlpackage` + a `--ane`-streaming auto-download; PR (mirror offline #13).
-- Trailing-punctuation edge on the final chunk (cosmetic; inherent to fixed-shape zero-pad).
+- Open the PR (mirror offline #13).
+- Trailing-punctuation edge on the final chunk (cosmetic; fp16-ANE vs bf16-MLX floor, ~1% agreement).

@@ -293,19 +293,23 @@ enum App {
                     if options.verbose { print("ANE encoder enabled: \(ParakeetModel.defaultANEEncoderRepo)") }
                 }
             } else if let nemotron = m as? NemotronASRModel {
-                // Offline CoreML/ANE encoder for Nemotron. Auto-clamps chunkDuration to the
-                // model's fixed length so overlap-merge stitches long audio.
+                // Offline CoreML/ANE encoder (decode path): explicit --coreml-encoder, or --ane
+                // without --stream. Auto-clamps chunkDuration so overlap-merge stitches long audio.
                 if let coremlPath = options.coremlEncoder {
                     try nemotron.enableCoreMLEncoder(modelURL: resolveURL(path: coremlPath))
                     if options.verbose { print("CoreML/ANE encoder enabled (Nemotron): \(coremlPath)") }
-                } else if options.ane {
+                } else if options.ane && !options.stream {
                     try await nemotron.enableCoreMLEncoder(repo: NemotronASRModel.defaultANEEncoderRepo)
                     if options.verbose { print("ANE encoder enabled (Nemotron): \(NemotronASRModel.defaultANEEncoderRepo)") }
                 }
-                // Cache-aware streaming CoreML/ANE encoder (used by --stream / generateStream).
+                // Cache-aware streaming CoreML/ANE encoder (generateStream path): explicit
+                // --coreml-stream-encoder, or --ane with --stream (auto-downloads the stream package).
                 if let streamPath = options.coremlStreamEncoder {
                     try nemotron.enableCoreMLStreamingEncoder(modelURL: resolveURL(path: streamPath))
                     if options.verbose { print("CoreML/ANE streaming encoder enabled (Nemotron): \(streamPath)") }
+                } else if options.ane && options.stream {
+                    try await nemotron.enableCoreMLStreamingEncoder(repo: NemotronASRModel.defaultANEStreamingEncoderRepo)
+                    if options.verbose { print("ANE streaming encoder enabled (Nemotron): \(NemotronASRModel.defaultANEStreamingEncoderRepo)") }
                 }
             }
         }
