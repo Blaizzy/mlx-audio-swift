@@ -70,6 +70,23 @@ Env: alex-mac (M-series, ANE), uv venv NeMo 2.x + coremltools + torch 2.10. Clip
 - `mlx-audio-swift-stt --stream --ane` auto-downloads + runs 100% on ANE — **validated live**
   (downloaded from HF, transcribed conversational_a.wav, words identical to MLX).
 
+## Cold/hot start — compiled-model caching (M1 Max, 13s clip)
+- `MLModel.compileModel` compiles the 1.1G package to a THROWAWAY temp `.mlmodelc` every launch →
+  every run paid the full ~34s ANE compile. Cache the `.mlmodelc` next to the source + reuse when newer.
+- **Cold start (compile once): 46s · Hot start (reuse): 3.0s** (MLX baseline 1.9s). Hot per-chunk ≈ 0.1s
+  (~1.6× MLX), not the 8× the cold runs implied. Transcript cold==hot.
+
+## Pure-MLX vs Hybrid (CoreML/ANE) — comparison
+| | Pure MLX | Hybrid (ANE encoder) |
+|---|---|---|
+| Conformer encoder on | GPU (Metal) | **ANE, 100% resident** (`.cpuAndNeuralEngine`) |
+| GPU freed during encode | no | **yes** |
+| GPU power (offline sibling A/B) | 17.3 W | **3.0 W (÷5.8)** |
+| Cold start (13s clip) | ~1.9 s | ~46 s (one-time ANE compile, cached) |
+| Hot start (13s clip) | ~1.9 s | ~3.0 s |
+| Transcript | reference | word-identical (punctuation @ fp16 floor) |
+
 ## Remaining
 - Open the PR (mirror offline #13).
-- Trailing-punctuation edge on the final chunk (cosmetic; fp16-ANE vs bf16-MLX floor, ~1% agreement).
+- Per-chunk MLX↔CoreML marshaling overhead (~0.1s vs MLX 0.06s) — IOSurface zero-copy is the upstream fix.
+- Apply the same `.mlmodelc` caching to the offline `ParakeetCoreMLEncoder` (#199 code; follow-up).
