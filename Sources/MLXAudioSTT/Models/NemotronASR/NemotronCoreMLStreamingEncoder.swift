@@ -61,9 +61,7 @@ public final class NemotronCoreMLStreamingEncoder: @unchecked Sendable {
         // CPU as one negligible island). The offline encoder has no such masks, so it uses .all.
         computeUnits: MLComputeUnits = .cpuAndNeuralEngine
     ) throws {
-        let compiledURL: URL = modelURL.pathExtension == "mlmodelc"
-            ? modelURL
-            : try MLModel.compileModel(at: modelURL)
+        let compiledURL = try Self.cachedCompiledModel(at: modelURL)
         let config = MLModelConfiguration()
         config.computeUnits = computeUnits
         self.model = try MLModel(contentsOf: compiledURL, configuration: config)
@@ -79,6 +77,28 @@ public final class NemotronCoreMLStreamingEncoder: @unchecked Sendable {
         self.cacheTime = try Self.zeroArray([layers, 1, dModel, convCache], .float16)
         self.cacheLen = try MLMultiArray(shape: [1], dataType: .int32)
         self.cacheLen[0] = 0
+    }
+
+    /// Compile the `.mlpackage` to `.mlmodelc` once and **cache it** next to the source, so the
+    /// ~30 s CoreML/ANE compilation is a one-time **cold start**; later loads reuse the cached
+    /// `.mlmodelc` (**hot start**, ~instant). `MLModel.compileModel` alone compiles to a throwaway
+    /// temp dir every launch — that is what made every run pay the full compile. Falls back to the
+    /// temp compile if the cache location isn't writable.
+    private static func cachedCompiledModel(at modelURL: URL) throws -> URL {
+        if modelURL.pathExtension == "mlmodelc" { return modelURL }
+        let fm = FileManager.default
+        let cached = modelURL.deletingPathExtension().appendingPathExtension("mlmodelc")
+        func modDate(_ url: URL) -> Date? {
+            (try? fm.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
+        }
+        if fm.fileExists(atPath: cached.path),
+           let c = modDate(cached), let s = modDate(modelURL), c >= s {
+            return cached  // hot start: reuse the cached compiled model
+        }
+        let tmp = try MLModel.compileModel(at: modelURL)  // cold start: compile once
+        if fm.fileExists(atPath: cached.path) { try? fm.removeItem(at: cached) }
+        do { try fm.moveItem(at: tmp, to: cached); return cached }
+        catch { return tmp }  // cache dir not writable -> use the temp compile (no caching)
     }
 
     /// Reset the three caches to their initial (all-zero) streaming state. Allocates **fresh
