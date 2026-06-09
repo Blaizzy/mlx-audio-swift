@@ -1,6 +1,6 @@
 import Foundation
 
-struct ParakeetDecodingLogic {
+struct NemoDecodingLogic {
     struct RNNTReductionResult: Sendable {
         let nextTime: Int
         let nextNewSymbols: Int
