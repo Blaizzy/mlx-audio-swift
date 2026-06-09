@@ -9,7 +9,9 @@ import MLX
 public final class ParakeetCoreMLEncoder: @unchecked Sendable {
     private let model: MLModel
     private let featIn: Int
-    private let fixedFrames: Int
+    /// The fixed mel-frame count the model was converted at (e.g. 1000 = 10 s). Callers use
+    /// this to keep their chunking ≤ this length, since longer mel is cropped.
+    public let fixedFrames: Int
     private let subsamplingFactor: Int
     private let inputName: String
     private let outputName: String
