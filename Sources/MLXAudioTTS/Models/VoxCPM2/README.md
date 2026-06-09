@@ -2,6 +2,11 @@
 
 OpenBMB VoxCPM2 text-to-speech support for MLX Swift.
 
+The implementation is adapted from the VoxCPM2TTS module in
+[soniqo/speech-swift](https://github.com/soniqo/speech-swift), which is
+licensed under Apache-2.0, and integrated with this package's model loading
+and generation APIs.
+
 ## Usage
 
 ```swift

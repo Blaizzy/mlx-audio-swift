@@ -1,3 +1,5 @@
+// Adapted from soniqo/speech-swift's VoxCPM2TTS module (Apache-2.0).
+
 import Foundation
 
 public struct RopeScalingConfig: Codable, Sendable {
