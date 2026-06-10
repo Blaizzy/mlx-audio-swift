@@ -885,7 +885,7 @@ public final class VoxCPM2Model: Module {
     ) throws -> MLXArray {
         var mono = audio
         if sampleRate != audio_vae.sampleRate {
-            mono = VoxCPM2AudioResampler.resample(audio, from: sampleRate, to: audio_vae.sampleRate)
+            mono = try resampleAudio(audio, from: sampleRate, to: audio_vae.sampleRate)
         }
         guard !mono.isEmpty else {
             throw NSError(domain: "VoxCPM2Model", code: 2, userInfo: [
@@ -949,13 +949,18 @@ public final class VoxCPM2Model: Module {
         minTokens: Int = 2,
         refText: String? = nil,
         refAudio: [Float]? = nil,
+        refAudioSampleRate: Int? = nil,
         promptText: String? = nil,
         promptAudio: [Float]? = nil,
+        promptAudioSampleRate: Int? = nil,
         inferenceTimesteps: Int = 10,
         cfgValue: Float = 2.0,
         streamingPrefixLen: Int = 4,
         warmupPatches: Int = 0,
-        instruct: String? = nil
+        instruct: String? = nil,
+        streamingDecodeInterval: Int? = nil,
+        audioChunkHandler: (@Sendable ([Float]) -> Void)? = nil,
+        returnFullAudio: Bool = true
     ) async throws -> [Float] {
         guard tokenizer != nil else {
             throw NSError(domain: "VoxCPM2Model", code: 3, userInfo: [
@@ -998,12 +1003,12 @@ public final class VoxCPM2Model: Module {
 
             let refFeat = try encodeAudio(
                 refAudio ?? [],
-                sampleRate: audio_vae.sampleRate,
+                sampleRate: refAudioSampleRate ?? audio_vae.sampleRate,
                 paddingMode: "right"
             )
             let promptFeat = try encodeAudio(
                 promptAudio ?? [],
-                sampleRate: audio_vae.sampleRate,
+                sampleRate: promptAudioSampleRate ?? audio_vae.sampleRate,
                 paddingMode: "left"
             )
             let promptLen = promptFeat.dim(0)
@@ -1063,7 +1068,7 @@ public final class VoxCPM2Model: Module {
 
             let refFeat = try encodeAudio(
                 refAudio ?? [],
-                sampleRate: audio_vae.sampleRate,
+                sampleRate: refAudioSampleRate ?? audio_vae.sampleRate,
                 paddingMode: "right"
             )
             let refTokens = MLXArray(
@@ -1106,7 +1111,7 @@ public final class VoxCPM2Model: Module {
 
             let promptFeat = try encodeAudio(
                 promptAudio ?? [],
-                sampleRate: audio_vae.sampleRate,
+                sampleRate: promptAudioSampleRate ?? audio_vae.sampleRate,
                 paddingMode: "left"
             )
             let promptLen = promptFeat.dim(0)
@@ -1185,6 +1190,18 @@ public final class VoxCPM2Model: Module {
 
         let hasContinuation = hasPrompt
         var predFeatSeq: [MLXArray] = []
+        var pendingStreamFeats: [MLXArray] = []
+        let streamInterval = max(1, streamingDecodeInterval ?? Int.max)
+
+        func decodeAudio(_ feats: [MLXArray]) -> [Float] {
+            var allFeat = concatenated(feats, axis: 1)
+            allFeat = allFeat.reshaped([allFeat.dim(0), -1, args.featDim])
+            var audio = audio_vae.decode(allFeat.asType(.float32))
+            audio = audio.flattened()
+            eval(audio)
+            return audio.asArray(Float.self)
+        }
+
         if hasContinuation {
             let audioIndices = (0..<audioMaskB.dim(1)).filter { idx in
                 audioMaskB[0, idx].item(Float.self) > 0.5
@@ -1223,7 +1240,15 @@ public final class VoxCPM2Model: Module {
             predFeat = predFeat.transposed(0, 2, 1)
 
             if step >= warmupCount {
-                predFeatSeq.append(predFeat.expandedDimensions(axis: 1))
+                let generatedFeat = predFeat.expandedDimensions(axis: 1)
+                predFeatSeq.append(generatedFeat)
+                if audioChunkHandler != nil {
+                    pendingStreamFeats.append(generatedFeat)
+                    if pendingStreamFeats.count >= streamInterval {
+                        audioChunkHandler?(decodeAudio(pendingStreamFeats))
+                        pendingStreamFeats.removeAll(keepingCapacity: true)
+                    }
+                }
             }
 
             let currEmbed = enc_to_lm_proj(
@@ -1271,12 +1296,17 @@ public final class VoxCPM2Model: Module {
             ])
         }
 
-        logGen("decoding audio")
-        var allFeat = concatenated(predFeatSeq, axis: 1)
-        allFeat = allFeat.reshaped([allFeat.dim(0), -1, args.featDim])
+        if audioChunkHandler != nil, !pendingStreamFeats.isEmpty {
+            audioChunkHandler?(decodeAudio(pendingStreamFeats))
+            pendingStreamFeats.removeAll(keepingCapacity: true)
+        }
 
-        var audio = audio_vae.decode(allFeat.asType(.float32))
-        audio = audio.flattened()
+        if audioChunkHandler != nil && !returnFullAudio {
+            return []
+        }
+
+        logGen("decoding audio")
+        var audio = MLXArray(decodeAudio(predFeatSeq))
 
         if hasContinuation {
             let decodePatchLen = args.patchSize * audio_vae.decodeChunkSize
@@ -1341,7 +1371,7 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
             }
 
             do {
-                let samples = try await self.generateVoxCPM2(
+                _ = try await self.generateVoxCPM2(
                     text: text,
                     language: language,
                     maxTokens: generationParameters.maxTokens ?? 2000,
@@ -1349,9 +1379,13 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
                     refAudio: refAudioSamples,
                     inferenceTimesteps: 10,
                     cfgValue: 2.0,
-                    instruct: voice
+                    instruct: voice,
+                    streamingDecodeInterval: 4,
+                    audioChunkHandler: { chunk in
+                        continuation.yield(.audio(MLXArray(chunk)))
+                    },
+                    returnFullAudio: false
                 )
-                continuation.yield(.audio(MLXArray(samples)))
                 continuation.finish()
             } catch {
                 continuation.finish(throwing: error)

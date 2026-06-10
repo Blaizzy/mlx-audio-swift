@@ -14,7 +14,7 @@ import MLXAudioCore
 import MLXAudioTTS
 
 let model = try await TTS.loadModel(
-    modelRepo: "aufklarer/VoxCPM2-MLX-bf16"
+    modelRepo: "mlx-community/VoxCPM2-8bit"
 )
 
 let audio = try await model.generate(

@@ -21,25 +21,3 @@ enum VoxCPM2WeightLoader {
         return weights
     }
 }
-
-enum VoxCPM2AudioResampler {
-    static func resample(_ input: [Float], from sourceRate: Int, to targetRate: Int) -> [Float] {
-        guard !input.isEmpty, sourceRate > 0, targetRate > 0, sourceRate != targetRate else {
-            return input
-        }
-
-        let outputCount = max(1, Int((Double(input.count) * Double(targetRate) / Double(sourceRate)).rounded()))
-        guard outputCount > 1, input.count > 1 else {
-            return Array(repeating: input.first ?? 0, count: outputCount)
-        }
-
-        let ratio = Double(sourceRate) / Double(targetRate)
-        return (0..<outputCount).map { index in
-            let position = Double(index) * ratio
-            let left = min(Int(position), input.count - 1)
-            let right = min(left + 1, input.count - 1)
-            let fraction = Float(position - Double(left))
-            return input[left] * (1 - fraction) + input[right] * fraction
-        }
-    }
-}
