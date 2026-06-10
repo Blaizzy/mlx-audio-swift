@@ -1356,7 +1356,11 @@ public final class VoxCPM2Model: Module {
         // used as overlap context for AudioVAE decoding.  Without this,
         // each chunk is decoded independently and the causal convolutions
         // produce boundary artifacts where the left padding is zero.
-        var streamOverlapBuffer: [MLXArray] = []
+        // Pre-fill overlap buffer with zero patches so the first streaming
+        // chunk also has decoder context (AudioVAE convolutions need ~13
+        // latent frames of left padding for clean output).
+        let zeroPatch = MLXArray.zeros([1, 1, args.patchSize, audio_vae.latentDim])
+        var streamOverlapBuffer: [MLXArray] = Array(repeating: zeroPatch, count: 4)
         let streamInterval = max(1, streamingDecodeInterval ?? Int.max)
         // Number of overlapping patches to prepend for AudioVAE context.
         // Determined by the decoder's total causal padding across all
