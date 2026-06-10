@@ -2,7 +2,7 @@ import Foundation
 import MLX
 import MLXNN
 
-class ParakeetMultiHeadAttention: Module {
+class NemoMultiHeadAttention: Module {
     let nHead: Int
     let headDim: Int
     let scale: Float
@@ -57,7 +57,7 @@ class ParakeetMultiHeadAttention: Module {
     }
 }
 
-final class ParakeetRelPositionMultiHeadAttention: ParakeetMultiHeadAttention {
+final class NemoRelPositionMultiHeadAttention: NemoMultiHeadAttention {
     @ModuleInfo(key: "linear_pos") var linearPos: Linear
 
     @ParameterInfo var posBiasU: MLXArray
@@ -140,7 +140,7 @@ final class ParakeetRelPositionMultiHeadAttention: ParakeetMultiHeadAttention {
     }
 }
 
-final class ParakeetRelPositionalEncoding {
+final class NemoRelPositionalEncoding {
     let dModel: Int
     var maxLen: Int
     let scaleInput: Float

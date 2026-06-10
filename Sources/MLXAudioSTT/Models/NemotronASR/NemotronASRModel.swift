@@ -21,8 +21,8 @@ public final class NemotronASRModel: Module, STTGenerationModel {
 
     @ModuleInfo(key: "encoder") var encoder: NemotronASRConformer
     @ModuleInfo(key: "prompt_kernel") var promptKernel: NemotronASRPromptKernel
-    @ModuleInfo(key: "decoder") var decoder: ParakeetPredictNetwork
-    @ModuleInfo(key: "joint") var joint: ParakeetJointNetwork
+    @ModuleInfo(key: "decoder") var decoder: NemoPredictNetwork
+    @ModuleInfo(key: "joint") var joint: NemoJointNetwork
 
     public var defaultGenerationParameters: STTGenerateParameters {
         STTGenerateParameters(
@@ -55,21 +55,21 @@ public final class NemotronASRModel: Module, STTGenerationModel {
             numPrompts: config.prompt.numPrompts,
             promptHidden: config.prompt.promptHidden
         )
-        self._decoder.wrappedValue = ParakeetPredictNetwork(
-            args: ParakeetPredictConfig(
+        self._decoder.wrappedValue = NemoPredictNetwork(
+            args: NemoPredictConfig(
                 blankAsPad: config.decoder.blankAsPad,
                 vocabSize: config.decoder.vocabSize,
-                prednet: ParakeetPredictNetworkConfig(
+                prednet: NemoPredictNetworkConfig(
                     predHidden: config.decoder.predHidden,
                     predRnnLayers: config.decoder.predRnnLayers
                 )
             )
         )
-        self._joint.wrappedValue = ParakeetJointNetwork(
-            args: ParakeetJointConfig(
+        self._joint.wrappedValue = NemoJointNetwork(
+            args: NemoJointConfig(
                 numClasses: config.joint.numClasses,
                 vocabulary: config.vocabulary,
-                jointnet: ParakeetJointNetworkConfig(
+                jointnet: NemoJointNetworkConfig(
                     jointHidden: config.joint.jointHidden,
                     activation: config.joint.activation,
                     encoderHidden: config.joint.encoderHidden,
@@ -89,7 +89,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
         let totalSamples = audio1D.shape[0]
         let audioDuration = Double(totalSamples) / Double(sampleRate)
         let chunkDuration = Double(generationParameters.chunkDuration)
-        let result: ParakeetAlignedResult
+        let result: NemoAlignedResult
 
         if chunkDuration <= 0 || audioDuration <= chunkDuration {
             result = decodeChunk(audio1D, language: generationParameters.language)
@@ -99,7 +99,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
             let overlapSamples = max(0, min(chunkSamples - 1, Int(overlapDuration * Double(sampleRate))))
             let stepSamples = max(1, chunkSamples - overlapSamples)
 
-            var allTokens: [ParakeetAlignedToken] = []
+            var allTokens: [NemoAlignedToken] = []
             var start = 0
             while start < totalSamples {
                 let end = min(start + chunkSamples, totalSamples)
@@ -117,7 +117,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
                 )
                 start += stepSamples
             }
-            result = ParakeetAlignment.sentencesToResult(ParakeetAlignment.tokensToSentences(allTokens))
+            result = NemoAlignment.sentencesToResult(NemoAlignment.tokensToSentences(allTokens))
         }
 
         let elapsed = CFAbsoluteTimeGetCurrent() - startTime
@@ -141,9 +141,9 @@ public final class NemotronASRModel: Module, STTGenerationModel {
             let frameSeconds = Double(self.encoderConfig.subsamplingFactor * self.preprocessConfig.hopLength)
                 / Double(sampleRate)
 
-            var results: [ParakeetAlignedToken] = []
+            var results: [NemoAlignedToken] = []
             var lastToken = self.blankTokenID
-            var decoderState: ParakeetLSTMState?
+            var decoderState: NemoLSTMState?
             var previousText = ""
             var globalTime = 0
 
@@ -160,13 +160,13 @@ public final class NemotronASRModel: Module, STTGenerationModel {
                         : MLXArray(Int32(lastToken)).reshaped([1, 1]).asType(.int32)
                     let decoderOutput = self.decoder(currentToken, state: decoderState)
                     let pred = decoderOutput.0.asType(frame.dtype)
-                    let proposedState: ParakeetLSTMState = (
+                    let proposedState: NemoLSTMState = (
                         hidden: decoderOutput.1.hidden?.asType(frame.dtype),
                         cell: decoderOutput.1.cell?.asType(frame.dtype)
                     )
                     let jointOutput = self.joint(frame, pred)
                     let token = jointOutput.argMax(axis: -1).item(Int.self)
-                    let step = ParakeetDecodingLogic.rnntStep(
+                    let step = NemoDecodingLogic.rnntStep(
                         predictedToken: token,
                         blankToken: self.blankTokenID,
                         time: time,
@@ -178,7 +178,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
                         decoderState = proposedState
                         if !NemotronASRTokenizer.isSpecialToken(token, vocabulary: self.vocabulary) {
                             results.append(
-                                ParakeetAlignedToken(
+                                NemoAlignedToken(
                                     id: token,
                                     text: NemotronASRTokenizer.decode(tokens: [token], vocabulary: self.vocabulary),
                                     start: Double(globalTime + time) * frameSeconds,
@@ -192,8 +192,8 @@ public final class NemotronASRModel: Module, STTGenerationModel {
                 }
                 globalTime += chunkLen
 
-                let currentResult = ParakeetAlignment.sentencesToResult(
-                    ParakeetAlignment.tokensToSentences(results)
+                let currentResult = NemoAlignment.sentencesToResult(
+                    NemoAlignment.tokensToSentences(results)
                 )
                 let fullText = currentResult.text
                 let nextText = fullText.hasPrefix(previousText)
@@ -205,8 +205,8 @@ public final class NemotronASRModel: Module, STTGenerationModel {
                 }
             }
 
-            let finalResult = ParakeetAlignment.sentencesToResult(
-                ParakeetAlignment.tokensToSentences(results)
+            let finalResult = NemoAlignment.sentencesToResult(
+                NemoAlignment.tokensToSentences(results)
             )
             continuation.yield(
                 .result(
@@ -226,7 +226,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
         mel: MLXArray,
         language: String? = nil,
         attContextSize: [Int]? = nil
-    ) -> ParakeetAlignedResult {
+    ) -> NemoAlignedResult {
         var features = mel
         if features.ndim == 2 {
             features = features.expandedDimensions(axis: 0)
@@ -244,10 +244,10 @@ public final class NemotronASRModel: Module, STTGenerationModel {
 
         let frameSeconds = Double(encoderConfig.subsamplingFactor * preprocessConfig.hopLength)
             / Double(preprocessConfig.sampleRate)
-        var results: [ParakeetAlignedToken] = []
+        var results: [NemoAlignedToken] = []
         let maxLength = Int(encoded.1[0].item(Int32.self))
         var lastToken = blankTokenID
-        var decoderState: ParakeetLSTMState?
+        var decoderState: NemoLSTMState?
         var time = 0
         var newSymbols = 0
 
@@ -259,7 +259,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
 
             let decoderOutput = decoder(currentToken, state: decoderState)
             let pred = decoderOutput.0.asType(frame.dtype)
-            let proposedState: ParakeetLSTMState = (
+            let proposedState: NemoLSTMState = (
                 hidden: decoderOutput.1.hidden?.asType(frame.dtype),
                 cell: decoderOutput.1.cell?.asType(frame.dtype)
             )
@@ -267,7 +267,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
             let jointOutput = joint(frame, pred)
             eval(jointOutput)
             let token = jointOutput.argMax(axis: -1).item(Int.self)
-            let step = ParakeetDecodingLogic.rnntStep(
+            let step = NemoDecodingLogic.rnntStep(
                 predictedToken: token,
                 blankToken: blankTokenID,
                 time: time,
@@ -280,7 +280,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
                 decoderState = proposedState
                 if !NemotronASRTokenizer.isSpecialToken(token, vocabulary: vocabulary) {
                     results.append(
-                        ParakeetAlignedToken(
+                        NemoAlignedToken(
                             id: token,
                             text: NemotronASRTokenizer.decode(tokens: [token], vocabulary: vocabulary),
                             start: Double(time) * frameSeconds,
@@ -294,7 +294,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
             newSymbols = step.nextNewSymbols
         }
 
-        let aligned = ParakeetAlignment.sentencesToResult(ParakeetAlignment.tokensToSentences(results))
+        let aligned = NemoAlignment.sentencesToResult(NemoAlignment.tokensToSentences(results))
         if aligned.text.isEmpty {
             return aligned
         }
@@ -329,27 +329,27 @@ public final class NemotronASRModel: Module, STTGenerationModel {
         audio.ndim > 1 ? audio.mean(axis: -1) : audio
     }
 
-    private func decodeChunk(_ chunkAudio: MLXArray, language: String?) -> ParakeetAlignedResult {
+    private func decodeChunk(_ chunkAudio: MLXArray, language: String?) -> NemoAlignedResult {
         let mel = NemotronASRAudio.logMelSpectrogram(chunkAudio, config: preprocessConfig)
         return decode(mel: mel, language: language)
     }
 
-    private func flattenTokens(from result: ParakeetAlignedResult) -> [ParakeetAlignedToken] {
+    private func flattenTokens(from result: NemoAlignedResult) -> [NemoAlignedToken] {
         result.sentences.flatMap { $0.tokens }
     }
 
     private func mergeTokenSequences(
-        existing: [ParakeetAlignedToken],
-        incoming: [ParakeetAlignedToken],
+        existing: [NemoAlignedToken],
+        incoming: [NemoAlignedToken],
         overlapDuration: Double
-    ) -> [ParakeetAlignedToken] {
+    ) -> [NemoAlignedToken] {
         if existing.isEmpty { return incoming }
         if incoming.isEmpty { return existing }
 
         do {
-            return try ParakeetAlignment.mergeLongestContiguous(existing, incoming, overlapDuration: overlapDuration)
+            return try NemoAlignment.mergeLongestContiguous(existing, incoming, overlapDuration: overlapDuration)
         } catch {
-            return ParakeetAlignment.mergeLongestCommonSubsequence(existing, incoming, overlapDuration: overlapDuration)
+            return NemoAlignment.mergeLongestCommonSubsequence(existing, incoming, overlapDuration: overlapDuration)
         }
     }
 }
