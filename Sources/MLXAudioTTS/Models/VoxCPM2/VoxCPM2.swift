@@ -1711,8 +1711,78 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
         language: String?,
         generationParameters: GenerateParameters
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let frameRateHz = Float(audio_vae.sampleRate) / Float(audio_vae.hopLength)
+        let patchRateHz = frameRateHz / Float(args.patchSize)
+        let defaultInterval = max(1, Int(patchRateHz * 2.0))
+        return _generateStream(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: language,
+            generationParameters: generationParameters,
+            streamingInterval: Double(defaultInterval) / Double(patchRateHz)
+        )
+    }
+
+    /// Streaming generation with a time‑based interval (seconds).
+    ///
+    /// This is the Qwen3TTS‑style streaming API: callers specify how many
+    /// seconds of audio they want per chunk, and the model converts that to
+    /// the appropriate number of patches for the AudioVAE overlap‑aware
+    /// decoder.  Chunks are delivered via `onAudioChunk`.
+    ///
+    /// - Parameters:
+    ///   - streamingInterval: Target seconds of audio per streaming chunk
+    ///     (e.g. `2.0` = roughly 2 seconds per chunk).  Actual chunk size
+    ///     is rounded to whole patches.
+    ///   - onToken: Called with each generated codebook token id.
+    ///   - onInfo: Called with generation stats (token count, timing, etc.)
+    ///     when generation completes.
+    ///   - onAudioChunk: Called with each decoded audio chunk as an MLXArray.
+    @discardableResult
+    public func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        streamingInterval: Double = 2.0,
+        onToken: (@Sendable (Int) -> Void)? = nil,
+        onInfo: (@Sendable (AudioGenerationInfo) -> Void)? = nil,
+        onAudioChunk: (@Sendable (MLXArray) -> Void)? = nil
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        _generateStream(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: language,
+            generationParameters: generationParameters,
+            streamingInterval: streamingInterval,
+            onToken: onToken,
+            onInfo: onInfo,
+            onAudioChunk: onAudioChunk
+        )
+    }
+
+    /// Shared implementation for all `generateStream` overloads.
+    private func _generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        streamingInterval: Double = 2.0,
+        onToken: (@Sendable (Int) -> Void)? = nil,
+        onInfo: (@Sendable (AudioGenerationInfo) -> Void)? = nil,
+        onAudioChunk: (@Sendable (MLXArray) -> Void)? = nil
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
         let refAudioSamples = refAudio?.asArray(Float.self)
+
         let task = Task { @Sendable [weak self, refAudioSamples] in
             guard let self else {
                 continuation.finish(throwing: AudioGenerationError.modelNotInitialized("Model deallocated"))
@@ -1720,6 +1790,15 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
             }
 
             do {
+                // Convert time‑based interval to patch‑based interval.
+                // AudioVAE: 1 latent frame = hopLength / sampleRate seconds
+                // 1 patch = patchSize latent frames
+                let frameRateHz = Float(audio_vae.sampleRate) / Float(audio_vae.hopLength)
+                let patchRateHz = frameRateHz / Float(args.patchSize)
+                let decodeInterval = max(1, Int(streamingInterval * Double(patchRateHz)))
+
+                let startTime = Date()
+
                 _ = try await self.generateVoxCPM2(
                     text: text,
                     language: language,
@@ -1729,12 +1808,28 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
                     inferenceTimesteps: 10,
                     cfgValue: 2.0,
                     instruct: voice,
-                    streamingDecodeInterval: 4,
+                    streamingDecodeInterval: decodeInterval,
                     audioChunkHandler: { chunk in
-                        continuation.yield(.audio(MLXArray(chunk)))
+                        let audio = MLXArray(chunk)
+                        continuation.yield(.audio(audio))
+                        onAudioChunk?(audio)
                     },
                     returnFullAudio: false
                 )
+
+                // Emit info event with generation stats
+                let generateTime = Date().timeIntervalSince(startTime)
+                let info = AudioGenerationInfo(
+                    promptTokenCount: 0,
+                    generationTokenCount: 0,
+                    prefillTime: 0,
+                    generateTime: generateTime,
+                    tokensPerSecond: 0,
+                    peakMemoryUsage: Double(Memory.peakMemory) / 1e9
+                )
+                continuation.yield(.info(info))
+                onInfo?(info)
+
                 continuation.finish()
             } catch {
                 continuation.finish(throwing: error)
