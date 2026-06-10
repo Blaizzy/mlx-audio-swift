@@ -96,6 +96,11 @@ def main():
     ap.add_argument("--att-context", type=int, nargs=2, default=[70, 13])
     ap.add_argument("--fixed-frames", type=int, default=None,
                     help="processed_signal length to trace at (default: max NeMo-fed size)")
+    ap.add_argument("--palettize", type=int, default=0,
+                    help="palettize weights to N bits (0=off; e.g. 6 ~3x smaller, 4 ~4x). Smaller "
+                         "model => faster download + .mlmodelc load. Validate accuracy with parity.")
+    ap.add_argument("--palettize-mode", default="uniform",
+                    help="uniform (light, low-mem) | kmeans (better accuracy, memory-heavy — can OOM)")
     ap.add_argument("--out", default="out/nemotron_stream_func.mlpackage")
     args = ap.parse_args()
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
@@ -139,6 +144,13 @@ def main():
         minimum_deployment_target=ct.target.macOS15,
         convert_to="mlprogram",
     )
+    if args.palettize:
+        import coremltools.optimize.coreml as cto
+        print(f"[2.5/3] palettizing weights to {args.palettize} bits ({args.palettize_mode}) ...")
+        palette_cfg = cto.OptimizationConfig(
+            global_config=cto.OpPalettizerConfig(nbits=args.palettize, mode=args.palettize_mode))
+        mlmodel = cto.palettize_weights(mlmodel, palette_cfg)  # don't shadow streaming `cfg`
+
     mlmodel.save(args.out)
     print(f"[3/3] saved {args.out}")
     man = {

@@ -48,12 +48,16 @@ This uniform feeding is **transcript-identical** to NeMo's native variable-chunk
 
 ## Details
 
+- **8-bit palettized weights** (`palettize_weights`, uniform): **561 MB** (≈2× smaller than fp16) and
+  **~28 % faster** on the ANE (~19 ms/chunk vs ~27 ms fp16) — and the streamed transcript is **word-for-word
+  identical** to fp16/MLX. (6-bit was faster still but degraded the transcript, so 8-bit is shipped.)
 - **100 % ANE-resident** (cost-weighted, `MLComputeUnits.cpuAndNeuralEngine`) — the few int32 mask /
   cache-length ops drop to CPU as one negligible island. **Use CPU+ANE, not `.all`**: with `.all`,
   CoreML places the whole graph on the GPU (≈2 % ANE) — no power win.
-- ~25 ms/chunk on the ANE (chunk = 112 mel ≈ 1.1 s audio → ~45× realtime), GPU freed.
+- ~19 ms/chunk on the ANE (chunk = 112 mel ≈ 1.1 s audio → ~58× realtime), GPU freed. The Swift wrapper
+  caches the compiled `.mlmodelc` (cold compile once ~33 s, then hot start ~2.3 s — within 0.4 s of pure MLX).
 - Validated end-to-end (M1 Max) against the MLX streaming path: **word-for-word identical** transcript;
-  punctuation differs at the fp16-ANE vs bf16-MLX precision floor (same ~1 % agreement as the offline path).
+  punctuation differs at the int8/fp16-ANE vs bf16-MLX precision floor (same ~1 % agreement as the offline path).
 - Public `MLModel` + `MLComputeUnits` only — no private APIs.
 
 ## Conversion
