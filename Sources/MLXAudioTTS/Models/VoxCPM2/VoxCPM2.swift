@@ -1755,6 +1755,8 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
         language: String?,
         generationParameters: GenerateParameters,
         streamingInterval: Double = 2.0,
+        inferenceTimesteps: Int = 10,
+        cfgValue: Float = 2.0,
         onToken: (@Sendable (Int) -> Void)? = nil,
         onInfo: (@Sendable (AudioGenerationInfo) -> Void)? = nil,
         onAudioChunk: (@Sendable (MLXArray) -> Void)? = nil
@@ -1767,6 +1769,8 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
             language: language,
             generationParameters: generationParameters,
             streamingInterval: streamingInterval,
+            inferenceTimesteps: inferenceTimesteps,
+            cfgValue: cfgValue,
             onToken: onToken,
             onInfo: onInfo,
             onAudioChunk: onAudioChunk
@@ -1782,6 +1786,8 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
         language: String?,
         generationParameters: GenerateParameters,
         streamingInterval: Double = 2.0,
+        inferenceTimesteps: Int = 10,
+        cfgValue: Float = 2.0,
         onToken: (@Sendable (Int) -> Void)? = nil,
         onInfo: (@Sendable (AudioGenerationInfo) -> Void)? = nil,
         onAudioChunk: (@Sendable (MLXArray) -> Void)? = nil
@@ -1805,13 +1811,8 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
 
                 let startTime = Date()
 
-                // When reference audio is provided, use it as BOTH the
-                // voice identity reference AND the prompt conditioning to
-                // enable VoxCPM2's Hi‑Fi cloning path (hasRef && hasPrompt).
-                let promptText = refText
-                let promptSamples = refAudioSamples
-                let promptSR = refAudioSamples != nil ? audio_vae.sampleRate : nil
-
+                // Hi-Fi cloning: pass ref audio as BOTH identity reference
+                // AND prompt conditioning for maximum voice fidelity.
                 _ = try await self.generateVoxCPM2(
                     text: text,
                     language: language,
@@ -1819,11 +1820,11 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
                     refText: refText,
                     refAudio: refAudioSamples,
                     refAudioSampleRate: refAudioSamples != nil ? audio_vae.sampleRate : nil,
-                    promptText: promptText,
-                    promptAudio: promptSamples,
-                    promptAudioSampleRate: promptSR,
-                    inferenceTimesteps: 10,
-                    cfgValue: 2.0,
+                    promptText: refText,
+                    promptAudio: refAudioSamples,
+                    promptAudioSampleRate: refAudioSamples != nil ? audio_vae.sampleRate : nil,
+                    inferenceTimesteps: inferenceTimesteps,
+                    cfgValue: cfgValue,
                     instruct: voice,
                     streamingDecodeInterval: decodeInterval,
                     audioChunkHandler: { chunk in
