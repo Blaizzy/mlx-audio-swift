@@ -52,6 +52,15 @@ public final class VoxCPM2Model: Module {
     // MARK: - LoRA state
     private var loraConfig: LoRAConfig?
     private var loraModules: [String: LoRALinear] = [:]
+
+    // Cache the most recently encoded reference audio to avoid
+    // re-encoding the same audio on consecutive synthesis calls.
+    // A single-entry cache is sufficient since iSpeak uses the same
+    // reference audio for every synthesis within a session.
+    private var cachedRefSR: Int = 0
+    private var cachedRefRight: MLXArray?
+    private var cachedRefLeft: MLXArray?
+
     private static var debugVerboseEnabled: Bool {
         ProcessInfo.processInfo.environment["VOXCPM2_DEBUG_VERBOSE"] == "1"
     }
@@ -1134,16 +1143,34 @@ public final class VoxCPM2Model: Module {
             let textLength = textIds.count + 1
             textToken = MLXArray(textIds + [Int32(101)]).reshaped([1, textLength])
 
-            let refFeat = try encodeAudio(
-                refAudio ?? [],
-                sampleRate: refAudioSampleRate ?? audio_vae.sampleRate,
-                paddingMode: "right"
-            )
-            let promptFeat = try encodeAudio(
-                promptAudio ?? [],
-                sampleRate: promptAudioSampleRate ?? audio_vae.sampleRate,
-                paddingMode: "left"
-            )
+            // Check the feature cache — same audio, same rate = skip re-encode.
+            let refSR = refAudioSampleRate ?? audio_vae.sampleRate
+            var refFeat: MLXArray
+            if let cached = cachedRefRight, cachedRefSR == refSR {
+                refFeat = cached
+                logGen("ref audio feature cache hit (right)")
+            } else {
+                refFeat = try encodeAudio(
+                    refAudio ?? [],
+                    sampleRate: refSR,
+                    paddingMode: "right"
+                )
+            }
+            var promptFeat: MLXArray
+            if let cached = cachedRefLeft, cachedRefSR == refSR {
+                promptFeat = cached
+                logGen("ref audio feature cache hit (left)")
+            } else {
+                promptFeat = try encodeAudio(
+                    promptAudio ?? [],
+                    sampleRate: promptAudioSampleRate ?? audio_vae.sampleRate,
+                    paddingMode: "left"
+                )
+            }
+            // Cache the reference features for the next synthesis call
+            cachedRefSR = refSR
+            cachedRefRight = refFeat
+            cachedRefLeft = promptFeat
             let promptLen = promptFeat.dim(0)
 
             let refTokens = MLXArray(
@@ -1301,6 +1328,7 @@ public final class VoxCPM2Model: Module {
         ].squeezed(axis: 1)
 
         let (encOutputs, initialLmCache) = base_lm(inputsEmbeds: combinedEmbed)
+
         var lmCache = initialLmCache
         let encOutputsFSQ = fsq_layer(encOutputs)
         let maskedEnc = encOutputsFSQ * audioMask3 + encOutputs * textMask3
