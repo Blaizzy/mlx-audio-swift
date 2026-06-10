@@ -1324,7 +1324,17 @@ public final class VoxCPM2Model: Module {
         let hasContinuation = hasPrompt
         var predFeatSeq: [MLXArray] = []
         var pendingStreamFeats: [MLXArray] = []
+        // Buffer of the last N patches from the previous streaming chunk,
+        // used as overlap context for AudioVAE decoding.  Without this,
+        // each chunk is decoded independently and the causal convolutions
+        // produce boundary artifacts where the left padding is zero.
+        var streamOverlapBuffer: [MLXArray] = []
         let streamInterval = max(1, streamingDecodeInterval ?? Int.max)
+        // Number of overlapping patches to prepend for AudioVAE context.
+        // Determined by the decoder's total causal padding across all
+        // transposed‑conv blocks (rates [8,6,5,2,2,2] → ~13 latent frames).
+        // With patchSize=4 we need ceil(13/4) ≈ 4 overlapping patches.
+        let streamOverlapPatches = 4
 
         func decodeAudio(_ feats: [MLXArray]) -> [Float] {
             var allFeat = concatenated(feats, axis: 1)
@@ -1333,6 +1343,38 @@ public final class VoxCPM2Model: Module {
             audio = audio.flattened()
             eval(audio)
             return audio.asArray(Float.self)
+        }
+
+        /// Decode audio from patches with overlap context, then trim the
+        /// overlapping prefix so only the new audio is returned.
+        func decodeAudioWithOverlap(
+            newPatches: [MLXArray],
+            overlapBuffer:inout [MLXArray]
+        ) -> [Float] {
+            // Prepend overlapping patches from the previous chunk for
+            // AudioVAE context, then decode the combined sequence.
+            let contextPatches = Array(overlapBuffer.suffix(streamOverlapPatches))
+            let decodePatches = contextPatches + newPatches
+            let decoded = decodeAudio(decodePatches)
+
+            // Calculate how many audio samples correspond to the overlap
+            // context so we can trim them from the output.
+            // Each patch = patchSize (4) latent frames; each latent frame
+            // produces audio_vae.hopLength * (outSampleRate / sampleRate)
+            // output samples.  But the simplest approach: compute samples
+            // per patch empirically from the first call.
+            let overlapPatches = contextPatches.count
+            let totalPatches = decodePatches.count
+            let totalSamples = decoded.count
+            let samplesPerPatch = totalSamples / totalPatches
+            let trimSamples = overlapPatches * samplesPerPatch
+
+            // Update the overlap buffer for the next call
+            let combined = overlapBuffer + newPatches
+            let keepCount = streamOverlapPatches * 4
+            overlapBuffer = combined.suffix(keepCount).map { $0 }
+
+            return Array(decoded.dropFirst(max(0, trimSamples)))
         }
 
         if hasContinuation {
@@ -1378,7 +1420,11 @@ public final class VoxCPM2Model: Module {
                 if audioChunkHandler != nil {
                     pendingStreamFeats.append(generatedFeat)
                     if pendingStreamFeats.count >= streamInterval {
-                        audioChunkHandler?(decodeAudio(pendingStreamFeats))
+                        let chunk = decodeAudioWithOverlap(
+                            newPatches: pendingStreamFeats,
+                            overlapBuffer: &streamOverlapBuffer
+                        )
+                        audioChunkHandler?(chunk)
                         pendingStreamFeats.removeAll(keepingCapacity: true)
                     }
                 }
