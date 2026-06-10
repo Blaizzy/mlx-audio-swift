@@ -363,6 +363,13 @@ enum App {
         audio: MLXArray,
         parameters: STTGenerateParameters
     ) async throws -> STTOutput {
+        // Voxtral Realtime has a true online streaming session — feed audio as it
+        // arrives (480 ms chunks ~ the model's native transcription delay) instead of
+        // the whole-buffer `generateStream`.
+        if let voxtral = model as? VoxtralRealtimeModel {
+            return runVoxtralStreaming(model: voxtral, audio: audio, parameters: parameters)
+        }
+
         var finalOutput: STTOutput?
         var streamedText = ""
         var emittedToken = false
@@ -390,6 +397,52 @@ enum App {
         }
 
         return STTOutput(text: streamedText.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Drive `VoxtralRealtimeStreamSession` from a file by feeding fixed audio chunks,
+    /// printing each delta as it is decoded (genuine online streaming).
+    private static func runVoxtralStreaming(
+        model: VoxtralRealtimeModel,
+        audio: MLXArray,
+        parameters: STTGenerateParameters
+    ) -> STTOutput {
+        let mono = audio.ndim > 1 ? audio.mean(axis: -1) : audio
+        let samples = mono.asType(.float32).asArray(Float.self)
+        let chunk = max(1, 16000 * 480 / 1000)   // 480 ms
+
+        let session = model.makeStreamSession(
+            temperature: parameters.temperature,
+            maxTokens: parameters.maxTokens
+        )
+
+        let start = CFAbsoluteTimeGetCurrent()
+        var emitted = false
+        func emit(_ delta: VoxtralRealtimeStreamSession.Delta) {
+            guard !delta.text.isEmpty else { return }
+            emitted = true
+            print(delta.text, terminator: "")
+            fflush(stdout)
+        }
+
+        var idx = 0
+        while idx < samples.count {
+            let end = min(idx + chunk, samples.count)
+            emit(session.step(Array(samples[idx..<end])))
+            idx = end
+        }
+        emit(session.finish())
+        if emitted { print() }
+
+        let totalTime = CFAbsoluteTimeGetCurrent() - start
+        let tokenCount = session.tokens.count
+        return STTOutput(
+            text: session.text.trimmingCharacters(in: .whitespacesAndNewlines),
+            language: parameters.language,
+            generationTokens: tokenCount,
+            totalTokens: tokenCount,
+            generationTps: totalTime > 0 ? Double(tokenCount) / totalTime : 0,
+            totalTime: totalTime
+        )
     }
 
     private static func loadModel(repo: String) async throws -> LoadedModel {
