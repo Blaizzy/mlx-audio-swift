@@ -363,6 +363,13 @@ enum App {
         audio: MLXArray,
         parameters: STTGenerateParameters
     ) async throws -> STTOutput {
+        // Voxtral Realtime has a true online streaming session — feed audio as it
+        // arrives (480 ms chunks ~ the model's native transcription delay) instead of
+        // the whole-buffer `generateStream`.
+        if let voxtral = model as? VoxtralRealtimeModel {
+            return runVoxtralStreaming(model: voxtral, audio: audio, parameters: parameters)
+        }
+
         var finalOutput: STTOutput?
         var streamedText = ""
         var emittedToken = false
@@ -390,6 +397,24 @@ enum App {
         }
 
         return STTOutput(text: streamedText.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Drive Voxtral's streaming transcription from a file, printing each delta live.
+    /// The chunked-feed logic lives in `VoxtralRealtimeModel.transcribeStreaming` so other
+    /// callers can reuse it; the CLI only renders the deltas.
+    private static func runVoxtralStreaming(
+        model: VoxtralRealtimeModel,
+        audio: MLXArray,
+        parameters: STTGenerateParameters
+    ) -> STTOutput {
+        var emitted = false
+        let output = model.transcribeStreaming(audio: audio, generationParameters: parameters) { delta in
+            emitted = true
+            print(delta, terminator: "")
+            fflush(stdout)
+        }
+        if emitted { print() }
+        return output
     }
 
     private static func loadModel(repo: String) async throws -> LoadedModel {
