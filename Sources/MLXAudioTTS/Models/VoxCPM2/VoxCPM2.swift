@@ -1799,12 +1799,23 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
 
                 let startTime = Date()
 
+                // When reference audio is provided, use it as BOTH the
+                // voice identity reference AND the prompt conditioning to
+                // enable VoxCPM2's Hi‑Fi cloning path (hasRef && hasPrompt).
+                let promptText = refText
+                let promptSamples = refAudioSamples
+                let promptSR = refAudioSamples != nil ? audio_vae.sampleRate : nil
+
                 _ = try await self.generateVoxCPM2(
                     text: text,
                     language: language,
                     maxTokens: generationParameters.maxTokens ?? 2000,
                     refText: refText,
                     refAudio: refAudioSamples,
+                    refAudioSampleRate: refAudioSamples != nil ? audio_vae.sampleRate : nil,
+                    promptText: promptText,
+                    promptAudio: promptSamples,
+                    promptAudioSampleRate: promptSR,
                     inferenceTimesteps: 10,
                     cfgValue: 2.0,
                     instruct: voice,
