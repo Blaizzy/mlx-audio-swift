@@ -48,6 +48,10 @@ public final class VoxCPM2Model: Module {
     private var tokenizer: Tokenizers.Tokenizer?
     private var voxCPM2TokenizerSplitMap: [Int: [Int]] = [:]
     private var _isLoaded: Bool = true
+
+    // MARK: - LoRA state
+    private var loraConfig: LoRAConfig?
+    private var loraModules: [String: LoRALinear] = [:]
     private static var debugVerboseEnabled: Bool {
         ProcessInfo.processInfo.environment["VOXCPM2_DEBUG_VERBOSE"] == "1"
     }
@@ -139,6 +143,7 @@ public final class VoxCPM2Model: Module {
 
     public static func fromPretrained(
         _ modelRepo: String = "aufklarer/VoxCPM2-MLX-bf16",
+        loraConfig: LoRAConfig? = nil,
         cache: HubCache = .default
     ) async throws -> VoxCPM2Model {
         guard let repoID = Repo.ID(rawValue: modelRepo) else {
@@ -151,10 +156,13 @@ public final class VoxCPM2Model: Module {
             additionalMatchingPatterns: ["*.py"],
             cache: cache
         )
-        return try await fromModelDirectory(modelDir)
+        return try await fromModelDirectory(modelDir, loraConfig: loraConfig)
     }
 
-    public static func fromModelDirectory(_ modelDir: URL) async throws -> VoxCPM2Model {
+    public static func fromModelDirectory(
+        _ modelDir: URL,
+        loraConfig: LoRAConfig? = nil
+    ) async throws -> VoxCPM2Model {
         let args = try ModelArgs.load(from: modelDir)
         let model = VoxCPM2Model(args: args)
 
@@ -184,6 +192,12 @@ public final class VoxCPM2Model: Module {
 
         // NOTE: MLX can trip over some parameter views during eager evaluation
         // even when the model loads cleanly. We defer evaluation until first use.
+
+        // If a LoRA configuration was provided, inject LoRA wrappers
+        // around the target linear layers.
+        if let loraConfig {
+            try model.injectLoRA(config: loraConfig)
+        }
 
         return model
     }
@@ -960,7 +974,15 @@ public final class VoxCPM2Model: Module {
         instruct: String? = nil,
         streamingDecodeInterval: Int? = nil,
         audioChunkHandler: (@Sendable ([Float]) -> Void)? = nil,
-        returnFullAudio: Bool = true
+        returnFullAudio: Bool = true,
+        // Normalization and retry (matching the official Python API)
+        normalize: Bool = false,
+        /// Denoise prompt/reference audio before generation.
+        /// Requires a loaded ZipEnhancer denoiser (not yet implemented in MLX).
+        denoise: Bool = false,
+        retryBadcase: Bool = false,
+        retryBadcaseMaxTimes: Int = 3,
+        retryBadcaseRatioThreshold: Float = 6.0
     ) async throws -> [Float] {
         guard tokenizer != nil else {
             throw NSError(domain: "VoxCPM2Model", code: 3, userInfo: [
@@ -969,6 +991,117 @@ public final class VoxCPM2Model: Module {
         }
         _ = language
         let debugVerboseEnabled = ProcessInfo.processInfo.environment["VOXCPM2_DEBUG_VERBOSE"] == "1"
+
+        // Apply text normalization before tokenization
+        let normalizedText = normalize ? TextNormalizer.normalize(text) : text
+
+        // Denoiser (ZipEnhancer) is not yet implemented in MLX.
+        // Reference: https://github.com/OpenBMB/VoxCPM
+        if denoise {
+            if debugVerboseEnabled, let data = "[VoxCPM2] denoise=true is not yet implemented in MLX — skipping denoising\n".data(using: .utf8) {
+                FileHandle.standardOutput.write(data)
+            }
+        }
+
+        // Define the actual generation step as a local function so we can
+        // retry it with different text (normalized vs original).
+        func runGeneration(text: String) async throws -> [Float] {
+            try await _runGenerationImpl(
+                text: text,
+                language: language,
+                maxTokens: maxTokens,
+                minTokens: minTokens,
+                refText: refText,
+                refAudio: refAudio,
+                refAudioSampleRate: refAudioSampleRate,
+                promptText: promptText,
+                promptAudio: promptAudio,
+                promptAudioSampleRate: promptAudioSampleRate,
+                inferenceTimesteps: inferenceTimesteps,
+                cfgValue: cfgValue,
+                streamingPrefixLen: streamingPrefixLen,
+                warmupPatches: warmupPatches,
+                instruct: instruct,
+                streamingDecodeInterval: streamingDecodeInterval,
+                audioChunkHandler: audioChunkHandler,
+                returnFullAudio: returnFullAudio,
+                debugVerboseEnabled: debugVerboseEnabled
+            )
+        }
+
+        // Retry wrapper for bad-case detection
+        let maxAttempts = retryBadcase ? max(1, retryBadcaseMaxTimes) : 1
+
+        var lastError: Error?
+        for attempt in 1...maxAttempts {
+            do {
+                let inputText = attempt == 1 ? normalizedText : text
+                let audio = try await runGeneration(text: inputText)
+
+                // Check for bad case (too short or too long relative to text)
+                if retryBadcase && isBadCase(
+                    audio: audio, text: normalizedText,
+                    ratioThreshold: retryBadcaseRatioThreshold
+                ) {
+                    lastError = nil
+                    if attempt < maxAttempts {
+                        if debugVerboseEnabled, let data = "[VoxCPM2] bad case detected (attempt \(attempt)/\(maxAttempts)), retrying...\n".data(using: .utf8) {
+                            FileHandle.standardOutput.write(data)
+                        }
+                    }
+                    continue
+                }
+                return audio
+            } catch {
+                lastError = error
+                if attempt < maxAttempts {
+                    if debugVerboseEnabled, let data = "[VoxCPM2] generation failed (attempt \(attempt)/\(maxAttempts)): \(error), retrying...\n".data(using: .utf8) {
+                        FileHandle.standardOutput.write(data)
+                    }
+                }
+            }
+        }
+
+        if let lastError { throw lastError }
+        // Fallback: should not reach here
+        throw NSError(domain: "VoxCPM2Model", code: 5, userInfo: [
+            NSLocalizedDescriptionKey: "Generation failed after \(maxAttempts) attempts"
+        ])
+    }
+
+    /// Determine whether generated audio is abnormally short or long.
+    private func isBadCase(audio: [Float], text: String, ratioThreshold: Float) -> Bool {
+        guard !audio.isEmpty else { return true }
+        let audioDuration = Float(audio.count) / Float(outputSampleRate)
+        let estimatedTextDuration = Float(text.count) / 5.0  // ~5 chars/sec average
+        guard estimatedTextDuration > 0 else { return false }
+        let ratio = audioDuration / estimatedTextDuration
+        return ratio > ratioThreshold || ratio < 1.0 / ratioThreshold
+    }
+
+    /// Core generation implementation extracted so that `generateVoxCPM2`
+    /// can wrap it with normalisation and retry logic.
+    private func _runGenerationImpl(
+        text: String,
+        language: String?,
+        maxTokens: Int,
+        minTokens: Int,
+        refText: String?,
+        refAudio: [Float]?,
+        refAudioSampleRate: Int?,
+        promptText: String?,
+        promptAudio: [Float]?,
+        promptAudioSampleRate: Int?,
+        inferenceTimesteps: Int,
+        cfgValue: Float,
+        streamingPrefixLen: Int,
+        warmupPatches: Int,
+        instruct: String?,
+        streamingDecodeInterval: Int?,
+        audioChunkHandler: (@Sendable ([Float]) -> Void)?,
+        returnFullAudio: Bool,
+        debugVerboseEnabled: Bool
+    ) async throws -> [Float] {
         @inline(__always)
         func logGen(_ message: String) {
             guard debugVerboseEnabled else { return }
@@ -1318,6 +1451,176 @@ public final class VoxCPM2Model: Module {
 
         eval(audio)
         return audio.asArray(Float.self)
+    }
+}
+
+// MARK: - LoRA injection and management
+
+extension VoxCPM2Model {
+    /// Collect the set of flattened path strings that should receive a LoRA
+    /// wrapper based on `config`.
+    private func collectLoRATargetPaths(config: LoRAConfig) -> Set<String> {
+        var targets = Set<String>()
+        let projNames = ["qProj", "kProj", "vProj", "oProj"]
+
+        if config.enableLM {
+            for i in base_lm.layers.indices {
+                for name in projNames {
+                    targets.insert("base_lm.layers.\(i).selfAttn.\(name)")
+                }
+            }
+            for i in residual_lm.layers.indices {
+                for name in projNames {
+                    targets.insert("residual_lm.layers.\(i).selfAttn.\(name)")
+                }
+            }
+        }
+
+        if config.enableDiT {
+            for i in feat_decoder.estimator.decoder.layers.indices {
+                for name in projNames {
+                    targets.insert("feat_decoder.estimator.decoder.layers.\(i).selfAttn.\(name)")
+                }
+            }
+        }
+
+        if config.enableProj {
+            targets.insert("enc_to_lm_proj")
+            targets.insert("lm_to_dit_proj")
+            targets.insert("res_to_dit_proj")
+            targets.insert("fusion_concat_proj")
+            targets.insert("stop_proj")
+            targets.insert("stop_head")
+        }
+
+        return targets
+    }
+
+    /// Wrap the target ``Linear`` layers in ``LoRALinear`` adapters
+    /// according to `config`.  Called during model loading.
+    private func injectLoRA(config: LoRAConfig) throws {
+        let targets = collectLoRATargetPaths(config: config)
+        let updates = leafModules().flattened().compactMap { (path, module) -> (String, Module)? in
+            guard targets.contains(path), let linear = module as? Linear else { return nil }
+            let lora = LoRALinear(base: linear, r: config.r, alpha: config.alpha)
+            loraModules[path] = lora
+            return (path, lora)
+        }
+        guard !updates.isEmpty else {
+            throw AudioGenerationError.modelNotInitialized(
+                "LoRA: no target Linear layers found — model structure may have changed"
+            )
+        }
+        loraConfig = config
+        update(modules: ModuleChildren.unflattened(updates))
+    }
+
+    // MARK: - Public LoRA API
+
+    /// Load LoRA weights from a safetensors file and apply them to the
+    /// injected LoRA adapters.
+    ///
+    /// The expected key format is:
+    /// ```
+    /// base_lm.layers.0.selfAttn.qProj.loraA
+    /// base_lm.layers.0.selfAttn.qProj.loraB
+    /// ```
+    ///
+    /// A `base_model.model.` prefix (common in PEFT exports) is stripped
+    /// automatically.
+    ///
+    /// - Parameters:
+    ///   - weightsPath: Path to a `.safetensors` file.
+    /// - Returns: `(loaded, skipped)` — keys that were loaded and keys that
+    ///   were skipped because no matching adapter was found.
+    @discardableResult
+    public func loadLoRA(weightsPath: String) throws -> (loaded: [String], skipped: [String]) {
+        guard !loraModules.isEmpty else {
+            throw AudioGenerationError.modelNotInitialized(
+                "No LoRA adapters injected — call fromModelDirectory(with: loraConfig:) first"
+            )
+        }
+
+        let url = URL(fileURLWithPath: weightsPath)
+        let allWeights = try MLX.loadArrays(url: url)
+
+        var loaded: [String] = []
+        var skipped: [String] = []
+
+        for (key, array) in allWeights {
+            // Strip common PEFT prefix
+            let cleanKey = key
+                .replacingOccurrences(of: "base_model.model.", with: "")
+                // Convert PEFT underscore convention to camelCase
+                .replacingOccurrences(of: "lora_A.weight", with: "loraA")
+                .replacingOccurrences(of: "lora_B.weight", with: "loraB")
+
+            // Find the parent path (e.g. "base_lm.layers.0.selfAttn.qProj")
+            // and the param name ("loraA" or "loraB")
+            guard let dot = cleanKey.lastIndex(of: ".") else {
+                skipped.append(key)
+                continue
+            }
+            let parentPath = String(cleanKey[..<dot])
+            let paramName = String(cleanKey[cleanKey.index(after: dot)...])
+
+            guard let module = loraModules[parentPath] else {
+                skipped.append(key)
+                continue
+            }
+
+            switch paramName {
+            case "loraA":
+                module.loraA = array.asType(.float32)
+                loaded.append(key)
+            case "loraB":
+                module.loraB = array.asType(.float32)
+                loaded.append(key)
+            default:
+                skipped.append(key)
+            }
+        }
+
+        return (loaded, skipped)
+    }
+
+    /// Unload LoRA weights by zeroing out all A/B matrices.
+    ///
+    /// The adapters remain in the model but have no effect until new weights
+    /// are loaded via ``loadLoRA(weightsPath:)``.
+    public func unloadLoRA() {
+        for (_, module) in loraModules {
+            let inDim = module.loraA.shape[0]
+            let r = module.loraA.shape[1]
+            let outDim = module.loraB.shape[0]
+            module.loraA = MLXArray.zeros([inDim, r])
+            module.loraB = MLXArray.zeros([outDim, r])
+        }
+    }
+
+    /// Enable or disable the LoRA branch on all injected adapters.
+    ///
+    /// When disabled the model behaves as the original base model.
+    public func setLoRAEnabled(_ enabled: Bool) {
+        for (_, module) in loraModules {
+            module.enabled = enabled
+        }
+    }
+
+    /// Export the current LoRA weights as a dictionary keyed by
+    /// flattened path (suitable for saving to safetensors).
+    public func getLoRAStateDict() -> [String: MLXArray] {
+        var state: [String: MLXArray] = [:]
+        for (path, module) in loraModules {
+            state["\(path).loraA"] = module.loraA
+            state["\(path).loraB"] = module.loraB
+        }
+        return state
+    }
+
+    /// Whether LoRA adapters are currently loaded and enabled.
+    public var isLoRAEnabled: Bool {
+        loraModules.values.contains { $0.enabled }
     }
 }
 

@@ -40,8 +40,64 @@ let model = try await TTS.loadModel(
 )
 ```
 
+## Advanced Features
+
+### Text Normalization
+
+Enable the `normalize` parameter to expand numbers, dates, currency amounts,
+and common abbreviations into spoken form before synthesis:
+
+```swift
+let audio = try await voxModel.generateVoxCPM2(
+    text: "It costs $50.25 — estimated delivery Feb 3rd.",
+    normalize: true
+)
+// Text becomes: "It costs fifty dollars and twenty-five cents — estimated delivery February third"
+```
+
+### Bad-case Retry
+
+The `retryBadcase` parameter automatically retries when the generated audio is
+abnormally short or long relative to the input text:
+
+```swift
+let audio = try await voxModel.generateVoxCPM2(
+    text: "Hello world.",
+    retryBadcase: true,
+    retryBadcaseMaxTimes: 3
+)
+```
+
+### LoRA Fine-Tuning
+
+Load a model with LoRA adapters for fine-tuned voice adaptation:
+
+```swift
+let config = LoRAConfig(enableLM: true, enableDiT: true, r: 8, alpha: 16)
+let model = try await VoxCPM2Model.fromModelDirectory(
+    modelDir,
+    loraConfig: config
+)
+try model.loadLoRA(weightsPath: "/path/to/lora_weights.safetensors")
+model.setLoRAEnabled(true)
+
+let audio = try await model.generateVoxCPM2(text: "Fine-tuned voice output.")
+```
+
+For training, the LoRA matrices (`loraA`, `loraB`) can be updated on each
+`LoRALinear` module. Use `getLoRAStateDict()` to export weights for saving:
+
+```swift
+let state = model.getLoRAStateDict()
+// Save `state` as a safetensors file for future inference
+```
+
 ## Notes
 
 - `voice` is passed as VoxCPM2 instruction text.
 - `refAudio` and `refText` are mapped to VoxCPM2 reference conditioning.
 - VoxCPM2 checkpoints are detected from `model_type`, `architecture`, or repository/path names containing `voxcpm2`.
+- LoRA requires injecting adapters at load time via `VoxCPM2Model.fromModelDirectory(_:loraConfig:)`.
+  The generic `TTS.loadModel()` path does not yet support LoRA configuration.
+- The ZipEnhancer denoiser (`denoise: true`) is not yet implemented in MLX.
+  Reference audio should be clean for best results.
