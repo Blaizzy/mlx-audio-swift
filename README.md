@@ -119,6 +119,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | Model | Model README | HuggingFace Repo |
 |-------|--------------|------------------|
 | Qwen3-TTS | [Qwen3-TTS README](Sources/MLXAudioTTS/Models/Qwen3TTS/README.md) | [mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit) |
+| VoxCPM2 | [VoxCPM2 README](Sources/MLXAudioTTS/Models/VoxCPM2/README.md) | [aufklarer/VoxCPM2-MLX-bf16](https://huggingface.co/aufklarer/VoxCPM2-MLX-bf16) |
 | Fish Audio S2 Pro | [Fish Audio S2 Pro README](Sources/MLXAudioTTS/Models/FishSpeech/README.md) | [mlx-community/fish-audio-s2-pro-8bit](https://huggingface.co/mlx-community/fish-audio-s2-pro-8bit) |
 | Soprano | [Soprano README](Sources/MLXAudioTTS/Models/Soprano/README.md) | [mlx-community/Soprano-80M-bf16](https://huggingface.co/mlx-community/Soprano-80M-bf16) |
 | VyvoTTS | [VyvoTTS README](Sources/MLXAudioTTS/Models/Qwen3/README.md) | [mlx-community/VyvoTTS-EN-Beta-4bit](https://huggingface.co/mlx-community/VyvoTTS-EN-Beta-4bit) |

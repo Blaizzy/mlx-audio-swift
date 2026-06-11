@@ -1,0 +1,1872 @@
+// Adapted from soniqo/speech-swift's VoxCPM2TTS module (Apache-2.0).
+
+import Foundation
+import HuggingFace
+import MLX
+import MLXAudioCore
+import MLXFast
+import MLXLMCommon
+import MLXNN
+import Tokenizers
+
+public final class ScalarQuantizationLayer: Module {
+    @ModuleInfo(key: "in_proj") public var in_proj: Linear
+    @ModuleInfo(key: "out_proj") public var out_proj: Linear
+    public let scale: Int
+
+    public init(inDim: Int, outDim: Int, latentDim: Int = 64, scale: Int = 9) {
+        self.scale = scale
+        self._in_proj = ModuleInfo(wrappedValue: zeroLinear(inDim, latentDim), key: "in_proj")
+        self._out_proj = ModuleInfo(wrappedValue: zeroLinear(latentDim, outDim), key: "out_proj")
+        super.init()
+    }
+
+    public func callAsFunction(_ x: MLXArray) -> MLXArray {
+        let h = in_proj(x)
+        let quantized = round(tanh(h) * MLXArray(Float(scale))) / MLXArray(Float(scale))
+        return out_proj(quantized)
+    }
+}
+
+public final class VoxCPM2Model: Module {
+    public let args: ModelArgs
+    public let outputSampleRate: Int
+
+    @ModuleInfo public var base_lm: MiniCPMModel
+    @ModuleInfo public var residual_lm: MiniCPMModel
+    @ModuleInfo public var feat_encoder: VoxCPMLocEnc
+    @ModuleInfo public var feat_decoder: UnifiedCFM
+    @ModuleInfo public var fsq_layer: ScalarQuantizationLayer
+    @ModuleInfo public var enc_to_lm_proj: Linear
+    @ModuleInfo public var lm_to_dit_proj: Linear
+    @ModuleInfo public var res_to_dit_proj: Linear
+    @ModuleInfo public var fusion_concat_proj: Linear
+    @ModuleInfo public var stop_proj: Linear
+    @ModuleInfo public var stop_head: Linear
+    @ModuleInfo public var audio_vae: AudioVAE
+
+    private var tokenizer: Tokenizers.Tokenizer?
+    private var voxCPM2TokenizerSplitMap: [Int: [Int]] = [:]
+    private var _isLoaded: Bool = true
+
+    // MARK: - LoRA state
+    private var loraConfig: LoRAConfig?
+    private var loraModules: [String: LoRALinear] = [:]
+
+    private static var debugVerboseEnabled: Bool {
+        ProcessInfo.processInfo.environment["VOXCPM2_DEBUG_VERBOSE"] == "1"
+    }
+
+    public init(args: ModelArgs) {
+        self.args = args
+        self.outputSampleRate = args.audioVAEConfig.outSampleRate
+        let debugInitEnabled = ProcessInfo.processInfo.environment["VOXCPM2_DEBUG_INIT"] == "1"
+        @inline(__always)
+        func logInit(_ message: String) {
+            guard debugInitEnabled else { return }
+            let line = "  VoxCPM2 init: \(message)\n"
+            if let data = line.data(using: .utf8) {
+                FileHandle.standardOutput.write(data)
+            }
+        }
+
+        let lmConfig = args.lmConfig
+        logInit("base_lm")
+        self._base_lm = ModuleInfo(wrappedValue: MiniCPMModel(lmConfig))
+
+        var residualConfig = lmConfig
+        residualConfig.numHiddenLayers = args.residualLMNumLayers
+        residualConfig.vocabSize = 0
+        residualConfig.noRope = args.residualLMNoRope
+        logInit("residual_lm")
+        self._residual_lm = ModuleInfo(wrappedValue: MiniCPMModel(residualConfig))
+
+        var encoderConfig = lmConfig
+        encoderConfig.hiddenSize = args.encoderConfig.hiddenDim
+        encoderConfig.intermediateSize = args.encoderConfig.ffnDim
+        encoderConfig.numAttentionHeads = args.encoderConfig.numHeads
+        encoderConfig.numHiddenLayers = args.encoderConfig.numLayers
+        encoderConfig.kvChannels = args.encoderConfig.kvChannels
+        encoderConfig.vocabSize = 0
+        logInit("feat_encoder")
+        self._feat_encoder = ModuleInfo(wrappedValue: VoxCPMLocEnc(config: encoderConfig, inputDim: args.featDim))
+
+        var ditConfig = lmConfig
+        ditConfig.hiddenSize = args.ditConfig.hiddenDim
+        ditConfig.intermediateSize = args.ditConfig.ffnDim
+        ditConfig.numAttentionHeads = args.ditConfig.numHeads
+        ditConfig.numHiddenLayers = args.ditConfig.numLayers
+        ditConfig.kvChannels = args.ditConfig.kvChannels
+        ditConfig.vocabSize = 0
+        logInit("feat_decoder")
+        let estimator = VoxCPMLocDiTV2(config: ditConfig, inChannels: args.featDim)
+        self._feat_decoder = ModuleInfo(wrappedValue: UnifiedCFM(
+            inChannels: args.featDim,
+            cfmParams: args.ditConfig.cfmConfig,
+            estimator: estimator,
+            meanMode: args.ditConfig.ditMeanMode
+        ))
+
+        logInit("fsq_layer")
+        self._fsq_layer = ModuleInfo(wrappedValue: ScalarQuantizationLayer(
+            inDim: args.lmConfig.hiddenSize,
+            outDim: args.lmConfig.hiddenSize,
+            latentDim: args.scalarQuantizationLatentDim,
+            scale: args.scalarQuantizationScale
+        ))
+
+        logInit("projection heads")
+        self._enc_to_lm_proj = ModuleInfo(wrappedValue: zeroLinear(args.encoderConfig.hiddenDim, args.lmConfig.hiddenSize))
+        self._lm_to_dit_proj = ModuleInfo(wrappedValue: zeroLinear(args.lmConfig.hiddenSize, args.ditConfig.hiddenDim))
+        self._res_to_dit_proj = ModuleInfo(wrappedValue: zeroLinear(args.lmConfig.hiddenSize, args.ditConfig.hiddenDim))
+        self._fusion_concat_proj = ModuleInfo(wrappedValue: zeroLinear(args.lmConfig.hiddenSize * 2, args.lmConfig.hiddenSize))
+        self._stop_proj = ModuleInfo(wrappedValue: zeroLinear(args.lmConfig.hiddenSize, args.lmConfig.hiddenSize))
+        self._stop_head = ModuleInfo(wrappedValue: zeroLinear(args.lmConfig.hiddenSize, 2, bias: false))
+        logInit("audio_vae")
+        self._audio_vae = ModuleInfo(wrappedValue: AudioVAE(args.audioVAEConfig))
+
+        super.init()
+    }
+
+    private static var shouldPromoteRuntimeParametersToFloat32: Bool {
+        GPU.deviceInfo().architecture.lowercased().contains("apple")
+    }
+
+    private func promoteRuntimeParametersToFloat32() {
+        _ = apply(filter: { module, _, _ in
+            !(module is Quantized)
+        }) { array in
+            array.asType(.float32)
+        }
+    }
+
+    // MARK: - Loading
+
+    public static func fromPretrained(
+        _ modelRepo: String = "aufklarer/VoxCPM2-MLX-bf16",
+        loraConfig: LoRAConfig? = nil,
+        cache: HubCache = .default
+    ) async throws -> VoxCPM2Model {
+        guard let repoID = Repo.ID(rawValue: modelRepo) else {
+            throw AudioGenerationError.modelNotInitialized("Invalid repository ID: \(modelRepo)")
+        }
+
+        let modelDir = try await ModelUtils.resolveOrDownloadModel(
+            repoID: repoID,
+            requiredExtension: "safetensors",
+            additionalMatchingPatterns: ["*.py"],
+            cache: cache
+        )
+        return try await fromModelDirectory(modelDir, loraConfig: loraConfig)
+    }
+
+    public static func fromModelDirectory(
+        _ modelDir: URL,
+        loraConfig: LoRAConfig? = nil
+    ) async throws -> VoxCPM2Model {
+        let args = try ModelArgs.load(from: modelDir)
+        let model = VoxCPM2Model(args: args)
+
+        let tokenizer = try await Self.loadTokenizer(from: modelDir)
+        model.setTokenizer(tokenizer)
+
+        try model.loadWithDiagnostics("loadWeights(from:)") {
+            try model.loadWeights(from: modelDir)
+        }
+        if ProcessInfo.processInfo.environment["VOXCPM2_DEBUG_WLOAD"] == "1" {
+            let q = model.base_lm.layers[0].selfAttn.qProj.weight
+            let mAbs = q.abs().mean().item(Float.self)
+            print("[VoxCPM2 WLOAD pre-promote] base_lm L0 q_proj mean_abs=\(mAbs) dtype=\(q.dtype)")
+        }
+        // Upstream promotes low-precision VoxCPM2 runtime dtypes to float32 on
+        // Apple Silicon because bf16/fp16 can glitch the diffusion loop.
+        if Self.shouldPromoteRuntimeParametersToFloat32 {
+            model.promoteRuntimeParametersToFloat32()
+        } else {
+            model.audio_vae.castParametersToFloat32()
+        }
+        if ProcessInfo.processInfo.environment["VOXCPM2_DEBUG_WLOAD"] == "1" {
+            let q = model.base_lm.layers[0].selfAttn.qProj.weight
+            let mAbs = q.abs().mean().item(Float.self)
+            print("[VoxCPM2 WLOAD post-promote] base_lm L0 q_proj mean_abs=\(mAbs) dtype=\(q.dtype)")
+        }
+
+        // NOTE: MLX can trip over some parameter views during eager evaluation
+        // even when the model loads cleanly. We defer evaluation until first use.
+
+        // If a LoRA configuration was provided, inject LoRA wrappers
+        // around the target linear layers.
+        if let loraConfig {
+            try model.injectLoRA(config: loraConfig)
+        }
+
+        return model
+    }
+
+    private func swapQuantizedLinears(from weights: [String: MLXArray]) throws {
+        let quantizedPaths = Set(weights.keys.flatMap { key -> [String] in
+            guard key.hasSuffix(".scales") else { return [] }
+            let base = String(key.dropLast(".scales".count))
+            return Self.quantizedPathVariants(for: base)
+        })
+        guard !quantizedPaths.isEmpty else { return }
+
+        let bits: Int
+        if let cfg = args.quantization, cfg.isQuantized {
+            bits = cfg.bits
+        } else {
+            bits = inferQuantizationBits(from: weights) ?? 4
+        }
+        let groupSize = args.quantization?.groupSize ?? 64
+        guard bits == 4 || bits == 8 else {
+            throw NSError(domain: "VoxCPM2Model", code: 6, userInfo: [
+                NSLocalizedDescriptionKey: "Unsupported quantization bits: \(bits) (expected 4 or 8)"
+            ])
+        }
+
+        // Walk every leaf module; convert each Linear whose path appears in the
+        // safetensors as a quantized weight. `quantize(model:filter:)` from MLXNN
+        // does the Linear → QuantizedLinear swap in place via update(modules:).
+        // The placeholder quantized parameters are overwritten by the subsequent
+        // update(parameters:) calls in loadWeights().
+        quantize(
+            model: self,
+            groupSize: groupSize,
+            bits: bits,
+            filter: { path, _ in quantizedPaths.contains(path) }
+        )
+    }
+
+    private static func quantizedPathVariants(for path: String) -> [String] {
+        let components = path.split(separator: ".").map(String.init)
+        guard let last = components.last else { return [path] }
+
+        var variants = [path]
+        let camelLast = camelCaseKey(last)
+        if camelLast != last {
+            let camelPath = (components.dropLast() + [camelLast]).joined(separator: ".")
+            variants.append(camelPath)
+        }
+        return variants
+    }
+
+    private static func camelCaseKey(_ key: String) -> String {
+        let parts = key.split(separator: "_").map(String.init)
+        guard parts.count > 1 else { return key }
+
+        let head = parts[0]
+        let tail = parts.dropFirst().map { component in
+            guard let first = component.first else { return component }
+            return first.uppercased() + component.dropFirst()
+        }
+        return ([head] + tail).joined()
+    }
+
+    private func inferQuantizationBits(from weights: [String: MLXArray]) -> Int? {
+        for key in weights.keys where key.hasSuffix(".scales") {
+            let prefix = String(key.dropLast(".scales".count))
+            guard let weight = weights["\(prefix).weight"],
+                  let scales = weights["\(prefix).scales"],
+                  weight.ndim == 2, scales.ndim == 2 else { continue }
+            let packedCols = weight.dim(1)
+            let numGroups = scales.dim(1)
+            guard numGroups > 0 else { continue }
+            let ratio = packedCols / numGroups
+            if ratio == 8 { return 4 }
+            if ratio == 16 { return 8 }
+        }
+        return nil
+    }
+
+    private static func loadTokenizer(from directory: URL) async throws -> Tokenizers.Tokenizer {
+        try await AutoTokenizer.from(modelFolder: directory, strict: false)
+    }
+
+    private func loadWeights(from directory: URL) throws {
+        let allWeights = try VoxCPM2WeightLoader.loadAllSafetensors(from: directory)
+        let sanitized = audio_vae.sanitize(allWeights)
+        try swapQuantizedLinears(from: sanitized)
+        try loadWeights(into: base_lm, prefix: "base_lm", from: sanitized)
+        try loadWeights(into: residual_lm, prefix: "residual_lm", from: sanitized)
+        if let specialToken = sanitized["feat_encoder.special_token"] {
+            try loadWithDiagnostics("feat_encoder.special_token") {
+                feat_encoder.loadSpecialToken(specialToken)
+            }
+        }
+        try loadWithDiagnostics("feat_encoder.in_proj") {
+            try loadLinearWeights(to: feat_encoder.inProj, prefix: "feat_encoder.in_proj", from: sanitized)
+        }
+        try loadWeights(into: feat_encoder.encoder, prefix: "feat_encoder.encoder", from: sanitized)
+        try loadWithDiagnostics("feat_decoder") {
+            try loadLinearWeights(
+                to: feat_decoder.estimator.inProj,
+                prefix: "feat_decoder.estimator.in_proj",
+                from: sanitized
+            )
+            try loadLinearWeights(
+                to: feat_decoder.estimator.condProj,
+                prefix: "feat_decoder.estimator.cond_proj",
+                from: sanitized
+            )
+            try loadLinearWeights(
+                to: feat_decoder.estimator.outProj,
+                prefix: "feat_decoder.estimator.out_proj",
+                from: sanitized
+            )
+            try loadWeights(
+                into: feat_decoder.estimator.timeMlp,
+                prefix: "feat_decoder.estimator.time_mlp",
+                from: sanitized
+            )
+            try loadWeights(
+                into: feat_decoder.estimator.deltaTimeMlp,
+                prefix: "feat_decoder.estimator.delta_time_mlp",
+                from: sanitized
+            )
+            // Use the generic recursive loader (same path as base_lm). The
+            // explicit loadMiniCPMModel below only loaded .weight per Linear
+            // and silently skipped .scales / .biases — which left every
+            // quantized Linear in the DiT decoder at random init in the
+            // int8 / int4 bundles, producing near-no-op layers.
+            try loadWeights(
+                into: feat_decoder.estimator.decoder,
+                prefix: "feat_decoder.estimator.decoder",
+                from: sanitized
+            )
+        }
+        try loadWithDiagnostics("fsq_layer") {
+            try loadWeights(into: fsq_layer, prefix: "fsq_layer", from: sanitized)
+        }
+        try loadWithDiagnostics("enc_to_lm_proj") {
+            try loadLinearWeights(to: enc_to_lm_proj, prefix: "enc_to_lm_proj", from: sanitized)
+        }
+        try loadWithDiagnostics("lm_to_dit_proj") {
+            try loadLinearWeights(to: lm_to_dit_proj, prefix: "lm_to_dit_proj", from: sanitized)
+        }
+        try loadWithDiagnostics("res_to_dit_proj") {
+            try loadLinearWeights(to: res_to_dit_proj, prefix: "res_to_dit_proj", from: sanitized)
+        }
+        try loadWithDiagnostics("fusion_concat_proj") {
+            try loadLinearWeights(to: fusion_concat_proj, prefix: "fusion_concat_proj", from: sanitized)
+        }
+        try loadWithDiagnostics("stop_proj") {
+            try loadLinearWeights(to: stop_proj, prefix: "stop_proj", from: sanitized)
+        }
+        try loadWithDiagnostics("stop_head") {
+            try loadLinearWeights(to: stop_head, prefix: "stop_head", from: sanitized)
+        }
+        try loadWithDiagnostics("audio_vae.encoder") {
+            try loadWeights(into: audio_vae.encoder, prefix: "audio_vae.encoder", from: sanitized)
+        }
+        try loadWithDiagnostics("audio_vae.encoder.conv_in") {
+            if let weight = sanitized["audio_vae.encoder.conv_in.weight"] {
+                try ensureShape(weight, matches: audio_vae.encoder.conv_in.weight.shape, label: "audio_vae.encoder.conv_in.weight")
+                audio_vae.encoder.conv_in.weight = weight
+            }
+            if let bias = sanitized["audio_vae.encoder.conv_in.bias"] {
+                if let currentBias = audio_vae.encoder.conv_in.bias {
+                    try ensureShape(bias, matches: currentBias.shape, label: "audio_vae.encoder.conv_in.bias")
+                }
+                audio_vae.encoder.conv_in.bias = bias
+            }
+        }
+        try loadWithDiagnostics("audio_vae.decoder.conv_in") {
+            try loadDecoderConvStack(audio_vae.decoder.conv_in, prefix: "audio_vae.decoder.conv_in", from: sanitized)
+        }
+        for (index, block) in audio_vae.decoder.blocks.layers.enumerated() {
+            try loadWithDiagnostics("audio_vae.decoder.blocks.layers.\(index)") {
+                try loadDecoderBlock(block, prefix: "audio_vae.decoder.blocks.layers.\(index)", from: sanitized)
+            }
+        }
+        try loadWithDiagnostics("audio_vae.decoder.sr_cond_layers") {
+            try loadSampleRateConditionLayerStack(
+                audio_vae.decoder.srCondLayers,
+                prefix: "audio_vae.decoder.sr_cond_layers",
+                from: sanitized
+            )
+        }
+        if let snakeOut = sanitized["audio_vae.decoder.snake_out.alpha"] {
+            try loadWithDiagnostics("audio_vae.decoder.snake_out.alpha") {
+                try ensureShape(
+                    snakeOut,
+                    matches: audio_vae.decoder.snake_out.alpha.shape,
+                    label: "audio_vae.decoder.snake_out.alpha"
+                )
+                audio_vae.decoder.snake_out.loadAlpha(snakeOut)
+            }
+        }
+        if let convOutWeight = sanitized["audio_vae.decoder.conv_out.weight"] {
+            try loadWithDiagnostics("audio_vae.decoder.conv_out.weight") {
+                try ensureShape(
+                    convOutWeight,
+                    matches: audio_vae.decoder.conv_out.weight.shape,
+                    label: "audio_vae.decoder.conv_out.weight"
+                )
+                audio_vae.decoder.conv_out.weight = convOutWeight
+            }
+        }
+        if let convOutBias = sanitized["audio_vae.decoder.conv_out.bias"] {
+            try loadWithDiagnostics("audio_vae.decoder.conv_out.bias") {
+                if let currentBias = audio_vae.decoder.conv_out.bias {
+                    try ensureShape(
+                        convOutBias,
+                        matches: currentBias.shape,
+                        label: "audio_vae.decoder.conv_out.bias"
+                    )
+                }
+                audio_vae.decoder.conv_out.bias = convOutBias
+            }
+        }
+        if ProcessInfo.processInfo.environment["VOXCPM2_DEBUG_STATS"] == "1" {
+            let baseQ = base_lm.layers[0].selfAttn.qProj.weight.asArray(Float.self)
+            let baseGate = base_lm.layers[0].mlp.gateProj.weight.asArray(Float.self)
+            let residualQ = residual_lm.layers[0].selfAttn.qProj.weight.asArray(Float.self)
+            let encoderQ = feat_encoder.encoder.layers[0].selfAttn.qProj.weight.asArray(Float.self)
+            let encoderGate = feat_encoder.encoder.layers[0].mlp.gateProj.weight.asArray(Float.self)
+            let featIn = feat_encoder.inProj.weight.asArray(Float.self)
+            let featDecoderIn = feat_decoder.estimator.inProj.weight.asArray(Float.self)
+            let featDecoderCond = feat_decoder.estimator.condProj.weight.asArray(Float.self)
+            let featDecoderOut = feat_decoder.estimator.outProj.weight.asArray(Float.self)
+            if let data = "  VoxCPM2 loaded weights: base_q[min=\(baseQ.min() ?? 0), max=\(baseQ.max() ?? 0)], base_gate[min=\(baseGate.min() ?? 0), max=\(baseGate.max() ?? 0)], residual_q[min=\(residualQ.min() ?? 0), max=\(residualQ.max() ?? 0)], encoder_q[min=\(encoderQ.min() ?? 0), max=\(encoderQ.max() ?? 0)], encoder_gate[min=\(encoderGate.min() ?? 0), max=\(encoderGate.max() ?? 0)], feat_in[min=\(featIn.min() ?? 0), max=\(featIn.max() ?? 0)]\n".data(using: .utf8) {
+                FileHandle.standardOutput.write(data)
+            }
+            if let data = "  VoxCPM2 loaded feat_decoder weights: in_proj[min=\(featDecoderIn.min() ?? 0), max=\(featDecoderIn.max() ?? 0)], cond_proj[min=\(featDecoderCond.min() ?? 0), max=\(featDecoderCond.max() ?? 0)], out_proj[min=\(featDecoderOut.min() ?? 0), max=\(featDecoderOut.max() ?? 0)]\n".data(using: .utf8) {
+                FileHandle.standardOutput.write(data)
+            }
+        }
+    }
+
+    private func loadMiniCPMModel(
+        _ model: MiniCPMModel,
+        prefix: String,
+        from weights: [String: MLXArray]
+    ) throws {
+        if let embedTokens = weights["\(prefix).embed_tokens.weight"] {
+            try loadWithDiagnostics("\(prefix).embed_tokens") {
+                model.update(
+                    modules: ModuleChildren.unflattened([
+                        ("embed_tokens", Embedding(weight: embedTokens))
+                    ])
+                )
+            }
+        }
+
+        if let rope = model.rope {
+            try loadMiniCPMRope(rope, prefix: "\(prefix).rope", from: weights)
+        }
+
+        if let normWeight = weights["\(prefix).norm.weight"] {
+            try loadWithDiagnostics("\(prefix).norm") {
+                try ensureShape(normWeight, matches: model.norm.weight.shape, label: "\(prefix).norm.weight")
+                try model.norm.update(parameters: ModuleParameters.unflattened(["weight": normWeight]), verify: .shapeMismatch)
+            }
+        }
+
+        for (index, layer) in model.layers.enumerated() {
+            try loadMiniCPMDecoderLayer(layer, prefix: "\(prefix).layers.\(index)", from: weights)
+        }
+    }
+
+    private func loadMiniCPMRope(
+        _ rope: MiniCPMLongRoPE,
+        prefix: String,
+        from weights: [String: MLXArray]
+    ) throws {
+        if let invFreq = weights["\(prefix).inv_freq"] {
+            try loadWithDiagnostics("\(prefix).inv_freq") {
+                try ensureShape(invFreq, matches: rope.invFreq.shape, label: "\(prefix).inv_freq")
+                try rope.update(parameters: ModuleParameters.unflattened(["inv_freq": invFreq]), verify: .shapeMismatch)
+            }
+        }
+        if let shortFactor = weights["\(prefix).short_factor"] {
+            try loadWithDiagnostics("\(prefix).short_factor") {
+                try ensureShape(shortFactor, matches: rope.shortFactor.shape, label: "\(prefix).short_factor")
+                try rope.update(parameters: ModuleParameters.unflattened(["short_factor": shortFactor]), verify: .shapeMismatch)
+            }
+        }
+        if let longFactor = weights["\(prefix).long_factor"] {
+            try loadWithDiagnostics("\(prefix).long_factor") {
+                try ensureShape(longFactor, matches: rope.longFactor.shape, label: "\(prefix).long_factor")
+                try rope.update(parameters: ModuleParameters.unflattened(["long_factor": longFactor]), verify: .shapeMismatch)
+            }
+        }
+    }
+
+    private func loadMiniCPMDecoderLayer(
+        _ layer: MiniCPMDecoderLayer,
+        prefix: String,
+        from weights: [String: MLXArray]
+    ) throws {
+        if let inputLayerNorm = weights["\(prefix).input_layernorm.weight"] {
+            try loadWithDiagnostics("\(prefix).input_layernorm") {
+                try ensureShape(inputLayerNorm, matches: layer.inputLayerNorm.weight.shape, label: "\(prefix).input_layernorm.weight")
+                try layer.inputLayerNorm.update(parameters: ModuleParameters.unflattened(["weight": inputLayerNorm]), verify: .shapeMismatch)
+            }
+        }
+
+        if let qWeight = weights["\(prefix).self_attn.q_proj.weight"] {
+            try loadWithDiagnostics("\(prefix).self_attn.q_proj") {
+                try ensureShape(qWeight, matches: layer.selfAttn.qProj.weight.shape, label: "\(prefix).self_attn.q_proj.weight")
+                try layer.selfAttn.qProj.update(parameters: ModuleParameters.unflattened(["weight": qWeight]), verify: .shapeMismatch)
+            }
+        }
+        if let kWeight = weights["\(prefix).self_attn.k_proj.weight"] {
+            try loadWithDiagnostics("\(prefix).self_attn.k_proj") {
+                try ensureShape(kWeight, matches: layer.selfAttn.kProj.weight.shape, label: "\(prefix).self_attn.k_proj.weight")
+                try layer.selfAttn.kProj.update(parameters: ModuleParameters.unflattened(["weight": kWeight]), verify: .shapeMismatch)
+            }
+        }
+        if let vWeight = weights["\(prefix).self_attn.v_proj.weight"] {
+            try loadWithDiagnostics("\(prefix).self_attn.v_proj") {
+                try ensureShape(vWeight, matches: layer.selfAttn.vProj.weight.shape, label: "\(prefix).self_attn.v_proj.weight")
+                try layer.selfAttn.vProj.update(parameters: ModuleParameters.unflattened(["weight": vWeight]), verify: .shapeMismatch)
+            }
+        }
+        if let oWeight = weights["\(prefix).self_attn.o_proj.weight"] {
+            try loadWithDiagnostics("\(prefix).self_attn.o_proj") {
+                try ensureShape(oWeight, matches: layer.selfAttn.oProj.weight.shape, label: "\(prefix).self_attn.o_proj.weight")
+                try layer.selfAttn.oProj.update(parameters: ModuleParameters.unflattened(["weight": oWeight]), verify: .shapeMismatch)
+            }
+        }
+        if let gateWeight = weights["\(prefix).mlp.gate_proj.weight"] {
+            try loadWithDiagnostics("\(prefix).mlp.gate_proj") {
+                try ensureShape(gateWeight, matches: layer.mlp.gateProj.weight.shape, label: "\(prefix).mlp.gate_proj.weight")
+                try layer.mlp.gateProj.update(parameters: ModuleParameters.unflattened(["weight": gateWeight]), verify: .shapeMismatch)
+            }
+        }
+        if let upWeight = weights["\(prefix).mlp.up_proj.weight"] {
+            try loadWithDiagnostics("\(prefix).mlp.up_proj") {
+                try ensureShape(upWeight, matches: layer.mlp.upProj.weight.shape, label: "\(prefix).mlp.up_proj.weight")
+                try layer.mlp.upProj.update(parameters: ModuleParameters.unflattened(["weight": upWeight]), verify: .shapeMismatch)
+            }
+        }
+        if let downWeight = weights["\(prefix).mlp.down_proj.weight"] {
+            try loadWithDiagnostics("\(prefix).mlp.down_proj") {
+                try ensureShape(downWeight, matches: layer.mlp.downProj.weight.shape, label: "\(prefix).mlp.down_proj.weight")
+                try layer.mlp.downProj.update(parameters: ModuleParameters.unflattened(["weight": downWeight]), verify: .shapeMismatch)
+            }
+        }
+
+        if let postAttentionLayerNorm = weights["\(prefix).post_attention_layernorm.weight"] {
+            try loadWithDiagnostics("\(prefix).post_attention_layernorm") {
+                try ensureShape(postAttentionLayerNorm, matches: layer.postAttentionLayerNorm.weight.shape, label: "\(prefix).post_attention_layernorm.weight")
+                try layer.postAttentionLayerNorm.update(parameters: ModuleParameters.unflattened(["weight": postAttentionLayerNorm]), verify: .shapeMismatch)
+            }
+        }
+    }
+
+    @discardableResult
+    private func loadWithDiagnostics<T>(_ label: String, _ body: () throws -> T) throws -> T {
+        do {
+            return try withErrorHandler({ message in
+                if let data = "[VoxCPM2] MLX error in \(label): \(message)\n".data(using: .utf8) {
+                    FileHandle.standardOutput.write(data)
+                }
+            }) {
+                try withError { error in
+                    let value = try body()
+                    try error.check()
+                    return value
+                }
+            }
+        } catch {
+            if let data = "[VoxCPM2] Swift error in \(label): \(error)\n".data(using: .utf8) {
+                FileHandle.standardOutput.write(data)
+            }
+            throw error
+        }
+    }
+
+    private func loadLinearWeights(
+        to linear: Linear,
+        prefix: String,
+        from weights: [String: MLXArray]
+    ) throws {
+        var params: [String: NestedItem<String, MLXArray>] = [:]
+        if let weight = weights["\(prefix).weight"] {
+            params["weight"] = .value(weight)
+        }
+        if let bias = weights["\(prefix).bias"] {
+            params["bias"] = .value(bias)
+        }
+        // QuantizedLinear also has `scales` and `biases` parameters. Without
+        // loading these the dequantised matmul gets random values from
+        // `quantize()`'s placeholder init and the layer becomes a near-no-op.
+        if let scales = weights["\(prefix).scales"] {
+            params["scales"] = .value(scales)
+        }
+        if let qBiases = weights["\(prefix).biases"] {
+            params["biases"] = .value(qBiases)
+        }
+        guard !params.isEmpty else { return }
+        try linear.update(parameters: ModuleParameters(values: params), verify: .shapeMismatch)
+    }
+
+    private func loadWeights<T: Module>(
+        into module: T,
+        prefix: String,
+        from weights: [String: MLXArray],
+        stripPrefix: String? = nil
+    ) throws {
+        let prefixWithDot = prefix + "."
+        let stripPrefix = stripPrefix ?? prefixWithDot
+        let filtered = weights.reduce(into: [String: MLXArray]()) { result, entry in
+            if entry.key == prefix {
+                result[""] = entry.value
+            } else if entry.key.hasPrefix(prefixWithDot) {
+                result[String(entry.key.dropFirst(stripPrefix.count))] = entry.value
+            }
+        }
+
+        guard !filtered.isEmpty else {
+            return
+        }
+
+        if let snake = module as? Snake1d {
+            if let alpha = filtered["alpha"] ?? filtered[""] {
+                try loadWithDiagnostics(prefix) {
+                    if Self.debugVerboseEnabled {
+                        if let data = "  snake current alpha shape: \(snake.alpha.shape)\n".data(using: .utf8) {
+                            FileHandle.standardOutput.write(data)
+                        }
+                        if let data = "  snake loaded alpha shape: \(alpha.shape)\n".data(using: .utf8) {
+                            FileHandle.standardOutput.write(data)
+                        }
+                    }
+                    snake.loadAlpha(alpha)
+                }
+                return
+            }
+        }
+
+        if Self.debugVerboseEnabled, let data = "Loading \(prefix)...\n".data(using: .utf8) {
+            FileHandle.standardOutput.write(data)
+        }
+        let params = ModuleParameters.unflattened(filtered)
+        _ = try loadWithDiagnostics(prefix) {
+            try module.update(parameters: params, verify: .shapeMismatch)
+        }
+    }
+
+    private func loadDecoderConvStack(
+        _ stack: ConvStack1d,
+        prefix: String,
+        from weights: [String: MLXArray]
+    ) throws {
+        for (index, layer) in stack.layers.enumerated() {
+            let layerPrefix = "\(prefix).layers.\(index)"
+            if let weight = weights["\(layerPrefix).weight"] {
+                try ensureShape(weight, matches: layer.weight.shape, label: "\(layerPrefix).weight")
+                layer.weight = weight
+            }
+            if let bias = weights["\(layerPrefix).bias"] {
+                if let currentBias = layer.bias {
+                    try ensureShape(bias, matches: currentBias.shape, label: "\(layerPrefix).bias")
+                }
+                layer.bias = bias
+            }
+        }
+    }
+
+    private func loadResidualUnit(
+        _ unit: CausalResidualUnit,
+        prefix: String,
+        from weights: [String: MLXArray]
+    ) throws {
+        if let alpha = weights["\(prefix).snake1.alpha"] {
+            try ensureShape(alpha, matches: unit.snake1.alpha.shape, label: "\(prefix).snake1.alpha")
+            unit.snake1.loadAlpha(alpha)
+        }
+        if let weight = weights["\(prefix).conv1.weight"] {
+            try ensureShape(weight, matches: unit.conv1.weight.shape, label: "\(prefix).conv1.weight")
+            unit.conv1.weight = weight
+        }
+        if let bias = weights["\(prefix).conv1.bias"] {
+            if let currentBias = unit.conv1.bias {
+                try ensureShape(bias, matches: currentBias.shape, label: "\(prefix).conv1.bias")
+            }
+            unit.conv1.bias = bias
+        }
+        if let alpha = weights["\(prefix).snake2.alpha"] {
+            try ensureShape(alpha, matches: unit.snake2.alpha.shape, label: "\(prefix).snake2.alpha")
+            unit.snake2.loadAlpha(alpha)
+        }
+        if let weight = weights["\(prefix).conv2.weight"] {
+            try ensureShape(weight, matches: unit.conv2.weight.shape, label: "\(prefix).conv2.weight")
+            unit.conv2.weight = weight
+        }
+        if let bias = weights["\(prefix).conv2.bias"] {
+            if let currentBias = unit.conv2.bias {
+                try ensureShape(bias, matches: currentBias.shape, label: "\(prefix).conv2.bias")
+            }
+            unit.conv2.bias = bias
+        }
+    }
+
+    private func loadDecoderBlock(
+        _ block: CausalDecoderBlock,
+        prefix: String,
+        from weights: [String: MLXArray]
+    ) throws {
+        if let alpha = weights["\(prefix).snake.alpha"] {
+            try ensureShape(alpha, matches: block.snake.alpha.shape, label: "\(prefix).snake.alpha")
+            block.snake.loadAlpha(alpha)
+        }
+        if let weight = weights["\(prefix).conv_t.weight"] {
+            try ensureShape(weight, matches: block.conv_t.weight.shape, label: "\(prefix).conv_t.weight")
+            block.conv_t.weight = weight
+        }
+        if let bias = weights["\(prefix).conv_t.bias"] {
+            if let currentBias = block.conv_t.bias {
+                try ensureShape(bias, matches: currentBias.shape, label: "\(prefix).conv_t.bias")
+            }
+            block.conv_t.bias = bias
+        }
+        try loadResidualUnit(block.res1, prefix: "\(prefix).res1", from: weights)
+        try loadResidualUnit(block.res2, prefix: "\(prefix).res2", from: weights)
+        try loadResidualUnit(block.res3, prefix: "\(prefix).res3", from: weights)
+    }
+
+    private func loadSampleRateConditionLayerStack(
+        _ stack: SampleRateConditionLayerStack,
+        prefix: String,
+        from weights: [String: MLXArray]
+    ) throws {
+        for (index, layer) in stack.layers.enumerated() {
+            let layerPrefix = "\(prefix).\(index)"
+            if let scaleWeight = weights["\(layerPrefix).scale_embed.weight"] {
+                try loadWithDiagnostics("\(layerPrefix).scale_embed") {
+                    try ensureTableEmbeddingShape(
+                        scaleWeight,
+                        matches: layer.scale_embed.weight.shape,
+                        label: "\(layerPrefix).scale_embed.weight"
+                    )
+                    layer.loadScaleWeight(scaleWeight)
+                }
+            }
+            if let biasWeight = weights["\(layerPrefix).bias_embed.weight"] {
+                try loadWithDiagnostics("\(layerPrefix).bias_embed") {
+                    try ensureTableEmbeddingShape(
+                        biasWeight,
+                        matches: layer.bias_embed.weight.shape,
+                        label: "\(layerPrefix).bias_embed.weight"
+                    )
+                    layer.loadBiasWeight(biasWeight)
+                }
+            }
+        }
+    }
+
+    private func ensureTableEmbeddingShape(
+        _ array: MLXArray,
+        matches expectedShape: [Int],
+        label: String
+    ) throws {
+        if array.shape == expectedShape {
+            return
+        }
+        guard expectedShape.count == 3, array.shape.count == 2 else {
+            throw NSError(
+                domain: "VoxCPM2Model",
+                code: 6,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "\(label) shape mismatch: expected \(expectedShape), got \(array.shape)"
+                ]
+            )
+        }
+        guard array.shape[0] == expectedShape[0],
+              array.shape[1] == expectedShape[1] * expectedShape[2]
+        else {
+            throw NSError(
+                domain: "VoxCPM2Model",
+                code: 6,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "\(label) shape mismatch: expected \(expectedShape), got \(array.shape)"
+                ]
+            )
+        }
+    }
+
+    private func ensureShape(
+        _ array: MLXArray,
+        matches expectedShape: [Int],
+        label: String
+    ) throws {
+        guard array.shape == expectedShape else {
+            throw NSError(
+                domain: "VoxCPM2Model",
+                code: 5,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "\(label) shape mismatch: expected \(expectedShape), got \(array.shape)"
+                ]
+            )
+        }
+    }
+
+    public func setTokenizer(_ tokenizer: Tokenizers.Tokenizer) {
+        self.tokenizer = tokenizer
+        self.voxCPM2TokenizerSplitMap = Self.buildVoxCPM2TokenizerSplitMap(
+            tokenizer: tokenizer,
+            vocabSize: args.lmConfig.vocabSize
+        )
+    }
+
+    // MARK: - Shape Helpers
+
+    func tokenize(_ text: String) throws -> [Int32] {
+        guard let tokenizer else {
+            throw NSError(domain: "VoxCPM2Model", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Tokenizer not loaded"
+            ])
+        }
+        let tokens = tokenizer.tokenize(text: text)
+        var ids: [Int] = []
+        ids.reserveCapacity(tokens.count)
+        for token in tokens {
+            if let expansion = Self.expandVoxCPM2TokenizerToken(token, tokenizer: tokenizer) {
+                ids.append(contentsOf: expansion)
+            } else if let id = tokenizer.convertTokenToId(token) {
+                ids.append(id)
+            }
+        }
+        return ids.map(Int32.init)
+    }
+
+    static func buildVoxCPM2TokenizerSplitMap(
+        tokenizer: Tokenizers.Tokenizer,
+        vocabSize: Int
+    ) -> [Int: [Int]] {
+        guard vocabSize > 0 else { return [:] }
+
+        var splitMap: [Int: [Int]] = [:]
+        splitMap.reserveCapacity(max(vocabSize / 256, 1))
+
+        for id in 0..<vocabSize {
+            guard let token = tokenizer.convertIdToToken(id) else { continue }
+            guard let expansion = expandVoxCPM2TokenizerToken(token, tokenizer: tokenizer) else { continue }
+            splitMap[id] = expansion
+        }
+
+        return splitMap
+    }
+
+    static func expandVoxCPM2TokenizerIds(
+        _ ids: [Int],
+        using splitMap: [Int: [Int]]
+    ) -> [Int] {
+        guard !splitMap.isEmpty else { return ids }
+
+        var expanded: [Int] = []
+        expanded.reserveCapacity(ids.count)
+        for id in ids {
+            if let expansion = splitMap[id] {
+                expanded.append(contentsOf: expansion)
+            } else {
+                expanded.append(id)
+            }
+        }
+        return expanded
+    }
+
+    static func expandVoxCPM2TokenizerToken(
+        _ token: String,
+        tokenizer: Tokenizers.Tokenizer
+    ) -> [Int]? {
+        let clean = token.replacingOccurrences(of: "▁", with: "")
+        guard clean.count >= 2 else { return nil }
+        guard clean.unicodeScalars.allSatisfy({ Self.isVoxCPM2CJKScalar($0) }) else { return nil }
+
+        let charIds = clean.compactMap { tokenizer.convertTokenToId(String($0)) }
+        guard charIds.count == clean.count else { return nil }
+        return charIds
+    }
+
+    static func isVoxCPM2CJKScalar(_ scalar: UnicodeScalar) -> Bool {
+        switch scalar.value {
+        case 0x4E00...0x9FFF,
+             0x3400...0x4DBF,
+             0xF900...0xFAFF,
+             0x20000...0x2A6DF:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func encodeAudio(
+        _ audio: [Float],
+        sampleRate: Int,
+        paddingMode: String = "right"
+    ) throws -> MLXArray {
+        var mono = audio
+        if sampleRate != audio_vae.sampleRate {
+            mono = try resampleAudio(audio, from: sampleRate, to: audio_vae.sampleRate)
+        }
+        guard !mono.isEmpty else {
+            throw NSError(domain: "VoxCPM2Model", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Reference/prompt audio is empty"
+            ])
+        }
+
+        let patchLen = args.patchSize * audio_vae.chunkSize
+        let remainder = mono.count % patchLen
+        if remainder != 0 {
+            let pad = patchLen - remainder
+            if paddingMode == "left" {
+                mono = [Float](repeating: 0, count: pad) + mono
+            } else {
+                mono += [Float](repeating: 0, count: pad)
+            }
+        }
+
+        let input = MLXArray(mono).reshaped([1, mono.count, 1])
+        let feat = audio_vae.encode(input, sampleRate: audio_vae.sampleRate).squeezed(axis: 0)
+        let audioLength = feat.dim(0) / args.patchSize
+        let trimmed = feat[
+            0..<(audioLength * args.patchSize),
+            0...
+        ]
+        return trimmed.reshaped([audioLength, args.patchSize, audio_vae.latentDim])
+    }
+
+    private func makeTimeSpan(_ timesteps: Int) -> [Float] {
+        return makeUnifiedCFMTimeSpan(
+            timesteps: timesteps,
+            scheduler: args.ditConfig.cfmConfig.tScheduler,
+            sigmaMin: args.ditConfig.cfmConfig.sigmaMin
+        )
+    }
+
+    // MARK: - Generation
+
+    public func generate(text: String, language: String? = nil) async throws -> [Float] {
+        try await generateVoxCPM2(
+            text: text,
+            language: language,
+            maxTokens: 2000,
+            minTokens: 2,
+            refText: nil,
+            refAudio: nil,
+            promptText: nil,
+            promptAudio: nil,
+            inferenceTimesteps: 10,
+            cfgValue: 2.0,
+            streamingPrefixLen: 4,
+            warmupPatches: 0,
+            instruct: nil
+        )
+    }
+
+    public func generateVoxCPM2(
+        text: String,
+        language: String? = nil,
+        maxTokens: Int = 2000,
+        minTokens: Int = 2,
+        refText: String? = nil,
+        refAudio: [Float]? = nil,
+        refAudioSampleRate: Int? = nil,
+        promptText: String? = nil,
+        promptAudio: [Float]? = nil,
+        promptAudioSampleRate: Int? = nil,
+        inferenceTimesteps: Int = 10,
+        cfgValue: Float = 2.0,
+        streamingPrefixLen: Int = 4,
+        warmupPatches: Int = 0,
+        instruct: String? = nil,
+        streamingDecodeInterval: Int? = nil,
+        audioChunkHandler: (@Sendable ([Float]) -> Void)? = nil,
+        returnFullAudio: Bool = true,
+        // Normalization and retry (matching the official Python API)
+        normalize: Bool = false,
+        /// Denoise prompt/reference audio before generation.
+        /// Requires a loaded ZipEnhancer denoiser (not yet implemented in MLX).
+        denoise: Bool = false,
+        retryBadcase: Bool = false,
+        retryBadcaseMaxTimes: Int = 3,
+        retryBadcaseRatioThreshold: Float = 6.0
+    ) async throws -> [Float] {
+        guard tokenizer != nil else {
+            throw NSError(domain: "VoxCPM2Model", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "Tokenizer not loaded"
+            ])
+        }
+        _ = language
+        let debugVerboseEnabled = ProcessInfo.processInfo.environment["VOXCPM2_DEBUG_VERBOSE"] == "1"
+
+        // Apply text normalization before tokenization
+        let normalizedText = normalize ? TextNormalizer.normalize(text) : text
+
+        // Denoiser (ZipEnhancer) is not yet implemented in MLX.
+        // Reference: https://github.com/OpenBMB/VoxCPM
+        if denoise {
+            if debugVerboseEnabled, let data = "[VoxCPM2] denoise=true is not yet implemented in MLX — skipping denoising\n".data(using: .utf8) {
+                FileHandle.standardOutput.write(data)
+            }
+        }
+
+        // Define the actual generation step as a local function so we can
+        // retry it with different text (normalized vs original).
+        func runGeneration(text: String) async throws -> [Float] {
+            try await _runGenerationImpl(
+                text: text,
+                language: language,
+                maxTokens: maxTokens,
+                minTokens: minTokens,
+                refText: refText,
+                refAudio: refAudio,
+                refAudioSampleRate: refAudioSampleRate,
+                promptText: promptText,
+                promptAudio: promptAudio,
+                promptAudioSampleRate: promptAudioSampleRate,
+                inferenceTimesteps: inferenceTimesteps,
+                cfgValue: cfgValue,
+                streamingPrefixLen: streamingPrefixLen,
+                warmupPatches: warmupPatches,
+                instruct: instruct,
+                streamingDecodeInterval: streamingDecodeInterval,
+                audioChunkHandler: audioChunkHandler,
+                returnFullAudio: returnFullAudio,
+                debugVerboseEnabled: debugVerboseEnabled
+            )
+        }
+
+        // Retry wrapper for bad-case detection
+        let maxAttempts = retryBadcase ? max(1, retryBadcaseMaxTimes) : 1
+
+        var lastError: Error?
+        for attempt in 1...maxAttempts {
+            do {
+                let inputText = attempt == 1 ? normalizedText : text
+                let audio = try await runGeneration(text: inputText)
+
+                // Check for bad case (too short or too long relative to text)
+                if retryBadcase && isBadCase(
+                    audio: audio, text: normalizedText,
+                    ratioThreshold: retryBadcaseRatioThreshold
+                ) {
+                    lastError = nil
+                    if attempt < maxAttempts {
+                        if debugVerboseEnabled, let data = "[VoxCPM2] bad case detected (attempt \(attempt)/\(maxAttempts)), retrying...\n".data(using: .utf8) {
+                            FileHandle.standardOutput.write(data)
+                        }
+                    }
+                    continue
+                }
+                return audio
+            } catch {
+                lastError = error
+                if attempt < maxAttempts {
+                    if debugVerboseEnabled, let data = "[VoxCPM2] generation failed (attempt \(attempt)/\(maxAttempts)): \(error), retrying...\n".data(using: .utf8) {
+                        FileHandle.standardOutput.write(data)
+                    }
+                }
+            }
+        }
+
+        if let lastError { throw lastError }
+        // Fallback: should not reach here
+        throw NSError(domain: "VoxCPM2Model", code: 5, userInfo: [
+            NSLocalizedDescriptionKey: "Generation failed after \(maxAttempts) attempts"
+        ])
+    }
+
+    /// Determine whether generated audio is abnormally short or long.
+    private func isBadCase(audio: [Float], text: String, ratioThreshold: Float) -> Bool {
+        guard !audio.isEmpty else { return true }
+        let audioDuration = Float(audio.count) / Float(outputSampleRate)
+        let estimatedTextDuration = Float(text.count) / 5.0  // ~5 chars/sec average
+        guard estimatedTextDuration > 0 else { return false }
+        let ratio = audioDuration / estimatedTextDuration
+        return ratio > ratioThreshold || ratio < 1.0 / ratioThreshold
+    }
+
+    /// Core generation implementation extracted so that `generateVoxCPM2`
+    /// can wrap it with normalisation and retry logic.
+    private func _runGenerationImpl(
+        text: String,
+        language: String?,
+        maxTokens: Int,
+        minTokens: Int,
+        refText: String?,
+        refAudio: [Float]?,
+        refAudioSampleRate: Int?,
+        promptText: String?,
+        promptAudio: [Float]?,
+        promptAudioSampleRate: Int?,
+        inferenceTimesteps: Int,
+        cfgValue: Float,
+        streamingPrefixLen: Int,
+        warmupPatches: Int,
+        instruct: String?,
+        streamingDecodeInterval: Int?,
+        audioChunkHandler: (@Sendable ([Float]) -> Void)?,
+        returnFullAudio: Bool,
+        debugVerboseEnabled: Bool
+    ) async throws -> [Float] {
+        @inline(__always)
+        func logGen(_ message: String) {
+            guard debugVerboseEnabled else { return }
+            if let data = "[VoxCPM2] \(message)\n".data(using: .utf8) {
+                FileHandle.standardOutput.write(data)
+            }
+        }
+
+        var workingText = text
+        var effectiveWarmup = warmupPatches
+        if let instruct, !instruct.isEmpty {
+            workingText = "(\(instruct))\(workingText)"
+            effectiveWarmup = min(effectiveWarmup, 1)
+        }
+
+        let scaleEmb = args.lmConfig.useMup ? Float(args.lmConfig.scaleEmb) : 1.0
+        let latentDim = audio_vae.latentDim
+        let hasRef = refAudio != nil
+        let hasPrompt = promptAudio != nil && promptText != nil
+
+        let textIds: [Int32]
+        var textToken: MLXArray
+        var audioFeat: MLXArray
+        var textMask: MLXArray
+        var audioMask: MLXArray
+
+        if hasRef && hasPrompt {
+            let combinedText = (promptText ?? "") + workingText
+            textIds = try tokenize(combinedText)
+            let textLength = textIds.count + 1
+            textToken = MLXArray(textIds + [Int32(101)]).reshaped([1, textLength])
+
+            // Encode reference audio ONCE and reuse for both ref and prompt
+            // positions.  The left vs right padding only affects the very
+            // first/last frames adjacent to zero padding — negligible for
+            // voice quality.  This halves AudioVAE encoder time (~500ms).
+            let refFeat = try encodeAudio(
+                refAudio ?? [],
+                sampleRate: refAudioSampleRate ?? audio_vae.sampleRate,
+                paddingMode: "right"
+            )
+            let promptFeat = refFeat
+            let promptLen = promptFeat.dim(0)
+
+            let refTokens = MLXArray(
+                [Int32(103)]
+                + Array(repeating: Int32(0), count: refFeat.dim(0))
+                + [Int32(104)]
+            )
+            let refFeats = concatenated(
+                [
+                    MLXArray.zeros([1, args.patchSize, latentDim]),
+                    refFeat,
+                    MLXArray.zeros([1, args.patchSize, latentDim])
+                ],
+                axis: 0
+            )
+            let refTMask = MLXArray(
+                [Float(1.0)]
+                + Array(repeating: Float(0.0), count: refFeat.dim(0))
+                + [Float(1.0)]
+            )
+            let refAMask = MLXArray(
+                [Float(0.0)]
+                + Array(repeating: Float(1.0), count: refFeat.dim(0))
+                + [Float(0.0)]
+            )
+
+            let textPadFeat = MLXArray.zeros([textLength, args.patchSize, latentDim])
+            let promptPadToken = MLXArray.zeros([promptLen], dtype: .int32)
+
+            let fullText = concatenated([refTokens, textToken.squeezed(axis: 0), promptPadToken], axis: 0)
+            let fullAudio = concatenated([refFeats, textPadFeat, promptFeat], axis: 0)
+            textMask = concatenated(
+                [
+                    refTMask,
+                    MLXArray.ones([textLength], dtype: .float32),
+                    MLXArray.zeros([promptLen], dtype: .float32)
+                ],
+                axis: 0
+            )
+            audioMask = concatenated(
+                [
+                    refAMask,
+                    MLXArray.zeros([textLength], dtype: .float32),
+                    MLXArray.ones([promptLen], dtype: .float32)
+                ],
+                axis: 0
+            )
+
+            textToken = fullText.reshaped([1, fullText.dim(0)])
+            audioFeat = fullAudio.reshaped([1, fullAudio.dim(0), args.patchSize, latentDim])
+        } else if hasRef {
+            textIds = try tokenize(workingText)
+            let textLength = textIds.count + 1
+            textToken = MLXArray(textIds + [Int32(101)]).reshaped([1, textLength])
+
+            let refFeat = try encodeAudio(
+                refAudio ?? [],
+                sampleRate: refAudioSampleRate ?? audio_vae.sampleRate,
+                paddingMode: "right"
+            )
+            let refTokens = MLXArray(
+                [Int32(103)]
+                + Array(repeating: Int32(0), count: refFeat.dim(0))
+                + [Int32(104)]
+            )
+            let refFeats = concatenated(
+                [
+                    MLXArray.zeros([1, args.patchSize, latentDim]),
+                    refFeat,
+                    MLXArray.zeros([1, args.patchSize, latentDim])
+                ],
+                axis: 0
+            )
+            let refTMask = MLXArray(
+                [Float(1.0)]
+                + Array(repeating: Float(0.0), count: refFeat.dim(0))
+                + [Float(1.0)]
+            )
+            let refAMask = MLXArray(
+                [Float(0.0)]
+                + Array(repeating: Float(1.0), count: refFeat.dim(0))
+                + [Float(0.0)]
+            )
+
+            let textPadFeat = MLXArray.zeros([textLength, args.patchSize, latentDim])
+            let fullText = concatenated([refTokens, textToken.squeezed(axis: 0)], axis: 0)
+            let fullAudio = concatenated([refFeats, textPadFeat], axis: 0)
+            textMask = concatenated([refTMask, MLXArray.ones([textLength], dtype: .float32)], axis: 0)
+            audioMask = concatenated([refAMask, MLXArray.zeros([textLength], dtype: .float32)], axis: 0)
+
+            textToken = fullText.reshaped([1, fullText.dim(0)])
+            audioFeat = fullAudio.reshaped([1, fullAudio.dim(0), args.patchSize, latentDim])
+        } else if hasPrompt {
+            let combinedText = (promptText ?? "") + workingText
+            textIds = try tokenize(combinedText)
+            let textLength = textIds.count + 1
+            textToken = MLXArray(textIds + [Int32(101)]).reshaped([1, textLength])
+
+            let promptFeat = try encodeAudio(
+                promptAudio ?? [],
+                sampleRate: promptAudioSampleRate ?? audio_vae.sampleRate,
+                paddingMode: "left"
+            )
+            let promptLen = promptFeat.dim(0)
+
+            let textPadFeat = MLXArray.zeros([textLength, args.patchSize, latentDim])
+            let promptPadToken = MLXArray.zeros([promptLen], dtype: .int32)
+
+            let fullText = concatenated([textToken.squeezed(axis: 0), promptPadToken], axis: 0)
+            let fullAudio = concatenated([textPadFeat, promptFeat], axis: 0)
+            textMask = concatenated(
+                [
+                    MLXArray.ones([textLength], dtype: .float32),
+                    MLXArray.zeros([promptLen], dtype: .float32)
+                ],
+                axis: 0
+            )
+            audioMask = concatenated(
+                [
+                    MLXArray.zeros([textLength], dtype: .float32),
+                    MLXArray.ones([promptLen], dtype: .float32)
+                ],
+                axis: 0
+            )
+
+            textToken = fullText.reshaped([1, fullText.dim(0)])
+            audioFeat = fullAudio.reshaped([1, fullAudio.dim(0), args.patchSize, latentDim])
+        } else {
+            textIds = try tokenize(workingText)
+            let textLength = textIds.count + 1
+            textToken = MLXArray(textIds + [Int32(101)]).reshaped([1, textLength])
+            audioFeat = MLXArray.zeros([1, textLength, args.patchSize, latentDim])
+            textMask = MLXArray.ones([1, textLength], dtype: .float32)
+            audioMask = MLXArray.zeros([1, textLength], dtype: .float32)
+        }
+
+        let textTokenB = textToken
+        let audioFeatB = audioFeat
+        let textMaskB = textMask.shape.count == 1 ? textMask.reshaped([1, textMask.dim(0)]) : textMask
+        let audioMaskB = audioMask.shape.count == 1 ? audioMask.reshaped([1, audioMask.dim(0)]) : audioMask
+        let textMask3 = textMaskB.expandedDimensions(axis: 2)
+        let audioMask3 = audioMaskB.expandedDimensions(axis: 2)
+
+        logGen("building embeddings")
+        let featEmbed = enc_to_lm_proj(feat_encoder(audioFeatB))
+        let textEmbed = base_lm.embedTokens!(textTokenB) * MLXArray(scaleEmb)
+        let combinedEmbed = textMask3 * textEmbed + audioMask3 * featEmbed
+
+        let lastFeatIndex = audioFeatB.dim(1) - 1
+        var prefixFeatCond = audioFeatB[
+            0...,
+            lastFeatIndex...(lastFeatIndex),
+            0...,
+            0...
+        ].squeezed(axis: 1)
+
+        let (encOutputs, initialLmCache) = base_lm(inputsEmbeds: combinedEmbed)
+
+        var lmCache = initialLmCache
+        let encOutputsFSQ = fsq_layer(encOutputs)
+        let maskedEnc = encOutputsFSQ * audioMask3 + encOutputs * textMask3
+        var lmHidden = maskedEnc[
+            0...,
+            (maskedEnc.dim(1) - 1)...(maskedEnc.dim(1) - 1),
+            0...
+        ].squeezed(axis: 1)
+
+        let residualInput = fusion_concat_proj(
+            concatenated([maskedEnc, audioMask3 * featEmbed], axis: -1)
+        )
+        let (resOutputs, initialResCache) = residual_lm(inputsEmbeds: residualInput)
+        var resCache = initialResCache
+        var residualHidden = resOutputs[
+            0...,
+            (resOutputs.dim(1) - 1)...(resOutputs.dim(1) - 1),
+            0...
+        ].squeezed(axis: 1)
+
+        let hasContinuation = hasPrompt
+        var predFeatSeq: [MLXArray] = []
+        var pendingStreamFeats: [MLXArray] = []
+        // Buffer of the last N patches from the previous streaming chunk,
+        // used as overlap context for AudioVAE decoding.  Without this,
+        // each chunk is decoded independently and the causal convolutions
+        // produce boundary artifacts where the left padding is zero.
+        // Pre-fill overlap buffer with zero patches so the first streaming
+        // chunk also has decoder context (AudioVAE convolutions need ~13
+        // latent frames of left padding for clean output).
+        let zeroPatch = MLXArray.zeros([1, 1, args.patchSize, audio_vae.latentDim])
+        var streamOverlapBuffer: [MLXArray] = Array(repeating: zeroPatch, count: 4)
+        let streamInterval = max(1, streamingDecodeInterval ?? Int.max)
+        // Number of overlapping patches to prepend for AudioVAE context.
+        // Determined by the decoder's total causal padding across all
+        // transposed‑conv blocks (rates [8,6,5,2,2,2] → ~13 latent frames).
+        // With patchSize=4 we need ceil(13/4) ≈ 4 overlapping patches.
+        let streamOverlapPatches = 4
+
+        func decodeAudio(_ feats: [MLXArray]) -> [Float] {
+            var allFeat = concatenated(feats, axis: 1)
+            allFeat = allFeat.reshaped([allFeat.dim(0), -1, args.featDim])
+            var audio = audio_vae.decode(allFeat.asType(.float32))
+            audio = audio.flattened()
+            eval(audio)
+            return audio.asArray(Float.self)
+        }
+
+        /// Decode audio from patches with overlap context, then trim the
+        /// overlapping prefix so only the new audio is returned.
+        func decodeAudioWithOverlap(
+            newPatches: [MLXArray],
+            overlapBuffer:inout [MLXArray]
+        ) -> [Float] {
+            // Prepend overlapping patches from the previous chunk for
+            // AudioVAE context, then decode the combined sequence.
+            let contextPatches = Array(overlapBuffer.suffix(streamOverlapPatches))
+            let decodePatches = contextPatches + newPatches
+            let decoded = decodeAudio(decodePatches)
+
+            // Calculate how many audio samples correspond to the overlap
+            // context so we can trim them from the output.
+            // Each patch = patchSize (4) latent frames; each latent frame
+            // produces audio_vae.hopLength * (outSampleRate / sampleRate)
+            // output samples.  But the simplest approach: compute samples
+            // per patch empirically from the first call.
+            let overlapPatches = contextPatches.count
+            let totalPatches = decodePatches.count
+            let totalSamples = decoded.count
+            let samplesPerPatch = totalSamples / totalPatches
+            let trimSamples = overlapPatches * samplesPerPatch
+
+            // Update the overlap buffer for the next call
+            let combined = overlapBuffer + newPatches
+            let keepCount = streamOverlapPatches * 4
+            overlapBuffer = combined.suffix(keepCount).map { $0 }
+
+            return Array(decoded.dropFirst(max(0, trimSamples)))
+        }
+
+        if hasContinuation {
+            let audioIndices = (0..<audioMaskB.dim(1)).filter { idx in
+                audioMaskB[0, idx].item(Float.self) > 0.5
+            }
+            let contextLen = min(streamingPrefixLen - 1, audioIndices.count)
+            for idx in audioIndices.suffix(contextLen) {
+                let slice = audioFeatB[
+                    0...,
+                    idx..<(idx + 1),
+                    0...,
+                    0...
+                ]
+                predFeatSeq.append(slice)
+            }
+        }
+
+        let warmupCount = hasContinuation ? 0 : effectiveWarmup
+        for step in 0..<(maxTokens + warmupCount) {
+            if step == 0 {
+                logGen("sampling first audio patch")
+            }
+            let ditMu = concatenated([
+                lm_to_dit_proj(lmHidden),
+                res_to_dit_proj(residualHidden)
+            ], axis: -1)
+            let condIn = prefixFeatCond.transposed(0, 2, 1)
+
+            var predFeat = feat_decoder.sample(
+                mu: ditMu,
+                nTimesteps: inferenceTimesteps,
+                patchSize: args.patchSize,
+                cond: condIn,
+                cfgValue: cfgValue
+            )
+
+            predFeat = predFeat.transposed(0, 2, 1)
+
+            if step >= warmupCount {
+                let generatedFeat = predFeat.expandedDimensions(axis: 1)
+                predFeatSeq.append(generatedFeat)
+                if audioChunkHandler != nil {
+                    pendingStreamFeats.append(generatedFeat)
+                    if pendingStreamFeats.count >= streamInterval {
+                        let chunk = decodeAudioWithOverlap(
+                            newPatches: pendingStreamFeats,
+                            overlapBuffer: &streamOverlapBuffer
+                        )
+                        audioChunkHandler?(chunk)
+                        pendingStreamFeats.removeAll(keepingCapacity: true)
+                    }
+                }
+            }
+
+            let currEmbed = enc_to_lm_proj(
+                feat_encoder(predFeat.expandedDimensions(axis: 1))
+            )
+
+            let stopLogits = stop_head(silu(stop_proj(lmHidden)))
+            let stopFlag = argMax(stopLogits, axis: -1).squeezed().item(Int32.self)
+            let realSteps = step - warmupCount
+            if realSteps > minTokens && stopFlag == 1 {
+                break
+            }
+
+            let (newLmOut, nextLmCache) = base_lm(
+                inputsEmbeds: currEmbed,
+                cache: lmCache
+            )
+            lmCache = nextLmCache
+            lmHidden = fsq_layer(newLmOut[
+                0...,
+                (newLmOut.dim(1) - 1)...(newLmOut.dim(1) - 1),
+                0...
+            ].squeezed(axis: 1))
+
+            let currResidualInput = fusion_concat_proj(
+                concatenated([lmHidden.expandedDimensions(axis: 1), currEmbed], axis: -1)
+            )
+            let (newResOut, nextResCache) = residual_lm(
+                inputsEmbeds: currResidualInput,
+                cache: resCache
+            )
+            resCache = nextResCache
+            residualHidden = newResOut[
+                0...,
+                (newResOut.dim(1) - 1)...(newResOut.dim(1) - 1),
+                0...
+            ].squeezed(axis: 1)
+
+            prefixFeatCond = predFeat
+        }
+
+        guard !predFeatSeq.isEmpty else {
+            throw NSError(domain: "VoxCPM2Model", code: 4, userInfo: [
+                NSLocalizedDescriptionKey: "No audio patches were generated"
+            ])
+        }
+
+        if audioChunkHandler != nil, !pendingStreamFeats.isEmpty {
+            audioChunkHandler?(decodeAudio(pendingStreamFeats))
+            pendingStreamFeats.removeAll(keepingCapacity: true)
+        }
+
+        if audioChunkHandler != nil && !returnFullAudio {
+            return []
+        }
+
+        logGen("decoding audio")
+        var audio = MLXArray(decodeAudio(predFeatSeq))
+
+        if hasContinuation {
+            let decodePatchLen = args.patchSize * audio_vae.decodeChunkSize
+            let trimAudioSamples = decodePatchLen * (streamingPrefixLen - 1)
+            if trimAudioSamples < audio.count {
+                audio = audio[trimAudioSamples...]
+            }
+        }
+
+        eval(audio)
+        return audio.asArray(Float.self)
+    }
+}
+
+// MARK: - LoRA injection and management
+
+extension VoxCPM2Model {
+    /// Collect the set of flattened path strings that should receive a LoRA
+    /// wrapper based on `config`.
+    private func collectLoRATargetPaths(config: LoRAConfig) -> Set<String> {
+        var targets = Set<String>()
+        let projNames = ["qProj", "kProj", "vProj", "oProj"]
+
+        if config.enableLM {
+            for i in base_lm.layers.indices {
+                for name in projNames {
+                    targets.insert("base_lm.layers.\(i).selfAttn.\(name)")
+                }
+            }
+            for i in residual_lm.layers.indices {
+                for name in projNames {
+                    targets.insert("residual_lm.layers.\(i).selfAttn.\(name)")
+                }
+            }
+        }
+
+        if config.enableDiT {
+            for i in feat_decoder.estimator.decoder.layers.indices {
+                for name in projNames {
+                    targets.insert("feat_decoder.estimator.decoder.layers.\(i).selfAttn.\(name)")
+                }
+            }
+        }
+
+        if config.enableProj {
+            targets.insert("enc_to_lm_proj")
+            targets.insert("lm_to_dit_proj")
+            targets.insert("res_to_dit_proj")
+            targets.insert("fusion_concat_proj")
+            targets.insert("stop_proj")
+            targets.insert("stop_head")
+        }
+
+        return targets
+    }
+
+    /// Wrap the target ``Linear`` layers in ``LoRALinear`` adapters
+    /// according to `config`.  Called during model loading.
+    private func injectLoRA(config: LoRAConfig) throws {
+        let targets = collectLoRATargetPaths(config: config)
+        let updates = leafModules().flattened().compactMap { (path, module) -> (String, Module)? in
+            guard targets.contains(path), let linear = module as? Linear else { return nil }
+            let lora = LoRALinear(base: linear, r: config.r, alpha: config.alpha)
+            loraModules[path] = lora
+            return (path, lora)
+        }
+        guard !updates.isEmpty else {
+            throw AudioGenerationError.modelNotInitialized(
+                "LoRA: no target Linear layers found — model structure may have changed"
+            )
+        }
+        loraConfig = config
+        update(modules: ModuleChildren.unflattened(updates))
+    }
+
+    // MARK: - Public LoRA API
+
+    /// Load LoRA weights from a safetensors file and apply them to the
+    /// injected LoRA adapters.
+    ///
+    /// The expected key format is:
+    /// ```
+    /// base_lm.layers.0.selfAttn.qProj.loraA
+    /// base_lm.layers.0.selfAttn.qProj.loraB
+    /// ```
+    ///
+    /// A `base_model.model.` prefix (common in PEFT exports) is stripped
+    /// automatically.
+    ///
+    /// - Parameters:
+    ///   - weightsPath: Path to a `.safetensors` file.
+    /// - Returns: `(loaded, skipped)` — keys that were loaded and keys that
+    ///   were skipped because no matching adapter was found.
+    @discardableResult
+    public func loadLoRA(weightsPath: String) throws -> (loaded: [String], skipped: [String]) {
+        guard !loraModules.isEmpty else {
+            throw AudioGenerationError.modelNotInitialized(
+                "No LoRA adapters injected — call fromModelDirectory(with: loraConfig:) first"
+            )
+        }
+
+        let url = URL(fileURLWithPath: weightsPath)
+        let allWeights = try MLX.loadArrays(url: url)
+
+        var loaded: [String] = []
+        var skipped: [String] = []
+
+        for (key, array) in allWeights {
+            // Strip common PEFT prefix
+            let cleanKey = key
+                .replacingOccurrences(of: "base_model.model.", with: "")
+                // Convert PEFT underscore convention to camelCase
+                .replacingOccurrences(of: "lora_A.weight", with: "loraA")
+                .replacingOccurrences(of: "lora_B.weight", with: "loraB")
+
+            // Find the parent path (e.g. "base_lm.layers.0.selfAttn.qProj")
+            // and the param name ("loraA" or "loraB")
+            guard let dot = cleanKey.lastIndex(of: ".") else {
+                skipped.append(key)
+                continue
+            }
+            let parentPath = String(cleanKey[..<dot])
+            let paramName = String(cleanKey[cleanKey.index(after: dot)...])
+
+            guard let module = loraModules[parentPath] else {
+                skipped.append(key)
+                continue
+            }
+
+            switch paramName {
+            case "loraA":
+                module.loraA = array.asType(.float32)
+                loaded.append(key)
+            case "loraB":
+                module.loraB = array.asType(.float32)
+                loaded.append(key)
+            default:
+                skipped.append(key)
+            }
+        }
+
+        return (loaded, skipped)
+    }
+
+    /// Unload LoRA weights by zeroing out all A/B matrices.
+    ///
+    /// The adapters remain in the model but have no effect until new weights
+    /// are loaded via ``loadLoRA(weightsPath:)``.
+    public func unloadLoRA() {
+        for (_, module) in loraModules {
+            let inDim = module.loraA.shape[0]
+            let r = module.loraA.shape[1]
+            let outDim = module.loraB.shape[0]
+            module.loraA = MLXArray.zeros([inDim, r])
+            module.loraB = MLXArray.zeros([outDim, r])
+        }
+    }
+
+    /// Enable or disable the LoRA branch on all injected adapters.
+    ///
+    /// When disabled the model behaves as the original base model.
+    public func setLoRAEnabled(_ enabled: Bool) {
+        for (_, module) in loraModules {
+            module.enabled = enabled
+        }
+    }
+
+    /// Export the current LoRA weights as a dictionary keyed by
+    /// flattened path (suitable for saving to safetensors).
+    public func getLoRAStateDict() -> [String: MLXArray] {
+        var state: [String: MLXArray] = [:]
+        for (path, module) in loraModules {
+            state["\(path).loraA"] = module.loraA
+            state["\(path).loraB"] = module.loraB
+        }
+        return state
+    }
+
+    /// Whether LoRA adapters are currently loaded and enabled.
+    public var isLoRAEnabled: Bool {
+        loraModules.values.contains { $0.enabled }
+    }
+}
+
+extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
+    public var sampleRate: Int { outputSampleRate }
+
+    public var defaultGenerationParameters: GenerateParameters {
+        GenerateParameters(
+            maxTokens: 2000,
+            temperature: 1.0,
+            topP: 1.0,
+            repetitionPenalty: 1.0
+        )
+    }
+
+    public func generate(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters
+    ) async throws -> MLXArray {
+        let samples = try await generateVoxCPM2(
+            text: text,
+            language: language,
+            maxTokens: generationParameters.maxTokens ?? 2000,
+            refText: refText,
+            refAudio: refAudio?.asArray(Float.self),
+            inferenceTimesteps: 10,
+            cfgValue: 2.0,
+            instruct: voice
+        )
+        return MLXArray(samples)
+    }
+
+    public func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let frameRateHz = Float(audio_vae.sampleRate) / Float(audio_vae.hopLength)
+        let patchRateHz = frameRateHz / Float(args.patchSize)
+        let defaultInterval = max(1, Int(patchRateHz * 2.0))
+        return _generateStream(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            promptText: nil,
+            promptAudio: nil,
+            promptAudioSampleRate: nil,
+            language: language,
+            generationParameters: generationParameters,
+            streamingInterval: Double(defaultInterval) / Double(patchRateHz)
+        )
+    }
+
+    /// Streaming generation with a time‑based interval (seconds).
+    ///
+    /// This is the Qwen3TTS‑style streaming API: callers specify how many
+    /// seconds of audio they want per chunk, and the model converts that to
+    /// the appropriate number of patches for the AudioVAE overlap‑aware
+    /// decoder.  Chunks are delivered via `onAudioChunk`.
+    ///
+    /// - Parameters:
+    ///   - streamingInterval: Target seconds of audio per streaming chunk
+    ///     (e.g. `2.0` = roughly 2 seconds per chunk).  Actual chunk size
+    ///     is rounded to whole patches.
+    ///   - onToken: Called with each generated codebook token id.
+    ///   - onInfo: Called with generation stats (token count, timing, etc.)
+    ///     when generation completes.
+    ///   - onAudioChunk: Called with each decoded audio chunk as an MLXArray.
+    @discardableResult
+    public func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        promptText: String? = nil,
+        promptAudio: MLXArray? = nil,
+        promptAudioSampleRate: Int? = nil,
+        language: String?,
+        generationParameters: GenerateParameters,
+        streamingInterval: Double = 2.0,
+        inferenceTimesteps: Int = 10,
+        cfgValue: Float = 2.0,
+        onToken: (@Sendable (Int) -> Void)? = nil,
+        onInfo: (@Sendable (AudioGenerationInfo) -> Void)? = nil,
+        onAudioChunk: (@Sendable (MLXArray) -> Void)? = nil
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        _generateStream(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            promptText: promptText,
+            promptAudio: promptAudio,
+            promptAudioSampleRate: promptAudioSampleRate,
+            language: language,
+            generationParameters: generationParameters,
+            streamingInterval: streamingInterval,
+            inferenceTimesteps: inferenceTimesteps,
+            cfgValue: cfgValue,
+            onToken: onToken,
+            onInfo: onInfo,
+            onAudioChunk: onAudioChunk
+        )
+    }
+
+    /// Shared implementation for all `generateStream` overloads.
+    private func _generateStream(
+        text: String,
+        voice: String?,
+        refAudio: MLXArray?,
+        refText: String?,
+        promptText: String?,
+        promptAudio: MLXArray?,
+        promptAudioSampleRate: Int?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        streamingInterval: Double = 2.0,
+        inferenceTimesteps: Int = 10,
+        cfgValue: Float = 2.0,
+        onToken: (@Sendable (Int) -> Void)? = nil,
+        onInfo: (@Sendable (AudioGenerationInfo) -> Void)? = nil,
+        onAudioChunk: (@Sendable (MLXArray) -> Void)? = nil
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
+        let refAudioSamples = refAudio?.asArray(Float.self)
+        let promptAudioSamples = promptAudio?.asArray(Float.self)
+
+        let task = Task { @Sendable [weak self, refAudioSamples, promptAudioSamples] in
+            guard let self else {
+                continuation.finish(throwing: AudioGenerationError.modelNotInitialized("Model deallocated"))
+                return
+            }
+
+            do {
+                // Convert time‑based interval to patch‑based interval.
+                // AudioVAE: 1 latent frame = hopLength / sampleRate seconds
+                // 1 patch = patchSize latent frames
+                let frameRateHz = Float(audio_vae.sampleRate) / Float(audio_vae.hopLength)
+                let patchRateHz = frameRateHz / Float(args.patchSize)
+                let decodeInterval = max(1, Int(streamingInterval * Double(patchRateHz)))
+
+                let startTime = Date()
+
+                // Keep speaker reference and continuation prompt separate.
+                // Clients that need continuation must pass prompt explicitly.
+                _ = try await self.generateVoxCPM2(
+                    text: text,
+                    language: language,
+                    maxTokens: generationParameters.maxTokens ?? 2000,
+                    refText: refText,
+                    refAudio: refAudioSamples,
+                    refAudioSampleRate: refAudioSamples != nil ? audio_vae.sampleRate : nil,
+                    promptText: promptText,
+                    promptAudio: promptAudioSamples,
+                    promptAudioSampleRate: promptAudioSamples != nil ? (promptAudioSampleRate ?? audio_vae.sampleRate) : nil,
+                    inferenceTimesteps: inferenceTimesteps,
+                    cfgValue: cfgValue,
+                    instruct: voice,
+                    streamingDecodeInterval: decodeInterval,
+                    audioChunkHandler: { chunk in
+                        let audio = MLXArray(chunk)
+                        continuation.yield(.audio(audio))
+                        onAudioChunk?(audio)
+                    },
+                    returnFullAudio: false
+                )
+
+                // Emit info event with generation stats
+                let generateTime = Date().timeIntervalSince(startTime)
+                let info = AudioGenerationInfo(
+                    promptTokenCount: 0,
+                    generationTokenCount: 0,
+                    prefillTime: 0,
+                    generateTime: generateTime,
+                    tokensPerSecond: 0,
+                    peakMemoryUsage: Double(Memory.peakMemory) / 1e9
+                )
+                continuation.yield(.info(info))
+                onInfo?(info)
+
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
+            }
+        }
+        continuation.onTermination = { @Sendable _ in task.cancel() }
+        return stream
+    }
+}
