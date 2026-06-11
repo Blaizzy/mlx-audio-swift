@@ -1725,6 +1725,9 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
             voice: voice,
             refAudio: refAudio,
             refText: refText,
+            promptText: nil,
+            promptAudio: nil,
+            promptAudioSampleRate: nil,
             language: language,
             generationParameters: generationParameters,
             streamingInterval: Double(defaultInterval) / Double(patchRateHz)
@@ -1752,6 +1755,9 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
         voice: String?,
         refAudio: MLXArray?,
         refText: String?,
+        promptText: String? = nil,
+        promptAudio: MLXArray? = nil,
+        promptAudioSampleRate: Int? = nil,
         language: String?,
         generationParameters: GenerateParameters,
         streamingInterval: Double = 2.0,
@@ -1766,6 +1772,9 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
             voice: voice,
             refAudio: refAudio,
             refText: refText,
+            promptText: promptText,
+            promptAudio: promptAudio,
+            promptAudioSampleRate: promptAudioSampleRate,
             language: language,
             generationParameters: generationParameters,
             streamingInterval: streamingInterval,
@@ -1783,6 +1792,9 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
         voice: String?,
         refAudio: MLXArray?,
         refText: String?,
+        promptText: String?,
+        promptAudio: MLXArray?,
+        promptAudioSampleRate: Int?,
         language: String?,
         generationParameters: GenerateParameters,
         streamingInterval: Double = 2.0,
@@ -1794,8 +1806,9 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
         let refAudioSamples = refAudio?.asArray(Float.self)
+        let promptAudioSamples = promptAudio?.asArray(Float.self)
 
-        let task = Task { @Sendable [weak self, refAudioSamples] in
+        let task = Task { @Sendable [weak self, refAudioSamples, promptAudioSamples] in
             guard let self else {
                 continuation.finish(throwing: AudioGenerationError.modelNotInitialized("Model deallocated"))
                 return
@@ -1811,8 +1824,8 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
 
                 let startTime = Date()
 
-                // Hi-Fi cloning: pass ref audio as BOTH identity reference
-                // AND prompt conditioning for maximum voice fidelity.
+                // Keep speaker reference and continuation prompt separate.
+                // Clients that need continuation must pass prompt explicitly.
                 _ = try await self.generateVoxCPM2(
                     text: text,
                     language: language,
@@ -1820,9 +1833,9 @@ extension VoxCPM2Model: SpeechGenerationModel, @unchecked Sendable {
                     refText: refText,
                     refAudio: refAudioSamples,
                     refAudioSampleRate: refAudioSamples != nil ? audio_vae.sampleRate : nil,
-                    promptText: refText,
-                    promptAudio: refAudioSamples,
-                    promptAudioSampleRate: refAudioSamples != nil ? audio_vae.sampleRate : nil,
+                    promptText: promptText,
+                    promptAudio: promptAudioSamples,
+                    promptAudioSampleRate: promptAudioSamples != nil ? (promptAudioSampleRate ?? audio_vae.sampleRate) : nil,
                     inferenceTimesteps: inferenceTimesteps,
                     cfgValue: cfgValue,
                     instruct: voice,
