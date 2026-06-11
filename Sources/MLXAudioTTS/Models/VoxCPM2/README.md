@@ -68,6 +68,33 @@ let audio = try await voxModel.generateVoxCPM2(
 )
 ```
 
+### Reference vs. Continuation Prompt
+
+`refAudio` and `refText` are speaker reference conditioning. They describe
+the voice to clone and should not be treated as text/audio to continue.
+
+`promptText` and `promptAudio` are continuation context. Pass them only when
+the next utterance should continue from a previous spoken segment:
+
+```swift
+guard let voxModel = model as? VoxCPM2Model else { return }
+
+let stream = voxModel.generateStream(
+    text: "This is the next sentence.",
+    voice: nil,
+    refAudio: referenceAudio,
+    refText: "This is what the reference speaker said.",
+    promptText: previousText,
+    promptAudio: previousAudio,
+    promptAudioSampleRate: 16_000,
+    language: "English",
+    generationParameters: voxModel.defaultGenerationParameters
+)
+```
+
+If `promptText` / `promptAudio` are omitted, streaming generation uses only
+speaker reference conditioning and will not replay or continue `refText`.
+
 ### LoRA Fine-Tuning
 
 Load a model with LoRA adapters for fine-tuned voice adaptation:
@@ -96,6 +123,8 @@ let state = model.getLoRAStateDict()
 
 - `voice` is passed as VoxCPM2 instruction text.
 - `refAudio` and `refText` are mapped to VoxCPM2 reference conditioning.
+- VoxCPM2-specific streaming can accept explicit `promptText` / `promptAudio`
+  for continuation; the generic protocol path leaves them empty.
 - VoxCPM2 checkpoints are detected from `model_type`, `architecture`, or repository/path names containing `voxcpm2`.
 - LoRA requires injecting adapters at load time via `VoxCPM2Model.fromModelDirectory(_:loraConfig:)`.
   The generic `TTS.loadModel()` path does not yet support LoRA configuration.
