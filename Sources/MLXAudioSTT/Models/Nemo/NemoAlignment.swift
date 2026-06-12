@@ -1,6 +1,6 @@
 import Foundation
 
-public struct ParakeetAlignedToken: Sendable {
+public struct NemoAlignedToken: Sendable {
     public let id: Int
     public let text: String
     public var start: Double
@@ -18,11 +18,11 @@ public struct ParakeetAlignedToken: Sendable {
     }
 }
 
-public struct ParakeetAlignedSentence: Sendable {
+public struct NemoAlignedSentence: Sendable {
     public let text: String
-    public let tokens: [ParakeetAlignedToken]
+    public let tokens: [NemoAlignedToken]
 
-    public init(text: String, tokens: [ParakeetAlignedToken]) {
+    public init(text: String, tokens: [NemoAlignedToken]) {
         self.text = text
         self.tokens = tokens.sorted { $0.start < $1.start }
     }
@@ -40,11 +40,11 @@ public struct ParakeetAlignedSentence: Sendable {
     }
 }
 
-public struct ParakeetAlignedResult: Sendable {
+public struct NemoAlignedResult: Sendable {
     public let text: String
-    public let sentences: [ParakeetAlignedSentence]
+    public let sentences: [NemoAlignedSentence]
 
-    public init(text: String, sentences: [ParakeetAlignedSentence]) {
+    public init(text: String, sentences: [NemoAlignedSentence]) {
         self.text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         self.sentences = sentences
     }
@@ -60,7 +60,7 @@ public struct ParakeetAlignedResult: Sendable {
     }
 }
 
-public struct ParakeetStreamingResult: Sendable {
+public struct NemoStreamingResult: Sendable {
     public let text: String
     public let tokens: [Int]
     public let isFinal: Bool
@@ -94,37 +94,37 @@ public struct ParakeetStreamingResult: Sendable {
     }
 }
 
-enum ParakeetAlignment {
-    static func tokensToSentences(_ tokens: [ParakeetAlignedToken]) -> [ParakeetAlignedSentence] {
-        var sentences: [ParakeetAlignedSentence] = []
-        var current: [ParakeetAlignedToken] = []
+enum NemoAlignment {
+    static func tokensToSentences(_ tokens: [NemoAlignedToken]) -> [NemoAlignedSentence] {
+        var sentences: [NemoAlignedSentence] = []
+        var current: [NemoAlignedToken] = []
 
         for (i, token) in tokens.enumerated() {
             current.append(token)
             if shouldCloseSentence(token: token, index: i, allTokens: tokens) {
                 let text = current.map(\.text).joined()
-                sentences.append(ParakeetAlignedSentence(text: text, tokens: current))
+                sentences.append(NemoAlignedSentence(text: text, tokens: current))
                 current.removeAll(keepingCapacity: true)
             }
         }
 
         if !current.isEmpty {
             let text = current.map(\.text).joined()
-            sentences.append(ParakeetAlignedSentence(text: text, tokens: current))
+            sentences.append(NemoAlignedSentence(text: text, tokens: current))
         }
 
         return sentences
     }
 
-    static func sentencesToResult(_ sentences: [ParakeetAlignedSentence]) -> ParakeetAlignedResult {
-        ParakeetAlignedResult(text: sentences.map(\.text).joined(), sentences: sentences)
+    static func sentencesToResult(_ sentences: [NemoAlignedSentence]) -> NemoAlignedResult {
+        NemoAlignedResult(text: sentences.map(\.text).joined(), sentences: sentences)
     }
 
     static func mergeLongestContiguous(
-        _ a: [ParakeetAlignedToken],
-        _ b: [ParakeetAlignedToken],
+        _ a: [NemoAlignedToken],
+        _ b: [NemoAlignedToken],
         overlapDuration: Double
-    ) throws -> [ParakeetAlignedToken] {
+    ) throws -> [NemoAlignedToken] {
         if a.isEmpty { return b }
         if b.isEmpty { return a }
 
@@ -163,14 +163,14 @@ enum ParakeetAlignment {
         }
 
         if best.count < enoughPairs {
-            throw ParakeetAlignmentError.noStrongOverlap
+            throw NemoAlignmentError.noStrongOverlap
         }
 
         let aStart = a.count - overlapA.count
         let indicesA = best.map { aStart + $0.0 }
         let indicesB = best.map { $0.1 }
 
-        var merged: [ParakeetAlignedToken] = []
+        var merged: [NemoAlignedToken] = []
         merged.append(contentsOf: a[..<indicesA[0]])
 
         for idx in best.indices {
@@ -192,10 +192,10 @@ enum ParakeetAlignment {
     }
 
     static func mergeLongestCommonSubsequence(
-        _ a: [ParakeetAlignedToken],
-        _ b: [ParakeetAlignedToken],
+        _ a: [NemoAlignedToken],
+        _ b: [NemoAlignedToken],
         overlapDuration: Double
-    ) -> [ParakeetAlignedToken] {
+    ) -> [NemoAlignedToken] {
         if a.isEmpty { return b }
         if b.isEmpty { return a }
 
@@ -250,7 +250,7 @@ enum ParakeetAlignment {
         let indicesA = pairs.map { aStart + $0.0 }
         let indicesB = pairs.map { $0.1 }
 
-        var merged: [ParakeetAlignedToken] = []
+        var merged: [NemoAlignedToken] = []
         merged.append(contentsOf: a[..<indicesA[0]])
 
         for idx in pairs.indices {
@@ -272,9 +272,9 @@ enum ParakeetAlignment {
     }
 
     private static func shouldCloseSentence(
-        token: ParakeetAlignedToken,
+        token: NemoAlignedToken,
         index: Int,
-        allTokens: [ParakeetAlignedToken]
+        allTokens: [NemoAlignedToken]
     ) -> Bool {
         if token.text.contains("!") || token.text.contains("?")
             || token.text.contains("。") || token.text.contains("？") || token.text.contains("！") {
@@ -288,14 +288,14 @@ enum ParakeetAlignment {
     }
 
     private static func matches(
-        _ lhs: ParakeetAlignedToken,
-        _ rhs: ParakeetAlignedToken,
+        _ lhs: NemoAlignedToken,
+        _ rhs: NemoAlignedToken,
         overlapDuration: Double
     ) -> Bool {
         lhs.id == rhs.id && abs(lhs.start - rhs.start) < overlapDuration
     }
 }
 
-enum ParakeetAlignmentError: Error {
+enum NemoAlignmentError: Error {
     case noStrongOverlap
 }
