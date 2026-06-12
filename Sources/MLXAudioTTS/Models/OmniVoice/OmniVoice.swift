@@ -312,7 +312,8 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             text: text,
             refText: refText,
             numRefAudioTokens: numRefTokCount,
-            speed: ovParameters.speed
+            speed: ovParameters.speed,
+            duration: ovParameters.duration
         )
 
         // 3. Prepare inference inputs
@@ -579,13 +580,125 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         text: String,
         refText: String?,
         numRefAudioTokens: Int,
-        speed: Float
+        speed: Float,
+        duration: Float?
     ) -> Int {
-        // Simple heuristic: ~4 tokens per character
-        let chars = text.count
-        let baseEstimate = max(25, chars * 4)
+        let tokensPerSecond = Float(config.sampleRate) / 960.0
+        if let duration {
+            return max(1, Int(ceil(duration * tokensPerSecond)))
+        }
+
+        // Parity with mlx-audio Python:
+        // RuleDurationEstimator().estimate_duration(text, "Nice to meet you.", 25)
+        // followed by a 1.15 safety margin. The previous `characters * 4`
+        // heuristic over-allocated English by roughly 2x, causing the diffusion
+        // model to place speech near the end of a long target window.
+        let rawTokens = estimateRuleDurationTokens(
+            targetText: text,
+            refText: "Nice to meet you.",
+            refDuration: 25.0
+        )
+        let baseEstimate = max(10, Int(rawTokens * 1.15))
         let adjusted = speed > 0 && speed != 1.0 ? Int(Float(baseEstimate) / speed) : baseEstimate
         return max(1, adjusted)
+    }
+
+    private func estimateRuleDurationTokens(
+        targetText: String,
+        refText: String,
+        refDuration: Float,
+        lowThreshold: Float = 50.0,
+        boostStrength: Float = 3.0
+    ) -> Float {
+        guard refDuration > 0, !refText.isEmpty else { return 0 }
+        let refWeight = phoneticWeight(refText)
+        guard refWeight > 0 else { return 0 }
+
+        let speedFactor = refWeight / refDuration
+        let estimated = phoneticWeight(targetText) / speedFactor
+        if estimated < lowThreshold {
+            let alpha = 1.0 / boostStrength
+            return lowThreshold * pow(estimated / lowThreshold, alpha)
+        }
+        return estimated
+    }
+
+    private func phoneticWeight(_ text: String) -> Float {
+        text.unicodeScalars.reduce(Float(0)) { total, scalar in
+            total + phoneticWeight(scalar)
+        }
+    }
+
+    private func phoneticWeight(_ scalar: Unicode.Scalar) -> Float {
+        let code = scalar.value
+        if (65...90).contains(code) || (97...122).contains(code) {
+            return 1.0
+        }
+        if code == 32 {
+            return 0.2
+        }
+        if code == 0x0640 {
+            return 0.0
+        }
+
+        switch scalar.properties.generalCategory {
+        case .nonspacingMark, .spacingMark, .enclosingMark:
+            return 0.0
+        case .connectorPunctuation, .dashPunctuation, .openPunctuation, .closePunctuation,
+             .initialPunctuation, .finalPunctuation, .otherPunctuation,
+             .mathSymbol, .currencySymbol, .modifierSymbol, .otherSymbol:
+            return 0.5
+        case .spaceSeparator, .lineSeparator, .paragraphSeparator:
+            return 0.2
+        case .decimalNumber, .letterNumber, .otherNumber:
+            return 3.5
+        default:
+            break
+        }
+
+        return scriptWeight(for: code)
+    }
+
+    private func scriptWeight(for code: UInt32) -> Float {
+        if code <= 0x02AF { return 1.0 }
+        if code <= 0x03FF { return 1.0 }
+        if code <= 0x052F { return 1.0 }
+        if code <= 0x058F { return 1.0 }
+        if code <= 0x05FF { return 1.5 }
+        if code <= 0x08FF { return 1.5 }
+        if code <= 0x0DFF { return 1.8 }
+        if code <= 0x0EFF { return 1.5 }
+        if code <= 0x0FFF { return 1.8 }
+        if code <= 0x109F { return 1.8 }
+        if code <= 0x10FF { return 1.0 }
+        if code <= 0x11FF { return 2.5 }
+        if code <= 0x139F { return 3.0 }
+        if code <= 0x17FF { return 1.8 }
+        if code <= 0x1C7F { return 1.8 }
+        if code <= 0x1C8F { return 1.0 }
+        if code <= 0x1CBF { return 1.0 }
+        if code <= 0x1CFF { return 1.8 }
+        if code <= 0x1EFF { return 1.0 }
+        if code <= 0x309F { return 2.2 }
+        if code <= 0x30FF { return 2.2 }
+        if code <= 0x312F { return 3.0 }
+        if code <= 0x318F { return 2.5 }
+        if code <= 0x9FFF { return 3.0 }
+        if code <= 0xA4CF { return 3.0 }
+        if code <= 0xA69F { return 1.0 }
+        if code <= 0xA7FF { return 1.0 }
+        if code <= 0xA8FF { return 1.8 }
+        if code <= 0xA97F { return 2.5 }
+        if code <= 0xAADF { return 1.8 }
+        if code <= 0xAB2F { return 3.0 }
+        if code <= 0xAB6F { return 1.0 }
+        if code <= 0xABFF { return 1.8 }
+        if code <= 0xD7AF { return 2.5 }
+        if code <= 0xFAFF { return 3.0 }
+        if code <= 0xFEFF { return 1.5 }
+        if code <= 0xFFEF { return 1.0 }
+        if code > 0x20000 { return 3.0 }
+        return 1.0
     }
 
     private func prepareInferenceInputs(
@@ -1569,4 +1682,3 @@ public final class OmniVoiceAudioTokenizer: Module {
         return maxIdx >= 0 ? maxIdx + 1 : nil
     }
 }
-
