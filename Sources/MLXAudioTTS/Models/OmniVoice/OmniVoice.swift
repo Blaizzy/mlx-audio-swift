@@ -374,79 +374,20 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
         let layerIds = MLXArray((0..<numCodebooks).map { Int32($0) }).reshaped([1, numCodebooks, 1])
 
-        // Diagnostic: test backbone reconstruction on reference audio tokens
-        if let refTok = refAudioTokens {
-            let refLen = min(refTok.shape[1], targetLen)
-            let refPrefix = refTok[0..., 0..<refLen]
-            let refPadding = MLXArray.full([numCodebooks, targetLen - refLen], values: MLXArray(Int32(config.audioMaskId)))
-            let refTarget = MLX.concatenated([refPrefix, refPadding], axis: 1).reshaped([1, numCodebooks, targetLen])
-            let prefix = inputIds[0..., 0..., 0..<prefixLen]
-            let diagInputIds = MLX.concatenated([prefix, refTarget], axis: 2)
-            
-            // Step-by-step diagnostic to isolate where predictions break
-            let diagEmbeds = prepareEmbedInputs(inputIds: diagInputIds, audioMask: audioMask)
-            print("[OmniVoice DIAG] embeds: shape=\(diagEmbeds.shape), min=\(diagEmbeds.min().item(Float.self)), max=\(diagEmbeds.max().item(Float.self)), mean=\(diagEmbeds.mean().item(Float.self))")
-            
-            let diagHidden = llm.forwardWithEmbeddings(inputsEmbeds: diagEmbeds, cache: nil, mask: .none).asType(.float32)
-            print("[OmniVoice DIAG] hidden: shape=\(diagHidden.shape), min=\(diagHidden.min().item(Float.self)), max=\(diagHidden.max().item(Float.self)), mean=\(diagHidden.mean().item(Float.self))")
-            
-            var diagLogitsList: [MLXArray] = []
-            for (i, head) in audioHeads.enumerated() {
-                let hLogits = head(diagHidden)  // [B, S, V]
-                let hReshaped = hLogits.reshaped([diagHidden.shape[0], diagHidden.shape[1], 1, config.audioVocabSize])
-                diagLogitsList.append(hReshaped)
-            }
-            let diagLogits = MLX.concatenated(diagLogitsList, axis: 2).asType(.float32)
-            print("[OmniVoice DIAG] logits: shape=\(diagLogits.shape), min=\(diagLogits.min().item(Float.self)), max=\(diagLogits.max().item(Float.self)), mean=\(diagLogits.mean().item(Float.self))")
-            
-            let diagTargetLogits = diagLogits[0, (condLength - targetLen)..<condLength, 0..., 0...]
-            let diagTargetLogitsBatch = diagTargetLogits.transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
-            let diagPreds = MLX.argMax(diagTargetLogitsBatch, axis: -1)[0]
-            let refForCompare = refTarget[0..., 0..., 0..<refLen]
-            let predForCompare = diagPreds[0..., 0..<refLen]
-            let match = (refForCompare .== predForCompare).sum().item(Int32.self)
-            let total = refLen * numCodebooks
-            print("[OmniVoice] DIAGNOSTIC: backbone reconstruction accuracy on ref audio = \(match)/\(total) (\(String(format: "%.1f", Float(match)/Float(total)*100))%)")
-            
-            // Extra diagnostic: print top-1 token distribution for first codebook
-            let firstCbPreds = predForCompare[0, 0...].asArray(Int32.self)
-            let uniquePreds = Dictionary(grouping: firstCbPreds, by: { $0 }).mapValues { $0.count }
-            let topPreds = uniquePreds.sorted { $0.value > $1.value }.prefix(5)
-            print("[OmniVoice DIAG] first codebook top-5 predicted tokens: \(Array(topPreds))")
-        }
-
         // 7. Iterative diffusion generation
         for step in 0..<numSteps {
             let k = schedule[step]
             if k <= 0 { continue }
 
-            // Separate forward passes for cond and uncond to avoid custom batch mask issues
+            // Separate forward passes for cond and uncond (bidirectional attention)
             let condLogits = forward(
                 inputIds: inputIds,
-                audioMask: audioMask,
-                attentionMask: .none
+                audioMask: audioMask
             ).asType(.float32)
             let uLogitsFull = forward(
                 inputIds: uncondInputIds,
-                audioMask: uncondAudioMask,
-                attentionMask: .none
+                audioMask: uncondAudioMask
             ).asType(.float32)
-
-            // Diagnostic: print logits statistics on step 0
-            if step == 0 {
-                let cMin = condLogits.min().item(Float.self)
-                let cMax = condLogits.max().item(Float.self)
-                let cMean = condLogits.mean().item(Float.self)
-                let cAnyNaN = isNaN(condLogits).any().item(Bool.self)
-                let cAnyInf = isInf(condLogits).any().item(Bool.self)
-                let uMin = uLogitsFull.min().item(Float.self)
-                let uMax = uLogitsFull.max().item(Float.self)
-                let uMean = uLogitsFull.mean().item(Float.self)
-                let uAnyNaN = isNaN(uLogitsFull).any().item(Bool.self)
-                let uAnyInf = isInf(uLogitsFull).any().item(Bool.self)
-                print("[OmniVoice] Step 0 cond logits: min=\(cMin), max=\(cMax), mean=\(cMean), hasNaN=\(cAnyNaN), hasInf=\(cAnyInf)")
-                print("[OmniVoice] Step 0 uncond logits: min=\(uMin), max=\(uMax), mean=\(uMean), hasNaN=\(uAnyNaN), hasInf=\(uAnyInf)")
-            }
 
             // Extract target region logits
             let cLogits = condLogits[0, (condLength - targetLen)..<condLength, 0..., 0...]
@@ -477,25 +418,6 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             let mask = tokens[0] .!= Int32(config.audioMaskId)
             let maskInf = MLX.where(mask, MLXArray(Float(-Float.infinity)), finalScores).asType(.float32)
 
-            // Parity-debug trace: dump step-0 scoring internals
-            if step == 0, ProcessInfo.processInfo.environment["OMNIVOICE_TRACE"] != nil {
-                try? FileManager.default.createDirectory(
-                    atPath: "/tmp/ov-trace-swift", withIntermediateDirectories: true)
-                try? MLX.save(
-                    arrays: [
-                        "pred_tokens": predTokens[0].asType(.int32),
-                        "scores": scores[0].asType(.float32),
-                        "final_scores": finalScores.reshaped([numCodebooks, targetLen]).asType(.float32),
-                        "input_ids": inputIds[0].asType(.int32),
-                        "audio_mask": audioMask.asType(.int32),
-                        "uncond_input_ids": uncondInputIds[0].asType(.int32),
-                        "uncond_audio_mask": uncondAudioMask.asType(.int32),
-                        "c_logits": cLogitsBatch.asType(.float32),
-                        "u_logits": uLogitsBatch.asType(.float32),
-                    ],
-                    url: URL(fileURLWithPath: "/tmp/ov-trace-swift/step00-internals.safetensors"))
-            }
-
             // Flatten for top-k selection
             let flatScores = maskInf.reshaped([-1])
             let flatTokens = tokens[0].reshaped([-1])
@@ -522,16 +444,6 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             uncondInputIds = tokens  // uncond is just the target region
 
             eval(inputIds, uncondInputIds, tokens)
-
-            // Parity-debug trace: dump per-step tokens when OMNIVOICE_TRACE is set
-            if ProcessInfo.processInfo.environment["OMNIVOICE_TRACE"] != nil {
-                let dir = "/tmp/ov-trace-swift"
-                try? FileManager.default.createDirectory(
-                    atPath: dir, withIntermediateDirectories: true)
-                try? MLX.save(
-                    arrays: ["tokens": tokens[0], "k": MLXArray(Int32(k))],
-                    url: URL(fileURLWithPath: String(format: "%@/step%02d.safetensors", dir, step)))
-            }
         }
 
         // Safeguard: fill any remaining mask tokens with a final deterministic prediction
@@ -569,50 +481,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             outputTokens = MLX.where(remainingMask, MLXArray.zeros(outputTokens.shape, type: Int32.self), outputTokens)
         }
         
-        // Diagnostic: print token statistics to debug noise issues
-        let tokenVals = outputTokens.asArray(Int32.self)
-        let uniqueVals = Set(tokenVals)
-        let maskCount = tokenVals.filter { $0 == Int32(config.audioMaskId) }.count
-        print("[OmniVoice] Token stats: min=\(uniqueVals.min() ?? -1), max=\(uniqueVals.max() ?? -1), unique=\(uniqueVals.count), maskRemaining=\(maskCount)")
-
-        // Diagnostic: bypass diffusion and decode refAudioTokens directly if available
-        if let refTok = refAudioTokens {
-            do {
-                let refDecoded = try audioTok.decode(refTok)
-                let tempDir = FileManager.default.temporaryDirectory
-                let refURL = tempDir.appendingPathComponent("omnivoice_diagnostic_ref_direct.wav")
-                try AudioUtils.writeWavFile(samples: refDecoded.asArray(Float.self), sampleRate: Double(config.sampleRate), fileURL: refURL)
-                print("[OmniVoice] DIAGNOSTIC: saved direct ref decode to \(refURL.path)")
-            } catch {
-                print("[OmniVoice] DIAGNOSTIC: ref direct decode failed: \(error)")
-            }
-        }
-
         let audio = try audioTok.decode(outputTokens)
-        
-        // Diagnostic: print vocoder output statistics
-        let audioMin = audio.min().item(Float.self)
-        let audioMax = audio.max().item(Float.self)
-        let audioMean = audio.mean().item(Float.self)
-        let audioNaN = isNaN(audio).any().item(Bool.self)
-        let audioInf = isInf(audio).any().item(Bool.self)
-        print("[OmniVoice] Vocoder decode stats: min=\(audioMin), max=\(audioMax), mean=\(audioMean), hasNaN=\(audioNaN), hasInf=\(audioInf)")
-
-        // Temporary diagnostics: save intermediate audio to temp directory
-        do {
-            let tempDir = FileManager.default.temporaryDirectory
-            let rawURL = tempDir.appendingPathComponent("omnivoice_diagnostic_raw.wav")
-            let finalURL = tempDir.appendingPathComponent("omnivoice_diagnostic_final.wav")
-            let rawSamples = audio.asArray(Float.self)
-            try AudioUtils.writeWavFile(samples: rawSamples, sampleRate: Double(config.sampleRate), fileURL: rawURL)
-            print("[OmniVoice] DIAGNOSTIC: saved raw vocoder output to \(rawURL.path)")
-            let processed = postProcessAudio(audio, refRms: nil, postprocessOutput: ovParameters.postprocessOutput)
-            try AudioUtils.writeWavFile(samples: processed.asArray(Float.self), sampleRate: Double(config.sampleRate), fileURL: finalURL)
-            print("[OmniVoice] DIAGNOSTIC: saved post-processed audio to \(finalURL.path)")
-            return processed
-        } catch {
-            print("[OmniVoice] DIAGNOSTIC: failed to save wav: \(error)")
-        }
 
         // 9. Post-process
         return postProcessAudio(audio, refRms: nil, postprocessOutput: ovParameters.postprocessOutput)
@@ -917,10 +786,11 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         if !extra.isEmpty {
             print("[OmniVoiceModel] WARNING: \(extra.count) extra keys after sanitize: \(extra.prefix(10))")
         }
+        // Weights run as float32: the diffusion loop is sensitive to logit
+        // precision and the reference checkpoint ships fp32 (no-op there).
         let float32Weights = sanitizedWeights.mapValues { $0.asType(.float32) }
         try model.update(parameters: ModuleParameters.unflattened(float32Weights), verify: .noUnusedKeys)
         eval(model)
-        print("[OmniVoiceModel] INFO: loaded TTS model weights as float32 for precision test")
 
         // Load text tokenizer
         model.tokenizer = try await AutoTokenizer.from(modelFolder: {
@@ -1326,16 +1196,11 @@ public final class OmniVoiceDACAcousticEncoder: Module {
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         var h = conv1(x)
-        print("[OmniVoice Encoder] after conv1: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
-        for (i, b) in block.enumerated() {
+        for b in block {
             h = b(h)
-            print("[OmniVoice Encoder] after downBlock \(i): shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
         }
         h = snake1.callAsFunction(h)
-        print("[OmniVoice Encoder] after snake1: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
-        h = conv2(h)
-        print("[OmniVoice Encoder] after conv2: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
-        return h
+        return conv2(h)
     }
 }
 
@@ -1385,17 +1250,12 @@ public final class OmniVoiceDACAcousticDecoder: Module {
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         var h = conv1(x)
-        print("[OmniVoice Dec] conv1 out: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self))")
-        for (i, b) in block.enumerated() {
+        for b in block {
             h = b(h)
-            print("[OmniVoice Dec] upBlock \(i) out: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self))")
         }
         h = snake1.callAsFunction(h)
-        print("[OmniVoice Dec] snake1 out: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self))")
-        h = conv2(h)
-        // Python _adjust_dac_decoder removes final Tanh; keep output unbounded
-        print("[OmniVoice Dec] conv2 out: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self))")
-        return h
+        // Python _adjust_dac_decoder removes the final Tanh; keep output unbounded
+        return conv2(h)
     }
 }
 
@@ -1550,20 +1410,6 @@ public final class OmniVoiceAudioTokenizer: Module {
         // RVQ: [B, D, T'] -> (codes [B, n_codebooks, T'], quantized [B, D, T'])
         let (codes, _) = quantizer(zProjected)
 
-        // Temporary diagnostic: encode->decode roundtrip to isolate vocoder issues
-        do {
-            let decoded = try self.decode(codes[0])
-            let tempDir = FileManager.default.temporaryDirectory
-            let originalURL = tempDir.appendingPathComponent("omnivoice_tokenizer_roundtrip_original.wav")
-            let decodedURL = tempDir.appendingPathComponent("omnivoice_tokenizer_roundtrip_decoded.wav")
-            try AudioUtils.writeWavFile(samples: wav[0].asArray(Float.self), sampleRate: Double(config.sampleRate), fileURL: originalURL)
-            try AudioUtils.writeWavFile(samples: decoded.asArray(Float.self), sampleRate: Double(config.sampleRate), fileURL: decodedURL)
-            print("[OmniVoiceAudioTokenizer] DIAGNOSTIC: saved original to \(originalURL.path)")
-            print("[OmniVoiceAudioTokenizer] DIAGNOSTIC: saved roundtrip to \(decodedURL.path)")
-        } catch {
-            print("[OmniVoiceAudioTokenizer] DIAGNOSTIC: roundtrip save failed: \(error)")
-        }
-
         // Return [n_codebooks, T'] (squeeze batch dim)
         return codes[0]
     }
@@ -1577,7 +1423,6 @@ public final class OmniVoiceAudioTokenizer: Module {
 
         // RVQ decode: [1, n_codebooks, T] -> [1, D, T] where D=1024
         let z = quantizer.decode(batchedTokens)
-        print("[OmniVoice Decode] after quantizer.decode: shape=\(z.shape), min=\(z.min().item(Float.self)), max=\(z.max().item(Float.self)), mean=\(z.mean().item(Float.self))")
 
         // fc2 project: [1, D, T] -> [1, D', T] where D'=256
         // fc2.weight shape is [256, 1024] (outputDim x inputDim)
@@ -1585,24 +1430,9 @@ public final class OmniVoiceAudioTokenizer: Module {
         let zNLC = z.transposed(0, 2, 1)  // [B, T, 1024]
         let hNLC = MLX.matmul(zNLC, fc2.weight.transposed(1, 0))  // [B, T, 256]
         let h = (hNLC + (fc2.bias ?? MLXArray.zeros([1]))).transposed(0, 2, 1)  // [B, 256, T]
-        print("[OmniVoice Decode] after fc2: shape=\(h.shape), min=\(h.min().item(Float.self)), max=\(h.max().item(Float.self)), mean=\(h.mean().item(Float.self))")
-
-        // Verify decoder conv1 weight shape at runtime
-        let paramDict = Dictionary(uniqueKeysWithValues: acousticDecoder.parameters().flattened())
-        if let w = paramDict["conv1.weight"] {
-            print("[OmniVoice Decode] RUNTIME CHECK acousticDecoder.conv1.weight: shape=\(w.shape), min=\(w.min().item(Float.self)), max=\(w.max().item(Float.self))")
-        } else {
-            print("[OmniVoice Decode] RUNTIME CHECK acousticDecoder.conv1.weight: MISSING")
-        }
-        if let w = paramDict["conv2.weight"] {
-            print("[OmniVoice Decode] RUNTIME CHECK acousticDecoder.conv2.weight: shape=\(w.shape), min=\(w.min().item(Float.self)), max=\(w.max().item(Float.self))")
-        } else {
-            print("[OmniVoice Decode] RUNTIME CHECK acousticDecoder.conv2.weight: MISSING")
-        }
 
         // Decoder: [1, D', T] -> [1, 1, T']
         let audio = acousticDecoder(h)
-        print("[OmniVoice Decode] after acousticDecoder: shape=\(audio.shape), min=\(audio.min().item(Float.self)), max=\(audio.max().item(Float.self)), mean=\(audio.mean().item(Float.self))")
 
         return audio.reshaped([-1])
     }
@@ -1715,11 +1545,10 @@ public final class OmniVoiceAudioTokenizer: Module {
             print("[OmniVoiceAudioTokenizer] WARNING: \(extra.count) extra keys in checkpoint: \(extra.prefix(10))")
         }
         
-        // Test: load all tokenizer weights in float32 to rule out bfloat16 precision issues
+        // Codec weights run as float32 (reference checkpoint ships fp32).
         let float32Weights = weights.mapValues { $0.asType(.float32) }
         try tokenizer.update(parameters: ModuleParameters.unflattened(float32Weights), verify: .noUnusedKeys)
         eval(tokenizer)
-        print("[OmniVoiceAudioTokenizer] INFO: loaded all weights as float32 for precision test")
 
         return tokenizer
     }
