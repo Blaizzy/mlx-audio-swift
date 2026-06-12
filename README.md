@@ -14,7 +14,7 @@ MLXAudio follows a modular design allowing you to import only what you need:
 
 - **MLXAudioCore**: Base types, protocols, and utilities
 - **MLXAudioCodecs**: Audio codec implementations (SNAC, Encodec, Vocos, Mimi, DACVAE)
-- **MLXAudioTTS**: Text-to-Speech models (Qwen3-TTS, Fish Audio S2 Pro, Soprano, VyvoTTS, Orpheus, Marvis TTS, Pocket TTS)
+- **MLXAudioTTS**: Text-to-Speech models (Qwen3-TTS, Fish Audio S2 Pro, Soprano, VyvoTTS, Orpheus, Marvis TTS, Pocket TTS, Irodori TTS)
 - **MLXAudioSTT**: Speech-to-Text models (Qwen3-ASR, Voxtral Realtime, Cohere Transcribe, Parakeet, Nemotron ASR, GLMASR)
 - **MLXAudioVAD**: Voice Activity Detection & Speaker Diarization (Sortformer, SmartTurn)
 - **MLXAudioSTS**: Speech-to-Speech models (LFM2.5-Audio, SAM-Audio, MossFormer2-SE, DeepFilterNet)
@@ -126,6 +126,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | MOSS-TTS | [MOSS-TTS README](Sources/MLXAudioTTS/Models/MossTTS/README.md) | [OpenMOSS-Team/MOSS-TTS](https://huggingface.co/OpenMOSS-Team/MOSS-TTS), [OpenMOSS-Team/MOSS-TTSD-v1.0](https://huggingface.co/OpenMOSS-Team/MOSS-TTSD-v1.0), [OpenMOSS-Team/MOSS-TTS-Local-Transformer](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer) |
 | Marvis TTS | [Marvis TTS README](Sources/MLXAudioTTS/Models/Marvis/README.md) | [Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit](https://huggingface.co/Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit) |
 | Pocket TTS | [Pocket TTS README](Sources/MLXAudioTTS/Models/PocketTTS/README.md) | [mlx-community/pocket-tts](https://huggingface.co/mlx-community/pocket-tts) |
+| Irodori TTS | [Irodori TTS README](Sources/MLXAudioTTS/Models/IrodoriTTS/README.md) | [mlx-community/Irodori-TTS-600M-v3-VoiceDesign-8bit](https://huggingface.co/mlx-community/Irodori-TTS-600M-v3-VoiceDesign-8bit) |
 
 ### STT Models
 
