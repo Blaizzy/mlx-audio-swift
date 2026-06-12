@@ -19,6 +19,8 @@ public final class MossTTSNanoModel: Module, SpeechGenerationModel, @unchecked S
 
     public var tokenizer: MossTextTokenizing?
     public var audioTokenizer: MossAudioTokenizing?
+    private var hfToken: String?
+    private var cache: HubCache = .default
 
     public var sampleRate: Int { config.audioTokenizerSampleRate }
 
@@ -91,7 +93,11 @@ public final class MossTTSNanoModel: Module, SpeechGenerationModel, @unchecked S
             }
         }
         let source = resolvedAudioTokenizerSource()
-        audioTokenizer = try await MLXMossAudioTokenizer.fromPretrained(source)
+        audioTokenizer = try await MLXMossAudioTokenizer.fromPretrained(
+            source,
+            hfToken: hfToken,
+            cache: cache
+        )
     }
 
     private func resolvedAudioTokenizerSource() -> String {
@@ -553,14 +559,20 @@ public final class MossTTSNanoModel: Module, SpeechGenerationModel, @unchecked S
             hfToken: hfToken,
             cache: cache
         )
-        return try await fromModelDirectory(modelDir)
+        return try await fromModelDirectory(modelDir, hfToken: hfToken, cache: cache)
     }
 
-    public static func fromModelDirectory(_ modelDir: URL) async throws -> MossTTSNanoModel {
+    public static func fromModelDirectory(
+        _ modelDir: URL,
+        hfToken: String? = nil,
+        cache: HubCache = .default
+    ) async throws -> MossTTSNanoModel {
         let configData = try Data(contentsOf: modelDir.appendingPathComponent("config.json"))
         var config = try JSONDecoder().decode(MossTTSNanoConfig.self, from: configData)
         config.modelPath = modelDir.path
         let model = MossTTSNanoModel(config: config)
+        model.hfToken = hfToken
+        model.cache = cache
 
         let weights = try loadWeights(from: modelDir)
         let sanitizedWeights = model.sanitize(weights: weights)

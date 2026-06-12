@@ -787,9 +787,12 @@ public final class MLXMossAudioTokenizer: Module, MossAudioTokenizing, @unchecke
         hfToken: String? = nil,
         cache: HubCache = .default
     ) async throws -> MLXMossAudioTokenizer {
+        let localURL = URL(fileURLWithPath: NSString(string: source).expandingTildeInPath)
+        if FileManager.default.fileExists(atPath: localURL.appendingPathComponent("config.json").path) {
+            return try fromModelDirectory(localURL)
+        }
         guard let repoID = Repo.ID(rawValue: source) else {
-            let url = URL(fileURLWithPath: NSString(string: source).expandingTildeInPath)
-            return try fromModelDirectory(url)
+            return try fromModelDirectory(localURL)
         }
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
