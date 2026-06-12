@@ -34,6 +34,7 @@ public final class ParakeetModel: Module, STTGenerationModel {
     enum EncoderExecutionImplementation: Sendable {
         case plain
         case compiled
+        case coreML
     }
 
     struct TDTTraceStep: Sendable, Equatable {
@@ -52,6 +53,9 @@ public final class ParakeetModel: Module, STTGenerationModel {
 
     var tdtDecoderImplementation: TDTDecoderImplementation?
     var encoderExecutionImplementation: EncoderExecutionImplementation?
+    #if canImport(CoreML)
+    var coreMLEncoder: ParakeetCoreMLEncoder?
+    #endif
     var tdtTraceEmitter: (@Sendable (TDTTraceStep) -> Void)?
     private var compiledEncoderFeaturesByShape: [String: @Sendable (MLXArray) -> MLXArray] = [:]
 
@@ -313,8 +317,92 @@ public final class ParakeetModel: Module, STTGenerationModel {
             let encodedFeatures = compiledEncoderFeatures(for: features)(features)
             let encodedLengths = computeEncodedLengths(from: resolvedLengths)
             return (encodedFeatures, encodedLengths)
+        case .coreML:
+            #if canImport(CoreML)
+            if let coreMLEncoder,
+               let result = try? coreMLEncoder.encode(features, outputDType: computeDType) {
+                return result
+            }
+            #endif
+            return encoder(features, lengths: resolvedLengths)  // fallback if CoreML unavailable
         }
     }
+
+    /// How to source the optional CoreML/ANE Conformer encoder (default `.off` = pure MLX).
+    public enum ANEEncoder: Sendable {
+        case off
+        case on                  // download `defaultANEEncoderRepo` from Hugging Face
+        case repo(String)        // download a specific Hugging Face repo
+        case package(URL)        // a local .mlpackage / .mlmodelc
+    }
+
+    public static let defaultANEEncoderRepo = "beshkenadze/parakeet-tdt-0.6b-v3-coreml-ane"
+
+    /// Apply an `ANEEncoder` option. No-op for `.off` or when CoreML is unavailable.
+    public func applyANEEncoder(_ option: ANEEncoder, cache: HubCache = .default) async throws {
+        #if canImport(CoreML)
+        switch option {
+        case .off: break
+        case .on: try await enableCoreMLEncoder(repo: Self.defaultANEEncoderRepo, cache: cache)
+        case .repo(let repo): try await enableCoreMLEncoder(repo: repo, cache: cache)
+        case .package(let url): try enableCoreMLEncoder(modelURL: url)
+        }
+        #endif
+    }
+
+    #if canImport(CoreML)
+    /// Route the Conformer encoder through CoreML/ANE; decoder and chunking stay in MLX.
+    public func enableCoreMLEncoder(modelURL: URL, fixedFrames: Int = 1000) throws {
+        coreMLEncoder = try ParakeetCoreMLEncoder(
+            modelURL: modelURL,
+            featIn: encoderConfig.featIn,
+            fixedFrames: fixedFrames,
+            subsamplingFactor: encoderConfig.subsamplingFactor
+        )
+        encoderExecutionImplementation = .coreML
+    }
+
+    /// Download a CoreML encoder `.mlpackage` from a Hugging Face repo, then route through it.
+    public func enableCoreMLEncoder(repo: String, cache: HubCache = .default) async throws {
+        let url = try await Self.downloadANEEncoderPackage(repo: repo, cache: cache)
+        try enableCoreMLEncoder(modelURL: url)
+    }
+
+    static func downloadANEEncoderPackage(repo: String, cache: HubCache = .default) async throws -> URL {
+        guard let repoID = Repo.ID(rawValue: repo) else {
+            throw NSError(domain: "ParakeetModel", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "Invalid ANE encoder repo: \(repo)"])
+        }
+        let hfToken = ProcessInfo.processInfo.environment["HF_TOKEN"]
+            ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
+        let client = (hfToken?.isEmpty == false)
+            ? HubClient(host: HubClient.defaultHost, bearerToken: hfToken!, cache: cache)
+            : HubClient(cache: cache)
+        let dir = (client.cache ?? cache).cacheDirectory
+            .appendingPathComponent("mlx-audio")
+            .appendingPathComponent(repo.replacingOccurrences(of: "/", with: "_"))
+
+        if let cached = findEncoderPackage(in: dir) { return cached }
+
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        _ = try await client.downloadSnapshot(
+            of: repoID, kind: .model, to: dir, revision: "main",
+            matching: ["*.json", "*.mlmodel", "*.bin", "*.weights", "*.mil", "*.espresso.*"],
+            progressHandler: { _ in }
+        )
+        guard let pkg = findEncoderPackage(in: dir) else {
+            throw NSError(domain: "ParakeetModel", code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: "No .mlpackage/.mlmodelc found in \(repo)"])
+        }
+        return pkg
+    }
+
+    static func findEncoderPackage(in dir: URL) -> URL? {
+        guard let items = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        else { return nil }
+        return items.first { ["mlpackage", "mlmodelc"].contains($0.pathExtension) }
+    }
+    #endif
 
     func compiledEncoderFeatures(for features: MLXArray) -> @Sendable (MLXArray) -> MLXArray {
         let key = "\(features.shape)-\(features.dtype)"
@@ -1054,7 +1142,8 @@ public extension ParakeetModel {
     static func fromPretrained(
         _ modelPath: String,
         computeDType: DType = .bfloat16,
-        cache: HubCache = .default
+        cache: HubCache = .default,
+        aneEncoder: ANEEncoder = .off
     ) async throws -> ParakeetModel {
         let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
             ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
@@ -1073,7 +1162,9 @@ public extension ParakeetModel {
             hfToken: hfToken,
             cache: cache
         )
-        return try fromDirectory(modelDir, computeDType: computeDType)
+        let model = try fromDirectory(modelDir, computeDType: computeDType)
+        try await model.applyANEEncoder(aneEncoder, cache: cache)
+        return model
     }
 }
 
