@@ -1396,53 +1396,32 @@ public final class OmniVoiceRVQQuantizer: Module {
         self._quantizers.wrappedValue = qs
     }
 
-    /// Quantize: [B, D, T] -> (codes [B, n_quantizers, T], quantized [B, outputDim, T])
-    /// Note: D must be 1024 (decoderHiddenSize). The caller must pre-project if needed.
-    func callAsFunction(_ z: MLXArray) -> (MLXArray, MLXArray) {
-        // z is [B, C, L] (NCL) where C = 1024
-        let batchSize = z.shape[0]
-        let seqLen = z.shape[2]
-        let nQuantizers = quantizers.count
+    /// Encode: [B, T, D] (NLC) -> [B, T, n_quantizers] int32 via greedy
+    /// residual quantization (parity with the Python
+    /// ResidualVectorQuantizer.encode: each stage quantizes the residual left
+    /// by the previous stages, not the original input).
+    func encode(_ z: MLXArray) -> MLXArray {
+        var residual = z
+        var tokens: [MLXArray] = []
 
-        var allCodes: [MLXArray] = []
-        var quantized = MLXArray.zeros([batchSize, outputDim, seqLen])
+        for q in quantizers {
+            let codebook = q.codebook.embed  // [K, codebookDim]
+            let zq = q.projectIn(residual)  // [B, T, codebookDim]
 
-        for qIdx in 0..<nQuantizers {
-            let q = quantizers[qIdx]
-            let codebook = q.codebook.embed
-            let codebookSize = codebook.shape[0]
-            let codebookDim = codebook.shape[1]
+            // Squared distances to each codebook entry: [B, T, K]
+            let dists =
+                MLX.sum(zq * zq, axis: -1, keepDims: true)
+                + MLX.sum(codebook * codebook, axis: -1)
+                - 2 * MLX.matmul(zq, codebook.transposed(1, 0))
+            let idx = MLX.argMin(dists, axis: -1).asType(.int32)  // [B, T]
+            tokens.append(idx)
 
-            // Project input to codebook dimension
-            // z is [B, C, L] (NCL), Linear expects [B, L, C] (NLC)
-            let zNLC = z.transposed(0, 2, 1)  // [B, L, C]
-            let zProjNLC = q.projectIn(zNLC)  // [B, L, codebookDim]
-            let zProj = zProjNLC.transposed(0, 2, 1)  // [B, codebookDim, L]
-
-            // [B, codebookDim, T] -> [B, T, codebookDim] for distance computation
-            let zPermute = zProj.transposed(0, 2, 1)
-            let zFlat = zPermute.reshaped([batchSize * seqLen, codebookDim])
-
-            // Compute distances: [B*T, K]
-            let diff = zFlat.reshaped([zFlat.shape[0], 1, codebookDim])
-                - codebook.reshaped([1, codebookSize, codebookDim])
-            let dist = MLX.sum(diff * diff, axis: -1)
-
-            // Nearest codebook index
-            let codes = MLX.argMin(dist, axis: -1)  // [B*T]
-            let codes2d = codes.reshaped([batchSize, seqLen])
-            allCodes.append(codes2d)
-
-            // Gather quantized vectors and project to output dimension
-            let qVecs = MLX.take(codebook, codes, axis: 0)  // [B*T, codebookDim]
-            let qOut = q.projectOut(qVecs)  // [B*T, outputDim]
-            let q3d = qOut.reshaped([batchSize, seqLen, -1]).transposed(0, 2, 1)
-
-            quantized = quantized + q3d
+            let qVecs = MLX.take(codebook, idx.reshaped([-1]), axis: 0)  // [B*T, codebookDim]
+            let recon = q.projectOut(qVecs).reshaped(residual.shape)  // [B, T, D]
+            residual = residual - recon
         }
 
-        let codes = MLX.stacked(allCodes, axis: 1)  // [B, n_quantizers, T]
-        return (codes, quantized)
+        return MLX.stacked(tokens, axis: -1)  // [B, T, n_quantizers]
     }
 
     /// Decode: [B, n_quantizers, T] -> [B, outputDim, T]
@@ -1481,7 +1460,15 @@ public final class OmniVoiceAudioTokenizer: Module {
     @ModuleInfo(key: "quantizer") var quantizer: OmniVoiceRVQQuantizer
     @ModuleInfo(key: "fc2") var fc2: MLXNN.Linear
 
-    init(config: OmniVoiceAudioTokenizerConfig) {
+    // Encode path (voice cloning): HuBERT semantic features fused with the
+    // acoustic features. Only present when the checkpoint ships
+    // semantic_model.* weights (the full mlx-community/OmniVoice does;
+    // the bf16 variant is stripped).
+    @ModuleInfo(key: "semantic_model") var semanticModel: OmniVoiceHubertModel?
+    @ModuleInfo(key: "encoder_semantic") var encoderSemantic: OmniVoiceSemanticEncoder?
+    @ModuleInfo(key: "fc") var fc: MLXNN.Linear?
+
+    init(config: OmniVoiceAudioTokenizerConfig, includeSemantic: Bool = false) {
         self.config = config
 
         self._acousticEncoder.wrappedValue = OmniVoiceDACAcousticEncoder(config: config)
@@ -1493,12 +1480,47 @@ public final class OmniVoiceAudioTokenizer: Module {
             inputDimensions: config.decoderHiddenSize,
             outputDimensions: config.encoderHiddenSize * 4
         )
+
+        if includeSemantic {
+            self._semanticModel.wrappedValue = OmniVoiceHubertModel(config: config)
+            self._encoderSemantic.wrappedValue = OmniVoiceSemanticEncoder(config: config)
+            // fc fuses [acoustic 256 | semantic hidden] -> quantizer input
+            let fusionDim = config.hiddenSize + config.encoderHiddenSize * 4
+            self._fc.wrappedValue = MLXNN.Linear(
+                inputDimensions: fusionDim, outputDimensions: fusionDim
+            )
+        } else {
+            self._semanticModel.wrappedValue = nil
+            self._encoderSemantic.wrappedValue = nil
+            self._fc.wrappedValue = nil
+        }
     }
 
-    /// Encode audio waveform to discrete tokens.
-    /// - Parameter audio: [samples] or [1, samples]
+    /// Stride factor mapping HuBERT frame rate (16 kHz / 320 = 50 fps) onto the
+    /// acoustic frame rate (24 kHz / 960 = 25 fps).
+    private var semanticDownsampleFactor: Int {
+        let hubertFPS = Double(config.semanticSampleRate) / Double(config.downsampleFactor)
+        let acousticFPS = Double(config.sampleRate) / Double(config.hopLength)
+        return max(1, Int((hubertFPS / acousticFPS).rounded()))
+    }
+
+    /// Encode audio waveform to discrete tokens (parity with the Python
+    /// HiggsAudioTokenizer.encode):
+    ///   1. acoustic_encoder on the 24 kHz waveform -> [B, Ta, 256]
+    ///   2. sinc-resample to 16 kHz, pad downsample_factor/2, HuBERT
+    ///      (mean of all hidden states), stride-slice to 25 fps,
+    ///      encoder_semantic CNN -> [B, Ts, hidden]
+    ///   3. concat [acoustic | semantic] -> fc -> residual RVQ encode
+    /// - Parameter audio: [samples] or [1, samples] at 24 kHz
     /// - Returns: [num_codebooks, seq_len]
     public func encode(_ audio: MLXArray) throws -> MLXArray {
+        guard let semanticModel, let encoderSemantic, let fc else {
+            throw AudioGenerationError.modelNotInitialized(
+                "audio tokenizer checkpoint lacks the semantic encode path (semantic_model.*) "
+                    + "required for voice cloning; use the full mlx-community/OmniVoice checkpoint"
+            )
+        }
+
         var wav = audio
         if wav.ndim == 1 {
             // [T] -> [1, 1, T]  (batch, channels, length) NCL
@@ -1510,21 +1532,52 @@ public final class OmniVoiceAudioTokenizer: Module {
             // NLC [B, L, C] -> NCL [B, C, L]
             wav = wav.transposed(0, 2, 1)
         }
+        let wav32 = wav.asType(.float32)
+        let batchSize = wav32.shape[0]
 
-        // Encoder: [B, 1, T] -> [B, D, T'] where D=256
-        let z = acousticEncoder(wav)
+        // 1. Acoustic features: [B, 1, T] -> [B, 256, Ta] (NCL) -> [B, Ta, 256]
+        let acoustic = acousticEncoder(wav32).transposed(0, 2, 1)
 
-        // Project encoder output (256) to quantizer input dimension (1024)
-        // fc2 is Linear(1024→256), weight shape [256, 1024]. To reverse: x @ W = [B,T',256] @ [256,1024] = [B,T',1024]
-        let zNLC = z.transposed(0, 2, 1)  // [B, T', 256]
-        let zProjectedNLC = MLX.matmul(zNLC, fc2.weight)  // [B, T', 1024]
-        let zProjected = zProjectedNLC.transposed(0, 2, 1)  // [B, 1024, T']
+        // 2. Semantic features. Sinc resampling matches torchaudio
+        //    (AVAudioConverter does not); HuBERT input is padded by
+        //    downsample_factor/2 on both sides.
+        var resampled: [[Float]] = []
+        for b in 0..<batchSize {
+            let samples = wav32[b, 0].asArray(Float.self)
+            resampled.append(
+                omniVoiceSincResample(
+                    samples, from: config.sampleRate, to: config.semanticSampleRate))
+        }
+        let targetLen = resampled.map(\.count).min() ?? 0
+        let hubertPad = config.downsampleFactor / 2
+        var flat = [Float]()
+        flat.reserveCapacity(batchSize * (targetLen + 2 * hubertPad))
+        for r in resampled {
+            flat.append(contentsOf: [Float](repeating: 0, count: hubertPad))
+            flat.append(contentsOf: r[0..<targetLen])
+            flat.append(contentsOf: [Float](repeating: 0, count: hubertPad))
+        }
+        let audio16k = MLXArray(flat).reshaped([batchSize, targetLen + 2 * hubertPad])
 
-        // RVQ: [B, D, T'] -> (codes [B, n_codebooks, T'], quantized [B, D, T'])
-        let (codes, _) = quantizer(zProjected)
+        var semantic = semanticModel.meanHiddenStates(audio16k)  // [B, Th, hidden]
+        let dsf = semanticDownsampleFactor
+        if dsf > 1 {
+            let indices = MLXArray(
+                Swift.stride(from: 0, to: semantic.shape[1], by: dsf).map(Int32.init))
+            semantic = MLX.take(semantic, indices, axis: 1)
+        }
+        semantic = encoderSemantic(semantic)  // [B, Ts, hidden]
 
-        // Return [n_codebooks, T'] (squeeze batch dim)
-        return codes[0]
+        // 3. Fuse, project, quantize.
+        let timeSteps = min(acoustic.shape[1], semantic.shape[1])
+        let fused = MLX.concatenated(
+            [acoustic[0..., 0..<timeSteps, 0...], semantic[0..., 0..<timeSteps, 0...]],
+            axis: -1
+        )
+        let codes = quantizer.encode(fc(fused))  // [B, T, n_codebooks]
+
+        // Return [n_codebooks, T] (squeeze batch dim)
+        return codes[0].transposed(1, 0)
     }
 
     /// Decode discrete tokens back to audio waveform.
@@ -1561,16 +1614,18 @@ public final class OmniVoiceAudioTokenizer: Module {
             "acoustic_decoder.",
             "quantizer.",
             "fc2.",
+            "semantic_model.",
+            "encoder_semantic.",
         ]
-        let keepExact: Set<String> = []
-        // Semantic-path weights (semantic_model/encoder_semantic/fc) are dropped
-        // until the HuBERT semantic encoder is ported — they are only needed for
-        // voice cloning, not for decode.
-        let dropPrefixes = ["decoder_semantic.", "fc1.", "semantic_model.", "encoder_semantic.", "fc."]
+        let keepExact: Set<String> = ["fc.weight", "fc.bias"]
+        let dropPrefixes = ["decoder_semantic.", "fc1."]
+        let dropExact: Set<String> = ["semantic_model.masked_spec_embed"]
         let dropSuffixes = [".embed_avg", ".cluster_size", ".inited"]
 
-        for (var k, var v) in weights {
+        for (key, v) in weights {
+            var k = key
             // Explicit drops
+            if dropExact.contains(k) { continue }
             if dropPrefixes.contains(where: { k.hasPrefix($0) }) { continue }
             if !keepPrefixes.contains(where: { k.hasPrefix($0) }) && !keepExact.contains(k) { continue }
             if dropSuffixes.contains(where: { k.hasSuffix($0) }) { continue }
@@ -1587,6 +1642,20 @@ public final class OmniVoiceAudioTokenizer: Module {
                 // OmniVoiceConv1d and OmniVoiceConvTranspose1d already
                 // transpose from PyTorch [out,in,k] / [in,out,k] to MLX
                 // [out,k,in] at runtime.
+            }
+
+            // === Semantic path (HuBERT) ===
+            // Remap parametrized weight-norm keys; conv weights keep the
+            // PyTorch [out, in/groups, K] layout (transposed at runtime by
+            // OmniVoiceSemanticConv1d / OmniVoiceWeightNormConv1d).
+            if k.hasPrefix("semantic_model.") {
+                if k.contains(".parametrizations.weight.original0") {
+                    k = k.replacingOccurrences(
+                        of: ".parametrizations.weight.original0", with: ".weight_g")
+                } else if k.contains(".parametrizations.weight.original1") {
+                    k = k.replacingOccurrences(
+                        of: ".parametrizations.weight.original1", with: ".weight_v")
+                }
             }
 
             result[k] = v
@@ -1620,7 +1689,7 @@ public final class OmniVoiceAudioTokenizer: Module {
         let inferredNCodebooks = Self.inferNCodebooks(from: rawWeights) ?? 9
 
         var configDict = try JSONSerialization.jsonObject(with: configData) as! [String: Any]
-        
+
         // Pull in nested acoustic_model_config values if present
         if let acoustic = configDict["acoustic_model_config"] as? [String: Any] {
             for key in ["codebook_size", "codebook_dim", "n_codebooks", "hop_length", "sampling_rate",
@@ -1631,7 +1700,17 @@ public final class OmniVoiceAudioTokenizer: Module {
                 }
             }
         }
-        
+
+        // Pull in nested semantic_model_config (HuBERT) values if present
+        if let semantic = configDict["semantic_model_config"] as? [String: Any] {
+            for key in ["hidden_size", "num_hidden_layers", "num_attention_heads",
+                        "intermediate_size", "conv_dim", "conv_kernel", "conv_stride"] {
+                if configDict[key] == nil, let val = semantic[key] {
+                    configDict[key] = val
+                }
+            }
+        }
+
         if let currentNum = configDict["n_codebooks"] as? Int, currentNum != inferredNCodebooks {
             print("[OmniVoiceAudioTokenizer] INFO: overriding n_codebooks from \(currentNum) to \(inferredNCodebooks) to match checkpoint")
             configDict["n_codebooks"] = inferredNCodebooks
@@ -1642,7 +1721,10 @@ public final class OmniVoiceAudioTokenizer: Module {
         let patchedConfigData = try JSONSerialization.data(withJSONObject: configDict)
         let config = try JSONDecoder().decode(OmniVoiceAudioTokenizerConfig.self, from: patchedConfigData)
 
-        let tokenizer = OmniVoiceAudioTokenizer(config: config)
+        // The semantic encode path (voice cloning) is only built when the
+        // checkpoint actually ships its weights (the bf16 release is stripped).
+        let includeSemantic = rawWeights.keys.contains { $0.hasPrefix("semantic_model.") }
+        let tokenizer = OmniVoiceAudioTokenizer(config: config, includeSemantic: includeSemantic)
         let weights = tokenizer.sanitize(weights: rawWeights)
 
         // Verify weight coverage before loading
