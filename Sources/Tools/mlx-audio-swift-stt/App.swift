@@ -17,7 +17,7 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
         case .inputFileNotFound(let path):
             "Input audio file not found: \(path)"
         case .unsupportedModelRepo(let repo):
-            "Unsupported STT model repo: \(repo). Expected FireRedASR2, SenseVoice, GLMASR, Qwen3ASR, VoxtralRealtime, CohereTranscribe, Parakeet, or Qwen3ForcedAligner."
+            "Unsupported STT model repo: \(repo). Expected NemotronASR, FireRedASR2, SenseVoice, GLMASR, Qwen3ASR, VoxtralRealtime, CohereTranscribe, Parakeet, or Qwen3ForcedAligner."
         case .missingTextForForcedAlignment:
             "--text is required when using a forced aligner model."
         case .streamUnsupportedForForcedAligner:
@@ -412,6 +412,9 @@ enum App {
         }
         if lower.contains("parakeet") {
             return .stt(try await ParakeetModel.fromPretrained(repo))
+        }
+        if lower.contains("nemotron") {
+            return .stt(try await NemotronASRModel.fromPretrained(repo))
         }
         if lower.contains("firered") || lower.contains("fire-red") {
             return .stt(try await FireRedASR2Model.fromPretrained(repo))
