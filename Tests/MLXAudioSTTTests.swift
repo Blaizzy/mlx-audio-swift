@@ -2849,6 +2849,91 @@ struct VoxtralRealtimeSTTTests {
         #expect(output.totalTokens == output.promptTokens)
         #expect(output.text == "")
     }
+
+    @Test func streamSessionMatchesOfflineOnFixture() throws {
+        let fixtureDir = try Self.makeEOSFixture()
+        defer { try? FileManager.default.removeItem(at: fixtureDir) }
+
+        let model = try VoxtralRealtimeModel.fromDirectory(fixtureDir)
+        let samples = Array(repeating: Float(0), count: 16000)
+        let params = STTGenerateParameters(maxTokens: 8, temperature: 0.0)
+
+        let offline = model.generate(audio: MLXArray(samples), generationParameters: params)
+
+        // Feed the identical audio in 80 ms (1280-sample) chunks through the online path.
+        let session = model.makeStreamSession(maxTokens: 8)
+        var idx = 0
+        while idx < samples.count {
+            let end = min(idx + 1280, samples.count)
+            _ = session.step(Array(samples[idx..<end]))
+            idx = end
+        }
+        _ = session.finish()
+
+        // Online transcript must equal the offline transcript (WER 0).
+        #expect(session.text == offline.text)
+        #expect(session.tokens.count == offline.generationTokens)
+    }
+
+    /// Minimal all-zero fixture: argmax always lands on the EOS id, so both paths
+    /// terminate immediately and must agree.
+    static func makeEOSFixture() throws -> URL {
+        let fixtureDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voxtral-fixture-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
+
+        let configJSON = """
+        {
+          "model_type": "voxtral_realtime",
+          "encoder_args": {
+            "dim": 16, "n_layers": 0, "n_heads": 2, "head_dim": 8, "hidden_dim": 32,
+            "n_kv_heads": 2, "norm_eps": 1e-5, "rope_theta": 1000000,
+            "sliding_window": 64, "causal": true, "use_biases": true, "downsample_factor": 4
+          },
+          "decoder": {
+            "dim": 16, "n_layers": 0, "n_heads": 2, "n_kv_heads": 2, "head_dim": 8,
+            "hidden_dim": 32, "vocab_size": 8, "norm_eps": 1e-5, "rope_theta": 1000000,
+            "sliding_window": 64, "tied_embeddings": true,
+            "ada_rms_norm_t_cond": false, "ada_rms_norm_t_cond_dim": 4
+          },
+          "audio_encoding_args": {
+            "sampling_rate": 16000, "frame_rate": 12.5, "num_mel_bins": 128,
+            "hop_length": 160, "window_size": 400, "global_log_mel_max": 1.5
+          },
+          "transcription_delay_ms": 0, "bos_token_id": 1, "eos_token_id": 0,
+          "streaming_pad_token_id": 2, "n_left_pad_tokens": 1
+        }
+        """
+        try configJSON.write(
+            to: fixtureDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+
+        let tekkenJSON = """
+        {
+          "vocab": [
+            {"token_bytes":"YQ=="},{"token_bytes":"Yg=="},{"token_bytes":"Yw=="},
+            {"token_bytes":"ZA=="},{"token_bytes":"ZQ=="},{"token_bytes":"Zg=="},
+            {"token_bytes":"Zw=="},{"token_bytes":"aA=="}
+          ],
+          "config":{"default_num_special_tokens":0},"special_tokens":[]
+        }
+        """
+        try tekkenJSON.write(
+            to: fixtureDir.appendingPathComponent("tekken.json"), atomically: true, encoding: .utf8)
+
+        let weights: [String: MLXArray] = [
+            "encoder.conv_layers_0_conv.conv.weight": MLXArray.zeros([16, 3, 128], type: Float.self),
+            "encoder.conv_layers_0_conv.conv.bias": MLXArray.zeros([16], type: Float.self),
+            "encoder.conv_layers_1_conv.conv.weight": MLXArray.zeros([16, 3, 16], type: Float.self),
+            "encoder.conv_layers_1_conv.conv.bias": MLXArray.zeros([16], type: Float.self),
+            "encoder.transformer_norm.weight": MLXArray.ones([16], type: Float.self),
+            "encoder.audio_language_projection_0.weight": MLXArray.zeros([16, 64], type: Float.self),
+            "encoder.audio_language_projection_2.weight": MLXArray.zeros([16, 16], type: Float.self),
+            "decoder.tok_embeddings.weight": MLXArray.zeros([8, 16], type: Float.self),
+            "decoder.norm.weight": MLXArray.ones([16], type: Float.self),
+        ]
+        try MLX.save(arrays: weights, url: fixtureDir.appendingPathComponent("model.safetensors"))
+        return fixtureDir
+    }
 }
 
 @Suite("FireRed ASR 2 Tests", .serialized)
