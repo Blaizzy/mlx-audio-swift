@@ -141,61 +141,18 @@ public final class NemotronASRModel: Module, STTGenerationModel {
             let frameSeconds = Double(self.encoderConfig.subsamplingFactor * self.preprocessConfig.hopLength)
                 / Double(sampleRate)
 
-            var results: [NemoAlignedToken] = []
-            var lastToken = self.blankTokenID
-            var decoderState: NemoLSTMState?
+            let rnntState = NemotronASRStreamRNNTState(blankToken: self.blankTokenID)
             var previousText = ""
-            var globalTime = 0
 
             // Cache-aware streaming: incremental subsampling + per-layer attn/conv
-            // caches. Token-identical to decode() at the native chunk size.
+            // caches, greedy RNN-T per chunk. Token-identical to decode() at the
+            // native chunk size; shares both loops with NemotronASRStreamSession.
             self.cacheAwareStreamEncode(mel, language: generationParameters.language) { prompted in
-                let chunkLen = prompted.shape[1]
-                var time = 0
-                var newSymbols = 0
-                while time < chunkLen {
-                    let frame = prompted[0..., time..<(time + 1), 0...]
-                    let currentToken: MLXArray? = lastToken == self.blankTokenID
-                        ? nil
-                        : MLXArray(Int32(lastToken)).reshaped([1, 1]).asType(.int32)
-                    let decoderOutput = self.decoder(currentToken, state: decoderState)
-                    let pred = decoderOutput.0.asType(frame.dtype)
-                    let proposedState: NemoLSTMState = (
-                        hidden: decoderOutput.1.hidden?.asType(frame.dtype),
-                        cell: decoderOutput.1.cell?.asType(frame.dtype)
-                    )
-                    let jointOutput = self.joint(frame, pred)
-                    let token = jointOutput.argMax(axis: -1).item(Int.self)
-                    let step = NemoDecodingLogic.rnntStep(
-                        predictedToken: token,
-                        blankToken: self.blankTokenID,
-                        time: time,
-                        newSymbols: newSymbols,
-                        maxSymbols: self.maxSymbols
-                    )
-                    if step.emittedToken {
-                        lastToken = token
-                        decoderState = proposedState
-                        if !NemotronASRTokenizer.isSpecialToken(token, vocabulary: self.vocabulary) {
-                            results.append(
-                                NemoAlignedToken(
-                                    id: token,
-                                    text: NemotronASRTokenizer.decode(tokens: [token], vocabulary: self.vocabulary),
-                                    start: Double(globalTime + time) * frameSeconds,
-                                    duration: frameSeconds
-                                )
-                            )
-                        }
-                    }
-                    time = step.nextTime
-                    newSymbols = step.nextNewSymbols
-                }
-                globalTime += chunkLen
+                self.streamRNNTDecode(prompted, state: rnntState, frameSeconds: frameSeconds)
 
-                let currentResult = NemoAlignment.sentencesToResult(
-                    NemoAlignment.tokensToSentences(results)
-                )
-                let fullText = currentResult.text
+                let fullText = NemoAlignment.sentencesToResult(
+                    NemoAlignment.tokensToSentences(rnntState.results)
+                ).text
                 let nextText = fullText.hasPrefix(previousText)
                     ? String(fullText.dropFirst(previousText.count))
                     : fullText
@@ -206,7 +163,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
             }
 
             let finalResult = NemoAlignment.sentencesToResult(
-                NemoAlignment.tokensToSentences(results)
+                NemoAlignment.tokensToSentences(rnntState.results)
             )
             continuation.yield(
                 .result(

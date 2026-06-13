@@ -2644,6 +2644,67 @@ struct NemotronASRTests {
         )
         #expect(NemotronASRTokenizer.detectedLanguage(tokens: [1, 2, 3], vocabulary: vocab) == "en-US")
     }
+
+    /// Synthetic 16 kHz waveform long enough to span several native chunks.
+    private func syntheticAudio(samples: Int) -> MLXArray {
+        let values = (0..<samples).map { i in
+            0.1 * sin(Float(i) * 0.05) + 0.05 * sin(Float(i) * 0.17)
+        }
+        return MLXArray(values)
+    }
+
+    private func wholeStreamText(_ model: NemotronASRModel, _ audio: MLXArray) async throws -> String {
+        var text = ""
+        for try await event in model.generateStream(
+            audio: audio,
+            generationParameters: STTGenerateParameters(language: "en-US")
+        ) {
+            if case let .result(out) = event { text = out.text }
+        }
+        return text
+    }
+
+    private func sessionText(_ model: NemotronASRModel, _ audio: MLXArray, feed: Int) -> (String, [Int]) {
+        let samples = audio.asArray(Float.self)
+        let session = model.makeStreamSession(language: "en-US")
+        var i = 0
+        while i < samples.count {
+            let e = min(i + feed, samples.count)
+            _ = session.step(Array(samples[i..<e]))
+            i = e
+        }
+        _ = session.finish()
+        return (session.text, session.tokens)
+    }
+
+    /// The incremental session, fed in small chunks, must reproduce the one-shot
+    /// `generateStream(wholeAudio)` transcript bit-for-bit (frozen-frame framing +
+    /// resumable encoder/RNN-T state).
+    @Test func streamSessionMatchesGenerateStream() async throws {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        let model = try tinyModel()
+        let audio = syntheticAudio(samples: 6000)
+        let whole = try await wholeStreamText(model, audio)
+        let (sessioned, tokens) = sessionText(model, audio, feed: 200)
+        #expect(sessioned == whole)
+        #expect(tokens.isEmpty == false)  // random weights still emit non-blank tokens
+    }
+
+    /// Output must be invariant to feed granularity: tiny chunks == large chunks.
+    @Test func streamSessionFeedGranularityInvariant() throws {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        let model = try tinyModel()
+        let audio = syntheticAudio(samples: 6000)
+        let (fine, _) = sessionText(model, audio, feed: 96)
+        let (coarse, _) = sessionText(model, audio, feed: 1500)
+        #expect(fine == coarse)
+    }
 }
 
 struct VoxtralRealtimeSTTTests {
