@@ -159,3 +159,52 @@ extension NemotronASRModel {
         }
     }
 }
+
+#if canImport(CoreML)
+extension NemotronASRModel {
+    /// Cache-aware streaming via the CoreML/ANE encoder, using the validated **uniform-F**
+    /// feeding (every chunk `[preFrames prev-mel ++ newFrames new-mel]`, stride `newFrames`).
+    /// Same `onChunk` contract as `cacheAwareStreamEncode`: post-prompt frames `[1, chunkLen, d]`.
+    /// The prompt MLP and RNN-T decode stay in MLX; only the conformer encoder runs on the ANE.
+    func cacheAwareStreamEncodeCoreML(
+        _ mel: MLXArray,
+        language: String?,
+        encoder coreEncoder: NemotronCoreMLStreamingEncoder,
+        onChunk: (MLXArray) -> Void
+    ) throws {
+        var features = mel
+        if features.ndim == 2 { features = features.expandedDimensions(axis: 0) }
+        features = features.asType(.float32)
+
+        let featIn = coreEncoder.featIn
+        let pre = coreEncoder.preFrames
+        let new = coreEncoder.newFrames
+        let sf = coreEncoder.subsamplingFactor
+        let total = features.shape[1]
+
+        coreEncoder.reset()
+        var p = 0
+        while p < total {
+            // window = [pre prev-mel ++ new new-mel], zeros at the first prepend and last tail.
+            let avail = min(pre, p)
+            var parts: [MLXArray] = []
+            if pre - avail > 0 { parts.append(MLXArray.zeros([1, pre - avail, featIn], dtype: .float32)) }
+            if avail > 0 { parts.append(features[0..., (p - avail)..<p, 0...]) }
+            let realNew = min(new, total - p)
+            parts.append(features[0..., p..<(p + realNew), 0...])
+            if new - realNew > 0 { parts.append(MLXArray.zeros([1, new - realNew, featIn], dtype: .float32)) }
+            let window = MLX.concatenated(parts, axis: 1)  // [1, fixedFrames, featIn]
+
+            let encoded = try coreEncoder.step(window)  // [1, dModel, T'] (drop already applied)
+            // Emit only the frames covered by *real* mel, never the zero-padded fixed-window tail
+            // — including on the final (short) chunk. Keeping the padding frames would decode
+            // silence as audio and can append spurious trailing tokens; the MLX path, which never
+            // pads, emits exactly this count.
+            let keep = min(encoded.shape[2], max(1, (realNew + sf - 1) / sf))
+            let h = encoded[0..., 0..., 0..<keep].transposed(0, 2, 1).asType(computeDType)  // [1, keep, d]
+            onChunk(applyPrompt(h, language: language))
+            p += new
+        }
+    }
+}
+#endif

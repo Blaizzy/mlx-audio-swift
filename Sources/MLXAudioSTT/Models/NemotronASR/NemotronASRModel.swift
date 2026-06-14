@@ -24,6 +24,11 @@ public final class NemotronASRModel: Module, STTGenerationModel {
     /// `decode()` runs it instead of the MLX encoder (falls back to MLX on any failure). The
     /// encoder is a generic fixed-shape Conformer encoder shared with Parakeet (same I/O).
     public var coreMLEncoder: ConformerCoreMLEncoder?
+
+    /// Optional cache-aware **streaming** CoreML/ANE encoder. When set, `generateStream` runs the
+    /// conformer encoder on the ANE (uniform-F feeding + manual cache threading) instead of the MLX
+    /// streaming path; the prompt MLP and RNN-T decode stay in MLX. Falls back to MLX on any failure.
+    public var streamingCoreMLEncoder: NemotronCoreMLStreamingEncoder?
     #endif
 
     @ModuleInfo(key: "encoder") var encoder: NemotronASRConformer
@@ -162,9 +167,10 @@ public final class NemotronASRModel: Module, STTGenerationModel {
             var previousText = ""
 
             // Cache-aware streaming: incremental subsampling + per-layer attn/conv
-            // caches, greedy RNN-T per chunk. Token-identical to decode() at the
-            // native chunk size; shares both loops with NemotronASRStreamSession.
-            self.cacheAwareStreamEncode(mel, language: generationParameters.language) { prompted in
+            // caches, greedy RNN-T per chunk. Token-identical to decode() at the native
+            // chunk size; shares streamRNNTDecode/rnntState with NemotronASRStreamSession.
+            // The chunk handler is shared by the MLX and CoreML/ANE encoder paths.
+            let processChunk: (MLXArray) -> Void = { prompted in
                 self.streamRNNTDecode(prompted, state: rnntState, frameSeconds: frameSeconds)
 
                 let fullText = NemoAlignment.sentencesToResult(
@@ -178,6 +184,26 @@ public final class NemotronASRModel: Module, STTGenerationModel {
                     continuation.yield(.token(nextText))
                 }
             }
+
+            // The encoder runs once over the whole stream, so a mid-stream CoreML failure must
+            // surface (not silently fall back) — earlier chunks already mutated decode state, and
+            // re-running on MLX would duplicate them. Model-load failures happen at enable time.
+            #if canImport(CoreML)
+            if let streamEncoder = self.streamingCoreMLEncoder {
+                do {
+                    try self.cacheAwareStreamEncodeCoreML(
+                        mel, language: generationParameters.language,
+                        encoder: streamEncoder, onChunk: processChunk)
+                } catch {
+                    continuation.finish(throwing: error)
+                    return
+                }
+            } else {
+                self.cacheAwareStreamEncode(mel, language: generationParameters.language, onChunk: processChunk)
+            }
+            #else
+            self.cacheAwareStreamEncode(mel, language: generationParameters.language, onChunk: processChunk)
+            #endif
 
             let finalResult = NemoAlignment.sentencesToResult(
                 NemoAlignment.tokensToSentences(rnntState.results)
