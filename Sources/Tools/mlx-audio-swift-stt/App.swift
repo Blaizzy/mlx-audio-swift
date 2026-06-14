@@ -279,13 +279,25 @@ enum App {
         let audio = try prepareAudioForSTT(inputAudio, inputSampleRate: inputSampleRate, targetSampleRate: 16000)
 
         #if canImport(CoreML)
-        if case .stt(let m) = model, let parakeet = m as? ParakeetModel {
-            if let coremlPath = options.coremlEncoder {
-                try parakeet.enableCoreMLEncoder(modelURL: resolveURL(path: coremlPath))
-                if options.verbose { print("CoreML/ANE encoder enabled: \(coremlPath)") }
-            } else if options.ane {
-                try await parakeet.enableCoreMLEncoder(repo: ParakeetModel.defaultANEEncoderRepo)
-                if options.verbose { print("ANE encoder enabled: \(ParakeetModel.defaultANEEncoderRepo)") }
+        if case .stt(let m) = model {
+            if let parakeet = m as? ParakeetModel {
+                if let coremlPath = options.coremlEncoder {
+                    try parakeet.enableCoreMLEncoder(modelURL: resolveURL(path: coremlPath))
+                    if options.verbose { print("CoreML/ANE encoder enabled: \(coremlPath)") }
+                } else if options.ane {
+                    try await parakeet.enableCoreMLEncoder(repo: ParakeetModel.defaultANEEncoderRepo)
+                    if options.verbose { print("ANE encoder enabled: \(ParakeetModel.defaultANEEncoderRepo)") }
+                }
+            } else if let nemotron = m as? NemotronASRModel {
+                // Offline CoreML/ANE encoder for Nemotron. Auto-clamps chunkDuration to the
+                // model's fixed length so overlap-merge stitches long audio.
+                if let coremlPath = options.coremlEncoder {
+                    try nemotron.enableCoreMLEncoder(modelURL: resolveURL(path: coremlPath))
+                    if options.verbose { print("CoreML/ANE encoder enabled (Nemotron): \(coremlPath)") }
+                } else if options.ane {
+                    try await nemotron.enableCoreMLEncoder(repo: NemotronASRModel.defaultANEEncoderRepo)
+                    if options.verbose { print("ANE encoder enabled (Nemotron): \(NemotronASRModel.defaultANEEncoderRepo)") }
+                }
             }
         }
         #endif
