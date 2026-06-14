@@ -741,6 +741,17 @@ private struct FireRedASR2CMVN: Decodable {
     let istd: [Float]
 }
 
+/// Boxes the per-instance CMVN statistics so MLX's parameter reflection does
+/// not pick them up as expected `MLXArray` parameters of `FireRedASR2Model`.
+/// Without this indirection, `Module.update(parameters:verify: .all)` rejects
+/// the load with `keyNotFound(path: ["cmvnMeans"|"cmvnIstd"], ...)` because the
+/// safetensors checkpoint doesn't carry weights at those paths — they're
+/// computed at runtime from `cmvn.json` via `loadAssets(from:)`.
+private final class FireRedASR2CMVNStats {
+    var means: MLXArray?
+    var istd: MLXArray?
+}
+
 public final class FireRedASR2Model: Module, STTGenerationModel {
     public let config: FireRedASR2Config
 
@@ -748,8 +759,17 @@ public final class FireRedASR2Model: Module, STTGenerationModel {
     @ModuleInfo(key: "decoder") var decoder: FireRedASR2TransformerDecoder
 
     var tokenizer: FireRedASR2Tokenizer?
-    var cmvnMeans: MLXArray?
-    var cmvnIstd: MLXArray?
+    private let cmvnStats = FireRedASR2CMVNStats()
+
+    var cmvnMeans: MLXArray? {
+        get { cmvnStats.means }
+        set { cmvnStats.means = newValue }
+    }
+
+    var cmvnIstd: MLXArray? {
+        get { cmvnStats.istd }
+        set { cmvnStats.istd = newValue }
+    }
 
     public var vocabulary: [String] {
         tokenizer?.vocabulary ?? []

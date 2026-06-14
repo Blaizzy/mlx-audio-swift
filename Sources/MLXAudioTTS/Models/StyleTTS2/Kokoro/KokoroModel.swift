@@ -114,7 +114,16 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
     // MARK: - Tokenizer
 
     func tokenize(_ text: String) -> [Int] {
-        text.compactMap { config.vocab[String($0)] }
+        // Iterate Unicode scalars, not Characters. Swift's `for ch in String`
+        // returns extended grapheme clusters, which fuse combining marks into
+        // their base character. The IPA lexicon emits French nasal vowels as
+        // base vowel + U+0303 COMBINING TILDE (e.g. "ɔ" + "̃"), which Swift
+        // collapses into a single Character "ɔ̃" that isn't in `config.vocab`
+        // — so `compactMap` silently drops the entire nasal vowel and
+        // "bonjour" comes out as "bjour". Iterating scalars preserves the
+        // base + combining pair as two separate tokens, both of which exist
+        // in the vocab. See https://github.com/Blaizzy/mlx-audio-swift/issues/187
+        text.unicodeScalars.compactMap { config.vocab[String($0)] }
     }
 
     // MARK: - SpeechGenerationModel

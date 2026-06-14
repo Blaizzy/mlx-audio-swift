@@ -12,7 +12,7 @@ import MLXNN
 // MARK: - Whisper Attention
 
 /// Whisper attention layer with optional Rotary Position Embeddings.
-public class WhisperAttention: Module {
+public class GLMASRWhisperAttention: Module {
     let embedDim: Int
     let numHeads: Int
     let headDim: Int
@@ -25,7 +25,7 @@ public class WhisperAttention: Module {
     @ModuleInfo(key: "out_proj") var outProj: Linear
     @ModuleInfo(key: "rope") var rope: RoPE?
 
-    public init(config: WhisperConfig, useRope: Bool = false) {
+    public init(config: GLMASRWhisperConfig, useRope: Bool = false) {
         self.embedDim = config.dModel
         self.numHeads = config.encoderAttentionHeads
         self.headDim = embedDim / numHeads
@@ -80,19 +80,19 @@ public class WhisperAttention: Module {
 // MARK: - Whisper Encoder Layer
 
 /// Whisper encoder layer with optional RoPE support.
-public class WhisperEncoderLayer: Module {
+public class GLMASRWhisperEncoderLayer: Module {
     let embedDim: Int
 
-    @ModuleInfo(key: "self_attn") var selfAttn: WhisperAttention
+    @ModuleInfo(key: "self_attn") var selfAttn: GLMASRWhisperAttention
     @ModuleInfo(key: "self_attn_layer_norm") var selfAttnLayerNorm: LayerNorm
     @ModuleInfo(key: "fc1") var fc1: Linear
     @ModuleInfo(key: "fc2") var fc2: Linear
     @ModuleInfo(key: "final_layer_norm") var finalLayerNorm: LayerNorm
 
-    public init(config: WhisperConfig, useRope: Bool = false) {
+    public init(config: GLMASRWhisperConfig, useRope: Bool = false) {
         self.embedDim = config.dModel
 
-        self._selfAttn.wrappedValue = WhisperAttention(config: config, useRope: useRope)
+        self._selfAttn.wrappedValue = GLMASRWhisperAttention(config: config, useRope: useRope)
         self._selfAttnLayerNorm.wrappedValue = LayerNorm(dimensions: embedDim)
         self._fc1.wrappedValue = Linear(embedDim, config.encoderFfnDim)
         self._fc2.wrappedValue = Linear(config.encoderFfnDim, embedDim)
@@ -120,16 +120,16 @@ public class WhisperEncoderLayer: Module {
 // MARK: - Whisper Encoder
 
 /// Whisper encoder with optional rotary position embeddings.
-public class WhisperEncoder: Module {
-    let config: WhisperConfig
+public class GLMASRWhisperEncoder: Module {
+    let config: GLMASRWhisperConfig
     let useRope: Bool
 
     @ModuleInfo(key: "conv1") var conv1: Conv1d
     @ModuleInfo(key: "conv2") var conv2: Conv1d
     @ModuleInfo(key: "embed_positions") var embedPositions: Embedding
-    @ModuleInfo(key: "layers") var layers: [WhisperEncoderLayer]
+    @ModuleInfo(key: "layers") var layers: [GLMASRWhisperEncoderLayer]
 
-    public init(config: WhisperConfig, useRope: Bool = false) {
+    public init(config: GLMASRWhisperConfig, useRope: Bool = false) {
         self.config = config
         self.useRope = useRope
         let embedDim = config.dModel
@@ -151,9 +151,9 @@ public class WhisperEncoder: Module {
         // Always create for weight loading compatibility (only used when not using RoPE)
         self._embedPositions.wrappedValue = Embedding(embeddingCount: config.maxSourcePositions, dimensions: embedDim)
 
-        var encoderLayers: [WhisperEncoderLayer] = []
+        var encoderLayers: [GLMASRWhisperEncoderLayer] = []
         for _ in 0..<config.encoderLayers {
-            encoderLayers.append(WhisperEncoderLayer(config: config, useRope: useRope))
+            encoderLayers.append(GLMASRWhisperEncoderLayer(config: config, useRope: useRope))
         }
         self._layers.wrappedValue = encoderLayers
     }
@@ -210,7 +210,7 @@ public class AdaptingMLP: Module {
 public class AudioEncoder: Module {
     let config: GLMASRModelConfig
 
-    @ModuleInfo(key: "whisper") var whisper: WhisperEncoder
+    @ModuleInfo(key: "whisper") var whisper: GLMASRWhisperEncoder
     @ModuleInfo(key: "layer_norm") var layerNorm: LayerNorm
     @ModuleInfo(key: "proj") var proj: Linear
     @ModuleInfo(key: "adapting") var adapting: AdaptingMLP
@@ -222,7 +222,7 @@ public class AudioEncoder: Module {
         let lmHiddenSize = config.lmConfig.hiddenSize
 
         // Whisper encoder
-        self._whisper.wrappedValue = WhisperEncoder(config: whisperConfig, useRope: config.useRope)
+        self._whisper.wrappedValue = GLMASRWhisperEncoder(config: whisperConfig, useRope: config.useRope)
 
         // Layer norm after whisper encoder
         self._layerNorm.wrappedValue = LayerNorm(dimensions: whisperConfig.dModel)

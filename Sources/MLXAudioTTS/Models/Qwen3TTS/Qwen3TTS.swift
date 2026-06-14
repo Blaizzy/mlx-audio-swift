@@ -358,10 +358,11 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             ttsPadEmbed = prepared.2
             refCodes = prepared.3
         } else {
-            // For CustomVoice models: voice is a speaker name, not free-text instruct.
+            // CustomVoice accepts `voice` as "speaker, instruction".
             let isCVModel = config.ttsModelType == "custom_voice"
-            let speaker: String? = isCVModel ? instruct : nil
-            let effectiveInstruct: String? = isCVModel ? nil : instruct
+            let customVoicePrompt = isCVModel ? Self.parseCustomVoicePrompt(instruct) : nil
+            let speaker: String? = isCVModel ? customVoicePrompt?.speaker : nil
+            let effectiveInstruct: String? = isCVModel ? customVoicePrompt?.instruction : instruct
             let prepared = prepareGenerationInputs(
                 text: text,
                 language: language,
@@ -565,6 +566,30 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
         eval(audio)
         return audio
+    }
+
+    static func parseCustomVoicePrompt(_ voice: String?) -> (speaker: String, instruction: String?)? {
+        guard let voice = voice?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !voice.isEmpty else {
+            return nil
+        }
+
+        guard let commaIndex = voice.firstIndex(of: ",") else {
+            return (speaker: voice, instruction: nil)
+        }
+
+        let speaker = voice[..<commaIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+        let instructionStart = voice.index(after: commaIndex)
+        let instruction = voice[instructionStart...].trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !speaker.isEmpty else {
+            return (speaker: voice, instruction: nil)
+        }
+
+        return (
+            speaker: String(speaker),
+            instruction: instruction.isEmpty ? nil : String(instruction)
+        )
     }
 
     // MARK: - Reference conditioning

@@ -147,10 +147,12 @@ let package = Package(
                 "Models/FireRedASR2/README.md",
                 "Models/GLMASR/README.md",
                 "Models/GraniteSpeech/README.md",
+                "Models/NemotronASR/README.md",
                 "Models/Parakeet/README.md",
                 "Models/Qwen3ASR/README.md",
                 "Models/SenseVoice/README.md",
                 "Models/VoxtralRealtime/README.md",
+                "Models/Whisper/README.md",
             ]
         ),
 

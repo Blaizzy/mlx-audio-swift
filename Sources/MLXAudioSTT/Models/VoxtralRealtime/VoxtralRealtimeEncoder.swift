@@ -320,6 +320,26 @@ final class VoxtralRealtimeAudioEncoder: Module {
         return downsampleAndProject(encoded)
     }
 
+    /// Feed a block of new conv-stem frames at absolute positions `[startPos, startPos+n)`
+    /// through the transformer with persistent per-layer KV-caches, returning the
+    /// transformer-normed frames (pre-downsample). While the total fed length stays
+    /// `<= slidingWindow` the caches never trim, so the result is bit-identical to
+    /// `encodeFull` over the same prefix — see `VoxtralRealtimeStreamSession`.
+    func encodeIncremental(
+        _ convBlock: MLXArray,
+        startPos: Int,
+        caches: inout [VoxtralRealtimeEncoderKVCache?]
+    ) -> MLXArray {
+        var x = convBlock
+        let positions = MLXArray(startPos..<(startPos + convBlock.shape[0])).asType(.int32)
+        for i in transformerLayers.indices {
+            let next = transformerLayers[i](x, positions: positions, cache: caches[i])
+            x = next.0
+            caches[i] = next.1
+        }
+        return transformerNorm(x)
+    }
+
     func downsampleAndProject(_ encoded: MLXArray) -> MLXArray {
         let seqLen = encoded.shape[0]
         let ds = config.downsampleFactor
