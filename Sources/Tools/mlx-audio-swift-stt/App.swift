@@ -78,6 +78,8 @@ private struct Options {
     var prefillStepSize = 2048
     var genKwargsRaw: String? = nil
     var text = ""
+    var coremlEncoder: String? = nil
+    var ane = false
 
     var temperature: Float? = nil
     var topP: Float? = nil
@@ -139,6 +141,11 @@ private struct Options {
             case "--text":
                 guard let v = it.next() else { throw CLIError.missingValue(arg) }
                 options.text = v
+            case "--coreml-encoder":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                options.coremlEncoder = v
+            case "--ane":
+                options.ane = true
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -271,6 +278,18 @@ enum App {
         let (inputSampleRate, inputAudio) = try loadAudioArray(from: inputURL)
         let audio = try prepareAudioForSTT(inputAudio, inputSampleRate: inputSampleRate, targetSampleRate: 16000)
 
+        #if canImport(CoreML)
+        if case .stt(let m) = model, let parakeet = m as? ParakeetModel {
+            if let coremlPath = options.coremlEncoder {
+                try parakeet.enableCoreMLEncoder(modelURL: resolveURL(path: coremlPath))
+                if options.verbose { print("CoreML/ANE encoder enabled: \(coremlPath)") }
+            } else if options.ane {
+                try await parakeet.enableCoreMLEncoder(repo: ParakeetModel.defaultANEEncoderRepo)
+                if options.verbose { print("ANE encoder enabled: \(ParakeetModel.defaultANEEncoderRepo)") }
+            }
+        }
+        #endif
+
         let startTime = CFAbsoluteTimeGetCurrent()
 
         if options.verbose {
@@ -346,9 +365,11 @@ enum App {
 
         if options.verbose {
             let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            let audioSeconds = Double(audio.size) / 16000.0
             print("\n==========")
             print("Saved file to: \(options.outputPath!).\(options.format.rawValue)")
             print(String(format: "Processing time: %.2f seconds", elapsed))
+            print(String(format: "RTF: %.1fx realtime (%.1fs audio / %.2fs)", audioSeconds / elapsed, audioSeconds, elapsed))
             print(String(format: "Prompt: %d tokens, %.3f tokens-per-sec", output.promptTokens, output.promptTps))
             print(String(format: "Generation: %d tokens, %.3f tokens-per-sec", output.generationTokens, output.generationTps))
             print(String(format: "Peak memory: %.2f GB", output.peakMemoryUsage))
