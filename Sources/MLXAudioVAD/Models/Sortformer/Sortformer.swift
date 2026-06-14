@@ -1288,38 +1288,35 @@ public class SortformerModel: Module {
         minDuration: Float = 0.0,
         mergeGap: Float = 0.0
     ) -> [DiarizationSegment] {
+        let numFrames = preds.dim(0)
         let numSpeakers = preds.dim(1)
         var segments = [DiarizationSegment]()
 
+        // Single bulk GPU->CPU readback (row-major [frame, speaker]); all change
+        // detection runs in pure Swift to avoid per-frame .item() round-trips.
+        let flat = preds.asType(.float32).reshaped([-1]).asArray(Float.self)
+
         for spk in 0..<numSpeakers {
-            let activity = preds[0..., spk] .> threshold
-            if !MLX.any(activity).item(Bool.self) {
-                continue
-            }
-
-            let padded = MLX.concatenated([
-                MLXArray.zeros([1]).asType(DType.bool),
-                activity,
-                MLXArray.zeros([1]).asType(DType.bool)
-            ])
-            let changes = padded[1...].asType(DType.int32) - padded[..<(-1)].asType(DType.int32)
-            eval(changes)
-
-            let changesList: [Int32] = (0..<changes.dim(0)).map { changes[$0].item(Int32.self) }
-
-            let starts = changesList.enumerated().compactMap { $0.element == 1 ? $0.offset : nil }
-            let ends = changesList.enumerated().compactMap { $0.element == -1 ? $0.offset : nil }
-
             var spkSegments = [DiarizationSegment]()
-            for (s, e) in zip(starts, ends) {
-                let startTime = Float(s) * frameDuration
-                let endTime = Float(e) * frameDuration
-                let duration = endTime - startTime
-
-                if duration >= minDuration {
-                    spkSegments.append(DiarizationSegment(
-                        start: startTime, end: endTime, speaker: spk
-                    ))
+            var segStart = -1
+            for f in 0..<numFrames {
+                let active = flat[f * numSpeakers + spk] > threshold
+                if active {
+                    if segStart < 0 { segStart = f }
+                } else if segStart >= 0 {
+                    let startTime = Float(segStart) * frameDuration
+                    let endTime = Float(f) * frameDuration
+                    if endTime - startTime >= minDuration {
+                        spkSegments.append(DiarizationSegment(start: startTime, end: endTime, speaker: spk))
+                    }
+                    segStart = -1
+                }
+            }
+            if segStart >= 0 {
+                let startTime = Float(segStart) * frameDuration
+                let endTime = Float(numFrames) * frameDuration
+                if endTime - startTime >= minDuration {
+                    spkSegments.append(DiarizationSegment(start: startTime, end: endTime, speaker: spk))
                 }
             }
 

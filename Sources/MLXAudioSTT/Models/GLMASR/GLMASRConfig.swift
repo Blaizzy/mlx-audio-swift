@@ -9,7 +9,7 @@ import MLXLMCommon
 import Foundation
 
 /// Configuration for the Whisper audio encoder.
-public struct WhisperConfig: Codable {
+public struct GLMASRWhisperConfig: Codable {
     public var modelType: String
     public var activationFunction: String
     public var dModel: Int
@@ -269,7 +269,7 @@ public struct LlamaConfig: Codable {
 /// Configuration for the GLM-ASR model.
 public struct GLMASRModelConfig: Codable {
     public var modelType: String
-    public var whisperConfig: WhisperConfig
+    public var whisperConfig: GLMASRWhisperConfig
     public var lmConfig: LlamaConfig
 
     // Adapter configuration
@@ -298,7 +298,7 @@ public struct GLMASRModelConfig: Codable {
 
     public init(
         modelType: String = "glmasr",
-        whisperConfig: WhisperConfig = WhisperConfig(),
+        whisperConfig: GLMASRWhisperConfig = GLMASRWhisperConfig(),
         lmConfig: LlamaConfig = LlamaConfig(),
         adapterType: String = "mlp",
         mergeFactor: Int = 4,
@@ -323,7 +323,7 @@ public struct GLMASRModelConfig: Codable {
     public init(from decoder: Swift.Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         modelType = try container.decodeIfPresent(String.self, forKey: .modelType) ?? "glmasr"
-        whisperConfig = try container.decodeIfPresent(WhisperConfig.self, forKey: .whisperConfig) ?? WhisperConfig()
+        whisperConfig = try container.decodeIfPresent(GLMASRWhisperConfig.self, forKey: .whisperConfig) ?? GLMASRWhisperConfig()
         lmConfig = try container.decodeIfPresent(LlamaConfig.self, forKey: .lmConfig) ?? LlamaConfig()
         adapterType = try container.decodeIfPresent(String.self, forKey: .adapterType) ?? "mlp"
         mergeFactor = try container.decodeIfPresent(Int.self, forKey: .mergeFactor) ?? 4
