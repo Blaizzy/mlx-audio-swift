@@ -102,6 +102,13 @@ public enum TTS {
         }
 
         switch resolvedType {
+        case "voxcpm2", "voxcpm":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await VoxCPM2Model.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await VoxCPM2Model.fromModelDirectory(modelDir) }
+            )
         case "moss_tts_nano":
             return try await load(
                 source,
@@ -259,6 +266,9 @@ public enum TTS {
 
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
+        if lower.contains("voxcpm2") || lower.contains("voxcpm") {
+            return "voxcpm2"
+        }
         // Repo names are hyphenated (e.g. "Irodori-TTS-600M-…"); match the bare name.
         if lower.contains("irodori") {
             return "irodori_tts"
