@@ -515,6 +515,31 @@ struct SortformerPostprocessingTests {
             #expect(segments[i].start >= segments[i - 1].start)
         }
     }
+
+    @Test func predsToSegmentsExactBoundaries() {
+        // Pin the exact frame->time mapping the bulk-readback edge detection must
+        // preserve: a start edge, an inactive-close edge, and — critically — a
+        // segment active through the FINAL frame (the tail branch other tests miss).
+        let frameDuration: Float = 0.08
+        let nFrames = 12
+        let nSpk = 1
+        var predsData = [Float](repeating: 0.0, count: nFrames * nSpk)
+        for i in 3...7 { predsData[i] = 0.9 }          // mid segment: frames 3..7
+        for i in 10..<nFrames { predsData[i] = 0.9 }   // trailing: frames 10..11 -> end
+
+        let preds = MLXArray(predsData).reshaped(nFrames, nSpk)
+        let segments = SortformerModel.predsToSegments(preds, frameDuration: frameDuration)
+
+        #expect(segments.count == 2)
+
+        // Mid segment: starts at frame 3, closes at the first inactive frame (8).
+        #expect(abs(segments[0].start - 3 * frameDuration) < 1e-5)   // 0.24
+        #expect(abs(segments[0].end - 8 * frameDuration) < 1e-5)     // 0.64
+
+        // Trailing segment: active through the last frame -> end == nFrames * dur.
+        #expect(abs(segments[1].start - 10 * frameDuration) < 1e-5)  // 0.80
+        #expect(abs(segments[1].end - Float(nFrames) * frameDuration) < 1e-5)  // 0.96
+    }
 }
 
 // MARK: - Smart Turn Config Tests

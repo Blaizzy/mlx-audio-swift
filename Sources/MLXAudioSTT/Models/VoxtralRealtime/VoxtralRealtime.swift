@@ -2,6 +2,7 @@ import Foundation
 import MLX
 import MLXNN
 import MLXAudioCore
+import MLXAudioVAD
 import MLXLMCommon
 import HuggingFace
 
@@ -122,6 +123,83 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
         )
     }
 
+    public func generate(
+        audio: MLXArray,
+        generationParameters: STTGenerateParameters,
+        vad: (model: SileroVAD, config: SpeechSegmentConfig)?
+    ) -> STTOutput {
+        guard let vad else {
+            return generate(audio: audio, generationParameters: generationParameters)
+        }
+        let audio1D = audio.ndim > 1 ? audio.mean(axis: -1) : audio
+        let chunks: [(MLXArray, Float)]
+        do {
+            chunks = try segmentSpeech(
+                audio: audio1D,
+                sampleRate: VoxtralRealtimeConstants.sampleRate,
+                vadModel: vad.model,
+                config: vad.config
+            )
+        } catch {
+            if generationParameters.verbose {
+                print("VAD pre-processing failed (\(error)); falling back to single-pass generate")
+            }
+            return generate(audio: audio1D, generationParameters: generationParameters)
+        }
+        if chunks.count <= 1 {
+            // One speech region: transcribe the trimmed chunk, not the original buffer
+            // (keeps the VAD's leading/trailing-silence removal). `chunks` is never empty,
+            // but fall back to `audio1D` defensively.
+            return generate(audio: chunks.first?.0 ?? audio1D, generationParameters: generationParameters)
+        }
+
+        var outputs: [STTOutput] = []
+        outputs.reserveCapacity(chunks.count)
+        var remainingTokens = generationParameters.maxTokens
+        for (chunkAudio, offsetSeconds) in chunks {
+            if remainingTokens <= 0 { break }
+            if generationParameters.verbose {
+                print("Voxtral VAD chunk at \(String(format: "%.1f", offsetSeconds))s")
+            }
+            let chunkParameters = STTGenerateParameters(
+                maxTokens: remainingTokens,
+                temperature: generationParameters.temperature,
+                topP: generationParameters.topP,
+                topK: generationParameters.topK,
+                verbose: generationParameters.verbose,
+                language: generationParameters.language,
+                chunkDuration: generationParameters.chunkDuration,
+                minChunkDuration: generationParameters.minChunkDuration
+            )
+            let out = generate(audio: chunkAudio, generationParameters: chunkParameters)
+            outputs.append(out)
+            remainingTokens = max(0, remainingTokens - out.generationTokens)
+        }
+
+        let combinedText = outputs
+            .map(\.text)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        let promptTokens = outputs.reduce(0) { $0 + $1.promptTokens }
+        let generationTokens = outputs.reduce(0) { $0 + $1.generationTokens }
+        let totalTokens = outputs.reduce(0) { $0 + $1.totalTokens }
+        let totalTime = outputs.reduce(0.0) { $0 + $1.totalTime }
+        let peakMemoryUsage = outputs.map(\.peakMemoryUsage).max() ?? 0
+
+        return STTOutput(
+            text: combinedText,
+            language: generationParameters.language,
+            promptTokens: promptTokens,
+            generationTokens: generationTokens,
+            totalTokens: totalTokens,
+            promptTps: totalTime > 0 ? Double(promptTokens) / totalTime : 0,
+            generationTps: totalTime > 0 ? Double(generationTokens) / totalTime : 0,
+            totalTime: totalTime,
+            peakMemoryUsage: peakMemoryUsage
+        )
+    }
+
     public func generateStream(
         audio: MLXArray,
         generationParameters: STTGenerateParameters
@@ -210,7 +288,7 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
     }
 }
 
-private extension VoxtralRealtimeModel {
+extension VoxtralRealtimeModel {
     func numAudioTokens(_ audioLength: Int) -> Int {
         let hop = VoxtralRealtimeConstants.hopLength
         let perTok = VoxtralRealtimeConstants.audioLengthPerToken
@@ -292,28 +370,57 @@ private extension VoxtralRealtimeModel {
         return (mel, nDelay)
     }
 
-    func encodeAndPrefill(
+    /// Encode audio → audio-conditioning rows (`adapterOut`), the per-token span
+    /// (`nAudioTotal`), and the decoder prompt length. Shared by the offline
+    /// (`encodeAndPrefill`) and streaming (`VoxtralRealtimeStreamSession`) paths.
+    /// Causal conv + causal/sliding-window attention make `adapterOut[0..<k]`
+    /// identical whether encoded from a prefix or the full buffer.
+    /// Conv-stem seam: audio → conv-stem frames (`convOut`, the transformer input),
+    /// the per-token span, and the prompt length. Shared by the offline encode and
+    /// the streaming session (which feeds `convOut` incrementally).
+    func convStemForAudio(
         audio: MLXArray,
-        verbose: Bool,
         transcriptionDelayMs: Int?
-    ) -> VoxtralPrefillContext {
-        let start = Date()
-
+    ) -> (convOut: MLXArray, nAudioTotal: Int, promptLength: Int) {
         ensureAdaScales(transcriptionDelayMs: transcriptionDelayMs)
         let (mel, nDelay) = prepareMel(audio, transcriptionDelayMs: transcriptionDelayMs)
 
         let convOut = encoder.convStem(mel)
         let ds = config.encoderArgs.downsampleFactor
         let nAudioTotal = convOut.shape[0] / ds
-
         let promptLength = 1 + config.nLeftPadTokens + nDelay
+        return (convOut, nAudioTotal, promptLength)
+    }
 
+    func encodeAudio(
+        audio: MLXArray,
+        transcriptionDelayMs: Int?
+    ) -> (adapterOut: MLXArray, nAudioTotal: Int, promptLength: Int) {
+        let (convOut, nAudioTotal, promptLength) = convStemForAudio(
+            audio: audio,
+            transcriptionDelayMs: transcriptionDelayMs
+        )
         let adapterOut: MLXArray
         if convOut.shape[0] <= config.encoderArgs.slidingWindow {
             adapterOut = encoder.encodeFull(convOut)
         } else {
             adapterOut = encoder.encodeChunked(convOut)
         }
+        return (adapterOut, nAudioTotal, promptLength)
+    }
+
+    fileprivate func encodeAndPrefill(
+        audio: MLXArray,
+        verbose: Bool,
+        transcriptionDelayMs: Int?
+    ) -> VoxtralPrefillContext {
+        let start = Date()
+
+        let (adapterOut, nAudioTotal, promptLength) = encodeAudio(
+            audio: audio,
+            transcriptionDelayMs: transcriptionDelayMs
+        )
+        let nDelay = promptLength - 1 - config.nLeftPadTokens
 
         let promptIds = [config.bosTokenId] + Array(
             repeating: config.streamingPadTokenId,
@@ -353,6 +460,12 @@ private extension VoxtralRealtimeModel {
             cache: cache,
             startTime: start
         )
+    }
+
+    /// Token-id → text seam for the streaming session (which lives in another file
+    /// and cannot reach the private `tokenizer`).
+    func decodeStreaming(_ tokenIds: [Int]) -> String {
+        tokenizer?.decode(tokenIds: tokenIds) ?? ""
     }
 
     func sample(logits: MLXArray, temperature: Float) -> Int {
