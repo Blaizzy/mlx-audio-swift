@@ -79,16 +79,19 @@ public enum ModelUtils {
             .appendingPathComponent("mlx-audio")
             .appendingPathComponent(modelSubdir)
 
-        // Check if model already exists with required files. Some repos keep
-        // their weights in version subfolders (e.g. DeepFilterNet v1/v2/v3),
-        // so search the snapshot recursively rather than only the top level.
+        // Check if model already exists with required files
         if FileManager.default.fileExists(atPath: modelDir.path) {
-            let hasRequiredFile =
-                firstNonEmptyFile(withExtension: normalizedRequiredExtension, under: modelDir) != nil
+            let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: [.fileSizeKey])
+            let hasRequiredFile = files?.contains { file in
+                guard file.pathExtension == normalizedRequiredExtension else { return false }
+                let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                return size > 0
+            } ?? false
 
             if hasRequiredFile {
                 // Validate that config.json is valid JSON
-                if let configPath = firstNonEmptyFile(withExtension: "json", named: "config.json", under: modelDir) {
+                let configPath = modelDir.appendingPathComponent("config.json")
+                if FileManager.default.fileExists(atPath: configPath.path) {
                     if let configData = try? Data(contentsOf: configPath),
                        let _ = try? JSONSerialization.jsonObject(with: configData) {
                         print("Using cached model at: \(modelDir.path)")
@@ -129,9 +132,14 @@ public enum ModelUtils {
         )
 
         // Post-download validation: ensure required files are non-zero
-        // (recursive, for repos that keep weights in subfolders).
-        let hasValidFile =
-            firstNonEmptyFile(withExtension: normalizedRequiredExtension, under: modelDir) != nil
+        let downloadedFiles = try? FileManager.default.contentsOfDirectory(
+            at: modelDir, includingPropertiesForKeys: [.fileSizeKey]
+        )
+        let hasValidFile = downloadedFiles?.contains { file in
+            guard file.pathExtension == normalizedRequiredExtension else { return false }
+            let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            return size > 0
+        } ?? false
 
         if !hasValidFile {
             Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
@@ -140,29 +148,6 @@ public enum ModelUtils {
 
         print("Model downloaded to: \(modelDir.path)")
         return modelDir
-    }
-
-    /// Recursively finds a non-zero-sized file with the given extension (and
-    /// optionally an exact file name), preferring the shallowest match.
-    private static func firstNonEmptyFile(
-        withExtension pathExtension: String,
-        named fileName: String? = nil,
-        under directory: URL
-    ) -> URL? {
-        guard let enumerator = FileManager.default.enumerator(
-            at: directory,
-            includingPropertiesForKeys: [.fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ) else { return nil }
-
-        var matches: [URL] = []
-        for case let file as URL in enumerator {
-            guard file.pathExtension == pathExtension else { continue }
-            if let fileName, file.lastPathComponent != fileName { continue }
-            let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-            if size > 0 { matches.append(file) }
-        }
-        return matches.min { $0.pathComponents.count < $1.pathComponents.count }
     }
 
     private static func clearCaches(modelDir: URL, repoID: Repo.ID, hubCache: HubCache) {
