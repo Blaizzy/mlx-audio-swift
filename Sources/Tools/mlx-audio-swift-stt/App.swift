@@ -369,6 +369,16 @@ enum App {
         if let voxtral = model as? VoxtralRealtimeModel {
             return runVoxtralStreaming(model: voxtral, audio: audio, parameters: parameters)
         }
+        // Nemotron has a true online session — feed audio as it arrives instead of the
+        // whole-buffer generateStream. The chunked-feed logic lives in the model. The
+        // session needs NA (frozen) mel normalization; for per-utterance normalization
+        // fall through to the generic stream instead of aborting on its precondition.
+        if let nemotron = model as? NemotronASRModel {
+            let norm = nemotron.preprocessConfig.normalize.lowercased()
+            if norm == "na" || norm == "none" {
+                return runNemotronStreaming(model: nemotron, audio: audio, parameters: parameters)
+            }
+        }
 
         var finalOutput: STTOutput?
         var streamedText = ""
@@ -404,6 +414,24 @@ enum App {
     /// callers can reuse it; the CLI only renders the deltas.
     private static func runVoxtralStreaming(
         model: VoxtralRealtimeModel,
+        audio: MLXArray,
+        parameters: STTGenerateParameters
+    ) -> STTOutput {
+        var emitted = false
+        let output = model.transcribeStreaming(audio: audio, generationParameters: parameters) { delta in
+            emitted = true
+            print(delta, terminator: "")
+            fflush(stdout)
+        }
+        if emitted { print() }
+        return output
+    }
+
+    /// Drive Nemotron's streaming transcription from a file, printing each delta live.
+    /// The chunked-feed logic lives in `NemotronASRModel.transcribeStreaming` so other
+    /// callers can reuse it; the CLI only renders the deltas.
+    private static func runNemotronStreaming(
+        model: NemotronASRModel,
         audio: MLXArray,
         parameters: STTGenerateParameters
     ) -> STTOutput {
