@@ -2,6 +2,13 @@
 
 ## SimpleChat Initial Setup
 
+Generate the Xcode project from the XcodeGen spec:
+
+```sh
+cd Examples/SimpleChat
+xcodegen generate
+```
+
 Create a local config file:
 
 ```sh
@@ -16,15 +23,37 @@ Edit `Examples/SimpleChat/Config/Local.xcconfig` and set:
 
 Open `Examples/SimpleChat/SimpleChat.xcodeproj` in Xcode and build `SimpleChat`.
 
+The Swift package entrypoint is still available:
+
+```sh
+cd Examples/SimpleChat
+swift run SimpleChat
+```
+
 ## Simulator / CI (no signing)
 
 Use this for Simulator builds in CI without signing:
 
 ```sh
+cd Examples/SimpleChat
+xcodegen generate
 xcodebuild \
-  -project Examples/SimpleChat/SimpleChat.xcodeproj \
+  -project SimpleChat.xcodeproj \
   -scheme SimpleChat \
-  -sdk iphonesimulator \
+  -destination 'generic/platform=iOS Simulator' \
+  -configuration Debug \
+  CODE_SIGNING_ALLOWED=NO
+```
+
+Use this for a macOS Xcode build without signing:
+
+```sh
+cd Examples/SimpleChat
+xcodegen generate
+xcodebuild \
+  -project SimpleChat.xcodeproj \
+  -scheme SimpleChat \
+  -destination 'platform=macOS' \
   -configuration Debug \
   CODE_SIGNING_ALLOWED=NO
 ```

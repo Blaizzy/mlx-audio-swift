@@ -1,13 +1,77 @@
 import AVFoundation
+import HuggingFace
 import MLX
 import MLXAudioCore
 import MLXAudioTTS
+import MLXHuggingFace
 @preconcurrency import MLXLMCommon
+import Tokenizers
 
 @MainActor
 protocol ConversationControllerDelegate: AnyObject {
     func conversationControllerDidStartUserSpeech(_ controller: ConversationController)
     func conversationController(_ controller: ConversationController, didFinish transcription: String)
+}
+
+private actor LanguageSessionStore {
+    // ChatSession is not Sendable; keep the unsafe escape private and serialize responses below.
+    nonisolated(unsafe) private var session: ChatSession?
+    private var isResponding = false
+    private var responseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func reset(instructions: String) async throws {
+        let model = try await loadModelContainer(
+            from: #hubDownloader(),
+            using: #huggingFaceTokenizerLoader(),
+            id: "mlx-community/Qwen3.5-0.8B-4bit"
+        )
+        session = ChatSession(
+            model,
+            instructions: instructions,
+            generateParameters: GenerateParameters(maxTokens: 4096, temperature: 0.6, topP: 0.95)
+        )
+    }
+
+    func clear() {
+        session = nil
+    }
+
+    func respond(to prompt: String) async throws -> String? {
+        await acquireResponseSlot()
+        do {
+            guard !Task.isCancelled else { throw CancellationError() }
+            guard let session else {
+                releaseResponseSlot()
+                return nil
+            }
+
+            let response = try await session.respond(to: prompt)
+            releaseResponseSlot()
+            return response
+        } catch {
+            releaseResponseSlot()
+            throw error
+        }
+    }
+
+    private func acquireResponseSlot() async {
+        if !isResponding {
+            isResponding = true
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            responseWaiters.append(continuation)
+        }
+    }
+
+    private func releaseResponseSlot() {
+        if responseWaiters.isEmpty {
+            isResponding = false
+        } else {
+            responseWaiters.removeFirst().resume()
+        }
+    }
 }
 
 @MainActor
@@ -146,7 +210,7 @@ final class ConversationController {
     @ObservationIgnored
     private var captureTask: Task<Void, Never>?
     @ObservationIgnored
-    private var languageSession: ChatSession?
+    private let languageSession = LanguageSessionStore()
     @ObservationIgnored
     private var incompleteTimeoutTask: Task<Void, Never>?
     @ObservationIgnored
@@ -192,7 +256,7 @@ final class ConversationController {
 
     func stop() async throws {
         cancelTurnHandling()
-        languageSession = nil
+        await languageSession.clear()
         stopCaptureLoop()
         audioEngine.endSpeaking()
         audioEngine.stop()
@@ -244,9 +308,8 @@ final class ConversationController {
     }
 
     private func resetLanguageSession() async throws {
-        let model = try await loadModelContainer(id: "mlx-community/Qwen3-1.7B-4bit")
         let instructions = Self.baseInstructions + "\n\n" + turnCompletionConfig.completionInstructions
-        languageSession = ChatSession(model, instructions: instructions, generateParameters: GenerateParameters(maxTokens: 4096, temperature: 0.6, topP: 0.95))
+        try await languageSession.reset(instructions: instructions)
     }
 
     private func ensureEngineStarted() async throws {
@@ -372,11 +435,9 @@ final class ConversationController {
         source: String,
         originalTranscript: String? = nil
     ) async {
-        guard let session = languageSession else { return }
-
         do {
             print("Using LLM prompt:\n\(prompt)")
-            let response = try await session.respond(to: prompt)
+            guard let response = try await languageSession.respond(to: prompt) else { return }
             print("LLM turn response [\(source)]: \(response)")
 
             let text = stripThinkContent(from: response)

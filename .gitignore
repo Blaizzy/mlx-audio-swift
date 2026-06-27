@@ -6,6 +6,8 @@
 .xcbkptlist
 .claude
 Examples/VoicesApp/Config/Local.xcconfig
+Examples/SimpleChat/Config/Local.xcconfig
+Examples/SimpleChat/SimpleChat.xcodeproj/
 xcuserdata/*
 *.pbxproj
 *.resolved

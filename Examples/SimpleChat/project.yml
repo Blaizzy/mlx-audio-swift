@@ -1,0 +1,78 @@
+name: SimpleChat
+
+options:
+  minimumXcodeGenVersion: 2.45.0
+  developmentLanguage: en
+  deploymentTarget:
+    iOS: "26.0"
+    macOS: "26.0"
+
+configs:
+  Debug: debug
+  Release: release
+
+packages:
+  mlx-audio-swift:
+    path: ../..
+  mlx-swift-lm:
+    url: https://github.com/ml-explore/mlx-swift-lm.git
+    exactVersion: 3.31.3
+  swift-huggingface:
+    url: https://github.com/huggingface/swift-huggingface.git
+    exactVersion: 0.8.1
+  swift-transformers:
+    url: https://github.com/huggingface/swift-transformers.git
+    exactVersion: 1.1.9
+
+targets:
+  SimpleChat:
+    type: application
+    platform: auto
+    supportedDestinations:
+      - iOS
+      - macOS
+    sources:
+      - path: SimpleChat
+    configFiles:
+      Debug: Config/Debug.xcconfig
+      Release: Config/Release.xcconfig
+    dependencies:
+      - package: mlx-audio-swift
+        product: MLXAudioTTS
+      - package: mlx-audio-swift
+        product: MLXAudioCore
+      - package: mlx-audio-swift
+        product: MLXAudioVAD
+      - package: mlx-swift-lm
+        product: MLXLMCommon
+      - package: mlx-swift-lm
+        product: MLXHuggingFace
+      - package: swift-huggingface
+        product: HuggingFace
+      - package: swift-transformers
+        product: Tokenizers
+    settings:
+      base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CURRENT_PROJECT_VERSION: 1
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: SimpleChat
+        INFOPLIST_KEY_CFBundleName: SimpleChat
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: SimpleChat needs microphone access to detect and transcribe speech.
+        MARKETING_VERSION: 1.0
+        PRODUCT_NAME: SimpleChat
+        SWIFT_VERSION: 6.2
+
+schemes:
+  SimpleChat:
+    build:
+      targets:
+        SimpleChat: all
+    run:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
