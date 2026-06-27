@@ -421,7 +421,14 @@ enum App {
         // fall through to the generic stream instead of aborting on its precondition.
         if let nemotron = model as? NemotronASRModel {
             let norm = nemotron.preprocessConfig.normalize.lowercased()
-            if norm == "na" || norm == "none" {
+            var useSession = norm == "na" || norm == "none"
+            #if canImport(CoreML)
+            // The streaming CoreML/ANE encoder is fixed-shape (native chunk only) and is
+            // consumed by generateStream, not the session. When it's enabled, fall through
+            // to generateStream so `--ane --stream` actually runs the encoder on the ANE.
+            if nemotron.streamingCoreMLEncoder != nil { useSession = false }
+            #endif
+            if useSession {
                 return runNemotronStreaming(model: nemotron, audio: audio, parameters: parameters)
             }
         }
