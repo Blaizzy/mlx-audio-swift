@@ -2,7 +2,7 @@
 //  Qwen3.swift
 //  MLXAudio
 //
-//  Created by Prince Canuma on 29/12/2025.
+//  Based on mlx-swift-lm Qwen3 model with TTS extensions.
 //
 
 import Foundation
@@ -14,7 +14,6 @@ import MLXNN
 import MLXAudioCodecs
 import MLXAudioCore
 import Combine
-
 
 // MARK: - VyvoTTS special token IDs (Qwen3-based tokenizer)
 let tokenizerLength = 151669
@@ -80,7 +79,6 @@ func decodeAudioFromCodes(codeList: [Int], snacModel: SNAC, chunkSize: Int = 50)
         groupStart = groupEnd
     }
 
-
     return MLXArray(Array(audioSamples))
 }
 
@@ -144,8 +142,7 @@ func encodeAudioToCodes(audio: MLXArray, snacModel: SNAC) -> MLXArray {
 }
 
 // MARK: - Attention
-
-public class Attention: Module {
+public class Qwen3Attention: Module {
     let args: Qwen3Configuration
     let scale: Float
 
@@ -169,32 +166,30 @@ public class Attention: Module {
         let headDim = args.headDim
         self.scale = pow(Float(headDim), -0.5)
 
-        self._wq.wrappedValue = Linear(dim, heads * headDim, bias: false)
-        self._wk.wrappedValue = Linear(dim, kvHeads * headDim, bias: false)
-        self._wv.wrappedValue = Linear(dim, kvHeads * headDim, bias: false)
-        self._wo.wrappedValue = Linear(heads * headDim, dim, bias: false)
+        _wq.wrappedValue = Linear(dim, heads * headDim, bias: false)
+        _wk.wrappedValue = Linear(dim, kvHeads * headDim, bias: false)
+        _wv.wrappedValue = Linear(dim, kvHeads * headDim, bias: false)
+        _wo.wrappedValue = Linear(heads * headDim, dim, bias: false)
 
-        self._qNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.rmsNormEps)
-        self._kNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.rmsNormEps)
+        _qNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.rmsNormEps)
+        _kNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.rmsNormEps)
 
         let ropeScale: Float
         if let ropeScaling = args.ropeScaling, ropeScaling["type"] == .string("linear"),
-        let factor = ropeScaling["factor"]
+            let factor = ropeScaling["factor"]
         {
             if let v = factor.asFloat() {
                 ropeScale = 1 / v
             } else {
-                fatalError("ropeScaling.factor must be a Float")
+                fatalError("ropeScaling.factor must be a float")
             }
         } else {
             ropeScale = 1
         }
 
         self.rope = RoPE(
-            dimensions: headDim, traditional: false, base: args.ropeTheta, scale: ropeScale
-        )
-
-
+            dimensions: headDim, traditional: false, base: args.ropeTheta,
+            scale: ropeScale)
     }
 
     public func callAsFunction(
@@ -210,65 +205,59 @@ public class Attention: Module {
         keys = kNorm(keys.reshaped(B, L, args.kvHeads, -1)).transposed(0, 2, 1, 3)
         values = values.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
 
-
         if let cache {
             queries = rope(queries, offset: cache.offset)
             keys = rope(keys, offset: cache.offset)
-            // Update cache and get full key/value history
-            (keys, values) = cache.update(keys: keys, values: values)
         } else {
             queries = rope(queries)
             keys = rope(keys)
         }
 
-        let output = MLXFast.scaledDotProductAttention(
+        let output = attentionWithCacheUpdate(
             queries: queries,
             keys: keys,
             values: values,
+            cache: cache,
             scale: scale,
             mask: mask
-        ).transposed(0, 2, 1, 3).reshaped(B, L, -1)
-
-        return wo(
-            output
         )
-    }
+        .transposed(0, 2, 1, 3)
+        .reshaped(B, L, -1)
 
+        return wo(output)
+    }
 }
 
-
-// MARK: - MLP
-
-private class MLP: Module {
+public class Qwen3MLP: Module, UnaryLayer {
     @ModuleInfo(key: "gate_proj") var gate: Linear
     @ModuleInfo(key: "down_proj") var down: Linear
     @ModuleInfo(key: "up_proj") var up: Linear
 
     public init(dimensions: Int, hiddenDimensions: Int) {
-        self._gate.wrappedValue = Linear(dimensions, hiddenDimensions, bias: false)
-        self._down.wrappedValue = Linear(hiddenDimensions, dimensions, bias: false)
-        self._up.wrappedValue = Linear(dimensions, hiddenDimensions, bias: false)
+        _gate.wrappedValue = Linear(dimensions, hiddenDimensions, bias: false)
+        _down.wrappedValue = Linear(hiddenDimensions, dimensions, bias: false)
+        _up.wrappedValue = Linear(dimensions, hiddenDimensions, bias: false)
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
-        return down(silu(gate(x)) * up(x))
+        down(silu(gate(x)) * up(x))
     }
 }
 
-
-private class TransformerBlock: Module {
-    @ModuleInfo(key: "self_attn") var attention: Attention
-    let mlp: MLP
+public class Qwen3TransformerBlock: Module {
+    @ModuleInfo(key: "self_attn") var attention: Qwen3Attention
+    let mlp: Qwen3MLP
 
     @ModuleInfo(key: "input_layernorm") var inputLayerNorm: RMSNorm
     @ModuleInfo(key: "post_attention_layernorm") var postAttentionLayerNorm: RMSNorm
 
     public init(_ args: Qwen3Configuration) {
-        self._attention.wrappedValue = Attention(args)
-        self.mlp = MLP(dimensions: args.hiddenSize, hiddenDimensions: args.intermediateSize)
-        self._inputLayerNorm.wrappedValue = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
-        self._postAttentionLayerNorm.wrappedValue = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
-
+        _attention.wrappedValue = Qwen3Attention(args)
+        self.mlp = Qwen3MLP(dimensions: args.hiddenSize, hiddenDimensions: args.intermediateSize)
+        _inputLayerNorm.wrappedValue = RMSNorm(
+            dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        _postAttentionLayerNorm.wrappedValue = RMSNorm(
+            dimensions: args.hiddenSize, eps: args.rmsNormEps)
     }
 
     public func callAsFunction(
@@ -279,30 +268,25 @@ private class TransformerBlock: Module {
         r = mlp(postAttentionLayerNorm(h))
         return h + r
     }
-
-
 }
 
-
-private class Qwen3ModelInner: Module {
+public class Qwen3ModelInner: Module {
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
 
-    fileprivate let layers: [TransformerBlock]
+    fileprivate let layers: [Qwen3TransformerBlock]
     let norm: RMSNorm
 
     public init(_ args: Qwen3Configuration) {
         precondition(args.vocabularySize > 0)
 
-        self._embedTokens.wrappedValue = Embedding(
-            embeddingCount: args.vocabularySize,
-            dimensions: args.hiddenSize
-        )
+        _embedTokens.wrappedValue = Embedding(
+            embeddingCount: args.vocabularySize, dimensions: args.hiddenSize)
 
         self.layers = (0..<args.hiddenLayers)
-            .map { _ in TransformerBlock(args) }
-
+            .map { _ in
+                Qwen3TransformerBlock(args)
+            }
         self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
-
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
@@ -318,16 +302,13 @@ private class Qwen3ModelInner: Module {
     }
 }
 
-
 public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel, @unchecked Sendable {
-
     public let vocabularySize: Int
     public let kvHeads: [Int]
     public var tokenizer: Tokenizers.Tokenizer?
     public var _snacModel: SNAC?
 
-    private let model: Qwen3ModelInner
-
+    public let model: Qwen3ModelInner
     let configuration: Qwen3Configuration
 
     @ModuleInfo(key: "lm_head") var lmHead: Linear?
@@ -337,14 +318,14 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         return self.configuration.hiddenLayers
     }
 
-    public init(_ args: Qwen3Configuration){
+    public init(_ args: Qwen3Configuration) {
         self.configuration = args
         self.vocabularySize = args.vocabularySize
-        self.kvHeads = (0..<args.hiddenLayers).map {_ in args.kvHeads}
+        self.kvHeads = (0..<args.hiddenLayers).map { _ in args.kvHeads }
         self.model = Qwen3ModelInner(args)
 
         if !args.tieWordEmbeddings {
-            self._lmHead.wrappedValue = Linear(args.hiddenSize, args.vocabularySize, bias: false)
+            _lmHead.wrappedValue = Linear(args.hiddenSize, args.vocabularySize, bias: false)
         }
     }
 
@@ -504,6 +485,24 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         return out
     }
 
+    public func forwardWithEmbeddings(
+        inputsEmbeds: MLXArray,
+        cache: [KVCache]? = nil,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode? = nil
+    ) -> MLXArray {
+        var h = inputsEmbeds
+        let resolvedMask: MLXFast.ScaledDotProductAttentionMaskMode = mask ?? .none
+        for (i, layer) in model.layers.enumerated() {
+            h = layer(h, mask: resolvedMask, cache: cache?[i])
+        }
+        h = model.norm(h)
+        return h
+    }
+
+    public func getEmbeddings(for inputIds: MLXArray) -> MLXArray {
+        return model.embedTokens(inputIds)
+    }
+
     public var sampleRate: Int {
         return self.configuration.sampleRate
     }
@@ -523,7 +522,6 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         if configuration.tieWordEmbeddings {
             weights["lm_head.weight"] = nil
         }
-
         return weights
     }
 
@@ -745,61 +743,61 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
                 guard self.tokenizer != nil else {
                     throw Qwen3Error.modelNotInitialized("Tokenizer not loaded")
                 }
-                
+
                 let prompt = text.replacingOccurrences(of: "\\n", with: "\n")
                     .replacingOccurrences(of: "\\t", with: "\t")
-                
+
                 let (inputIds, _) = self.prepareInputIds(
                     prompts: [prompt],
                     voice: voice,
                     refAudio: refAudio,
                     refText: refText
                 )
-                
+
                 let sampler = parameters.sampler()
                 var processor = parameters.processor()
-                
+
                 let promptTokens = inputIds.squeezed(axis: 0)
                 processor?.prompt(promptTokens)
                 var cache = cache
                 if cache == nil {
                     cache = self.makeCache()
                 }
-                
+
                 let maxTokens = parameters.maxTokens ?? 1200
-                
+
                 // DEDUP: Pull prompt tokens ONCE to CPU - this is your anchor
                 let promptTokensList = inputIds.squeezed(axis: 0).asArray(Int32.self)
-                
+
                 // Store only generated tokens (not prompt tokens) - dedup approach
                 var generatedTokens = ContiguousArray<Int32>()
                 generatedTokens.reserveCapacity(maxTokens)
-                
+
                 let startTime = Date()
-                
+
                 // Prefill: process the prompt, slice immediately to [1, V]
                 var tokenCount: Int = 0
                 var logits = self(inputIds, cache: cache)
                 logits = logits[0..., -1, 0...]  // [1, V] - avoid keeping [1, L, V]
                 eval(logits)
                 let prefillTime = Date().timeIntervalSince(startTime)
-                
+
                 let generateStartTime = Date()
-                
+
                 // Generate tokens
                 for _ in 0..<maxTokens {
                     try Task.checkCancellation()
-                    
+
                     // Extract token value and advance - minimize intermediate tensor lifetime
                     let tokenValue: Int = autoreleasepool {
                         var lastLogits = logits
                         lastLogits = processor?.process(logits: lastLogits) ?? lastLogits
-                        
+
                         let nextToken = sampler.sample(logits: lastLogits)
                         processor?.didSample(token: nextToken)
-                        
+
                         let value = nextToken.item(Int.self)
-                        
+
                         // Forward pass with cache
                         if value != endOfSpeech {
                             let nextTokenExpanded = nextToken.reshaped([1, 1])
@@ -807,44 +805,44 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
                             logits = logits[0..., -1, 0...]  // [1, V]
                             eval(logits)
                         }
-                        
+
                         return value
                     }
-                    
+
                     tokenCount += 1
-                    
+
                     continuation.yield(.token(tokenValue))
-                    
+
                     if tokenValue == endOfSpeech {
                         break
                     }
-                    
+
                     generatedTokens.append(Int32(tokenValue))
                 }
-                
+
                 Memory.clearCache()
                 try Task.checkCancellation()
-                
+
                 let generateTime = Date().timeIntervalSince(generateStartTime)
-                
+
                 // Reconstruct full tokens only once at the end for parsing
                 var fullTokens = ContiguousArray<Int32>()
                 fullTokens.reserveCapacity(promptTokensList.count + generatedTokens.count)
                 fullTokens.append(contentsOf: promptTokensList)
                 fullTokens.append(contentsOf: generatedTokens)
-                
+
                 // Parse output to audio codes using CPU-based parsing
                 let codeList = self.parseOutputRow(Array(fullTokens))
-                
+
                 guard !codeList.isEmpty else {
                     throw Qwen3Error.generationFailed("No audio codes generated")
                 }
-                
+
                 let audio = decodeAudioFromCodes(codeList: codeList, snacModel: snacModel)
                 audio.eval()
-                
+
                 Memory.clearCache()
-                
+
                 // Yield completion info
                 let info = Qwen3GenerationInfo(
                     promptTokenCount: inputIds.shape[1],
@@ -855,10 +853,10 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
                     peakMemoryUsage: Double(Memory.peakMemory) / 1e9
                 )
                 continuation.yield(.info(info))
-                
+
                 // Yield final audio
                 continuation.yield(.audio(audio))
-                
+
                 continuation.finish()
             } catch {
                 continuation.finish(throwing: error)
@@ -898,11 +896,9 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         let configPath = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configPath)
         let config = try JSONDecoder().decode(Qwen3Configuration.self, from: configData)
-
         let perLayerQuantization = config.perLayerQuantization
 
         let model = Qwen3Model(config)
-
 
         // Load weights from safetensors
         let weights = try loadWeights(from: modelDir)
@@ -910,7 +906,6 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         let sanitizedWeights = model.sanitize(weights: weights)
 
         // Quantize if needed
-
         if perLayerQuantization != nil {
             print("Applying quantizaiton from config...")
 
@@ -928,13 +923,9 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
             }
         }
 
-
-
         try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .all)
         eval(model)
-
         try await model.post_load_hook(model: model, modelDir: modelDir, cache: cache)
-
         return model
     }
 }
@@ -943,7 +934,6 @@ func loadWeights(from directory: URL) throws -> [String: MLXArray] {
     let fileManager = FileManager.default
     let files = try fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
     let safetensorFiles = files.filter { $0.pathExtension == "safetensors" }
-
     var weights: [String: MLXArray] = [:]
     for file in safetensorFiles {
         let fileWeights = try MLX.loadArrays(url: file)
