@@ -4,10 +4,12 @@ Swift/MLX port of [k2-fsa/OmniVoice](https://huggingface.co/k2-fsa/OmniVoice), a
 
 ## Weights
 
-Use the full conversion `mlx-community/OmniVoice` (fp32, includes the complete
-audio codec). The `mlx-community/OmniVoice-bf16` repo's `audio_tokenizer/` was
-exported without the semantic encode path (no `semantic_model.*` /
-`encoder_semantic.*` weights), so it cannot encode reference audio.
+Two MLX conversions are available, both with the complete audio codec
+(acoustic **and** semantic encode path), so both support voice cloning:
+
+- `mlx-community/OmniVoice` — fp32.
+- `mlx-community/OmniVoice-bf16` — bfloat16: ~half the size and MLX's native
+  compute dtype on Apple Silicon.
 
 ## Usage
 
