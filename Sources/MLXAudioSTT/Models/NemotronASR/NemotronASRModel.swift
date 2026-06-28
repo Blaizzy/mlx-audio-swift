@@ -19,6 +19,13 @@ public final class NemotronASRModel: Module, STTGenerationModel {
 
     public var computeDType: DType = .bfloat16
 
+    #if canImport(CoreML)
+    /// Optional fixed-shape CoreML/ANE Conformer encoder for the **offline** path. When set,
+    /// `decode()` runs it instead of the MLX encoder (falls back to MLX on any failure). The
+    /// encoder is a generic fixed-shape Conformer encoder shared with Parakeet (same I/O).
+    public var coreMLEncoder: ConformerCoreMLEncoder?
+    #endif
+
     @ModuleInfo(key: "encoder") var encoder: NemotronASRConformer
     @ModuleInfo(key: "prompt_kernel") var promptKernel: NemotronASRPromptKernel
     @ModuleInfo(key: "decoder") var decoder: NemoPredictNetwork
@@ -88,7 +95,17 @@ public final class NemotronASRModel: Module, STTGenerationModel {
         let sampleRate = preprocessConfig.sampleRate
         let totalSamples = audio1D.shape[0]
         let audioDuration = Double(totalSamples) / Double(sampleRate)
-        let chunkDuration = Double(generationParameters.chunkDuration)
+        var chunkDuration = Double(generationParameters.chunkDuration)
+        #if canImport(CoreML)
+        // The offline CoreML encoder is fixed-shape (`fixedFrames` mel frames); longer mel is
+        // cropped. Force chunking ≤ that length so `generate()`'s overlap-merge stitches long
+        // audio. (A few frames of margin keep the boundary attention clean.)
+        if let coreML = coreMLEncoder {
+            let hopSeconds = Double(preprocessConfig.hopLength) / Double(sampleRate)
+            let maxChunkSeconds = Double(coreML.fixedFrames - 4) * hopSeconds
+            chunkDuration = chunkDuration <= 0 ? maxChunkSeconds : min(chunkDuration, maxChunkSeconds)
+        }
+        #endif
         let result: NemoAlignedResult
 
         if chunkDuration <= 0 || audioDuration <= chunkDuration {
@@ -195,7 +212,16 @@ public final class NemotronASRModel: Module, STTGenerationModel {
         )
 
         features = features.asType(computeDType)
-        let encoded = encoder(features, attContextSize: attContextSize ?? defaultAttContextSize)
+        let encoded: (MLXArray, MLXArray)
+        #if canImport(CoreML)
+        if let coreML = coreMLEncoder, let result = try? coreML.encode(features, outputDType: computeDType) {
+            encoded = result
+        } else {
+            encoded = encoder(features, attContextSize: attContextSize ?? defaultAttContextSize)
+        }
+        #else
+        encoded = encoder(features, attContextSize: attContextSize ?? defaultAttContextSize)
+        #endif
         let prompted = applyPrompt(encoded.0, language: language)
         eval(prompted, encoded.1)
 
