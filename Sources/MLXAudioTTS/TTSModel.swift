@@ -201,6 +201,12 @@ public enum TTS {
                 pretrained: { try await KokoroModel.fromPretrained($0, textProcessor: processor, cache: $1) },
                 local: { modelDir, _ in try await KokoroModel.fromModelDirectory(modelDir, textProcessor: processor) }
             )
+        case "omnivoice":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await OmniVoiceModel.fromPretrained($0, cache: $1) }
+            )
         default:
             throw TTSModelError.unsupportedModelType(resolvedType)
         }
@@ -309,6 +315,9 @@ public enum TTS {
         }
         if lower.contains("kokoro") {
             return "kokoro"
+        }
+        if lower.contains("omnivoice") {
+            return "omnivoice"
         }
         return nil
     }
