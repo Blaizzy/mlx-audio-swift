@@ -78,6 +78,9 @@ private struct Options {
     var prefillStepSize = 2048
     var genKwargsRaw: String? = nil
     var text = ""
+    var coremlEncoder: String? = nil
+    var coremlStreamEncoder: String? = nil
+    var ane = false
 
     var temperature: Float? = nil
     var topP: Float? = nil
@@ -139,6 +142,14 @@ private struct Options {
             case "--text":
                 guard let v = it.next() else { throw CLIError.missingValue(arg) }
                 options.text = v
+            case "--coreml-encoder":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                options.coremlEncoder = v
+            case "--coreml-stream-encoder":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                options.coremlStreamEncoder = v
+            case "--ane":
+                options.ane = true
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -271,6 +282,39 @@ enum App {
         let (inputSampleRate, inputAudio) = try loadAudioArray(from: inputURL)
         let audio = try prepareAudioForSTT(inputAudio, inputSampleRate: inputSampleRate, targetSampleRate: 16000)
 
+        #if canImport(CoreML)
+        if case .stt(let m) = model {
+            if let parakeet = m as? ParakeetModel {
+                if let coremlPath = options.coremlEncoder {
+                    try parakeet.enableCoreMLEncoder(modelURL: resolveURL(path: coremlPath))
+                    if options.verbose { print("CoreML/ANE encoder enabled: \(coremlPath)") }
+                } else if options.ane {
+                    try await parakeet.enableCoreMLEncoder(repo: ParakeetModel.defaultANEEncoderRepo)
+                    if options.verbose { print("ANE encoder enabled: \(ParakeetModel.defaultANEEncoderRepo)") }
+                }
+            } else if let nemotron = m as? NemotronASRModel {
+                // Offline CoreML/ANE encoder (decode path): explicit --coreml-encoder, or --ane
+                // without --stream. Auto-clamps chunkDuration so overlap-merge stitches long audio.
+                if let coremlPath = options.coremlEncoder {
+                    try nemotron.enableCoreMLEncoder(modelURL: resolveURL(path: coremlPath))
+                    if options.verbose { print("CoreML/ANE encoder enabled (Nemotron): \(coremlPath)") }
+                } else if options.ane && !options.stream {
+                    try await nemotron.enableCoreMLEncoder(repo: NemotronASRModel.defaultANEEncoderRepo)
+                    if options.verbose { print("ANE encoder enabled (Nemotron): \(NemotronASRModel.defaultANEEncoderRepo)") }
+                }
+                // Cache-aware streaming CoreML/ANE encoder (generateStream path): explicit
+                // --coreml-stream-encoder, or --ane with --stream (auto-downloads the stream package).
+                if let streamPath = options.coremlStreamEncoder {
+                    try nemotron.enableCoreMLStreamingEncoder(modelURL: resolveURL(path: streamPath))
+                    if options.verbose { print("CoreML/ANE streaming encoder enabled (Nemotron): \(streamPath)") }
+                } else if options.ane && options.stream {
+                    try await nemotron.enableCoreMLStreamingEncoder(repo: NemotronASRModel.defaultANEStreamingEncoderRepo)
+                    if options.verbose { print("ANE streaming encoder enabled (Nemotron): \(NemotronASRModel.defaultANEStreamingEncoderRepo)") }
+                }
+            }
+        }
+        #endif
+
         let startTime = CFAbsoluteTimeGetCurrent()
 
         if options.verbose {
@@ -346,9 +390,11 @@ enum App {
 
         if options.verbose {
             let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            let audioSeconds = Double(audio.size) / 16000.0
             print("\n==========")
             print("Saved file to: \(options.outputPath!).\(options.format.rawValue)")
             print(String(format: "Processing time: %.2f seconds", elapsed))
+            print(String(format: "RTF: %.1fx realtime (%.1fs audio / %.2fs)", audioSeconds / elapsed, audioSeconds, elapsed))
             print(String(format: "Prompt: %d tokens, %.3f tokens-per-sec", output.promptTokens, output.promptTps))
             print(String(format: "Generation: %d tokens, %.3f tokens-per-sec", output.generationTokens, output.generationTps))
             print(String(format: "Peak memory: %.2f GB", output.peakMemoryUsage))
@@ -375,7 +421,14 @@ enum App {
         // fall through to the generic stream instead of aborting on its precondition.
         if let nemotron = model as? NemotronASRModel {
             let norm = nemotron.preprocessConfig.normalize.lowercased()
-            if norm == "na" || norm == "none" {
+            var useSession = norm == "na" || norm == "none"
+            #if canImport(CoreML)
+            // The streaming CoreML/ANE encoder is fixed-shape (native chunk only) and is
+            // consumed by generateStream, not the session. When it's enabled, fall through
+            // to generateStream so `--ane --stream` actually runs the encoder on the ANE.
+            if nemotron.streamingCoreMLEncoder != nil { useSession = false }
+            #endif
+            if useSession {
                 return runNemotronStreaming(model: nemotron, audio: audio, parameters: parameters)
             }
         }
