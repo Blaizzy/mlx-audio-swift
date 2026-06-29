@@ -229,6 +229,41 @@ Additional usage examples can be found in the test files.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
+## Code Quality
+
+The project uses [SwiftLint](https://github.com/realm/SwiftLint) for static analysis and [SwiftFormat](https://github.com/nicklockwood/SwiftFormat) for automatic formatting.
+
+### Setup
+
+```bash
+brew install swiftlint swiftformat
+```
+
+### Usage
+
+```bash
+# Check formatting (exit 1 if changes needed — use in CI)
+swiftformat . --lint
+
+# Apply formatting
+swiftformat .
+
+# Lint
+swiftlint lint
+
+# Lint with auto-fix
+swiftlint lint --fix --format
+```
+
+### Configuration
+
+| File | Tool | Purpose |
+|------|------|---------|
+| [`.swiftlint.yml`](.swiftlint.yml) | SwiftLint 0.63+ | Static analysis, 300+ rules |
+| [`.swiftformat`](.swiftformat) | SwiftFormat 0.61+ | Auto-formatting |
+
+Both configs target **Swift 6** and are tuned for an ML audio library: relaxed body-length thresholds for DSP/model code, strict concurrency rules (`async_without_await`, `unowned_variable_capture`), and consistent wrapping for initialisers with many named parameters.
+
 ## Credits
 
 - Built on [MLX Swift](https://github.com/ml-explore/mlx-swift)
