@@ -371,6 +371,12 @@ struct MossTTSNanoTests {
         #expect(TTS.resolveModelType(modelRepo: "mlx-community/MOSS-TTS-Nano") == "moss_tts_nano")
         #expect(TTS.resolveModelType(modelRepo: "anything", modelType: "moss_tts_nano") == "moss_tts_nano")
     }
+
+    @Test func ttsModelResolutionIncludesVoxCPM2() {
+        #expect(TTS.resolveModelType(modelRepo: "aufklarer/VoxCPM2-MLX-bf16") == "voxcpm2")
+        #expect(TTS.resolveModelType(modelRepo: "/tmp/VoxCPM2-8bit") == "voxcpm2")
+        #expect(TTS.resolveModelType(modelRepo: "anything", modelType: "voxcpm2") == "voxcpm2")
+    }
 }
 
 @Suite("MOSS TTS Full Tests")
