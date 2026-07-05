@@ -257,7 +257,10 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
                     refAudio: refAudio,
                     refText: refText,
                     language: language,
-                    ovParameters: ovParams
+                    ovParameters: ovParams,
+                    onStepProgress: { done, total in
+                        continuation.yield(.progress(Double(done) / Double(total)))
+                    }
                 )
                 let info = AudioGenerationInfo(
                     promptTokenCount: 0,
@@ -285,7 +288,8 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         refAudio: MLXArray?,
         refText: String?,
         language: String?,
-        ovParameters: OmniVoiceGenerateParameters
+        ovParameters: OmniVoiceGenerateParameters,
+        onStepProgress: (@Sendable (Int, Int) -> Void)? = nil
     ) async throws -> MLXArray {
         guard let audioTok = audioTokenizer else {
             throw AudioGenerationError.modelNotInitialized("Audio tokenizer not loaded")
@@ -369,7 +373,12 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         // 7. Iterative diffusion generation
         for step in 0..<numSteps {
             let k = schedule[step]
-            if k <= 0 { continue }
+            if k <= 0 {
+                // Nothing left to unmask this step — still report it so
+                // progress always reaches numSteps/numSteps.
+                onStepProgress?(step + 1, numSteps)
+                continue
+            }
 
             // Separate forward passes for cond and uncond (bidirectional attention)
             let condLogits = forward(
@@ -436,6 +445,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             uncondInputIds = tokens  // uncond is just the target region
 
             eval(inputIds, uncondInputIds, tokens)
+            onStepProgress?(step + 1, numSteps)
         }
 
         // Safeguard: fill any remaining mask tokens with a final deterministic prediction

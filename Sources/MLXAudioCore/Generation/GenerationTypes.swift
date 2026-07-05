@@ -54,6 +54,10 @@ public enum AudioGeneration: Sendable {
     case info(AudioGenerationInfo)
     /// Final generated audio
     case audio(MLXArray)
+    /// Fractional progress through generation (0-1). Emitted by models with a
+    /// deterministic step count (e.g. diffusion denoise steps), where the
+    /// fraction is exact rather than an estimate.
+    case progress(Double)
 }
 
 // MARK: - Generation Errors
