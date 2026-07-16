@@ -1980,6 +1980,52 @@ struct MossTranscribeDiarizeModuleSetupTests {
         #expect(segments[0]["end"] as? Double == 4.25)
         #expect(segments[0]["text"] as? String == text)
     }
+
+    @Test func mossConfigDecodesQuantization() throws {
+        let json = """
+        {
+          "model_type": "moss_transcribe_diarize",
+          "quantization": { "group_size": 64, "bits": 8 }
+        }
+        """
+
+        let config = try JSONDecoder().decode(MossTranscribeDiarizeConfig.self, from: Data(json.utf8))
+
+        #expect(config.quantization?.bits == 8)
+        #expect(config.quantization?.groupSize == 64)
+    }
+
+    @Test func mossConfigDecodesQuantizationConfigKey() throws {
+        let json = """
+        {
+          "model_type": "moss_transcribe_diarize",
+          "quantization_config": { "group_size": 32, "bits": 4 }
+        }
+        """
+
+        let config = try JSONDecoder().decode(MossTranscribeDiarizeConfig.self, from: Data(json.utf8))
+
+        #expect(config.quantization?.bits == 4)
+        #expect(config.quantization?.groupSize == 32)
+    }
+
+    @Test func mossConfigWithoutQuantizationStaysDense() throws {
+        let json = """
+        { "model_type": "moss_transcribe_diarize" }
+        """
+
+        let config = try JSONDecoder().decode(MossTranscribeDiarizeConfig.self, from: Data(json.utf8))
+
+        #expect(config.quantization == nil)
+    }
+
+    @Test func sttGenerateParametersDefaultKVBitsIsNil() {
+        let parameters = STTGenerateParameters()
+
+        #expect(parameters.kvBits == nil)
+        #expect(parameters.kvGroupSize == 64)
+        #expect(parameters.quantizedKVStart == 0)
+    }
 }
 
 struct CohereTranscribeModuleSetupTests {
