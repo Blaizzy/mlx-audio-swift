@@ -1,4 +1,5 @@
 import Foundation
+import MLXLMCommon
 
 public struct MossTranscribeDiarizeConfig: Codable {
     public var modelType: String
@@ -9,6 +10,11 @@ public struct MossTranscribeDiarizeConfig: Codable {
     public var adaptorInputDim: Int?
     public var tieWordEmbeddings: Bool
     public var sampleRate: Int
+    /// Global quantization parameters for pre-quantized checkpoints
+    /// (decoded from "quantization" or "quantization_config"; not re-encoded).
+    public var quantization: BaseConfiguration.Quantization?
+    /// Per-layer overrides for mixed-precision checkpoints.
+    public var perLayerQuantization: BaseConfiguration.PerLayerQuantization?
 
     enum CodingKeys: String, CodingKey {
         case modelType = "model_type"
@@ -19,6 +25,11 @@ public struct MossTranscribeDiarizeConfig: Codable {
         case adaptorInputDim = "adaptor_input_dim"
         case tieWordEmbeddings = "tie_word_embeddings"
         case sampleRate = "sample_rate"
+    }
+
+    enum QuantizationCodingKeys: String, CodingKey {
+        case quantization
+        case quantizationConfig = "quantization_config"
     }
 
     public init(
@@ -37,7 +48,9 @@ public struct MossTranscribeDiarizeConfig: Codable {
         audioMergeSize: Int = 4,
         adaptorInputDim: Int? = nil,
         tieWordEmbeddings: Bool = true,
-        sampleRate: Int = 16000
+        sampleRate: Int = 16000,
+        quantization: BaseConfiguration.Quantization? = nil,
+        perLayerQuantization: BaseConfiguration.PerLayerQuantization? = nil
     ) {
         self.modelType = modelType
         var resolvedTextConfig = textConfig
@@ -49,6 +62,8 @@ public struct MossTranscribeDiarizeConfig: Codable {
         self.adaptorInputDim = adaptorInputDim ?? audioConfig.dModel * audioMergeSize
         self.tieWordEmbeddings = tieWordEmbeddings
         self.sampleRate = sampleRate
+        self.quantization = quantization
+        self.perLayerQuantization = perLayerQuantization
     }
 
     public init(from decoder: Decoder) throws {
@@ -74,5 +89,16 @@ public struct MossTranscribeDiarizeConfig: Codable {
         adaptorInputDim = try container.decodeIfPresent(Int.self, forKey: .adaptorInputDim)
             ?? audioConfig.dModel * audioMergeSize
         sampleRate = try container.decodeIfPresent(Int.self, forKey: .sampleRate) ?? 16000
+
+        let quantContainer = try decoder.container(keyedBy: QuantizationCodingKeys.self)
+        let globalQuant = try? quantContainer.decodeIfPresent(
+            BaseConfiguration.Quantization.self, forKey: .quantization
+        )
+        let altGlobalQuant = try? quantContainer.decodeIfPresent(
+            BaseConfiguration.Quantization.self, forKey: .quantizationConfig
+        )
+        quantization = globalQuant ?? altGlobalQuant
+        let baseConfig = try? BaseConfiguration(from: decoder)
+        perLayerQuantization = baseConfig?.perLayerQuantization
     }
 }
