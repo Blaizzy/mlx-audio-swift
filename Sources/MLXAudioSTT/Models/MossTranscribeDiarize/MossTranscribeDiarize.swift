@@ -225,7 +225,7 @@ public final class MossTranscribeDiarizeBackbone: Module {
         var embeds = inputsEmbeds ?? languageModel.embedTokens(inputIds)
         if let inputFeatures,
            let audioFeatureLengths,
-           cache == nil || cache?.first == nil || (cache?.first as? KVCacheSimple)?.offset == 0 {
+           cache == nil || cache?.first == nil || cache?.first?.offset == 0 {
             embeds = try! injectAudioFeatures(
                 inputIds: inputIds,
                 inputsEmbeds: embeds,
