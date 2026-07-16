@@ -719,6 +719,17 @@ private extension MossTranscribeDiarizeModel {
             let chunkEmbeds = inputEmbeddings[0..., processedTokens..<(processedTokens + n), 0...]
             let logits = callAsFunction(inputIds: chunkIds, inputEmbeddings: chunkEmbeds, cache: cache)
             eval(logits)
+            // Quantize the retained context as prefill progresses (mlx-lm
+            // quantizes inside its chunked prompt loop too): a long prompt
+            // otherwise carries its full-precision KV as a transient peak
+            // that can exceed a small machine's memory before the cache is
+            // ever converted. No-op when kvBits == nil or already quantized.
+            maybeQuantizeKVCache(
+                cache: &cache,
+                kvBits: kvBits,
+                kvGroupSize: kvGroupSize,
+                quantizedKVStart: quantizedKVStart
+            )
             Memory.clearCache()
             processedTokens += n
         }
@@ -733,8 +744,7 @@ private extension MossTranscribeDiarizeModel {
         var nextTokenArray = lastLogits.argMax(axis: -1)
         asyncEval(nextTokenArray)
 
-        // Prefill runs at model precision; quantize only the retained context.
-        // kvBits == nil leaves the cache untouched (bit-for-bit prior behavior).
+        // Covers prompts short enough that the chunk loop never ran.
         maybeQuantizeKVCache(
             cache: &cache,
             kvBits: kvBits,

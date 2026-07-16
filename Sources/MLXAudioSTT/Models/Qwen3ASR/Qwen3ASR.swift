@@ -900,7 +900,7 @@ public class Qwen3ASRTextModel: Module {
             fatalError("Either inputIds or inputsEmbeds must be provided")
         }
 
-        let mask = createAttentionMask(h: h, cache: cache?.first)
+        let mask = Self.attentionMask(h: h, cache: cache?.first)
 
         let caches = cache ?? [KVCache?](repeating: nil, count: layers.count)
         for (i, layer) in layers.enumerated() {
@@ -908,6 +908,27 @@ public class Qwen3ASRTextModel: Module {
         }
 
         return norm(h)
+    }
+
+    /// Attention mask for one forward step. Multi-token steps over a
+    /// QUANTIZED cache need an additive float mask: the quantized attention
+    /// path substitutes a near-zero constant (not -inf) for masked positions
+    /// of symbolic/boolean masks, which lets future positions leak into the
+    /// softmax; its additive branch applies the mask exactly. All other
+    /// cases keep the standard helper's behavior.
+    static func attentionMask(
+        h: MLXArray, cache: KVCache?
+    ) -> MLXFast.ScaledDotProductAttentionMaskMode {
+        let n = h.dim(1)
+        if n > 1, let cache, cache is QuantizedKVCacheProtocol {
+            let offset = cache.offset
+            let boolMask = createCausalMask(n: n, offset: offset)
+            let additive = MLX.where(
+                boolMask, MLXArray(Float(0)), MLXArray(Float(-1e9))
+            ).asType(h.dtype)
+            return .array(additive)
+        }
+        return createAttentionMask(h: h, cache: cache)
     }
 }
 
