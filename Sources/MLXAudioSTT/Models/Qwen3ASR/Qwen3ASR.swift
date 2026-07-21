@@ -790,20 +790,23 @@ class Qwen3ASRTextAttention: Module {
         keys = keys.transposed(0, 2, 1, 3)
         values = values.transposed(0, 2, 1, 3)
 
-        // Apply RoPE
+        // Apply RoPE using the pre-update cache offset, matching the previous
+        // manual cache.update + scaledDotProductAttention sequence.
         if let cache = cache {
             queries = rope(queries, offset: cache.offset)
             keys = rope(keys, offset: cache.offset)
-            (keys, values) = cache.update(keys: keys, values: values)
         } else {
             queries = rope(queries)
             keys = rope(keys)
         }
 
-        let output = MLXFast.scaledDotProductAttention(
+        // Routes to quantized attention when the cache is a QuantizedKVCache,
+        // and performs the cache update internally for all cache types.
+        let output = attentionWithCacheUpdate(
             queries: queries,
             keys: keys,
             values: values,
+            cache: cache,
             scale: scale,
             mask: mask
         ).transposed(0, 2, 1, 3).reshaped(B, L, -1)

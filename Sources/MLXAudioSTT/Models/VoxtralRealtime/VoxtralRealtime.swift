@@ -376,8 +376,8 @@ extension VoxtralRealtimeModel {
     /// Causal conv + causal/sliding-window attention make `adapterOut[0..<k]`
     /// identical whether encoded from a prefix or the full buffer.
     /// Conv-stem seam: audio → conv-stem frames (`convOut`, the transformer input),
-    /// the per-token span, and the prompt length. Shared by the offline encode and
-    /// the streaming session (which feeds `convOut` incrementally).
+    /// the per-token span, and the prompt length. Used by the offline encode; the
+    /// streaming session builds the same rows incrementally (`convStemStep`).
     func convStemForAudio(
         audio: MLXArray,
         transcriptionDelayMs: Int?
