@@ -10,8 +10,7 @@ public struct MossTranscribeDiarizeConfig: Codable {
     public var adaptorInputDim: Int?
     public var tieWordEmbeddings: Bool
     public var sampleRate: Int
-    /// Global quantization parameters for pre-quantized checkpoints
-    /// (decoded from "quantization" or "quantization_config"; not re-encoded).
+    /// Quantization parameters from "quantization"/"quantization_config".
     public var quantization: BaseConfiguration.Quantization?
     /// Per-layer overrides for mixed-precision checkpoints.
     public var perLayerQuantization: BaseConfiguration.PerLayerQuantization?

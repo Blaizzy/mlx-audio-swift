@@ -910,12 +910,9 @@ public class Qwen3ASRTextModel: Module {
         return norm(h)
     }
 
-    /// Attention mask for one forward step. Multi-token steps over a
-    /// QUANTIZED cache need an additive float mask: the quantized attention
-    /// path substitutes a near-zero constant (not -inf) for masked positions
-    /// of symbolic/boolean masks, which lets future positions leak into the
-    /// softmax; its additive branch applies the mask exactly. All other
-    /// cases keep the standard helper's behavior.
+    /// Multi-token steps over a quantized cache need an exact additive mask:
+    /// the quantized attention path replaces boolean-mask positions with a
+    /// finite constant, letting future positions leak into the softmax.
     static func attentionMask(
         h: MLXArray, cache: KVCache?
     ) -> MLXFast.ScaledDotProductAttentionMaskMode {

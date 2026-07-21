@@ -706,10 +706,8 @@ private extension MossTranscribeDiarizeModel {
         onToken: ((Int) -> Void)? = nil
     ) throws -> [Int] {
         var cache = makeCache()
-        // Quantized prefill attention is unfused (scores materialize as a
-        // [heads, chunk, context] tensor), so its transient memory scales
-        // with the chunk size; a smaller chunk bounds that spike. The
-        // full-precision path keeps its fused kernel and original chunking.
+        // Quantized prefill attention is unfused; its transient scores tensor
+        // scales with chunk size, so a smaller chunk bounds the memory spike.
         let prefillStepSize = kvBits == nil ? 2048 : 512
         let totalTokens = promptIds.dim(1)
         var processedTokens = 0
@@ -723,11 +721,8 @@ private extension MossTranscribeDiarizeModel {
             let chunkEmbeds = inputEmbeddings[0..., processedTokens..<(processedTokens + n), 0...]
             let logits = callAsFunction(inputIds: chunkIds, inputEmbeddings: chunkEmbeds, cache: cache)
             eval(logits)
-            // Quantize the retained context as prefill progresses (mlx-lm
-            // quantizes inside its chunked prompt loop too): a long prompt
-            // otherwise carries its full-precision KV as a transient peak
-            // that can exceed a small machine's memory before the cache is
-            // ever converted. No-op when kvBits == nil or already quantized.
+            // Quantize retained context as prefill progresses (as mlx-lm does):
+            // a long prompt would otherwise peak at full-precision KV.
             maybeQuantizeKVCache(
                 cache: &cache,
                 kvBits: kvBits,
@@ -1056,8 +1051,7 @@ extension MossTranscribeDiarizeModel {
         let sanitized = sanitize(weights: weights)
         if config.quantization != nil || config.perLayerQuantization != nil {
             quantize(model: model) { path, _ in
-                // Only layers that ship quantized tensors are swapped; anything
-                // stored dense (e.g. the audio tower) keeps its original module.
+                // Only layers shipping quantized tensors are swapped.
                 guard sanitized["\(path).scales"] != nil else {
                     return nil
                 }
