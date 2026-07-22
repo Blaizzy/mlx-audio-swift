@@ -94,6 +94,7 @@ struct OmniVoiceConfigTests {
         #expect(params.layerPenaltyFactor == 5.0)
         #expect(params.positionTemperature == 5.0)
         #expect(params.classTemperature == 0.0)
+        #expect(params.seed == nil)
     }
 
     @Test func testFastPreset() {
@@ -121,7 +122,8 @@ struct OmniVoiceConfigTests {
             postprocessOutput: false,
             layerPenaltyFactor: 3.0,
             positionTemperature: 3.0,
-            classTemperature: 0.5
+            classTemperature: 0.5,
+            seed: 42
         )
 
         #expect(params.numStep == 48)
@@ -134,6 +136,7 @@ struct OmniVoiceConfigTests {
         #expect(params.layerPenaltyFactor == 3.0)
         #expect(params.positionTemperature == 3.0)
         #expect(params.classTemperature == 0.5)
+        #expect(params.seed == 42)
     }
 }
 
