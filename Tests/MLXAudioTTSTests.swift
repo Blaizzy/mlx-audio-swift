@@ -701,6 +701,8 @@ private func collectQwen3TTSStream(
             infoCount += 1
         case .audio(let audio):
             lastAudio = audio
+        case .progress:
+            break
         }
     }
 

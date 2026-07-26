@@ -453,6 +453,14 @@ class TTSViewModel {
                                 generationProgress = "Generated \(chunkTokenCount) tokens..."
                             }
                         }
+                    case .progress(let fraction):
+                        // Diffusion models report exact step progress instead of tokens.
+                        let percent = Int((fraction * 100).rounded())
+                        if chunks.count > 1 {
+                            generationProgress = "Chunk \(index + 1)/\(chunks.count): \(percent)%"
+                        } else {
+                            generationProgress = "Generating... \(percent)%"
+                        }
                     case .info(let info):
                         tokensPerSecond = info.tokensPerSecond
                     case .audio(let audioData):
