@@ -450,47 +450,7 @@ enum App {
         if lower.contains("forcedalign") || lower.contains("forced-align") {
             return .forcedAligner(try await Qwen3ForcedAlignerModel.fromPretrained(repo))
         }
-        if lower.contains("glmasr") || lower.contains("glm-asr") {
-            return .stt(try await GLMASRModel.fromPretrained(repo))
-        }
-        if lower.contains("qwen3-asr") || lower.contains("qwen3_asr") {
-            return .stt(try await Qwen3ASRModel.fromPretrained(repo))
-        }
-        if lower.contains("voxtral") {
-            return .stt(try await VoxtralRealtimeModel.fromPretrained(repo))
-        }
-        if lower.contains("cohere") {
-            return .stt(try await CohereTranscribeModel.fromPretrained(repo))
-        }
-        if lower.contains("parakeet") {
-            return .stt(try await ParakeetModel.fromPretrained(repo))
-        }
-        if lower.contains("canary") {
-            return .stt(try await CanaryModel.fromPretrained(repo))
-        }
-        if lower.contains("wav2vec") || lower.contains("wav2vec2") || lower.contains("/mms-") || lower.contains("mms_") || lower.contains("mms-") {
-            return .stt(try await Wav2Vec2CTCModel.fromPretrained(repo))
-        }
-        if lower.contains("lasr") {
-            return .stt(try await LasrCTCModel.fromPretrained(repo))
-        }
-        if lower.contains("moonshine") {
-            return .stt(try await MoonshineModel.fromPretrained(repo))
-        }
-        if lower.contains("nemotron") {
-            return .stt(try await NemotronASRModel.fromPretrained(repo))
-        }
-        if lower.contains("firered") || lower.contains("fire-red") {
-            return .stt(try await FireRedASR2Model.fromPretrained(repo))
-        }
-        if lower.contains("sensevoice") {
-            return .stt(try await SenseVoiceModel.fromPretrained(repo))
-        }
-        if lower.contains("whisper") {
-            return .stt(try await WhisperModel.fromPretrained(repo))
-        }
-
-        throw AppError.unsupportedModelRepo(repo)
+        return .stt(try await STT.loadModel(modelRepo: repo))
     }
 
     private static func normalizeLanguage(_ language: String?) -> String? {

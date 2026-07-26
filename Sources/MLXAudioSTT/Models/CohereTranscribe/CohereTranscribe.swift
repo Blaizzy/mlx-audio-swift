@@ -14,6 +14,14 @@ private struct CoherePrefillContext {
     let startTime: Date
 }
 
+struct CohereStreamingDecodeResult: Sendable {
+    let tokenIds: [Int]
+    let promptLength: Int
+    let decodeTime: Double
+    let totalTime: Double
+    let peakMemoryUsage: Double
+}
+
 private let cohereWeightPrefixAliases: [(source: String, target: String)] = [
     ("encoder.pre_encode.", "encoder.subsampling."),
     ("encoder_decoder_proj.", "bridge_proj."),
@@ -743,6 +751,131 @@ private extension CohereTranscribeModel {
             chunkDuration: generationParameters.chunkDuration,
             minChunkDuration: generationParameters.minChunkDuration
         )
+    }
+}
+
+extension CohereTranscribeModel {
+    func streamingDecodeTokenIds(
+        audio: MLXArray,
+        config: StreamingConfig,
+        confirmedTokenIds: [Int] = []
+    ) -> CohereStreamingDecodeResult {
+        let language = config.language?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let defaultParameters = defaultGenerationParameters
+        let parameters = STTGenerateParameters(
+            maxTokens: config.maxTokensPerPass,
+            temperature: config.temperature,
+            topP: defaultParameters.topP,
+            topK: defaultParameters.topK,
+            verbose: false,
+            language: language?.isEmpty == false ? language : defaultParameters.language,
+            chunkDuration: defaultParameters.chunkDuration,
+            minChunkDuration: defaultParameters.minChunkDuration,
+            repetitionPenalty: defaultParameters.repetitionPenalty,
+            repetitionContextSize: defaultParameters.repetitionContextSize
+        )
+
+        let audio1D = audio.ndim > 1 ? audio.mean(axis: -1) : audio
+        var context = encodeAndPrefill(audio: audio1D, generationParameters: parameters)
+        var generated: [Int] = []
+        generated.reserveCapacity(parameters.maxTokens)
+        let decodeStart = Date()
+
+        let eosTokenId = tokenizer?.encode(text: "<|endoftext|>").first ?? 0
+        let maxGenerationTokens = effectiveMaxGenerationTokens(
+            promptLength: context.promptLength,
+            requestedMaxTokens: parameters.maxTokens
+        )
+
+        for (offset, token) in confirmedTokenIds.prefix(maxGenerationTokens).enumerated() {
+            if Task.isCancelled { break }
+
+            generated.append(token)
+
+            let inputIds = MLXArray([Int32(token)]).expandedDimensions(axis: 0)
+            let positions = MLXArray([Int32(context.promptLength + offset)]).expandedDimensions(axis: 0)
+
+            let next = decoder(
+                inputIds: inputIds,
+                positions: positions,
+                encoderHiddenStates: context.adapterOut,
+                selfAttentionMask: nil,
+                crossAttentionMask: nil,
+                cache: context.cache
+            )
+
+            context.cache = next.1
+            context.logits = lmHead(next.0[0, -1])
+            eval(context.logits)
+        }
+
+        let generationStart = context.promptLength + generated.count
+        let generationEnd = context.promptLength + maxGenerationTokens
+        guard generationStart < generationEnd else {
+            let end = Date()
+            let peakMemoryUsage = Double(Memory.peakMemory) / 1e9
+            Memory.clearCache()
+            return CohereStreamingDecodeResult(
+                tokenIds: generated,
+                promptLength: context.promptLength,
+                decodeTime: end.timeIntervalSince(decodeStart),
+                totalTime: end.timeIntervalSince(context.startTime),
+                peakMemoryUsage: peakMemoryUsage
+            )
+        }
+
+        for pos in generationStart..<generationEnd {
+            if Task.isCancelled { break }
+
+            let token = sample(logits: context.logits, temperature: parameters.temperature)
+            generated.append(token)
+
+            if token == eosTokenId {
+                break
+            }
+
+            let inputIds = MLXArray([Int32(token)]).expandedDimensions(axis: 0)
+            let positions = MLXArray([Int32(pos)]).expandedDimensions(axis: 0)
+
+            let next = decoder(
+                inputIds: inputIds,
+                positions: positions,
+                encoderHiddenStates: context.adapterOut,
+                selfAttentionMask: nil,
+                crossAttentionMask: nil,
+                cache: context.cache
+            )
+
+            context.cache = next.1
+            context.logits = lmHead(next.0[0, -1])
+
+            eval(context.logits)
+            if generated.count % 256 == 0 {
+                Memory.clearCache()
+            }
+        }
+
+        if generated.last == eosTokenId {
+            _ = generated.popLast()
+        }
+
+        let end = Date()
+        let decodeTime = end.timeIntervalSince(decodeStart)
+        let totalTime = end.timeIntervalSince(context.startTime)
+        let peakMemoryUsage = Double(Memory.peakMemory) / 1e9
+        Memory.clearCache()
+
+        return CohereStreamingDecodeResult(
+            tokenIds: generated,
+            promptLength: context.promptLength,
+            decodeTime: decodeTime,
+            totalTime: totalTime,
+            peakMemoryUsage: peakMemoryUsage
+        )
+    }
+
+    func streamingDecodeText(tokens: [Int]) -> String {
+        tokenizer?.decode(tokens: tokens).trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 }
 

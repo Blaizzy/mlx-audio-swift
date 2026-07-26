@@ -115,6 +115,14 @@ public class AudioPlayer: NSObject, ObservableObject {
         }
     }
 
+    public func unloadAudio() {
+        stop()
+        player = nil
+        currentAudioURL = nil
+        duration = 0
+        currentTime = 0
+    }
+
     public func seek(to time: TimeInterval) {
         guard let player = player else { return }
         player.currentTime = max(0, min(time, duration))

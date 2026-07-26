@@ -1851,6 +1851,183 @@ struct Qwen3ASRModuleSetupTests {
     }
 }
 
+struct MossTranscribeDiarizeModuleSetupTests {
+
+    @Test func mossConfigDefaults() throws {
+        let config = MossTranscribeDiarizeConfig()
+
+        #expect(config.modelType == "moss_transcribe_diarize")
+        #expect(config.audioConfig.numMelBins == 80)
+        #expect(config.audioConfig.dModel == 1024)
+        #expect(config.textConfig.hiddenSize == 1024)
+        #expect(config.audioMergeSize == 4)
+        #expect(config.adaptorInputDim == 4096)
+        #expect(config.sampleRate == 16000)
+    }
+
+    @Test func mossConfigDecodesNestedConfig() throws {
+        let json = """
+        {
+          "model_type": "moss_transcribe_diarize",
+          "audio_token_id": 123,
+          "audio_merge_size": 2,
+          "audio_config": {
+            "model_type": "whisper",
+            "num_mel_bins": 80,
+            "d_model": 512,
+            "encoder_layers": 2,
+            "encoder_attention_heads": 8,
+            "encoder_ffn_dim": 2048,
+            "max_source_positions": 1500
+          },
+          "text_config": {
+            "model_type": "qwen3",
+            "vocab_size": 32000,
+            "hidden_size": 768,
+            "intermediate_size": 2048,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 4,
+            "head_dim": 96,
+            "rms_norm_eps": 0.000001,
+            "tie_word_embeddings": true
+          },
+          "tie_word_embeddings": true
+        }
+        """
+
+        let config = try JSONDecoder().decode(MossTranscribeDiarizeConfig.self, from: Data(json.utf8))
+
+        #expect(config.audioTokenId == 123)
+        #expect(config.audioConfig.dModel == 512)
+        #expect(config.textConfig.hiddenSize == 768)
+        #expect(config.audioMergeSize == 2)
+        #expect(config.adaptorInputDim == 1024)
+        #expect(config.textConfig.tieWordEmbeddings)
+    }
+
+    @Test func mossSanitizeMapsHFKeys() {
+        let weights: [String: MLXArray] = [
+            "model.vq_adaptor.layers.layers.0.weight": MLXArray.zeros([4, 4]),
+            "model.vq_adwaptor.layers.2.bias": MLXArray.zeros([4]),
+            "model.whisper_encoder.conv1.weight": MLXArray.zeros([8, 80, 3]),
+            "lm_head.weight": MLXArray.zeros([8, 8]),
+        ]
+
+        let sanitized = MossTranscribeDiarizeModel.sanitize(weights: weights)
+
+        #expect(sanitized["model.vq_adaptor.layers.layers.0.weight"] != nil)
+        #expect(sanitized["model.vq_adaptor.layers.layers.2.bias"] != nil)
+        #expect(sanitized["lm_head.weight"] == nil)
+        #expect(sanitized["model.whisper_encoder.conv1.weight"]?.shape == [8, 3, 80])
+    }
+
+    @Test func mossParseSegments() {
+        let text = "[0.48][S01]hello[1.66][2.00][S02]world[3.50]"
+
+        let segments = MossTranscribeDiarizeModel.parseSegments(text: text, fallbackEnd: 10.0)
+
+        #expect(segments.count == 2)
+        #expect(segments[0]["start"] as? Double == 0.48)
+        #expect(segments[0]["end"] as? Double == 1.66)
+        #expect(segments[0]["speaker_id"] as? String == "S01")
+        #expect(segments[0]["text"] as? String == "[S01] hello")
+        #expect(segments[1]["speaker_id"] as? String == "S02")
+    }
+
+    @Test func mossParseSegmentsAppliesChunkOffset() {
+        let text = "[0.48][S01]hello[1.66]"
+
+        let segments = MossTranscribeDiarizeModel.parseSegments(
+            text: text,
+            fallbackEnd: 10.0,
+            offsetSeconds: 30.0
+        )
+
+        #expect(segments.count == 1)
+        #expect(segments[0]["start"] as? Double == 30.48)
+        #expect(segments[0]["end"] as? Double == 31.66)
+        #expect(segments[0]["speaker_id"] as? String == "S01")
+    }
+
+    @Test func mossOffsetTimestampTags() {
+        let text = "[0.48][S01]hello[1.66][2.00][S02]world[3.50]"
+
+        let shifted = MossTranscribeDiarizeModel.offsetTimestampTags(in: text, by: 60.0)
+
+        #expect(shifted == "[60.48][S01]hello[61.66][62.00][S02]world[63.50]")
+    }
+
+    @Test func mossTimestampHelpersHandleCommaDecimals() {
+        let text = "[0,48][S01]hello[1,66]"
+
+        let shifted = MossTranscribeDiarizeModel.offsetTimestampTags(in: text, by: 30.0)
+        let segments = MossTranscribeDiarizeModel.parseSegments(text: text, fallbackEnd: 10.0, offsetSeconds: 30.0)
+
+        #expect(shifted == "[30.48][S01]hello[31.66]")
+        #expect(segments.count == 1)
+        #expect(segments[0]["start"] as? Double == 30.48)
+        #expect(segments[0]["end"] as? Double == 31.66)
+    }
+
+    @Test func mossParseSegmentsFallback() {
+        let text = "[S01] hello world"
+
+        let segments = MossTranscribeDiarizeModel.parseSegments(text: text, fallbackEnd: 4.25)
+
+        #expect(segments.count == 1)
+        #expect(segments[0]["start"] as? Double == 0.0)
+        #expect(segments[0]["end"] as? Double == 4.25)
+        #expect(segments[0]["text"] as? String == text)
+    }
+
+    @Test func mossConfigDecodesQuantization() throws {
+        let json = """
+        {
+          "model_type": "moss_transcribe_diarize",
+          "quantization": { "group_size": 64, "bits": 8 }
+        }
+        """
+
+        let config = try JSONDecoder().decode(MossTranscribeDiarizeConfig.self, from: Data(json.utf8))
+
+        #expect(config.quantization?.bits == 8)
+        #expect(config.quantization?.groupSize == 64)
+    }
+
+    @Test func mossConfigDecodesQuantizationConfigKey() throws {
+        let json = """
+        {
+          "model_type": "moss_transcribe_diarize",
+          "quantization_config": { "group_size": 32, "bits": 4 }
+        }
+        """
+
+        let config = try JSONDecoder().decode(MossTranscribeDiarizeConfig.self, from: Data(json.utf8))
+
+        #expect(config.quantization?.bits == 4)
+        #expect(config.quantization?.groupSize == 32)
+    }
+
+    @Test func mossConfigWithoutQuantizationStaysDense() throws {
+        let json = """
+        { "model_type": "moss_transcribe_diarize" }
+        """
+
+        let config = try JSONDecoder().decode(MossTranscribeDiarizeConfig.self, from: Data(json.utf8))
+
+        #expect(config.quantization == nil)
+    }
+
+    @Test func sttGenerateParametersDefaultKVBitsIsNil() {
+        let parameters = STTGenerateParameters()
+
+        #expect(parameters.kvBits == nil)
+        #expect(parameters.kvGroupSize == 64)
+        #expect(parameters.quantizedKVStart == 0)
+    }
+}
+
 struct CohereTranscribeModuleSetupTests {
 
     @Test func cohereConfigDecoding() throws {
@@ -1897,6 +2074,43 @@ struct CohereTranscribeModuleSetupTests {
         #expect(config.decoder.numLayers == 8)
         #expect(config.decoder.maxSequenceLength == 1024)
         #expect(config.quantization?.bits == 8)
+    }
+
+    @Test func cohereConfigDecodingUsesHeadClassCountWhenVocabSizeMissing() throws {
+        let json = """
+        {
+          "model_type": "cohere_asr",
+          "sample_rate": 16000,
+          "max_audio_clip_s": 35,
+          "head": {
+            "num_classes": 16384
+          },
+          "encoder": {
+            "d_model": 1280,
+            "ff_expansion_factor": 4,
+            "n_heads": 8,
+            "conv_kernel_size": 9,
+            "n_layers": 48,
+            "pos_emb_max_len": 5000,
+            "subsampling_conv_channels": 256,
+            "subsampling_factor": 8,
+            "feat_in": 128
+          },
+          "transf_decoder": {
+            "config_dict": {
+              "hidden_size": 1024,
+              "inner_size": 4096,
+              "num_attention_heads": 8,
+              "num_layers": 8,
+              "max_sequence_length": 1024,
+              "vocab_size": "None"
+            }
+          }
+        }
+        """
+
+        let config = try JSONDecoder().decode(CohereTranscribeConfig.self, from: Data(json.utf8))
+        #expect(config.vocabSize == 16384)
     }
 
     @Test func cohereAudioFeaturesShape() {

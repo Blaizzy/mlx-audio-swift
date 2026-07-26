@@ -1007,6 +1007,42 @@ struct DACVAETests {
 
 struct BigVGANTests {
 
+    @Test func testSnakeBetaRegistersDistinctBetaParameter() throws {
+        let activation = BigVGANActivation1d(
+            channels: 3,
+            activation: .snakebeta,
+            snakeLogscale: true
+        )
+        let parameterKeys = Set(activation.parameters().flattened().map(\.0))
+        #expect(parameterKeys.contains("act.alpha"))
+        #expect(parameterKeys.contains("act.beta"))
+
+        let alpha = MLXArray([-0.5, 0.0, 0.5] as [Float])
+        let beta = MLXArray([0.25, 0.5, 0.75] as [Float])
+        try activation.act.update(
+            parameters: ModuleParameters.unflattened([
+                "alpha": alpha,
+                "beta": beta,
+            ]),
+            verify: .all
+        )
+        eval(activation.act.alpha, activation.act.beta!)
+
+        #expect(activation.act.alpha.asArray(Float.self) == alpha.asArray(Float.self))
+        #expect(activation.act.beta!.asArray(Float.self) == beta.asArray(Float.self))
+    }
+
+    @Test func testSnakeDoesNotRequireBetaParameter() throws {
+        let activation = BigVGANActivation1d(
+            channels: 3,
+            activation: .snake,
+            snakeLogscale: true
+        )
+        let parameterKeys = Set(activation.parameters().flattened().map(\.0))
+        #expect(parameterKeys.contains("act.alpha"))
+        #expect(!parameterKeys.contains("act.beta"))
+    }
+
     @Test func testBigVGAN22kHz80BandShape() throws {
         let config = BigVGANConfig(
             numMels: 80,

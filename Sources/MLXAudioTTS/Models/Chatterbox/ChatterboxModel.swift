@@ -18,6 +18,10 @@ import MLXNN
 @preconcurrency import MLXLMCommon
 import Tokenizers
 
+func resolveChatterboxEmotionAdv(default value: MLXArray, override: Float?) -> MLXArray {
+    override.map { MLXArray(Float($0)) } ?? value
+}
+
 // MARK: - Default Voice Conditioning
 
 /// Pre-computed voice conditioning loaded from conds.safetensors (Turbo default voice).
@@ -704,7 +708,8 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
                 speakerEmb: defaults.speakerEmb,
                 condPromptSpeechTokens: defaults.condPromptSpeechTokens,
                 condPromptSpeechEmb: nil,
-                emotionAdv: defaults.emotionAdv
+                emotionAdv: resolveChatterboxEmotionAdv(
+                    default: defaults.emotionAdv, override: emotionAdvOverride)
             )
             xVector = defaults.xVector
             promptTokens = defaults.promptToken

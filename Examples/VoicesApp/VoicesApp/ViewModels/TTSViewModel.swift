@@ -13,6 +13,19 @@ import AppKit
 @MainActor
 @Observable
 class TTSViewModel {
+    private static let defaultModelId = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit"
+    private static let modelIdStorageKey = "VoicesApp.TTSViewModel.modelId"
+    private static let maxTokensStorageKey = "VoicesApp.TTSViewModel.maxTokens"
+    private static let temperatureStorageKey = "VoicesApp.TTSViewModel.temperature"
+    private static let topPStorageKey = "VoicesApp.TTSViewModel.topP"
+    private static let repetitionPenaltyStorageKey = "VoicesApp.TTSViewModel.repetitionPenalty"
+    private static let voiceDescriptionStorageKey = "VoicesApp.TTSViewModel.voiceDescription"
+    private static let useVoiceDesignStorageKey = "VoicesApp.TTSViewModel.useVoiceDesign"
+    private static let enableChunkingStorageKey = "VoicesApp.TTSViewModel.enableChunking"
+    private static let maxChunkLengthStorageKey = "VoicesApp.TTSViewModel.maxChunkLength"
+    private static let splitPatternStorageKey = "VoicesApp.TTSViewModel.splitPattern"
+    private static let streamingPlaybackStorageKey = "VoicesApp.TTSViewModel.streamingPlayback"
+
     var isLoading = false
     var isGenerating = false
     var generationProgress: String = ""
@@ -28,15 +41,28 @@ class TTSViewModel {
         repetitionPenalty: 1.3,
         repetitionContextSize: 20
     )
-    private var maxTokensOverride: Int?
-    private var temperatureOverride: Float?
-    private var topPOverride: Float?
-    private var repetitionPenaltyOverride: Float?
+    private var maxTokensOverride: Int? = UserDefaults.standard.object(forKey: TTSViewModel.maxTokensStorageKey).map { _ in
+        UserDefaults.standard.integer(forKey: TTSViewModel.maxTokensStorageKey)
+    }
+    private var temperatureOverride: Float? = UserDefaults.standard.object(forKey: TTSViewModel.temperatureStorageKey).map { _ in
+        UserDefaults.standard.float(forKey: TTSViewModel.temperatureStorageKey)
+    }
+    private var topPOverride: Float? = UserDefaults.standard.object(forKey: TTSViewModel.topPStorageKey).map { _ in
+        UserDefaults.standard.float(forKey: TTSViewModel.topPStorageKey)
+    }
+    private var repetitionPenaltyOverride: Float? = UserDefaults.standard.object(forKey: TTSViewModel.repetitionPenaltyStorageKey).map { _ in
+        UserDefaults.standard.float(forKey: TTSViewModel.repetitionPenaltyStorageKey)
+    }
 
     var maxTokens: Int {
         get { maxTokensOverride ?? defaultMaxTokens }
         set {
             maxTokensOverride = (newValue == defaultMaxTokens) ? nil : newValue
+            if let maxTokensOverride {
+                UserDefaults.standard.set(maxTokensOverride, forKey: TTSViewModel.maxTokensStorageKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: TTSViewModel.maxTokensStorageKey)
+            }
         }
     }
 
@@ -45,6 +71,11 @@ class TTSViewModel {
         set {
             let defaultValue = defaultGenerationParameters.temperature
             temperatureOverride = abs(newValue - defaultValue) < 0.0001 ? nil : newValue
+            if let temperatureOverride {
+                UserDefaults.standard.set(temperatureOverride, forKey: TTSViewModel.temperatureStorageKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: TTSViewModel.temperatureStorageKey)
+            }
         }
     }
 
@@ -53,6 +84,11 @@ class TTSViewModel {
         set {
             let defaultValue = defaultGenerationParameters.topP
             topPOverride = abs(newValue - defaultValue) < 0.0001 ? nil : newValue
+            if let topPOverride {
+                UserDefaults.standard.set(topPOverride, forKey: TTSViewModel.topPStorageKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: TTSViewModel.topPStorageKey)
+            }
         }
     }
     
@@ -61,23 +97,62 @@ class TTSViewModel {
         set {
             let defaultValue = defaultGenerationParameters.repetitionPenalty ?? 1.3
             repetitionPenaltyOverride = abs(newValue - defaultValue) < 0.0001 ? nil : newValue
+            if let repetitionPenaltyOverride {
+                UserDefaults.standard.set(repetitionPenaltyOverride, forKey: TTSViewModel.repetitionPenaltyStorageKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: TTSViewModel.repetitionPenaltyStorageKey)
+            }
         }
     }
     
     // Voice Design (for Qwen3-TTS VoiceDesign models)
-    var voiceDescription: String = ""
-    var useVoiceDesign: Bool = false
+    var voiceDescription: String = UserDefaults.standard.string(forKey: TTSViewModel.voiceDescriptionStorageKey) ?? "" {
+        didSet {
+            UserDefaults.standard.set(voiceDescription, forKey: TTSViewModel.voiceDescriptionStorageKey)
+        }
+    }
+    var useVoiceDesign: Bool = UserDefaults.standard.bool(forKey: TTSViewModel.useVoiceDesignStorageKey) {
+        didSet {
+            UserDefaults.standard.set(useVoiceDesign, forKey: TTSViewModel.useVoiceDesignStorageKey)
+        }
+    }
 
     // Text chunking
-    var enableChunking: Bool = true
-    var maxChunkLength: Int = 200
-    var splitPattern: String = "\n" // Can be regex like "\\n" or "[.!?]\\s+"
+    var enableChunking: Bool = UserDefaults.standard.object(forKey: TTSViewModel.enableChunkingStorageKey).map { _ in
+        UserDefaults.standard.bool(forKey: TTSViewModel.enableChunkingStorageKey)
+    } ?? true {
+        didSet {
+            UserDefaults.standard.set(enableChunking, forKey: TTSViewModel.enableChunkingStorageKey)
+        }
+    }
+    var maxChunkLength: Int = UserDefaults.standard.object(forKey: TTSViewModel.maxChunkLengthStorageKey).map { _ in
+        UserDefaults.standard.integer(forKey: TTSViewModel.maxChunkLengthStorageKey)
+    } ?? 200 {
+        didSet {
+            UserDefaults.standard.set(maxChunkLength, forKey: TTSViewModel.maxChunkLengthStorageKey)
+        }
+    }
+    var splitPattern: String = UserDefaults.standard.string(forKey: TTSViewModel.splitPatternStorageKey) ?? "\n" {
+        didSet {
+            UserDefaults.standard.set(splitPattern, forKey: TTSViewModel.splitPatternStorageKey)
+        }
+    } // Can be regex like "\\n" or "[.!?]\\s+"
 
     // Streaming playback
-    var streamingPlayback: Bool = true // Play audio as chunks are generated
+    var streamingPlayback: Bool = UserDefaults.standard.object(forKey: TTSViewModel.streamingPlaybackStorageKey).map { _ in
+        UserDefaults.standard.bool(forKey: TTSViewModel.streamingPlaybackStorageKey)
+    } ?? true {
+        didSet {
+            UserDefaults.standard.set(streamingPlayback, forKey: TTSViewModel.streamingPlaybackStorageKey)
+        }
+    } // Play audio as chunks are generated
 
     // Model configuration
-    var modelId: String = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit"
+    var modelId: String = UserDefaults.standard.string(forKey: TTSViewModel.modelIdStorageKey) ?? TTSViewModel.defaultModelId {
+        didSet {
+            UserDefaults.standard.set(modelId, forKey: TTSViewModel.modelIdStorageKey)
+        }
+    }
     private var loadedModelId: String?
 
     // Audio player state (manually synced from AudioPlayerManager)
@@ -159,6 +234,30 @@ class TTSViewModel {
         maxTokensOverride = nil
         temperatureOverride = nil
         topPOverride = nil
+        repetitionPenaltyOverride = nil
+        UserDefaults.standard.removeObject(forKey: TTSViewModel.maxTokensStorageKey)
+        UserDefaults.standard.removeObject(forKey: TTSViewModel.temperatureStorageKey)
+        UserDefaults.standard.removeObject(forKey: TTSViewModel.topPStorageKey)
+        UserDefaults.standard.removeObject(forKey: TTSViewModel.repetitionPenaltyStorageKey)
+    }
+
+    func resetSettingsToDefaults() {
+        modelId = TTSViewModel.defaultModelId
+        resetGenerationParameterOverrides()
+        useVoiceDesign = false
+        voiceDescription = ""
+        enableChunking = true
+        maxChunkLength = 200
+        splitPattern = "\n"
+        streamingPlayback = true
+
+        UserDefaults.standard.removeObject(forKey: TTSViewModel.modelIdStorageKey)
+        UserDefaults.standard.removeObject(forKey: TTSViewModel.voiceDescriptionStorageKey)
+        UserDefaults.standard.removeObject(forKey: TTSViewModel.useVoiceDesignStorageKey)
+        UserDefaults.standard.removeObject(forKey: TTSViewModel.enableChunkingStorageKey)
+        UserDefaults.standard.removeObject(forKey: TTSViewModel.maxChunkLengthStorageKey)
+        UserDefaults.standard.removeObject(forKey: TTSViewModel.splitPatternStorageKey)
+        UserDefaults.standard.removeObject(forKey: TTSViewModel.streamingPlaybackStorageKey)
     }
 
     private func effectiveGenerationParameters() -> GenerateParameters {
@@ -171,6 +270,9 @@ class TTSViewModel {
         }
         if let topPOverride {
             parameters.topP = topPOverride
+        }
+        if let repetitionPenaltyOverride {
+            parameters.repetitionPenalty = repetitionPenaltyOverride
         }
         return parameters
     }
