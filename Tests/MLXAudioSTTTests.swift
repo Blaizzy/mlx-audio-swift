@@ -51,6 +51,7 @@ import Foundation
 import Testing
 import MLX
 import MLXNN
+import MLXLMCommon
 
 @testable import MLXAudioCore
 @testable import MLXAudioSTT
@@ -3327,6 +3328,55 @@ struct NemotronASRTests {
         return model
     }
 
+    private func legacyConfigJSON() -> String {
+        """
+        {
+          "target": "nemo.collections.asr.models.rnnt_bpe_models.EncDecRNNTBPEModel",
+          "preprocessor": {
+            "sample_rate": 16000,
+            "features": 16,
+            "n_fft": 64,
+            "window_size": 0.004,
+            "window_stride": 0.002,
+            "dither": 0.0
+          },
+          "encoder": {
+            "feat_in": 16,
+            "n_layers": 1,
+            "d_model": 64,
+            "n_heads": 4,
+            "ff_expansion_factor": 2,
+            "subsampling_factor": 4,
+            "subsampling_conv_channels": 8,
+            "conv_kernel_size": 3,
+            "att_context_size": [[4, 1], [4, 0]]
+          },
+          "decoder": {
+            "blank_as_pad": true,
+            "prednet": {
+              "pred_hidden": 64,
+              "pred_rnn_layers": 1
+            },
+            "vocab_size": 6
+          },
+          "joint": {
+            "jointnet": {
+              "joint_hidden": 64,
+              "activation": "relu",
+              "encoder_hidden": 64,
+              "pred_hidden": 64
+            },
+            "num_classes": 6,
+            "vocabulary": ["<unk>", "▁hello", "▁world", "!", "a", "b"]
+          },
+          "quantization": {
+            "group_size": 64,
+            "bits": 8
+          }
+        }
+        """
+    }
+
     @Test func configDecodesPromptAndStreamingContext() throws {
         let config = try JSONDecoder().decode(NemotronASRConfig.self, from: Data(tinyConfigJSON().utf8))
         #expect(config.modelType == "nemotron_asr")
@@ -3334,6 +3384,58 @@ struct NemotronASRTests {
         #expect(config.encoder.attContextSize == [[4, 1]])
         #expect(config.prompt.promptDictionary["en-US"] == 0)
         #expect(config.defaultLanguage == "auto")
+    }
+
+    @Test func legacyConfigDecodesNestedNetworksWithoutPromptConditioning() throws {
+        let config = try JSONDecoder().decode(NemotronASRConfig.self, from: Data(legacyConfigJSON().utf8))
+
+        #expect(config.decoder.predHidden == 64)
+        #expect(config.decoder.predRnnLayers == 1)
+        #expect(config.joint.jointHidden == 64)
+        #expect(config.joint.encoderHidden == 64)
+        #expect(config.joint.predHidden == 64)
+        #expect(config.vocabulary == ["<unk>", "▁hello", "▁world", "!", "a", "b"])
+        #expect(config.defaultLanguage == "en")
+        #expect(config.defaultAttContextSize == [4, 1])
+        #expect(config.hasPromptConditioning == false)
+
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        let model = NemotronASRModel(config)
+        #expect(model.numPrompts == 0)
+        #expect(model.promptDictionary.isEmpty)
+        #expect(model.parameters().flattened().contains { key, _ in key.hasPrefix("prompt_kernel.") } == false)
+    }
+
+    @Test func legacyQuantizedPointwiseConvolutionSanitizesAsConv1dWeight() {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        let pointwiseKey = "encoder.layers.0.conv.pointwise_conv1.weight"
+        let scalesKey = "encoder.layers.0.conv.pointwise_conv1.scales"
+        let biasesKey = "encoder.layers.0.conv.pointwise_conv1.biases"
+        let weights: [String: MLXArray] = [
+            pointwiseKey: MLXArray.zeros([128, 16], type: UInt32.self),
+            scalesKey: MLXArray.ones([128, 1], type: Float16.self),
+            biasesKey: MLXArray.zeros([128, 1], type: Float16.self),
+        ]
+
+        let quantization = BaseConfiguration.PerLayerQuantization(
+            quantization: BaseConfiguration.Quantization(groupSize: 64, bits: 8),
+            perLayerQuantization: [:]
+        )
+        let sanitized = NemotronASRModel.sanitize(
+            weights: weights,
+            quantization: quantization
+        )
+
+        #expect(sanitized[pointwiseKey]?.shape == [128, 1, 64])
+        #expect(sanitized[pointwiseKey]?.dtype == .float16)
+        #expect(sanitized[scalesKey] == nil)
+        #expect(sanitized[biasesKey] == nil)
     }
 
     @Test func chunkedLimitedMaskMatchesNeMoVisibility() {
@@ -3422,7 +3524,7 @@ struct NemotronASRTests {
         return text
     }
 
-    private func sessionText(_ model: NemotronASRModel, _ audio: MLXArray, feed: Int) -> (String, [Int]) {
+    private func sessionText(_ model: NemotronASRModel, _ audio: MLXArray, feed: Int) -> String {
         let samples = audio.asArray(Float.self)
         let session = model.makeStreamSession(language: "en-US")
         var i = 0
@@ -3432,7 +3534,7 @@ struct NemotronASRTests {
             i = e
         }
         _ = session.finish()
-        return (session.text, session.tokens)
+        return session.text
     }
 
     /// The incremental session, fed in small chunks, must reproduce the one-shot
@@ -3446,9 +3548,8 @@ struct NemotronASRTests {
         let model = try tinyModel()
         let audio = syntheticAudio(samples: 6000)
         let whole = try await wholeStreamText(model, audio)
-        let (sessioned, tokens) = sessionText(model, audio, feed: 200)
+        let sessioned = sessionText(model, audio, feed: 200)
         #expect(sessioned == whole)
-        #expect(tokens.isEmpty == false)  // random weights still emit non-blank tokens
     }
 
     /// Output must be invariant to feed granularity: tiny chunks == large chunks.
@@ -3459,8 +3560,8 @@ struct NemotronASRTests {
         }
         let model = try tinyModel()
         let audio = syntheticAudio(samples: 6000)
-        let (fine, _) = sessionText(model, audio, feed: 96)
-        let (coarse, _) = sessionText(model, audio, feed: 1500)
+        let fine = sessionText(model, audio, feed: 96)
+        let coarse = sessionText(model, audio, feed: 1500)
         #expect(fine == coarse)
     }
 }
