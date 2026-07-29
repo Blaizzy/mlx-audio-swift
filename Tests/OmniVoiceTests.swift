@@ -400,6 +400,7 @@ struct OmniVoiceModelTests {
 
         var totalSamples = 0
         var chunkCount = 0
+        var progressFractions: [Double] = []
         let startTime = CFAbsoluteTimeGetCurrent()
 
         for try await event in model.generateStream(
@@ -423,13 +424,27 @@ struct OmniVoiceModelTests {
                 let samples = chunk.asArray(Float.self)
                 totalSamples += samples.count
                 print("Received audio chunk: \(samples.count) samples (total: \(totalSamples))")
+            case .progress(let fraction):
+                progressFractions.append(fraction)
             }
         }
 
         let elapsed = CFAbsoluteTimeGetCurrent() - startTime
         print("Streaming completed: \(totalSamples) samples in \(String(format: "%.2f", elapsed))s")
+        print("Received \(progressFractions.count) progress events")
 
         #expect(totalSamples > 0, "Should have received audio samples")
+
+        // OmniVoice's denoise loop has a deterministic step count, so progress is
+        // exact: monotonically increasing and always arriving at 1.0.
+        #expect(!progressFractions.isEmpty, "Should have received progress events")
+        #expect(
+            zip(progressFractions, progressFractions.dropFirst()).allSatisfy { $0 < $1 },
+            "Progress should increase monotonically, got \(progressFractions)"
+        )
+        if let last = progressFractions.last {
+            #expect(abs(last - 1.0) < 1e-6, "Progress should reach 1.0, got \(last)")
+        }
 
         // Save streamed audio
         if totalSamples > 0 {
