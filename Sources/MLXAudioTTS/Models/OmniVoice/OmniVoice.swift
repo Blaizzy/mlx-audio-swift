@@ -245,7 +245,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let ovParams = OmniVoiceGenerateParameters()
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
-        Task { @Sendable [weak self] in
+        let task = Task { @Sendable [weak self] in
             guard let self else { return }
             do {
                 guard tokenizer != nil else {
@@ -274,6 +274,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
                 continuation.finish(throwing: error)
             }
         }
+        continuation.onTermination = { _ in task.cancel() }
         return stream
     }
 
@@ -372,6 +373,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
         // 7. Iterative diffusion generation
         for step in 0..<numSteps {
+            try Task.checkCancellation()
             let k = schedule[step]
             if k <= 0 { continue }
 
@@ -469,6 +471,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         }
 
         // 8. Decode tokens to waveform
+        try Task.checkCancellation()
         var outputTokens = tokens[0, 0..., 0..<targetLen]
 
         // Replace any remaining mask tokens with 0 (matching Python reference)
