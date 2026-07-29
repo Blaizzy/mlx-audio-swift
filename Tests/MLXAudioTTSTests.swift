@@ -1403,6 +1403,68 @@ struct FishSpeechTests {
         #expect(batches == ["<|speaker:0|>hello\n<|speaker:1|>world", "<|speaker:2|>again"])
     }
 
+    @Test func testPlainTextBatchingHonorsByteLimit() {
+        let text = "  one  two\nthree 四五六七 eight  "
+        let batches = fishSpeechSplitTextIntoBatches(text, maxBytes: 10)
+
+        #expect(batches.joined() == text)
+        #expect(batches.allSatisfy { $0.lengthOfBytes(using: .utf8) <= 10 })
+    }
+
+    @Test func testPlainTextBatchingPreservesGraphemesAndSkipsWhitespaceOnlyBatches() {
+        let decomposedE = "e\u{301}"
+        let text = " " + String(repeating: "a", count: 38) + decomposedE + " tail"
+        let batches = fishSpeechSplitTextIntoBatches(text, maxBytes: 40)
+
+        #expect(batches.joined() == text)
+        #expect(batches.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+        #expect(batches.contains(where: { $0.contains(decomposedE) }))
+        #expect(!batches.contains(where: { $0 == "e" || $0 == "\u{301}" }))
+    }
+
+    @Test func testPlainTextBatchingBoundsOversizedGrapheme() {
+        let text = "e" + String(repeating: "\u{301}", count: 50)
+        let batches = fishSpeechSplitTextIntoBatches(text, maxBytes: 40)
+
+        #expect(batches.joined() == text)
+        #expect(batches.allSatisfy { $0.lengthOfBytes(using: .utf8) <= 40 })
+    }
+
+    @Test func testGenerationBatchesSplitLongSpeakerTurnsWithMarker() {
+        let marker = "<|speaker:0|>"
+        let payload = Array(repeating: "word", count: 30).joined(separator: " ")
+        let batches = fishSpeechGenerationBatches(marker + payload, maxBytes: 40)
+
+        #expect(batches.count > 1)
+        #expect(batches.allSatisfy { $0.hasPrefix(marker) })
+        #expect(batches.allSatisfy { $0.lengthOfBytes(using: .utf8) <= 40 })
+        #expect(batches.map { String($0.dropFirst(marker.count)) }.joined() == payload)
+    }
+
+    @Test func testGenerationBatchesDropWhitespaceOnlySlices() {
+        let text = String(repeating: " ", count: 41) + "speak this"
+        let batches = fishSpeechGenerationBatches(text, maxBytes: 40)
+
+        #expect(batches.allSatisfy {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        })
+        #expect(batches.joined().trimmingCharacters(in: .whitespacesAndNewlines) == "speak this")
+    }
+
+    @Test func testStreamingChunkBytesRejectsInvalidIntervals() throws {
+        #expect(try fishSpeechStreamingChunkBytes(interval: 2) == 80)
+        #expect(try fishSpeechStreamingChunkBytes(interval: 1_000) == 2_400)
+        #expect(throws: AudioGenerationError.self) {
+            try fishSpeechStreamingChunkBytes(interval: .infinity)
+        }
+        #expect(throws: AudioGenerationError.self) {
+            try fishSpeechStreamingChunkBytes(interval: .nan)
+        }
+        #expect(throws: AudioGenerationError.self) {
+            try fishSpeechStreamingChunkBytes(interval: 0)
+        }
+    }
+
     @Test func testSanitizeRemapsFishWeightPrefixes() {
         let model = FishSpeechModel(config: makeTinyFishSpeechConfig())
         let sanitized = model.sanitize(weights: [

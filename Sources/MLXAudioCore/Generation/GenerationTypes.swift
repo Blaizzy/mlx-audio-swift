@@ -52,7 +52,7 @@ public enum AudioGeneration: Sendable {
     case token(Int)
     /// Generation statistics
     case info(AudioGenerationInfo)
-    /// Final generated audio
+    /// Generated audio chunk. Concatenate repeated values for the complete waveform.
     case audio(MLXArray)
 }
 
