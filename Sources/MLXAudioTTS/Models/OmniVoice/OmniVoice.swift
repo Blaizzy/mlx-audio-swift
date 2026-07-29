@@ -291,6 +291,10 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             throw AudioGenerationError.modelNotInitialized("Audio tokenizer not loaded")
         }
 
+        if let seed = ovParameters.seed {
+            MLXRandom.seed(seed)
+        }
+
         // 1. Encode reference audio to tokens if provided
         var refAudioTokens: MLXArray?
         if let refAudio {
