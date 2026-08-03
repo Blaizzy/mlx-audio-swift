@@ -669,8 +669,10 @@ class HiFTGenerator: Module {
             h = xs! / Float(numKernels)
         }
 
-        // Final processing
-        h = leakyRelu(h, negativeSlope: lreluSlope)
+        // Final processing — PyTorch's F.leaky_relu(x) here uses the DEFAULT slope
+        // (0.01), not the 0.1 lrelu_slope used inside the upsample loop. Using 0.1
+        // here adds ~+8 dB of broadband HF noise (audible hiss) to every output.
+        h = leakyRelu(h, negativeSlope: 0.01)
         h = h.transposed(0, 2, 1)  // (B, T, C)
         h = convPost(h)  // Conv1d in (B, T, C)
         h = h.transposed(0, 2, 1)  // (B, nFft+2, T)
