@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "MLXAudio",
-    platforms: [.macOS(.v14), .iOS(.v17)],
+    platforms: [.macOS(.v15), .iOS(.v18)],
     products: [
         // Core foundation library
         .library(name: "MLXAudioCore", targets: ["MLXAudioCore"]),
@@ -60,10 +60,19 @@ let package = Package(
 
     ],
     dependencies: [
-        .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMajor(from: "0.30.6")),
+        // 0.31.6 is the first release with a working Linux (CUDA) build path for MLXNN/MLXFast.
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMinor(from: "0.31.6")),
         .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", .upToNextMajor(from: "3.31.3")),
         .package(url: "https://github.com/huggingface/swift-transformers.git", .upToNextMajor(from: "1.1.6")),
-        .package(url: "https://github.com/huggingface/swift-huggingface.git", .upToNextMajor(from: "0.8.1"))
+        .package(url: "https://github.com/huggingface/swift-huggingface.git", .upToNextMajor(from: "0.8.1")),
+        // Linux-only: arbitrary audio decode/playback via system GStreamer. Referenced only by
+        // MLXAudioCore on Linux (see the conditional product dependency below).
+        .package(url: "https://github.com/wendylabsinc/gstreamer-swift.git", .upToNextMinor(from: "0.1.0")),
+        // Transitive dep of swift-huggingface. Pin ≥1.4.1: earlier versions call
+        // URLSession.bytes(for:delegate:), which doesn't exist on Linux (1.4.1 adds a
+        // FoundationNetworking-based SSE path). Direct dependency prevents re-resolution
+        // from downgrading it.
+        .package(url: "https://github.com/mattt/EventSource.git", .upToNextMinor(from: "1.4.1"))
     ],
     targets: [
         // MARK: - MLXAudioCore
@@ -73,6 +82,9 @@ let package = Package(
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
+                // GStreamer backs arbitrary-format audio decode on Linux; unused on Apple
+                // platforms (AVFoundation handles it there).
+                .product(name: "GStreamer", package: "gstreamer-swift", condition: .when(platforms: [.linux])),
             ],
             path: "Sources/MLXAudioCore",
             swiftSettings: [

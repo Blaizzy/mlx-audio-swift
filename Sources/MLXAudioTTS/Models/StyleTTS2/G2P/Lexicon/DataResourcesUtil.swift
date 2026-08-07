@@ -1,3 +1,4 @@
+#if canImport(NaturalLanguage)
 import Foundation
 
 final class DataResourcesUtil {
@@ -26,3 +27,5 @@ final class DataResourcesUtil {
         return json
     }
 }
+
+#endif

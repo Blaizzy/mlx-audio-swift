@@ -10,7 +10,6 @@ import MLX
 import MLXNN
 import MLXLMCommon
 import Tokenizers
-import os
 
 // MARK: - Shared State
 
@@ -193,9 +192,9 @@ private final class MossStreamingInferenceSessionCore: @unchecked Sendable, Stre
     private let windowSamples: Int
     private let partialWindowSamples: Int
     private let minimumPartialSamples: Int
-    private let shared = OSAllocatedUnfairLock(initialState: MossStreamingSharedState())
-    private let audioState = OSAllocatedUnfairLock(initialState: MossAudioStreamingSharedState())
-    private let sessionLock = OSAllocatedUnfairLock(initialState: 0)
+    private let shared = LockedState(MossStreamingSharedState())
+    private let audioState = LockedState(MossAudioStreamingSharedState())
+    private let sessionLock = LockedState(0)
 
     private var isActive: Bool = false
     private var continuation: AsyncStream<TranscriptionEvent>.Continuation?
@@ -310,7 +309,7 @@ private final class MossStreamingInferenceSessionCore: @unchecked Sendable, Stre
     private static func runDecodePass(
         params: MossDecodePassParams,
         continuation: AsyncStream<TranscriptionEvent>.Continuation?,
-        sharedState: OSAllocatedUnfairLock<MossStreamingSharedState>
+        sharedState: LockedState<MossStreamingSharedState>
     ) {
         if Task.isCancelled { return }
 
@@ -555,9 +554,9 @@ private final class CohereStreamingInferenceSessionCore: @unchecked Sendable, St
     private let sampleRate: Int
     private let windowSamples: Int
     private let overlapSamples: Int
-    private let shared = OSAllocatedUnfairLock(initialState: SessionSharedState())
-    private let audioState = OSAllocatedUnfairLock(initialState: CohereStreamingSharedState())
-    private let sessionLock = OSAllocatedUnfairLock(initialState: 0)
+    private let shared = LockedState(SessionSharedState())
+    private let audioState = LockedState(CohereStreamingSharedState())
+    private let sessionLock = LockedState(0)
 
     private var isActive: Bool = false
     private var continuation: AsyncStream<TranscriptionEvent>.Continuation?
@@ -683,7 +682,7 @@ private final class CohereStreamingInferenceSessionCore: @unchecked Sendable, St
     private static func runDecodePass(
         params: CohereDecodePassParams,
         continuation: AsyncStream<TranscriptionEvent>.Continuation?,
-        sharedState: OSAllocatedUnfairLock<SessionSharedState>,
+        sharedState: LockedState<SessionSharedState>,
         encodedWindowCount: Int
     ) {
         if Task.isCancelled { return }
@@ -728,7 +727,7 @@ private final class CohereStreamingInferenceSessionCore: @unchecked Sendable, St
         tokenIds: [Int],
         model: CohereTranscribeModel,
         continuation: AsyncStream<TranscriptionEvent>.Continuation?,
-        sharedState: OSAllocatedUnfairLock<SessionSharedState>
+        sharedState: LockedState<SessionSharedState>
     ) {
         let windowText = model.streamingDecodeText(tokens: tokenIds)
         let completedText = sharedState.withLock { state in
@@ -751,7 +750,7 @@ private final class CohereStreamingInferenceSessionCore: @unchecked Sendable, St
         allTokenIds: [Int],
         params: CohereDecodePassParams,
         continuation: AsyncStream<TranscriptionEvent>.Continuation?,
-        sharedState: OSAllocatedUnfairLock<SessionSharedState>
+        sharedState: LockedState<SessionSharedState>
     ) {
         let confirmedCount = params.confirmedTokenIds.count
         let prevProvisional = params.prevProvisional
@@ -969,8 +968,8 @@ private final class QwenStreamingInferenceSessionCore: @unchecked Sendable, Stre
     private let melProcessor: IncrementalMelSpectrogram
     private let encoder: StreamingEncoder
 
-    private let shared = OSAllocatedUnfairLock(initialState: SessionSharedState())
-    private let sessionLock = OSAllocatedUnfairLock(initialState: 0)
+    private let shared = LockedState(SessionSharedState())
+    private let sessionLock = LockedState(0)
 
     private var isActive: Bool = false
     private var totalSamplesFed: Int = 0
@@ -1349,7 +1348,7 @@ private final class QwenStreamingInferenceSessionCore: @unchecked Sendable, Stre
     private static func runDecodePass(
         params: DecodePassParams,
         continuation: AsyncStream<TranscriptionEvent>.Continuation?,
-        sharedState: OSAllocatedUnfairLock<SessionSharedState>,
+        sharedState: LockedState<SessionSharedState>,
         totalSamples: Int,
         encodedWindowCount: Int
     ) {
@@ -1459,7 +1458,7 @@ private final class QwenStreamingInferenceSessionCore: @unchecked Sendable, Stre
         allTokenIds: [Int],
         params: DecodePassParams,
         continuation: AsyncStream<TranscriptionEvent>.Continuation?,
-        sharedState: OSAllocatedUnfairLock<SessionSharedState>,
+        sharedState: LockedState<SessionSharedState>,
         tokenizer: any Tokenizers.Tokenizer,
         totalSamples: Int,
         decodeTime: Double,
@@ -1553,7 +1552,7 @@ private final class QwenStreamingInferenceSessionCore: @unchecked Sendable, Stre
     private static func runFinalizeCompletedWindows(
         params: FinalizeWindowsParams,
         continuation: AsyncStream<TranscriptionEvent>.Continuation?,
-        sharedState: OSAllocatedUnfairLock<SessionSharedState>
+        sharedState: LockedState<SessionSharedState>
     ) {
         if Task.isCancelled { return }
 
