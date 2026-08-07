@@ -1,0 +1,68 @@
+# Native arm64 Linux build (Jetson / CUDA target).
+#
+# This is the only supported Linux configuration: mlx-swift builds MLXNN/MLXFast on Linux only
+# via its CUDA backend, so a real build needs the CUDA toolkit plus the CCCL / cuDNN-frontend /
+# CUTLASS versions its CMake pins. Cross-compiling from macOS is not possible (mlx-swift's
+# manifest gates sources with host-evaluated `#if os(Linux)`), so this must run natively.
+#
+# The job is `continue-on-error` for now: it documents and exercises the exact target toolchain,
+# and is expected to go green once mlx-swift's SwiftPM CUDA build path is complete on this
+# environment. It also validates the GStreamer + BLAS/LAPACK provisioning the port relies on.
+
+name: Linux (arm64)
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  linux-arm64-cuda:
+    name: Native arm64 build (Jetson/CUDA)
+    runs-on: ubuntu-22.04-arm
+    continue-on-error: true
+    container: swift:6.2-jammy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install BLAS/LAPACK, Fortran and GStreamer
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            pkg-config wget ca-certificates unzip \
+            libopenblas-dev liblapack-dev liblapacke-dev gfortran \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libglib2.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+
+      - name: Install CUDA toolkit 12.9 (sbsa) and cuDNN
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/sbsa/cuda-keyring_1.1-1_all.deb
+          dpkg -i cuda-keyring_1.1-1_all.deb
+          apt-get update
+          apt-get install -y --no-install-recommends cuda-toolkit-12-9 libcudnn9-dev-cuda-12
+          echo "/usr/local/cuda/bin" >> "$GITHUB_PATH"
+
+      - name: Provision mlx-swift CUDA header deps (CCCL, cuDNN-frontend, CUTLASS)
+        run: |
+          cd /tmp
+          # CCCL v3.1.3 -> /usr/local/cuda/include/cccl (mlx-swift adds -I.../cccl)
+          wget -q https://github.com/NVIDIA/cccl/releases/download/v3.1.3/cccl-v3.1.3.zip
+          unzip -q cccl-v3.1.3.zip
+          mkdir -p /usr/local/cuda/include/cccl
+          cp -r cccl-v3.1.3/include/cuda /usr/local/cuda/include/cccl/
+          cp -r cccl-v3.1.3/include/nv /usr/local/cuda/include/cccl/
+          # cuDNN-frontend v1.16.0 (header-only)
+          wget -q https://github.com/NVIDIA/cudnn-frontend/archive/refs/tags/v1.16.0.tar.gz -O cudnn-fe.tgz
+          tar xzf cudnn-fe.tgz
+          cp -r cudnn-frontend-1.16.0/include/* /usr/local/cuda/include/
+          # CUTLASS v4.3.5 (header-only: cutlass/ + cute/)
+          wget -q https://github.com/NVIDIA/cutlass/archive/refs/tags/v4.3.5.tar.gz -O cutlass.tgz
+          tar xzf cutlass.tgz
+          cp -r cutlass-4.3.5/include/* /usr/local/cuda/include/
+
+      - name: swift build
+        env:
+          # nvcc targets a modern arch (Jetson Orin = sm_87); __grid_constant__ needs >= sm_70.
+          NVCC_APPEND_FLAGS: "-arch=sm_87 -Wno-deprecated-gpu-targets"
+        run: swift build -v
