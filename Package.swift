@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "MLXAudio",
-    platforms: [.macOS(.v15), .iOS(.v18)],
+    platforms: [.macOS(.v14), .iOS(.v17)],
     products: [
         // Core foundation library
         .library(name: "MLXAudioCore", targets: ["MLXAudioCore"]),
