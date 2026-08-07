@@ -1,3 +1,4 @@
+#if canImport(NaturalLanguage)
 import Foundation
 import NaturalLanguage
 
@@ -593,3 +594,5 @@ final class Lexicon {
     return (text, rating)
   }
 }
+
+#endif

@@ -1,3 +1,5 @@
+// AVFoundation-based PCM format converter used by streaming playback — Apple platforms only.
+#if canImport(AVFoundation)
 @preconcurrency import AVFoundation
 import os
 
@@ -152,3 +154,4 @@ private extension PCMStreamConverter {
             lhs.isInterleaved == rhs.isInterleaved
     }
 }
+#endif

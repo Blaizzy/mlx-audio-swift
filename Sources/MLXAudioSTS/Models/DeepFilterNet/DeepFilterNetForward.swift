@@ -1,6 +1,13 @@
-import Accelerate
 import MLX
 import MLXNN
+// `expf`/`tanhf` come from the platform C math library (previously via Accelerate on Apple).
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 // MARK: - Network Forward (V2/V3)
 
@@ -618,11 +625,11 @@ extension DeepFilterNetModel {
                         state.withUnsafeBufferPointer { sBuf in
                             wHH.withUnsafeBufferPointer { wBuf in
                                 gh.withUnsafeMutableBufferPointer { gBuf in
-                                    vDSP_mmul(
-                                        sBuf.baseAddress! + stOff, 1,
-                                        wBuf.baseAddress! + wHHOff, 1,
-                                        gBuf.baseAddress!, 1,
-                                        vDSP_Length(1), vDSP_Length(h3), vDSP_Length(h)
+                                    dfnHiddenMatVec(
+                                        sBuf.baseAddress! + stOff,
+                                        wBuf.baseAddress! + wHHOff,
+                                        gBuf.baseAddress!,
+                                        n: h3, p: h
                                     )
                                 }
                             }
