@@ -201,8 +201,14 @@ public final class NemotronASRStreamSession {
         emittedText = fullText
         let deltaIds = rnntState.results[firstNew...].map { $0.id }
 
-        if final { done = true }
-        Memory.clearCache()
+        if final {
+            done = true
+            // The session's carried encoder/RNNT state is still live here, so
+            // this clear only releases temporary buffers. Callers that drop
+            // the session after finish can clear once more to return the
+            // entire idle pool to the weight floor.
+            Memory.clearCache()
+        }
         return Delta(text: deltaText, tokenIds: Array(deltaIds))
     }
 
