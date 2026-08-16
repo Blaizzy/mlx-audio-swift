@@ -21,10 +21,10 @@ private func pocketPadForConv1d(_ x: MLXArray, ksize: Int, stride: Int, paddingT
 }
 
 public final class DummyQuantizer: Module {
-    @ModuleInfo(key: "output_proj") public var output_proj: MLXAudioCodecs.Conv1d
+    @ModuleInfo(key: "output_proj") public var output_proj: MLXAudioCodecs.MimiConv1d
 
     public init(dimension: Int, outputDimension: Int) {
-        self._output_proj = ModuleInfo(wrappedValue: MLXAudioCodecs.Conv1d(
+        self._output_proj = ModuleInfo(wrappedValue: MLXAudioCodecs.MimiConv1d(
             inChannels: dimension,
             outChannels: outputDimension,
             ksize: 1,

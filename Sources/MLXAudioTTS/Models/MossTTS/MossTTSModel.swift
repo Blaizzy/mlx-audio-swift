@@ -1,6 +1,7 @@
 import Foundation
 import HuggingFace
 @preconcurrency import MLX
+import MLXAudioCodecs
 import MLXAudioCore
 @preconcurrency import MLXLMCommon
 import MLXNN
@@ -78,6 +79,8 @@ public final class MossTTSModel: Module, SpeechGenerationModel, @unchecked Senda
 
     public var tokenizer: MossTTSTextTokenizing?
     public var audioTokenizer: MossAudioTokenizing?
+    private var hfToken: String?
+    private var cache: HubCache = .default
 
     public var sampleRate: Int { config.samplingRate }
 
@@ -332,48 +335,22 @@ public final class MossTTSModel: Module, SpeechGenerationModel, @unchecked Senda
                 return
             }
         }
-        let source = config.audioTokenizerPretrainedNameOrPath?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let source, !source.isEmpty {
-            let localSource = URL(fileURLWithPath: (source as NSString).expandingTildeInPath)
-            if FileManager.default.fileExists(atPath: localSource.appendingPathComponent("config.json").path) {
-                audioTokenizer = try MLXMossAudioTokenizer.fromModelDirectory(localSource)
-                return
-            }
-        }
-        if let cached = Self.findCachedHubSnapshot(
-            repo: source?.isEmpty == false ? source! : mossTTSDefaultAudioTokenizerRepo
-        ) {
-            audioTokenizer = try MLXMossAudioTokenizer.fromModelDirectory(cached)
-            return
-        }
+        let source = resolvedAudioTokenizerSource()
         audioTokenizer = try await MLXMossAudioTokenizer.fromPretrained(
-            (source?.isEmpty == false ? source! : mossTTSDefaultAudioTokenizerRepo)
+            source,
+            hfToken: hfToken,
+            cache: cache
         )
     }
 
-    private static func findCachedHubSnapshot(repo: String) -> URL? {
-        let components = repo.split(separator: "/", maxSplits: 1).map(String.init)
-        guard components.count == 2 else { return nil }
-        #if os(macOS)
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        #else
-        let home = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        #endif
-        let snapshotsDir = home
-            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
-            .appendingPathComponent("models--\(components[0])--\(components[1])", isDirectory: true)
-            .appendingPathComponent("snapshots", isDirectory: true)
-        guard let snapshots = try? FileManager.default.contentsOfDirectory(
-            at: snapshotsDir,
-            includingPropertiesForKeys: nil
-        ) else {
-            return nil
+    private func resolvedAudioTokenizerSource() -> String {
+        guard let source = config.audioTokenizerPretrainedNameOrPath?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !source.isEmpty
+        else {
+            return mossTTSDefaultAudioTokenizerRepo
         }
-        return snapshots.sorted { $0.lastPathComponent > $1.lastPathComponent }.first {
-            FileManager.default.fileExists(atPath: $0.appendingPathComponent("config.json").path)
-        }
+        return source
     }
 
     private static func findLastEqual(_ values: MLXArray, target: Int) -> Int {
@@ -834,14 +811,20 @@ public final class MossTTSModel: Module, SpeechGenerationModel, @unchecked Senda
             hfToken: hfToken,
             cache: cache
         )
-        return try await fromModelDirectory(modelDir)
+        return try await fromModelDirectory(modelDir, hfToken: hfToken, cache: cache)
     }
 
-    public static func fromModelDirectory(_ modelDir: URL) async throws -> MossTTSModel {
+    public static func fromModelDirectory(
+        _ modelDir: URL,
+        hfToken: String? = nil,
+        cache: HubCache = .default
+    ) async throws -> MossTTSModel {
         let configData = try Data(contentsOf: modelDir.appendingPathComponent("config.json"))
         var config = try JSONDecoder().decode(MossTTSConfig.self, from: configData)
         config.modelPath = modelDir.path
         let model = try MossTTSModel(config: config)
+        model.hfToken = hfToken
+        model.cache = cache
         model.generationConfig = MossTTSGenerationConfig.fromFileIfPresent(
             modelDir.appendingPathComponent("generation_config.json")
         )

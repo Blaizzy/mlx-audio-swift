@@ -36,7 +36,8 @@ final class VoxtralRealtimeAdaRMSNorm: Module {
     }
 
     func callAsFunction(_ x: MLXArray, adaScale: MLXArray) -> MLXArray {
-        x * (1.0 + adaScale)
+        // Cast the float32 adaScale down so it doesn't promote the fp16 hidden state.
+        x * (1.0 + adaScale.asType(x.dtype))
     }
 }
 
@@ -71,7 +72,15 @@ final class VoxtralRealtimeDecoderAttention: Module {
 
     }
 
-    private func ropeFrequencies(positions: MLXArray) -> (MLXArray, MLXArray) {
+    /// Interleaved-RoPE cos/sin tables for `positions`. Every decoder layer rotates
+    /// by the same tables, so the decoder builds them once per forward pass instead
+    /// of once per layer — same operations, bit-identical outputs, `nLayers`× fewer
+    /// tiny kernel launches per decoded token.
+    fileprivate static func ropeFrequencies(
+        positions: MLXArray,
+        headDim: Int,
+        ropeTheta: Float
+    ) -> (MLXArray, MLXArray) {
         let idx = MLXArray(stride(from: 0, to: headDim, by: 2)).asType(.float32)
         let ropeInvFreq = 1.0 / MLX.pow(MLXArray(ropeTheta), idx / Float(headDim))
         let angles = positions.asType(.float32).expandedDimensions(axis: 1) * ropeInvFreq.expandedDimensions(axis: 0)
@@ -81,6 +90,8 @@ final class VoxtralRealtimeDecoderAttention: Module {
     func callAsFunction(
         _ x: MLXArray,
         positions: MLXArray,
+        ropeCos: MLXArray,
+        ropeSin: MLXArray,
         cache: VoxtralRealtimeDecoderKVCache?
     ) -> (MLXArray, VoxtralRealtimeDecoderKVCache) {
         let seqLen = x.shape[0]
@@ -89,9 +100,8 @@ final class VoxtralRealtimeDecoderAttention: Module {
         var k = wk(x)
         var v = wv(x)
 
-        let (cos, sin) = ropeFrequencies(positions: positions)
-        q = voxtralApplyInterleavedRoPE(q, cos: cos, sin: sin, nHeads: nHeads, headDim: headDim)
-        k = voxtralApplyInterleavedRoPE(k, cos: cos, sin: sin, nHeads: nKvHeads, headDim: headDim)
+        q = voxtralApplyInterleavedRoPE(q, cos: ropeCos, sin: ropeSin, nHeads: nHeads, headDim: headDim)
+        k = voxtralApplyInterleavedRoPE(k, cos: ropeCos, sin: ropeSin, nHeads: nKvHeads, headDim: headDim)
 
         var positionOffset = cache?.positionOffset ?? 0
         if let cache {
@@ -129,7 +139,8 @@ final class VoxtralRealtimeDecoderAttention: Module {
             let causal = kPos .<= qPos
             let window = kPos .>= (qPos - MLXArray(Int32(slidingWindow - 1)))
             let allowed = logicalAnd(causal, window)
-            let mask = MLX.where(allowed, MLXArray(0.0), MLXArray(-1e9))
+            // Match the activation dtype: a float32 mask over fp16 q/k aborts SDPA.
+            let mask = MLX.where(allowed, MLXArray(0.0), MLXArray(-1e9)).asType(q.dtype)
             maskMode = .array(mask)
         }
 
@@ -179,13 +190,15 @@ final class VoxtralRealtimeDecoderLayer: Module {
     func callAsFunction(
         _ x: MLXArray,
         positions: MLXArray,
+        ropeCos: MLXArray,
+        ropeSin: MLXArray,
         adaScale: MLXArray?,
         cache: VoxtralRealtimeDecoderKVCache?
     ) -> (MLXArray, VoxtralRealtimeDecoderKVCache) {
         var out = x
 
         var h = attentionNorm(out)
-        let attn = attention(h, positions: positions, cache: cache)
+        let attn = attention(h, positions: positions, ropeCos: ropeCos, ropeSin: ropeSin, cache: cache)
         h = attn.0
         out = out + h
 
@@ -239,7 +252,9 @@ final class VoxtralRealtimeDecoder: Module {
     }
 
     func embedToken(tokenId: Int) -> MLXArray {
-        tokEmbeddings.weight[tokenId]
+        // Module lookup rather than a raw `weight` row: for a QuantizedEmbedding the
+        // weight is bit-packed and only the module's gather dequantizes it.
+        tokEmbeddings(MLXArray([Int32(tokenId)])).squeezed(axis: 0)
     }
 
     func embedTokens(_ tokenIds: MLXArray) -> MLXArray {
@@ -254,6 +269,12 @@ final class VoxtralRealtimeDecoder: Module {
         var h = embeds
         let seqLen = h.shape[0]
         let positions = MLXArray(startPos..<(startPos + seqLen)).asType(.int32)
+        // Shared by every layer — see `VoxtralRealtimeDecoderAttention.ropeFrequencies`.
+        let (ropeCos, ropeSin) = VoxtralRealtimeDecoderAttention.ropeFrequencies(
+            positions: positions,
+            headDim: config.headDim,
+            ropeTheta: config.ropeTheta
+        )
 
         var newCache: [VoxtralRealtimeDecoderKVCache?] = []
         newCache.reserveCapacity(layers.count)
@@ -261,7 +282,9 @@ final class VoxtralRealtimeDecoder: Module {
         for i in layers.indices {
             let layerCache = cache?[i]
             let adaScale = adaScales?[i]
-            let next = layers[i](h, positions: positions, adaScale: adaScale, cache: layerCache)
+            let next = layers[i](
+                h, positions: positions, ropeCos: ropeCos, ropeSin: ropeSin,
+                adaScale: adaScale, cache: layerCache)
             h = next.0
             newCache.append(next.1)
         }
@@ -271,6 +294,10 @@ final class VoxtralRealtimeDecoder: Module {
     }
 
     func logits(_ h: MLXArray) -> MLXArray {
-        MLX.matmul(h, tokEmbeddings.weight.transposed(1, 0))
+        // `asLinear` dispatches to the module's tied projection: a plain embedding
+        // computes the same contraction as the previous matmul(h, weight.T), and a
+        // QuantizedEmbedding takes the quantized-matmul path. Callers pass a single
+        // hidden row, so lift to rank 2 for the projection and drop the batch axis.
+        tokEmbeddings.asLinear(h.expandedDimensions(axis: 0)).squeezed(axis: 0)
     }
 }

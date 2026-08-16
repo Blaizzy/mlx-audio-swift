@@ -13,14 +13,14 @@ class S3GenPositionalEncoding: Module {
     let xscale: Float
     let dropoutRate: Float
     let maxLen: Int
-    var pe: MLXArray
+    @ParameterInfo var pe: MLXArray
 
     init(dModel: Int, dropoutRate: Float, maxLen: Int = 5000) {
         self.dModel = dModel
         self.xscale = sqrt(Float(dModel))
         self.dropoutRate = dropoutRate
         self.maxLen = maxLen
-        self.pe = Self.createPE(maxLen: maxLen, dModel: dModel)
+        _pe.wrappedValue = Self.createPE(maxLen: maxLen, dModel: dModel)
     }
 
     static func createPE(maxLen: Int, dModel: Int) -> MLXArray {
@@ -65,14 +65,14 @@ class S3GenEspnetRelPositionalEncoding: Module {
     let xscale: Float
     let dropoutRate: Float
     let maxLen: Int
-    var pe: MLXArray
+    @ParameterInfo var pe: MLXArray
 
     init(dModel: Int, dropoutRate: Float, maxLen: Int = 5000) {
         self.dModel = dModel
         self.xscale = sqrt(Float(dModel))
         self.dropoutRate = dropoutRate
         self.maxLen = maxLen
-        self.pe = Self.createRelPE(size: maxLen, dModel: dModel)
+        _pe.wrappedValue = Self.createRelPE(size: maxLen, dModel: dModel)
     }
 
     static func createRelPE(size: Int, dModel: Int) -> MLXArray {
@@ -122,13 +122,13 @@ class S3GenLinearNoSubsampling: Module {
     @ModuleInfo(key: "linear") var linear: Linear
     @ModuleInfo(key: "norm") var norm: LayerNorm
     let dropoutRate: Float
-    let posEnc: Module  // One of the positional encoding types
+    @ModuleInfo(key: "pos_enc") var posEnc: Module
 
     init(idim: Int, odim: Int, dropoutRate: Float, posEnc: Module) {
         self._linear.wrappedValue = Linear(idim, odim)
         self._norm.wrappedValue = LayerNorm(dimensions: odim, eps: 1e-5)
         self.dropoutRate = dropoutRate
-        self.posEnc = posEnc
+        self._posEnc.wrappedValue = posEnc
     }
 
     func callAsFunction(

@@ -3,6 +3,7 @@
 // Converts 16kHz audio waveform → discrete speech token IDs (6561 vocab, 25 tokens/sec)
 
 import Foundation
+import HuggingFace
 import MLX
 import MLXAudioCore
 import MLXFast
@@ -29,7 +30,7 @@ private func precomputeFreqsCis(dim: Int, end: Int, theta: Float = 10000.0) -> (
     let halfDim = dim / 2
     let freqs = 1.0 / MLX.pow(
         MLXArray(theta),
-        MLXArray(0 ..< halfDim).asType(.float32)[..<halfDim] / Float(dim)
+        MLXArray((0 ..< halfDim).map { Float($0 * 2) }) / Float(dim)
     )
     let t = MLXArray(0 ..< end).asType(.float32)
     let outerProduct = t.expandedDimensions(axis: 1) * freqs.expandedDimensions(axis: 0)
@@ -123,7 +124,7 @@ class FSMNMultiHeadAttention: Module {
     @ModuleInfo(key: "key") var key: Linear
     @ModuleInfo(key: "value") var value: Linear
     @ModuleInfo(key: "out") var out: Linear
-    @ModuleInfo(key: "fsmn_block") var fsmnBlock: Conv1d
+    @ModuleInfo(key: "fsmn_block") var fsmnBlock: MLXNN.Conv1d
 
     let leftPadding: Int
     let rightPadding: Int
@@ -134,7 +135,7 @@ class FSMNMultiHeadAttention: Module {
         self._key.wrappedValue = Linear(nState, nState, bias: false)
         self._value.wrappedValue = Linear(nState, nState)
         self._out.wrappedValue = Linear(nState, nState)
-        self._fsmnBlock.wrappedValue = Conv1d(
+        self._fsmnBlock.wrappedValue = MLXNN.Conv1d(
             inputChannels: nState, outputChannels: nState,
             kernelSize: kernelSize, stride: 1, padding: 0,
             groups: nState, bias: false
@@ -213,18 +214,18 @@ class FSMNMultiHeadAttention: Module {
 class S3ResidualAttentionBlock: Module {
     @ModuleInfo(key: "attn") var attn: FSMNMultiHeadAttention
     @ModuleInfo(key: "attn_ln") var attnLn: LayerNorm
-    @ModuleInfo(key: "mlp") var mlp: Sequential
+    @ModuleInfo(key: "mlp") var mlp: MLXNN.Sequential
     @ModuleInfo(key: "mlp_ln") var mlpLn: LayerNorm
 
     init(nState: Int, nHead: Int, kernelSize: Int = 31) {
         let nMlp = nState * 4
         self._attn.wrappedValue = FSMNMultiHeadAttention(nState: nState, nHead: nHead, kernelSize: kernelSize)
         self._attnLn.wrappedValue = LayerNorm(dimensions: nState, eps: 1e-6)
-        self._mlp.wrappedValue = Sequential {
-            Linear(nState, nMlp)
-            GELU()
+        self._mlp.wrappedValue = MLXNN.Sequential(layers: [
+            Linear(nState, nMlp),
+            GELU(),
             Linear(nMlp, nState)
-        }
+        ])
         self._mlpLn.wrappedValue = LayerNorm(dimensions: nState)
     }
 
@@ -246,19 +247,19 @@ class S3ResidualAttentionBlock: Module {
 /// Total 4x downsampling: stride-2 conv1 + stride-2 conv2.
 class AudioEncoderV2: Module {
     let stride: Int
-    @ModuleInfo(key: "conv1") var conv1: Conv1d
-    @ModuleInfo(key: "conv2") var conv2: Conv1d
+    @ModuleInfo(key: "conv1") var conv1: MLXNN.Conv1d
+    @ModuleInfo(key: "conv2") var conv2: MLXNN.Conv1d
     @ModuleInfo(key: "blocks") var blocks: [S3ResidualAttentionBlock]
 
     let freqsCis: (MLXArray, MLXArray)
 
     init(nMels: Int, nState: Int, nHead: Int, nLayer: Int, stride: Int = 2) {
         self.stride = stride
-        self._conv1.wrappedValue = Conv1d(
+        self._conv1.wrappedValue = MLXNN.Conv1d(
             inputChannels: nMels, outputChannels: nState,
             kernelSize: 3, stride: stride, padding: 1
         )
-        self._conv2.wrappedValue = Conv1d(
+        self._conv2.wrappedValue = MLXNN.Conv1d(
             inputChannels: nState, outputChannels: nState,
             kernelSize: 3, stride: 2, padding: 1
         )
@@ -281,14 +282,14 @@ class AudioEncoderV2: Module {
         out = out * mask1.expandedDimensions(axis: -1)
         out = gelu(conv1(out))
         let strideVal = Int32(stride)
-        outLen = (outLen + MLXArray(Int32(0))) / strideVal + MLXArray(Int32(1))
+        outLen = (outLen - MLXArray(Int32(1))) / strideVal + MLXArray(Int32(1))
 
         // Mask and apply conv2
         // Same formula with stride=2: (L - 1) / 2 + 1
         let mask2 = makeNonPadMask(outLen, maxLen: out.dim(1))
         out = out * mask2.expandedDimensions(axis: -1)
         out = gelu(conv2(out))
-        outLen = (outLen + MLXArray(Int32(0))) / Int32(2) + MLXArray(Int32(1))
+        outLen = (outLen - MLXArray(Int32(1))) / Int32(2) + MLXArray(Int32(1))
 
         // Attention mask
         let mask3 = makeNonPadMask(outLen, maxLen: out.dim(1))
@@ -312,6 +313,9 @@ class AudioEncoderV2: Module {
 /// Input: mel spectrogram (B, 128, T) at 100 frames/sec (from 16kHz audio, hop=160)
 /// Output: token IDs (B, T') at 25 tokens/sec (4x downsampling), vocabulary size 6561.
 public class S3TokenizerV2: Module {
+    public static let defaultRepository = "mlx-community/S3TokenizerV2"
+    public static let defaultTokenizerName = "speech_tokenizer_v2_25hz"
+
     let config: S3TokenizerConfig
     @ModuleInfo(key: "encoder") var encoder: AudioEncoderV2
     @ModuleInfo(key: "quantizer") var quantizer: FSQVectorQuantization
@@ -337,9 +341,87 @@ public class S3TokenizerV2: Module {
     ///   - melLen: Length of each mel in the batch (B,)
     /// - Returns: (tokens, tokenLens) where tokens is (B, T') int32, tokenLens is (B,)
     public func callAsFunction(_ mel: MLXArray, melLen: MLXArray) -> (MLXArray, MLXArray) {
+        quantize(mel, melLen: melLen)
+    }
+
+    /// Quantize mel spectrogram to speech tokens.
+    public func quantize(_ mel: MLXArray, melLen: MLXArray) -> (MLXArray, MLXArray) {
         let (hidden, codeLen) = encoder(mel, xLen: melLen)
         let code = quantizer.encode(hidden)
         return (code, codeLen)
+    }
+
+    /// Load S3TokenizerV2 from a Hugging Face repository.
+    ///
+    /// Supports both `model.safetensors` and named tokenizer files such as
+    /// `speech_tokenizer_v2_25hz.safetensors`.
+    public static func fromPretrained(
+        _ repoId: String = defaultRepository,
+        name: String = defaultTokenizerName,
+        hfToken: String? = nil,
+        cache: HubCache = .default
+    ) async throws -> S3TokenizerV2 {
+        guard let repoID = Repo.ID(rawValue: repoId) else {
+            throw NSError(
+                domain: "S3TokenizerV2",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid repository ID: \(repoId)"]
+            )
+        }
+
+        let modelDir = try await ModelUtils.resolveOrDownloadModel(
+            repoID: repoID,
+            requiredExtension: ".safetensors",
+            hfToken: hfToken,
+            cache: cache
+        )
+
+        return try fromModelDirectory(modelDir, name: name)
+    }
+
+    /// Load S3TokenizerV2 from a local directory.
+    public static func fromModelDirectory(
+        _ modelDir: URL,
+        name: String = defaultTokenizerName
+    ) throws -> S3TokenizerV2 {
+        let weightsURL = try resolveWeightsURL(in: modelDir, name: name)
+        let model = S3TokenizerV2()
+        var weights = try loadArrays(url: weightsURL)
+        weights = sanitize(weights: weights, model: model)
+        try model.update(parameters: ModuleParameters.unflattened(weights), verify: [])
+        eval(model)
+        return model
+    }
+
+    private static func resolveWeightsURL(in modelDir: URL, name: String) throws -> URL {
+        let preferred = [
+            modelDir.appendingPathComponent("model.safetensors"),
+            modelDir.appendingPathComponent("\(name).safetensors"),
+        ]
+
+        for url in preferred where FileManager.default.fileExists(atPath: url.path) {
+            return url
+        }
+
+        let candidates = try FileManager.default.contentsOfDirectory(
+            at: modelDir,
+            includingPropertiesForKeys: nil
+        )
+            .filter { $0.pathExtension == "safetensors" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+
+        if let only = candidates.only {
+            return only
+        }
+
+        throw NSError(
+            domain: "S3TokenizerV2",
+            code: 2,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "Could not find S3TokenizerV2 weights in \(modelDir.path). Expected model.safetensors or \(name).safetensors."
+            ]
+        )
     }
 
     /// Weight sanitization for loading from safetensors.
@@ -396,6 +478,12 @@ public class S3TokenizerV2: Module {
     }
 }
 
+private extension Array {
+    var only: Element? {
+        count == 1 ? self[0] : nil
+    }
+}
+
 // MARK: - Helper: Log Mel Spectrogram for S3TokenizerV2
 
 /// Compute log mel spectrogram for S3TokenizerV2 input.
@@ -415,16 +503,14 @@ public func s3TokenizerLogMelSpectrogram(
     nFft: Int = 400,
     hopLength: Int = 160
 ) -> MLXArray {
-    let window = hanningWindow(size: nFft)
+    let window = hanningWindow(size: nFft + 1)[..<nFft]
 
     // STFT (center=true, matching Python default)
     let freqs = stft(audio: audio, window: window, nFft: nFft, hopLength: hopLength)
     // freqs shape: (T', nFft/2+1)
 
-    // Power spectrum — drop last frame to match Python's `spec[:, :-1, :]` behavior
-    // Python drops the last STFT frame to match PyTorch torch.stft convention
-    let numFrames = freqs.dim(0)
-    let magnitudes = abs(freqs[..<(numFrames - 1)]).square()
+    // Power spectrum. Python uses `hanning(n_fft + 1)[:-1]` and keeps all STFT frames.
+    let magnitudes = abs(freqs).square()
 
     // Mel filterbank: (nFreqs, nMels)
     let filters = melFilters(

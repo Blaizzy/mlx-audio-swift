@@ -141,6 +141,105 @@ func fishSpeechSplitTextBySpeaker(_ text: String) -> [String] {
     return turns
 }
 
+func fishSpeechSplitTextIntoBatches(_ text: String, maxBytes: Int) -> [String] {
+    let limit = max(1, maxBytes)
+    guard text.lengthOfBytes(using: .utf8) > limit else {
+        return text.isEmpty ? [] : [text]
+    }
+
+    var batches: [String] = []
+    var batchStart = text.startIndex
+    var cursor = batchStart
+    var batchBytes = 0
+    var lastWhitespaceEnd: String.Index?
+
+    while cursor < text.endIndex {
+        let next = text.index(after: cursor)
+        let character = text[cursor]
+        let characterBytes = String(character).utf8.count
+        if characterBytes > limit {
+            if cursor > batchStart {
+                batches.append(String(text[batchStart..<cursor]))
+            }
+            var fragment = ""
+            var fragmentBytes = 0
+            for scalar in String(character).unicodeScalars {
+                let scalarText = String(scalar)
+                let scalarBytes = scalarText.utf8.count
+                if !fragment.isEmpty, fragmentBytes + scalarBytes > limit {
+                    batches.append(fragment)
+                    fragment = ""
+                    fragmentBytes = 0
+                }
+                fragment.append(contentsOf: scalarText)
+                fragmentBytes += scalarBytes
+            }
+            if !fragment.isEmpty {
+                batches.append(fragment)
+            }
+            batchStart = next
+            cursor = next
+            batchBytes = 0
+            lastWhitespaceEnd = nil
+            continue
+        }
+        if batchBytes + characterBytes > limit, cursor > batchStart {
+            let whitespaceSplit = lastWhitespaceEnd.flatMap { index -> String.Index? in
+                String(text[batchStart..<index]).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? nil
+                    : index
+            }
+            let split = whitespaceSplit ?? cursor
+            batches.append(String(text[batchStart..<split]))
+            batchStart = split
+            cursor = split
+            batchBytes = 0
+            lastWhitespaceEnd = nil
+            continue
+        }
+
+        batchBytes += characterBytes
+        if character.isWhitespace {
+            lastWhitespaceEnd = next
+        }
+        cursor = next
+    }
+
+    if batchStart < text.endIndex {
+        batches.append(String(text[batchStart...]))
+    }
+    return batches
+}
+
+func fishSpeechSplitSpeakerTurn(_ turn: String, maxBytes: Int) -> [String] {
+    guard turn.hasPrefix("<|speaker:"),
+          let markerEnd = turn.range(of: "|>")?.upperBound
+    else {
+        return fishSpeechSplitTextIntoBatches(turn, maxBytes: maxBytes)
+    }
+
+    let marker = String(turn[..<markerEnd])
+    let payload = String(turn[markerEnd...])
+    let payloadLimit = max(1, maxBytes - marker.lengthOfBytes(using: .utf8))
+    return fishSpeechSplitTextIntoBatches(payload, maxBytes: payloadLimit).map {
+        marker + $0
+    }
+}
+
+func fishSpeechGenerationBatches(_ text: String, maxBytes: Int) -> [String] {
+    let turns = fishSpeechSplitTextBySpeaker(text)
+    let batches = turns.isEmpty
+        ? fishSpeechSplitTextIntoBatches(text, maxBytes: maxBytes)
+        : fishSpeechGroupTurnsIntoBatches(
+            turns.flatMap { fishSpeechSplitSpeakerTurn($0, maxBytes: maxBytes) },
+            maxSpeakers: 5,
+            maxBytes: maxBytes
+        )
+    return batches.filter {
+        !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
 func fishSpeechGroupTurnsIntoBatches(
     _ turns: [String],
     maxSpeakers: Int = 5,
@@ -154,8 +253,10 @@ func fishSpeechGroupTurnsIntoBatches(
 
     for turn in turns {
         let turnBytes = turn.lengthOfBytes(using: .utf8)
+        let separatorBytes = currentBatch.isEmpty ? 0 : 1
         let exceedsSpeakers = currentBatch.count >= maxSpeakers
-        let exceedsBytes = !currentBatch.isEmpty && (currentBytes + turnBytes > maxBytes)
+        let exceedsBytes = !currentBatch.isEmpty
+            && (currentBytes + separatorBytes + turnBytes > maxBytes)
 
         if exceedsSpeakers || exceedsBytes {
             batches.append(currentBatch.joined(separator: "\n"))
@@ -163,7 +264,7 @@ func fishSpeechGroupTurnsIntoBatches(
             currentBytes = turnBytes
         } else {
             currentBatch.append(turn)
-            currentBytes += turnBytes
+            currentBytes += separatorBytes + turnBytes
         }
     }
 

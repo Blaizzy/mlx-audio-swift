@@ -225,6 +225,8 @@ struct TTSSmokeTests {
             case .audio(let audio):
                 finalAudio = audio
                 print("\u{001B}[32mReceived final audio: \(audio.shape)\u{001B}[0m")
+            case .progress(_):
+                break
             }
         }
 
@@ -312,6 +314,8 @@ struct TTSSmokeTests {
             case .audio(let audio):
                 finalAudio = audio
                 print("\u{001B}[32mReceived final audio: \(audio.shape)\u{001B}[0m")
+            case .progress(_):
+                break
             }
         }
 
@@ -421,6 +425,8 @@ struct TTSSmokeTests {
             case .audio(let audio):
                 finalAudio = audio
                 print("\u{001B}[32mReceived final audio: \(audio.shape)\u{001B}[0m")
+            case .progress(_):
+                break
             }
         }
 
@@ -494,7 +500,7 @@ struct TTSSmokeTests {
             case .info(let info):
                 generationInfo = info
                 print("\u{001B}[36mGeneration info: generateTime=\(info.generateTime)s\u{001B}[0m")
-            case .token(_):
+            case .token(_), .progress(_):
                 break
             }
         }
@@ -585,7 +591,7 @@ struct TTSSmokeTests {
                 print("\u{001B}[32mReceived audio chunk: \(audio.shape)\u{001B}[0m")
             case .info(let info):
                 print("\u{001B}[36mGeneration info: \(String(format: "%.2f", info.generateTime))s\u{001B}[0m")
-            case .token(_):
+            case .token(_), .progress(_):
                 break
             }
         }

@@ -4,10 +4,12 @@ Swift/MLX port of [k2-fsa/OmniVoice](https://huggingface.co/k2-fsa/OmniVoice), a
 
 ## Weights
 
-Use the full conversion `mlx-community/OmniVoice` (fp32, includes the complete
-audio codec). The `mlx-community/OmniVoice-bf16` repo's `audio_tokenizer/` was
-exported without the semantic encode path (no `semantic_model.*` /
-`encoder_semantic.*` weights), so it cannot encode reference audio.
+Two MLX conversions are available, both with the complete audio codec
+(acoustic **and** semantic encode path), so both support voice cloning:
+
+- `mlx-community/OmniVoice` — fp32.
+- `mlx-community/OmniVoice-bf16` — bfloat16: ~half the size and MLX's native
+  compute dtype on Apple Silicon.
 
 ## Usage
 
@@ -30,7 +32,7 @@ swift run mlx-audio-swift-tts --model mlx-community/OmniVoice \
     --text "Hello!" --voice "male, british accent" --output out.wav
 ```
 
-Generation knobs live in `OmniVoiceGenerateParameters` (`numStep`, `guidanceScale`, `speed`, `positionTemperature`, `tShift`, ...). Defaults match the Python reference (`num_steps=32`, `guidance_scale=2.0`).
+Generation knobs live in `OmniVoiceGenerateParameters` (`numStep`, `guidanceScale`, `speed`, `positionTemperature`, `tShift`, `seed`, ...). Defaults match the Python reference (`num_steps=32`, `guidance_scale=2.0`). Set `seed` to reproduce generation; leave it `nil` to continue from MLX's current random state.
 
 ## Modes
 

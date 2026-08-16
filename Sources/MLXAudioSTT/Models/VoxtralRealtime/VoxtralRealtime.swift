@@ -376,8 +376,8 @@ extension VoxtralRealtimeModel {
     /// Causal conv + causal/sliding-window attention make `adapterOut[0..<k]`
     /// identical whether encoded from a prefix or the full buffer.
     /// Conv-stem seam: audio → conv-stem frames (`convOut`, the transformer input),
-    /// the per-token span, and the prompt length. Shared by the offline encode and
-    /// the streaming session (which feeds `convOut` incrementally).
+    /// the per-token span, and the prompt length. Used by the offline encode; the
+    /// streaming session builds the same rows incrementally (`convStemStep`).
     func convStemForAudio(
         audio: MLXArray,
         transcriptionDelayMs: Int?
@@ -633,10 +633,13 @@ public extension VoxtralRealtimeModel {
     }
 
     func shouldQuantize(path: String) -> Bool {
+        // tok_embeddings is deliberately not skipped: the loader's quantize pass is
+        // gated on the checkpoint shipping "<path>.scales", so checkpoints with a
+        // quantized tied embedding load directly while fp16-embedding checkpoints
+        // are structured exactly as before.
         let skipPatterns = [
             "norm",
             "ada_rms_norm",
-            "tok_embeddings",
             "conv_layers",
             "audio_language_projection",
         ]

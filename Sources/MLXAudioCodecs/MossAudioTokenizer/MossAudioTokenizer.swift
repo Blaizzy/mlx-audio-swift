@@ -7,6 +7,25 @@ import MLXNN
 
 public let mossDefaultAudioTokenizerRepo = "mlx-community/MOSS-Audio-Tokenizer-Nano"
 
+public enum MossAudioTokenizerError: Error, CustomStringConvertible {
+    case invalidInput(String)
+    case notImplemented(String)
+
+    public var description: String {
+        switch self {
+        case .invalidInput(let message):
+            message
+        case .notImplemented(let message):
+            message
+        }
+    }
+}
+
+public protocol MossAudioTokenizing: AnyObject {
+    func encodeAudio(_ audio: MLXArray, numQuantizers: Int) throws -> MLXArray
+    func decodeAudioCodes(_ audioTokenIDs: MLXArray, numQuantizers: Int) throws -> MLXArray
+}
+
 public struct MossAudioTokenizerConfig: Sendable {
     public var sampleRate: Int
     public var samplingRate: Int
@@ -46,7 +65,7 @@ public struct MossAudioTokenizerConfig: Sendable {
     public static func fromFile(_ url: URL) throws -> MossAudioTokenizerConfig {
         let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
         guard let json = object as? [String: Any] else {
-            throw MossTTSNanoError.invalidInput("Invalid MOSS audio tokenizer config.")
+            throw MossAudioTokenizerError.invalidInput("Invalid MOSS audio tokenizer config.")
         }
         return try fromDictionary(json)
     }
@@ -75,9 +94,9 @@ public struct MossAudioTokenizerConfig: Sendable {
 }
 
 public struct SendableValue: @unchecked Sendable {
-    let rawValue: Any
+    public let rawValue: Any
 
-    init(_ rawValue: Any) {
+    public init(_ rawValue: Any) {
         self.rawValue = rawValue
     }
 }
@@ -376,7 +395,7 @@ private final class MossAudioTransformerLayer: Module {
         norm: String
     ) throws {
         guard norm == "layer_norm" else {
-            throw MossTTSNanoError.invalidInput("Unsupported MOSS audio tokenizer norm: \(norm)")
+            throw MossAudioTokenizerError.invalidInput("Unsupported MOSS audio tokenizer norm: \(norm)")
         }
         _selfAttention.wrappedValue = MossAudioMultiheadAttention(
             embedDim: dModel,
@@ -437,7 +456,7 @@ private final class MossAudioTransformer: Module {
         gating: String
     ) throws {
         guard gating == "none" else {
-            throw MossTTSNanoError.invalidInput("Unsupported MOSS audio tokenizer gating: \(gating)")
+            throw MossAudioTokenizerError.invalidInput("Unsupported MOSS audio tokenizer gating: \(gating)")
         }
         self.positionalEmbedding = positionalEmbedding
         self.maxPeriod = maxPeriod
@@ -702,7 +721,7 @@ public final class MLXMossAudioTokenizer: Module, MossAudioTokenizing, @unchecke
 
         let quantizerType = config.quantizerKwargs.string("quantizer_type", fallback: config.quantizerType)
         guard ["rlfq", "random_prefix_rlfq"].contains(quantizerType) else {
-            throw MossTTSNanoError.invalidInput("Unsupported MOSS quantizer_type: \(quantizerType)")
+            throw MossAudioTokenizerError.invalidInput("Unsupported MOSS quantizer_type: \(quantizerType)")
         }
         let quantizer = MossResidualLFQ(kwargs: config.quantizerKwargs)
         self.numQuantizers = quantizer.numQuantizers
@@ -747,17 +766,30 @@ public final class MLXMossAudioTokenizer: Module, MossAudioTokenizing, @unchecke
             let module = try MossProjectedTransformer(kwargs: kwargs, context: context)
             return (module, module.downsampleRatio)
         default:
-            throw MossTTSNanoError.invalidInput("Unsupported MOSS audio tokenizer module_type: \(moduleType)")
+            throw MossAudioTokenizerError.invalidInput("Unsupported MOSS audio tokenizer module_type: \(moduleType)")
         }
     }
 
     public static func fromModelDirectory(_ modelDir: URL) throws -> MLXMossAudioTokenizer {
         let config = try MossAudioTokenizerConfig.fromFile(modelDir.appendingPathComponent("config.json"))
         let model = try MLXMossAudioTokenizer(config: config)
-        let weights = try loadWeights(from: modelDir)
+        let weights = try loadMossAudioTokenizerWeights(from: modelDir)
         try model.update(parameters: ModuleParameters.unflattened(sanitize(weights: weights)), verify: .all)
         eval(model)
         return model
+    }
+
+    private static func loadMossAudioTokenizerWeights(from directory: URL) throws -> [String: MLXArray] {
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "safetensors" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+
+        var weights: [String: MLXArray] = [:]
+        for file in files {
+            let fileWeights = try MLX.loadArrays(url: file)
+            weights.merge(fileWeights) { _, new in new }
+        }
+        return weights
     }
 
     private static func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
@@ -787,9 +819,12 @@ public final class MLXMossAudioTokenizer: Module, MossAudioTokenizing, @unchecke
         hfToken: String? = nil,
         cache: HubCache = .default
     ) async throws -> MLXMossAudioTokenizer {
+        let localURL = URL(fileURLWithPath: NSString(string: source).expandingTildeInPath)
+        if FileManager.default.fileExists(atPath: localURL.appendingPathComponent("config.json").path) {
+            return try fromModelDirectory(localURL)
+        }
         guard let repoID = Repo.ID(rawValue: source) else {
-            let url = URL(fileURLWithPath: NSString(string: source).expandingTildeInPath)
-            return try fromModelDirectory(url)
+            return try fromModelDirectory(localURL)
         }
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
@@ -826,7 +861,7 @@ public final class MLXMossAudioTokenizer: Module, MossAudioTokenizing, @unchecke
                 channelCount = audio.dim(1)
             }
         } else {
-            throw MossTTSNanoError.invalidInput("Unsupported audio shape: \(audio.shape)")
+            throw MossAudioTokenizerError.invalidInput("Unsupported audio shape: \(audio.shape)")
         }
 
         if channelCount != channels {
@@ -851,7 +886,7 @@ public final class MLXMossAudioTokenizer: Module, MossAudioTokenizing, @unchecke
                 samples = mono
                 channelCount = 1
             } else {
-                throw MossTTSNanoError.invalidInput(
+                throw MossAudioTokenizerError.invalidInput(
                     "Unsupported reference audio channel conversion: \(channelCount) -> \(channels)"
                 )
             }
@@ -870,7 +905,7 @@ public final class MLXMossAudioTokenizer: Module, MossAudioTokenizing, @unchecke
 
     private func prepareWaveformBatch(_ waveforms: [MLXArray]) throws -> (MLXArray, MLXArray) {
         guard !waveforms.isEmpty else {
-            throw MossTTSNanoError.invalidInput("waveforms must not be empty")
+            throw MossAudioTokenizerError.invalidInput("waveforms must not be empty")
         }
         let lengths = waveforms.map { $0.dim($0.ndim - 1) }
         let maxLength = lengths.max() ?? 0
@@ -878,7 +913,7 @@ public final class MLXMossAudioTokenizer: Module, MossAudioTokenizing, @unchecke
         for waveform in waveforms {
             var current = waveform.ndim == 1 ? waveform.expandedDimensions(axis: 0) : waveform
             guard current.dim(0) == channels else {
-                throw MossTTSNanoError.invalidInput("Expected waveform shape [\(channels), samples], got \(current.shape)")
+                throw MossAudioTokenizerError.invalidInput("Expected waveform shape [\(channels), samples], got \(current.shape)")
             }
             let pad = maxLength - current.dim(1)
             if pad > 0 {
@@ -897,12 +932,12 @@ public final class MLXMossAudioTokenizer: Module, MossAudioTokenizing, @unchecke
         numQuantizers: Int?
     ) throws -> (MLXArray, MLXArray, Int) {
         guard !codesList.isEmpty else {
-            throw MossTTSNanoError.invalidInput("codesList must not be empty")
+            throw MossAudioTokenizerError.invalidInput("codesList must not be empty")
         }
         let available = codesList.map { $0.dim(0) }
         let effectiveNQ = numQuantizers ?? available[0]
         guard (available.min() ?? 0) >= effectiveNQ else {
-            throw MossTTSNanoError.invalidInput("numQuantizers=\(effectiveNQ) exceeds available quantizers")
+            throw MossAudioTokenizerError.invalidInput("numQuantizers=\(effectiveNQ) exceeds available quantizers")
         }
         let lengths = codesList.map { $0.dim($0.ndim - 1) }
         let maxLength = lengths.max() ?? 0
@@ -984,7 +1019,7 @@ public final class MLXMossAudioTokenizer: Module, MossAudioTokenizing, @unchecke
         codesLengths: MLXArray? = nil
     ) throws -> (MLXArray, MLXArray) {
         guard codes.ndim == 3 else {
-            throw MossTTSNanoError.invalidInput("Expected codes shape [nq, batch, time], got \(codes.shape)")
+            throw MossAudioTokenizerError.invalidInput("Expected codes shape [nq, batch, time], got \(codes.shape)")
         }
         let lengths = codesLengths ?? MLX.full([codes.dim(1)], values: Int32(codes.dim(2)), type: Int32.self)
         var audio = quantizer.decodeCodes(codes.asType(.int32))
@@ -1013,12 +1048,12 @@ public final class MLXMossAudioTokenizer: Module, MossAudioTokenizing, @unchecke
         var codes = audioTokenIDs.asType(.int32)
         if codes.ndim == 3 {
             guard codes.dim(0) == 1 else {
-                throw MossTTSNanoError.notImplemented("Batched MOSS audio-tokenizer decode is not implemented.")
+                throw MossAudioTokenizerError.notImplemented("Batched MOSS audio-tokenizer decode is not implemented.")
             }
             codes = codes[0]
         }
         guard codes.ndim == 2 else {
-            throw MossTTSNanoError.invalidInput("Expected codes shape [frames, nq], got \(codes.shape)")
+            throw MossAudioTokenizerError.invalidInput("Expected codes shape [frames, nq], got \(codes.shape)")
         }
         guard codes.dim(0) > 0 else {
             return MLXArray.zeros([0, channels], dtype: .float32)

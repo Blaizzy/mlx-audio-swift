@@ -84,20 +84,22 @@ public final class BigVGANPeriodicActivation: Module, UnaryLayer {
     public let alphaLogscale: Bool
     public let useBeta: Bool
 
-    public var alpha: MLXArray
-    public var beta: MLXArray
+    @ModuleInfo(key: "alpha") public var alpha: MLXArray
+    @ModuleInfo(key: "beta") public var beta: MLXArray?
 
     public init(channels: Int, alphaLogscale: Bool, useBeta: Bool) {
         self.alphaLogscale = alphaLogscale
         self.useBeta = useBeta
-        let initial = alphaLogscale ? MLXArray.zeros([channels]) : MLXArray.ones([channels])
-        self.alpha = initial
-        self.beta = initial
+        self._alpha.wrappedValue = alphaLogscale ? MLXArray.zeros([channels]) : MLXArray.ones([channels])
+        self._beta.wrappedValue = useBeta
+            ? (alphaLogscale ? MLXArray.zeros([channels]) : MLXArray.ones([channels]))
+            : nil
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
         var alphaValue = alpha.reshaped([1, 1, alpha.shape[0]])
-        var betaValue = useBeta ? beta.reshaped([1, 1, beta.shape[0]]) : alphaValue
+        let betaBase = beta ?? alpha
+        var betaValue = useBeta ? betaBase.reshaped([1, 1, betaBase.shape[0]]) : alphaValue
         if alphaLogscale {
             alphaValue = MLX.exp(alphaValue)
             betaValue = MLX.exp(betaValue)

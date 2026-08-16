@@ -12,7 +12,10 @@ let package = Package(
         .executable(name: "SimpleChat", targets: ["SimpleChat"])
     ],
     dependencies: [
-        .package(path: "../..")
+        .package(path: "../.."),
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", exact: "3.31.3"),
+        .package(url: "https://github.com/huggingface/swift-huggingface.git", exact: "0.8.1"),
+        .package(url: "https://github.com/huggingface/swift-transformers.git", exact: "1.1.9")
     ],
     targets: [
         .executableTarget(
@@ -20,7 +23,11 @@ let package = Package(
             dependencies: [
                 .product(name: "MLXAudioTTS", package: "mlx-audio-swift"),
                 .product(name: "MLXAudioCore", package: "mlx-audio-swift"),
-                .product(name: "MLXAudioVAD", package: "mlx-audio-swift")
+                .product(name: "MLXAudioVAD", package: "mlx-audio-swift"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),
+                .product(name: "HuggingFace", package: "swift-huggingface"),
+                .product(name: "Tokenizers", package: "swift-transformers")
             ],
             path: "SimpleChat"
         )
