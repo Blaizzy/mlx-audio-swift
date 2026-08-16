@@ -2,17 +2,9 @@ import Foundation
 import MLX
 import MLXNN
 
-// MARK: - Conv1d (NCL wrapper over MLX's NLC)
+// MARK: - MimiConv1d (NCL adapter over MLXNN.Conv1d)
 
-public final class Conv1d: Module {
-
-    public var weight: MLXArray
-    public var bias: MLXArray?
-
-    public let padding: Int
-    public let groups: Int
-    public let stride: Int
-    public let dilation: Int
+public final class MimiConv1d: MLXNN.Conv1d {
 
     public init(
         inChannels: Int,
@@ -24,45 +16,33 @@ public final class Conv1d: Module {
         dilation: Int = 1,
         bias: Bool = true
     ) {
-        // Uniform init in [-scale, scale]
-        let scale: Float = 1.0 / Float(inChannels * ksize)
-        self.weight = MLXRandom.uniform(
-            low: -scale, high: scale,
-            [outChannels, ksize, inChannels / groups]
+        super.init(
+            inputChannels: inChannels,
+            outputChannels: outChannels,
+            kernelSize: ksize,
+            stride: stride,
+            padding: padding,
+            dilation: dilation,
+            groups: groups,
+            bias: bias
         )
-        self.bias = bias ? MLXArray.zeros([outChannels]) : nil
-        self.padding = padding
-        self.groups = groups
-        self.stride = stride
-        self.dilation = dilation
     }
 
     // NCL -> NLC -> conv1d -> NCL
-    public func callAsFunction(_ xsNCL: MLXArray) -> MLXArray {
+    public override func callAsFunction(_ xsNCL: MLXArray) -> MLXArray {
         let xsNLC = swappedAxes(xsNCL, 1, 2)
-        var y = conv1d(
-            xsNLC, weight,
-            stride: stride, padding: padding,
-            dilation: dilation, groups: groups
-        )
-        if let b = bias { y = y + b }
+        let y = super.callAsFunction(xsNLC)
         return swappedAxes(y, 1, 2)
     }
 }
 
-// MARK: - ConvTranspose1d (NCL wrapper)
+// MARK: - MimiConvTransposed1d (NCL adapter over MLXNN.ConvTransposed1d)
 
-public final class ConvTranspose1d: Module {
+public final class MimiConvTransposed1d: MLXNN.ConvTransposed1d {
 
-    public var weight: MLXArray
-    public var bias: MLXArray?
-
-    public let padding: Int
-    public let groups: Int
-    public let stride: Int
-    public let ksize: Int
-    public let inChannels: Int
-    public let outChannels: Int
+    private let ksize: Int
+    private let inChannels: Int
+    private let outChannels: Int
 
     public init(
         inChannels: Int,
@@ -73,19 +53,18 @@ public final class ConvTranspose1d: Module {
         groups: Int = 1,
         bias: Bool = true
     ) {
-        // Weight shape mirrors Python: (out_channels, ksize, in_channels // groups)
-        let scale: Float = 1.0 / Float(inChannels * ksize)
-        self.weight = MLXRandom.uniform(
-            low: -scale, high: scale,
-            [outChannels, ksize, inChannels / groups]
-        )
-        self.bias = bias ? MLXArray.zeros([outChannels]) : nil
-        self.padding = padding
-        self.groups = groups
-        self.stride = stride
         self.ksize = ksize
         self.inChannels = inChannels
         self.outChannels = outChannels
+        super.init(
+            inputChannels: inChannels,
+            outputChannels: outChannels,
+            kernelSize: ksize,
+            stride: stride,
+            padding: padding,
+            groups: groups,
+            bias: bias
+        )
     }
 
     // Expand weight as needed to emulate grouped depthwise transposed conv like the Python version
@@ -106,16 +85,24 @@ public final class ConvTranspose1d: Module {
             let wRep = repeated(w, count: groups, axis: 0)
             return (wRep * eyeW, 1)
         } else if groups > 1 {
-            fatalError("groups > 1 (non-depthwise) not supported in ConvTranspose1d")
+            fatalError("groups > 1 (non-depthwise) not supported in MimiConvTransposed1d")
         } else {
             return (weight, groups)
         }
     }
 
-    public func callAsFunction(_ xsNCL: MLXArray) -> MLXArray {
+    public override func callAsFunction(_ xsNCL: MLXArray) -> MLXArray {
         let xsNLC = swappedAxes(xsNCL, 1, 2)
         let (wEff, gEff) = expandedWeightAndGroups()
-        var y = convTransposed1d(xsNLC, wEff, stride: stride, padding: padding, groups: gEff)
+        var y = convTransposed1d(
+            xsNLC,
+            wEff,
+            stride: stride,
+            padding: padding,
+            dilation: dilation,
+            outputPadding: outputPadding,
+            groups: gEff
+        )
         if let b = bias { y = y + b }
         return swappedAxes(y, 1, 2)
     }
@@ -124,14 +111,14 @@ public final class ConvTranspose1d: Module {
 // MARK: - Normalized wrappers (kept as simple pass-through like Python)
 
 public final class NormConv1d: Module {
-    @ModuleInfo public var conv: Conv1d
+    @ModuleInfo public var conv: MimiConv1d
 
     public init(
         inChannels: Int, outChannels: Int, ksize: Int,
         stride: Int = 1, padding: Int = 0,
         groups: Int = 1, dilation: Int = 1, bias: Bool = true
     ) {
-        self._conv = ModuleInfo(wrappedValue: Conv1d(
+        self._conv = ModuleInfo(wrappedValue: MimiConv1d(
             inChannels: inChannels, outChannels: outChannels, ksize: ksize,
             stride: stride, padding: padding, groups: groups, dilation: dilation, bias: bias
         ))
@@ -141,14 +128,14 @@ public final class NormConv1d: Module {
 }
 
 public final class NormConvTranspose1d: Module {
-    @ModuleInfo public var convtr: ConvTranspose1d
+    @ModuleInfo public var convtr: MimiConvTransposed1d
 
     public init(
         inChannels: Int, outChannels: Int, ksize: Int,
         stride: Int = 1, padding: Int = 0,
         groups: Int = 1, bias: Bool = true
     ) {
-        self._convtr = ModuleInfo(wrappedValue: ConvTranspose1d(
+        self._convtr = ModuleInfo(wrappedValue: MimiConvTransposed1d(
             inChannels: inChannels, outChannels: outChannels, ksize: ksize,
             stride: stride, padding: padding, groups: groups, bias: bias
         ))

@@ -790,20 +790,23 @@ class Qwen3ASRTextAttention: Module {
         keys = keys.transposed(0, 2, 1, 3)
         values = values.transposed(0, 2, 1, 3)
 
-        // Apply RoPE
+        // Apply RoPE using the pre-update cache offset, matching the previous
+        // manual cache.update + scaledDotProductAttention sequence.
         if let cache = cache {
             queries = rope(queries, offset: cache.offset)
             keys = rope(keys, offset: cache.offset)
-            (keys, values) = cache.update(keys: keys, values: values)
         } else {
             queries = rope(queries)
             keys = rope(keys)
         }
 
-        let output = MLXFast.scaledDotProductAttention(
+        // Routes to quantized attention when the cache is a QuantizedKVCache,
+        // and performs the cache update internally for all cache types.
+        let output = attentionWithCacheUpdate(
             queries: queries,
             keys: keys,
             values: values,
+            cache: cache,
             scale: scale,
             mask: mask
         ).transposed(0, 2, 1, 3).reshaped(B, L, -1)
@@ -900,7 +903,7 @@ public class Qwen3ASRTextModel: Module {
             fatalError("Either inputIds or inputsEmbeds must be provided")
         }
 
-        let mask = createAttentionMask(h: h, cache: cache?.first)
+        let mask = Self.attentionMask(h: h, cache: cache?.first)
 
         let caches = cache ?? [KVCache?](repeating: nil, count: layers.count)
         for (i, layer) in layers.enumerated() {
@@ -908,6 +911,24 @@ public class Qwen3ASRTextModel: Module {
         }
 
         return norm(h)
+    }
+
+    /// Multi-token steps over a quantized cache need an exact additive mask:
+    /// the quantized attention path replaces boolean-mask positions with a
+    /// finite constant, letting future positions leak into the softmax.
+    static func attentionMask(
+        h: MLXArray, cache: KVCache?
+    ) -> MLXFast.ScaledDotProductAttentionMaskMode {
+        let n = h.dim(1)
+        if n > 1, let cache, cache is QuantizedKVCacheProtocol {
+            let offset = cache.offset
+            let boolMask = createCausalMask(n: n, offset: offset)
+            let additive = MLX.where(
+                boolMask, MLXArray(Float(0)), MLXArray(Float(-1e9))
+            ).asType(h.dtype)
+            return .array(additive)
+        }
+        return createAttentionMask(h: h, cache: cache)
     }
 }
 

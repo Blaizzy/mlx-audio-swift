@@ -59,6 +59,85 @@ private struct StopSnapshot: Sendable {
     let fallbackFinalText: String?
 }
 
+private struct CohereStreamingSharedState: Sendable {
+    var pendingSamples: [Float] = []
+    var totalSamplesFed: Int = 0
+    var lastDecodeTime: Date?
+    var isDecoding: Bool = false
+    var finalizedWindowCount: Int = 0
+}
+
+private enum CohereDecodePassKind: Sendable {
+    case partial
+    case finalWindow
+}
+
+private struct CohereDecodePassParams: Sendable {
+    let audio: UncheckedSendableBox<MLXArray>
+    let model: UncheckedSendableBox<CohereTranscribeModel>
+    let config: StreamingConfig
+    let kind: CohereDecodePassKind
+    let confirmedTokenIds: [Int]
+    let displayPrefix: String
+    let prevProvisional: [Int]
+    let prevFirstSeen: [Date]
+    let prevAgreementCounts: [Int]
+    let minAgreementPasses: Int
+    let totalSamples: Int
+}
+
+private struct CohereDecodeLaunch: Sendable {
+    let samples: [Float]
+    let kind: CohereDecodePassKind
+    let totalSamples: Int
+    let encodedWindowCount: Int
+}
+
+private struct MossStreamingSharedState: Sendable {
+    var completedText: String = ""
+    var provisionalText: String = ""
+}
+
+private struct MossAudioStreamingSharedState: Sendable {
+    var pendingSamples: [Float] = []
+    var pendingStartSample: Int = 0
+    var totalSamplesFed: Int = 0
+    var lastDecodeTime: Date?
+    var isDecoding: Bool = false
+    var finalizedWindowCount: Int = 0
+}
+
+private enum MossDecodePassKind: Sendable {
+    case partial
+    case finalWindow
+}
+
+private struct MossDecodePassParams: Sendable {
+    let audio: UncheckedSendableBox<MLXArray>
+    let model: UncheckedSendableBox<MossTranscribeDiarizeModel>
+    let config: StreamingConfig
+    let kind: MossDecodePassKind
+    let offsetSeconds: Double
+    let totalSamples: Int
+    let encodedWindowCount: Int
+}
+
+private struct MossDecodeLaunch: Sendable {
+    let samples: [Float]
+    let kind: MossDecodePassKind
+    let offsetSeconds: Double
+    let totalSamples: Int
+    let encodedWindowCount: Int
+}
+
+private protocol StreamingInferenceSessionCore: AnyObject, Sendable {
+    var events: AsyncStream<TranscriptionEvent> { get }
+
+    func feedAudio(samples: [Float])
+    func stop()
+    func cancel()
+}
+
 /// Orchestrates streaming speech-to-text inference.
 ///
 /// Streaming decode runs on the current **pending** (partial) encoder window for
@@ -66,7 +145,825 @@ private struct StopSnapshot: Sendable {
 /// optionally run a one-shot decode for that completed window
 /// (`StreamingConfig.finalizeCompletedWindows`) to improve accuracy, then resets
 /// decode state for the next window.
-public class StreamingInferenceSession: @unchecked Sendable {
+public final class StreamingInferenceSession: @unchecked Sendable {
+    private let core: any StreamingInferenceSessionCore
+
+    public let events: AsyncStream<TranscriptionEvent>
+
+    private init(core: any StreamingInferenceSessionCore) {
+        self.core = core
+        self.events = core.events
+    }
+
+    public convenience init(model: Qwen3ASRModel, config: StreamingConfig = StreamingConfig()) {
+        self.init(core: QwenStreamingInferenceSessionCore(model: model, config: config))
+    }
+
+    public convenience init(model: any STTGenerationModel, config: StreamingConfig = StreamingConfig()) {
+        if let qwenModel = model as? Qwen3ASRModel {
+            self.init(model: qwenModel, config: config)
+        } else if let cohereModel = model as? CohereTranscribeModel {
+            self.init(core: CohereStreamingInferenceSessionCore(model: cohereModel, config: config))
+        } else if let mossModel = model as? MossTranscribeDiarizeModel {
+            self.init(core: MossStreamingInferenceSessionCore(model: mossModel, config: config))
+        } else {
+            preconditionFailure(
+                "StreamingInferenceSession requires Qwen3ASRModel, CohereTranscribeModel, or MossTranscribeDiarizeModel"
+            )
+        }
+    }
+
+    public func feedAudio(samples: [Float]) {
+        core.feedAudio(samples: samples)
+    }
+
+    public func stop() {
+        core.stop()
+    }
+
+    public func cancel() {
+        core.cancel()
+    }
+}
+
+private final class MossStreamingInferenceSessionCore: @unchecked Sendable, StreamingInferenceSessionCore {
+    private let model: MossTranscribeDiarizeModel
+    private let config: StreamingConfig
+    private let sampleRate: Int
+    private let windowSamples: Int
+    private let partialWindowSamples: Int
+    private let minimumPartialSamples: Int
+    private let shared = OSAllocatedUnfairLock(initialState: MossStreamingSharedState())
+    private let audioState = OSAllocatedUnfairLock(initialState: MossAudioStreamingSharedState())
+    private let sessionLock = OSAllocatedUnfairLock(initialState: 0)
+
+    private var isActive: Bool = false
+    private var continuation: AsyncStream<TranscriptionEvent>.Continuation?
+    private var decodeTask: Task<Void, Never>?
+    private var stopTask: Task<Void, Never>?
+
+    let events: AsyncStream<TranscriptionEvent>
+
+    init(model: MossTranscribeDiarizeModel, config: StreamingConfig = StreamingConfig()) {
+        self.model = model
+        self.config = config
+        self.sampleRate = model.sampleRate
+        let windowSeconds = max(3.0, min(6.0, Double(max(1, config.maxDecodeWindows)) * 4.0))
+        self.windowSamples = max(model.sampleRate, Int(round(windowSeconds * Double(model.sampleRate))))
+        self.minimumPartialSamples = max(model.sampleRate, Int(round(1.25 * Double(model.sampleRate))))
+        self.partialWindowSamples = max(
+            self.minimumPartialSamples,
+            Int(round(min(windowSeconds, 2.5) * Double(model.sampleRate)))
+        )
+
+        var continuation: AsyncStream<TranscriptionEvent>.Continuation!
+        self.events = AsyncStream { continuation = $0 }
+        self.continuation = continuation
+        self.isActive = true
+    }
+
+    func feedAudio(samples: [Float]) {
+        let launch: MossDecodeLaunch? = sessionLock.withLock { _ in
+            guard isActive else { return nil }
+
+            let now = Date()
+            audioState.withLock { state in
+                state.pendingSamples.append(contentsOf: samples)
+                state.totalSamplesFed += samples.count
+            }
+
+            return audioState.withLock { state -> MossDecodeLaunch? in
+                guard !state.isDecoding else { return nil }
+
+                if state.pendingSamples.count >= windowSamples {
+                    let window = Array(state.pendingSamples.prefix(windowSamples))
+                    let offsetSeconds = Double(state.pendingStartSample) / Double(sampleRate)
+                    state.pendingSamples = Array(state.pendingSamples.dropFirst(windowSamples))
+                    state.pendingStartSample += windowSamples
+                    state.finalizedWindowCount += 1
+                    state.isDecoding = true
+                    state.lastDecodeTime = now
+                    return MossDecodeLaunch(
+                        samples: window,
+                        kind: .finalWindow,
+                        offsetSeconds: offsetSeconds,
+                        totalSamples: state.totalSamplesFed,
+                        encodedWindowCount: state.finalizedWindowCount
+                    )
+                }
+
+                guard state.pendingSamples.count >= minimumPartialSamples else { return nil }
+                if let lastDecode = state.lastDecodeTime,
+                   now.timeIntervalSince(lastDecode) < max(1.0, config.decodeIntervalSeconds)
+                {
+                    return nil
+                }
+
+                state.isDecoding = true
+                state.lastDecodeTime = now
+                let pendingCount = state.pendingSamples.count
+                let partialCount = min(pendingCount, partialWindowSamples)
+                let partialStart = pendingCount - partialCount
+                let partialSamples = Array(state.pendingSamples[partialStart..<pendingCount])
+                return MossDecodeLaunch(
+                    samples: partialSamples,
+                    kind: .partial,
+                    offsetSeconds: Double(state.pendingStartSample + partialStart) / Double(sampleRate),
+                    totalSamples: state.totalSamplesFed,
+                    encodedWindowCount: state.finalizedWindowCount
+                )
+            }
+        }
+
+        if let launch {
+            launchDecodePass(launch)
+        }
+    }
+
+    private func launchDecodePass(_ launch: MossDecodeLaunch) {
+        let params = MossDecodePassParams(
+            audio: UncheckedSendableBox(MLXArray(launch.samples)),
+            model: UncheckedSendableBox(model),
+            config: config,
+            kind: launch.kind,
+            offsetSeconds: launch.offsetSeconds,
+            totalSamples: launch.totalSamples,
+            encodedWindowCount: launch.encodedWindowCount
+        )
+        let continuation = self.continuation
+        let sharedState = self.shared
+        let audioState = self.audioState
+
+        decodeTask = Task.detached {
+            defer {
+                audioState.withLock { $0.isDecoding = false }
+            }
+
+            Self.runDecodePass(
+                params: params,
+                continuation: continuation,
+                sharedState: sharedState
+            )
+        }
+    }
+
+    private static func runDecodePass(
+        params: MossDecodePassParams,
+        continuation: AsyncStream<TranscriptionEvent>.Continuation?,
+        sharedState: OSAllocatedUnfairLock<MossStreamingSharedState>
+    ) {
+        if Task.isCancelled { return }
+
+        let decodeStart = Date()
+        let output: STTOutput
+        var liveText = ""
+        let currentWindowSeconds = Double(params.audio.value.dim(0)) / Double(params.model.value.sampleRate)
+        let maxTokens: Int?
+        switch params.kind {
+        case .partial:
+            maxTokens = min(params.config.maxTokensPerPass, max(48, Int(ceil(currentWindowSeconds * 16.0))))
+        case .finalWindow:
+            maxTokens = nil
+        }
+        let onText: (String) -> Void = { delta in
+            guard !Task.isCancelled, !delta.isEmpty else { return }
+            liveText += delta
+            let provisional = liveText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !provisional.isEmpty else { return }
+            let completed = sharedState.withLock { state -> String in
+                state.provisionalText = provisional
+                return state.completedText
+            }
+            yieldMossDisplayUpdate(
+                completedText: completed,
+                provisionalText: provisional,
+                continuation: continuation
+            )
+        }
+
+        do {
+            output = try params.model.value.streamingTranscribeWindow(
+                audio: params.audio.value,
+                offsetSeconds: params.offsetSeconds,
+                config: params.config,
+                maxTokens: maxTokens,
+                onText: onText
+            )
+        } catch {
+            return
+        }
+
+        if Task.isCancelled { return }
+
+        let text = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch params.kind {
+        case .partial:
+            let completed = sharedState.withLock { state -> String in
+                state.provisionalText = text
+                return state.completedText
+            }
+            yieldMossDisplayUpdate(
+                completedText: completed,
+                provisionalText: text,
+                continuation: continuation
+            )
+
+        case .finalWindow:
+            let completed = sharedState.withLock { state -> String in
+                appendMossText(text, to: &state.completedText)
+                state.provisionalText = ""
+                return state.completedText
+            }
+            continuation?.yield(.displayUpdate(
+                confirmedText: completed,
+                provisionalText: ""
+            ))
+        }
+
+        let decodeTime = Date().timeIntervalSince(decodeStart)
+        let totalAudioSeconds = Double(params.totalSamples) / Double(params.model.value.sampleRate)
+        continuation?.yield(.stats(StreamingStats(
+            encodedWindowCount: max(params.encodedWindowCount, Int(ceil(totalAudioSeconds / max(currentWindowSeconds, 0.001)))),
+            totalAudioSeconds: totalAudioSeconds,
+            tokensPerSecond: decodeTime > 0 ? Double(output.generationTokens) / decodeTime : 0,
+            realTimeFactor: decodeTime / max(currentWindowSeconds, 0.001),
+            peakMemoryGB: output.peakMemoryUsage
+        )))
+    }
+
+    private static func yieldMossDisplayUpdate(
+        completedText: String,
+        provisionalText: String,
+        continuation: AsyncStream<TranscriptionEvent>.Continuation?
+    ) {
+        let confirmedText = !completedText.isEmpty
+            && !provisionalText.isEmpty
+            && !provisionalText.hasPrefix("\n")
+            ? completedText + "\n"
+            : completedText
+        continuation?.yield(.displayUpdate(
+            confirmedText: confirmedText,
+            provisionalText: provisionalText
+        ))
+    }
+
+    private static func appendMossText(_ segment: String, to base: inout String) {
+        let normalizedSegment = segment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedSegment.isEmpty else { return }
+        if base.isEmpty {
+            base = normalizedSegment
+        } else {
+            base += "\n" + normalizedSegment
+        }
+    }
+
+    func stop() {
+        let stopContext: (
+            previousStopTask: Task<Void, Never>?,
+            inFlightDecode: Task<Void, Never>?,
+            pendingSamples: [Float],
+            pendingStartSample: Int,
+            totalSamples: Int,
+            encodedWindowCount: Int
+        )? =
+            sessionLock.withLock { _ in
+                guard isActive else { return nil }
+                isActive = false
+
+                let inFlightDecode = decodeTask
+                decodeTask = nil
+
+                let snapshot = audioState.withLock { state in
+                    (
+                        state.pendingSamples,
+                        state.pendingStartSample,
+                        state.totalSamplesFed,
+                        state.finalizedWindowCount
+                    )
+                }
+
+                let previousStopTask = stopTask
+                stopTask = nil
+                return (previousStopTask, inFlightDecode, snapshot.0, snapshot.1, snapshot.2, snapshot.3)
+            }
+
+        guard let stopContext else { return }
+        stopContext.previousStopTask?.cancel()
+
+        let task = Task.detached {
+            [self,
+             inFlightDecode = stopContext.inFlightDecode,
+             pendingSamples = stopContext.pendingSamples,
+             pendingStartSample = stopContext.pendingStartSample,
+             totalSamples = stopContext.totalSamples,
+             encodedWindowCount = stopContext.encodedWindowCount] in
+            await finishStop(
+                waitingFor: inFlightDecode,
+                pendingSamples: pendingSamples,
+                pendingStartSample: pendingStartSample,
+                totalSamples: totalSamples,
+                encodedWindowCount: encodedWindowCount
+            )
+        }
+
+        sessionLock.withLock { _ in
+            if continuation != nil {
+                stopTask = task
+            }
+        }
+    }
+
+    private func finishStop(
+        waitingFor inFlightDecode: Task<Void, Never>?,
+        pendingSamples: [Float],
+        pendingStartSample: Int,
+        totalSamples: Int,
+        encodedWindowCount: Int
+    ) async {
+        if let inFlightDecode {
+            _ = await inFlightDecode.value
+        }
+
+        if Task.isCancelled {
+            return
+        }
+
+        if !pendingSamples.isEmpty {
+            let params = MossDecodePassParams(
+                audio: UncheckedSendableBox(MLXArray(pendingSamples)),
+                model: UncheckedSendableBox(model),
+                config: config,
+                kind: .finalWindow,
+                offsetSeconds: Double(pendingStartSample) / Double(sampleRate),
+                totalSamples: totalSamples,
+                encodedWindowCount: encodedWindowCount + 1
+            )
+            Self.runDecodePass(
+                params: params,
+                continuation: continuation,
+                sharedState: shared
+            )
+        }
+
+        let finalText = shared.withLock { state in
+            if state.completedText.isEmpty {
+                return state.provisionalText
+            }
+            return state.completedText
+        }
+
+        if Task.isCancelled {
+            return
+        }
+
+        continuation?.yield(.ended(fullText: finalText))
+        continuation?.finish()
+
+        sessionLock.withLock { _ in
+            continuation = nil
+            stopTask = nil
+            audioState.withLock { state in
+                state.pendingSamples = []
+                state.pendingStartSample = totalSamples
+                state.isDecoding = false
+            }
+        }
+
+        Memory.clearCache()
+    }
+
+    func cancel() {
+        sessionLock.withLock { _ in
+            isActive = false
+            decodeTask?.cancel()
+            decodeTask = nil
+            stopTask?.cancel()
+            stopTask = nil
+            continuation?.finish()
+            continuation = nil
+            audioState.withLock { state in
+                state.pendingSamples = []
+                state.isDecoding = false
+            }
+        }
+    }
+}
+
+private final class CohereStreamingInferenceSessionCore: @unchecked Sendable, StreamingInferenceSessionCore {
+    private let model: CohereTranscribeModel
+    private let config: StreamingConfig
+    private let sampleRate: Int
+    private let windowSamples: Int
+    private let overlapSamples: Int
+    private let shared = OSAllocatedUnfairLock(initialState: SessionSharedState())
+    private let audioState = OSAllocatedUnfairLock(initialState: CohereStreamingSharedState())
+    private let sessionLock = OSAllocatedUnfairLock(initialState: 0)
+
+    private var isActive: Bool = false
+    private var continuation: AsyncStream<TranscriptionEvent>.Continuation?
+    private var decodeTask: Task<Void, Never>?
+    private var stopTask: Task<Void, Never>?
+
+    let events: AsyncStream<TranscriptionEvent>
+
+    init(model: CohereTranscribeModel, config: StreamingConfig = StreamingConfig()) {
+        self.model = model
+        self.config = config
+        self.sampleRate = model.config.sampleRate
+        let windowSamples = model.config.sampleRate * 8
+        self.windowSamples = windowSamples
+        self.overlapSamples = max(
+            0,
+            min(
+                Int(round(config.encoderWindowOverlapSeconds * Double(model.config.sampleRate))),
+                max(0, windowSamples - 1)
+            )
+        )
+
+        var continuation: AsyncStream<TranscriptionEvent>.Continuation!
+        self.events = AsyncStream { continuation = $0 }
+        self.continuation = continuation
+        self.isActive = true
+    }
+
+    func feedAudio(samples: [Float]) {
+        let launch: CohereDecodeLaunch? = sessionLock.withLock { _ in
+            guard isActive else { return nil }
+
+            let now = Date()
+            audioState.withLock { state in
+                state.pendingSamples.append(contentsOf: samples)
+                state.totalSamplesFed += samples.count
+            }
+
+            return audioState.withLock { state -> CohereDecodeLaunch? in
+                guard !state.isDecoding else { return nil }
+
+                if state.pendingSamples.count >= windowSamples {
+                    let window = Array(state.pendingSamples.prefix(windowSamples))
+                    let keepStart = max(0, windowSamples - overlapSamples)
+                    state.pendingSamples = Array(state.pendingSamples[keepStart...])
+                    state.finalizedWindowCount += 1
+                    state.isDecoding = true
+                    state.lastDecodeTime = now
+                    return CohereDecodeLaunch(
+                        samples: window,
+                        kind: .finalWindow,
+                        totalSamples: state.totalSamplesFed,
+                        encodedWindowCount: state.finalizedWindowCount
+                    )
+                }
+
+                guard state.pendingSamples.count >= sampleRate / 2 else { return nil }
+                if let lastDecode = state.lastDecodeTime,
+                   now.timeIntervalSince(lastDecode) < max(0.2, config.decodeIntervalSeconds)
+                {
+                    return nil
+                }
+
+                state.isDecoding = true
+                state.lastDecodeTime = now
+                return CohereDecodeLaunch(
+                    samples: state.pendingSamples,
+                    kind: .partial,
+                    totalSamples: state.totalSamplesFed,
+                    encodedWindowCount: state.finalizedWindowCount
+                )
+            }
+        }
+
+        if let launch {
+            launchDecodePass(launch)
+        }
+    }
+
+    private func launchDecodePass(_ launch: CohereDecodeLaunch) {
+        let snapshot = shared.withLock { state -> ([Int], String, [Int], [Date], [Int]) in
+            let prefix = QwenStreamingInferenceSessionCore.concatText(state.completedText, state.confirmedText)
+            return (state.confirmedTokenIds,
+                    prefix,
+                    state.provisionalTokenIds,
+                    state.provisionalFirstSeen,
+                    state.provisionalAgreementCounts)
+        }
+        let (confirmedTokenIds, displayPrefix, prevProvisional, prevFirstSeen, prevAgreementCounts) = snapshot
+        let params = CohereDecodePassParams(
+            audio: UncheckedSendableBox(MLXArray(launch.samples)),
+            model: UncheckedSendableBox(model),
+            config: config,
+            kind: launch.kind,
+            confirmedTokenIds: launch.kind == .partial ? confirmedTokenIds : [],
+            displayPrefix: launch.kind == .partial ? displayPrefix : "",
+            prevProvisional: launch.kind == .partial ? prevProvisional : [],
+            prevFirstSeen: launch.kind == .partial ? prevFirstSeen : [],
+            prevAgreementCounts: launch.kind == .partial ? prevAgreementCounts : [],
+            minAgreementPasses: launch.kind == .partial ? max(1, config.minAgreementPasses) : 1,
+            totalSamples: launch.totalSamples
+        )
+        let continuation = self.continuation
+        let sharedState = self.shared
+        let audioState = self.audioState
+        let encodedWindowCount = launch.encodedWindowCount
+
+        decodeTask = Task.detached {
+            defer {
+                sharedState.withLock { $0.isDecoding = false }
+                audioState.withLock { $0.isDecoding = false }
+            }
+
+            Self.runDecodePass(
+                params: params,
+                continuation: continuation,
+                sharedState: sharedState,
+                encodedWindowCount: encodedWindowCount
+            )
+        }
+    }
+
+    private static func runDecodePass(
+        params: CohereDecodePassParams,
+        continuation: AsyncStream<TranscriptionEvent>.Continuation?,
+        sharedState: OSAllocatedUnfairLock<SessionSharedState>,
+        encodedWindowCount: Int
+    ) {
+        if Task.isCancelled { return }
+
+        let result = params.model.value.streamingDecodeTokenIds(
+            audio: params.audio.value,
+            config: params.config,
+            confirmedTokenIds: params.confirmedTokenIds
+        )
+
+        if Task.isCancelled { return }
+
+        switch params.kind {
+        case .partial:
+            promoteTokens(
+                allTokenIds: result.tokenIds,
+                params: params,
+                continuation: continuation,
+                sharedState: sharedState
+            )
+        case .finalWindow:
+            finalizeWindow(
+                tokenIds: result.tokenIds,
+                model: params.model.value,
+                continuation: continuation,
+                sharedState: sharedState
+            )
+        }
+
+        let totalAudioSeconds = Double(params.totalSamples) / Double(params.model.value.config.sampleRate)
+        let tokenCount = max(0, result.tokenIds.count - params.confirmedTokenIds.count)
+        continuation?.yield(.stats(StreamingStats(
+            encodedWindowCount: max(encodedWindowCount, Int(ceil(totalAudioSeconds / 8.0))),
+            totalAudioSeconds: totalAudioSeconds,
+            tokensPerSecond: result.decodeTime > 0 ? Double(tokenCount) / result.decodeTime : 0,
+            realTimeFactor: result.totalTime / max(totalAudioSeconds, 0.001),
+            peakMemoryGB: result.peakMemoryUsage
+        )))
+    }
+
+    private static func finalizeWindow(
+        tokenIds: [Int],
+        model: CohereTranscribeModel,
+        continuation: AsyncStream<TranscriptionEvent>.Continuation?,
+        sharedState: OSAllocatedUnfairLock<SessionSharedState>
+    ) {
+        let windowText = model.streamingDecodeText(tokens: tokenIds)
+        let completedText = sharedState.withLock { state in
+            state.completedText = QwenStreamingInferenceSessionCore.concatText(state.completedText, windowText)
+            state.confirmedTokenIds = []
+            state.provisionalTokenIds = []
+            state.provisionalFirstSeen = []
+            state.provisionalAgreementCounts = []
+            state.confirmedText = ""
+            return state.completedText
+        }
+
+        continuation?.yield(.displayUpdate(
+            confirmedText: completedText,
+            provisionalText: ""
+        ))
+    }
+
+    private static func promoteTokens(
+        allTokenIds: [Int],
+        params: CohereDecodePassParams,
+        continuation: AsyncStream<TranscriptionEvent>.Continuation?,
+        sharedState: OSAllocatedUnfairLock<SessionSharedState>
+    ) {
+        let confirmedCount = params.confirmedTokenIds.count
+        let prevProvisional = params.prevProvisional
+        let prevFirstSeen = params.prevFirstSeen
+        let prevAgreementCounts = params.prevAgreementCounts
+
+        let newProvisional = Array(allTokenIds.dropFirst(min(confirmedCount, allTokenIds.count)))
+        let now = Date()
+        let delaySeconds = Double(params.config.delayPreset.delayMs) / 1000.0
+
+        var matchLen = 0
+        let compareLen = min(prevProvisional.count, newProvisional.count)
+        for i in 0..<compareLen {
+            if prevProvisional[i] == newProvisional[i] {
+                matchLen = i + 1
+            } else {
+                break
+            }
+        }
+
+        var nextFirstSeen: [Date] = []
+        nextFirstSeen.reserveCapacity(newProvisional.count)
+        var nextAgreementCounts: [Int] = []
+        nextAgreementCounts.reserveCapacity(newProvisional.count)
+
+        for i in 0..<newProvisional.count {
+            if i < matchLen {
+                let firstSeen = i < prevFirstSeen.count ? prevFirstSeen[i] : now
+                let prevAgreement = i < prevAgreementCounts.count ? prevAgreementCounts[i] : 1
+                nextFirstSeen.append(firstSeen)
+                nextAgreementCounts.append(max(1, prevAgreement + 1))
+            } else {
+                nextFirstSeen.append(now)
+                nextAgreementCounts.append(1)
+            }
+        }
+
+        var promotionCount = 0
+        for i in 0..<newProvisional.count {
+            let hasDelay = i < nextFirstSeen.count && now.timeIntervalSince(nextFirstSeen[i]) >= delaySeconds
+            let hasAgreement = i < nextAgreementCounts.count && nextAgreementCounts[i] >= params.minAgreementPasses
+            if hasDelay && hasAgreement {
+                promotionCount = i + 1
+            } else {
+                break
+            }
+        }
+
+        let promoteCount = promotionCount
+        let finalProvisional = Array(newProvisional.dropFirst(promoteCount))
+        let finalFirstSeen = Array(nextFirstSeen.dropFirst(promoteCount))
+        let finalAgreementCounts = Array(nextAgreementCounts.dropFirst(promoteCount))
+
+        let displayPrefix: String = sharedState.withLock { state in
+            if promoteCount > 0 {
+                let promoted = Array(newProvisional.prefix(promoteCount))
+                state.confirmedTokenIds.append(contentsOf: promoted)
+                state.confirmedText = params.model.value.streamingDecodeText(tokens: state.confirmedTokenIds)
+                continuation?.yield(.confirmed(text: QwenStreamingInferenceSessionCore.concatText(
+                    state.completedText,
+                    state.confirmedText
+                )))
+            }
+            state.provisionalTokenIds = finalProvisional
+            state.provisionalFirstSeen = finalFirstSeen
+            state.provisionalAgreementCounts = finalAgreementCounts
+            return QwenStreamingInferenceSessionCore.concatText(state.completedText, state.confirmedText)
+        }
+
+        let finalProvText = params.model.value.streamingDecodeText(tokens: finalProvisional)
+        continuation?.yield(.displayUpdate(
+            confirmedText: displayPrefix,
+            provisionalText: finalProvText
+        ))
+    }
+
+    func stop() {
+        let stopContext: (
+            previousStopTask: Task<Void, Never>?,
+            inFlightDecode: Task<Void, Never>?,
+            pendingSamples: [Float],
+            totalSamples: Int,
+            encodedWindowCount: Int
+        )? =
+            sessionLock.withLock { _ in
+                guard isActive else { return nil }
+                isActive = false
+
+                let inFlightDecode = decodeTask
+                decodeTask = nil
+
+                let snapshot = audioState.withLock { state in
+                    (
+                        state.pendingSamples,
+                        state.totalSamplesFed,
+                        state.finalizedWindowCount
+                    )
+                }
+
+                let previousStopTask = stopTask
+                stopTask = nil
+                return (previousStopTask, inFlightDecode, snapshot.0, snapshot.1, snapshot.2)
+            }
+
+        guard let stopContext else { return }
+        stopContext.previousStopTask?.cancel()
+
+        let task = Task.detached {
+            [self,
+             inFlightDecode = stopContext.inFlightDecode,
+             pendingSamples = stopContext.pendingSamples,
+             totalSamples = stopContext.totalSamples,
+             encodedWindowCount = stopContext.encodedWindowCount] in
+            await finishStop(
+                waitingFor: inFlightDecode,
+                pendingSamples: pendingSamples,
+                totalSamples: totalSamples,
+                encodedWindowCount: encodedWindowCount
+            )
+        }
+
+        sessionLock.withLock { _ in
+            if continuation != nil {
+                stopTask = task
+            }
+        }
+    }
+
+    private func finishStop(
+        waitingFor inFlightDecode: Task<Void, Never>?,
+        pendingSamples: [Float],
+        totalSamples: Int,
+        encodedWindowCount: Int
+    ) async {
+        if let inFlightDecode {
+            _ = await inFlightDecode.value
+        }
+
+        if Task.isCancelled {
+            return
+        }
+
+        if !pendingSamples.isEmpty {
+            let params = CohereDecodePassParams(
+                audio: UncheckedSendableBox(MLXArray(pendingSamples)),
+                model: UncheckedSendableBox(model),
+                config: config,
+                kind: .finalWindow,
+                confirmedTokenIds: [],
+                displayPrefix: "",
+                prevProvisional: [],
+                prevFirstSeen: [],
+                prevAgreementCounts: [],
+                minAgreementPasses: 1,
+                totalSamples: totalSamples
+            )
+            Self.runDecodePass(
+                params: params,
+                continuation: continuation,
+                sharedState: shared,
+                encodedWindowCount: encodedWindowCount + 1
+            )
+        }
+
+        let finalText = shared.withLock { state -> String in
+            if !state.provisionalTokenIds.isEmpty {
+                state.confirmedTokenIds.append(contentsOf: state.provisionalTokenIds)
+                state.provisionalTokenIds = []
+                state.provisionalFirstSeen = []
+                state.provisionalAgreementCounts = []
+            }
+            state.confirmedText = model.streamingDecodeText(tokens: state.confirmedTokenIds)
+            return QwenStreamingInferenceSessionCore.concatText(state.completedText, state.confirmedText)
+        }
+
+        if Task.isCancelled {
+            return
+        }
+
+        continuation?.yield(.ended(fullText: finalText))
+        continuation?.finish()
+
+        sessionLock.withLock { _ in
+            continuation = nil
+            stopTask = nil
+            audioState.withLock { state in
+                state.pendingSamples = []
+                state.isDecoding = false
+            }
+        }
+
+        Memory.clearCache()
+    }
+
+    func cancel() {
+        sessionLock.withLock { _ in
+            isActive = false
+            decodeTask?.cancel()
+            decodeTask = nil
+            stopTask?.cancel()
+            stopTask = nil
+            continuation?.finish()
+            continuation = nil
+            audioState.withLock { state in
+                state.pendingSamples = []
+                state.isDecoding = false
+            }
+        }
+    }
+}
+
+private final class QwenStreamingInferenceSessionCore: @unchecked Sendable, StreamingInferenceSessionCore {
     private let model: Qwen3ASRModel
     private let config: StreamingConfig
     private let melProcessor: IncrementalMelSpectrogram
@@ -87,9 +984,9 @@ public class StreamingInferenceSession: @unchecked Sendable {
     private var decodeTask: Task<Void, Never>?
     private var stopTask: Task<Void, Never>?
 
-    public let events: AsyncStream<TranscriptionEvent>
+    let events: AsyncStream<TranscriptionEvent>
 
-    public init(model: Qwen3ASRModel, config: StreamingConfig = StreamingConfig()) {
+    init(model: Qwen3ASRModel, config: StreamingConfig = StreamingConfig()) {
         self.model = model
         self.config = config
         let overlapFrames = max(0, Int(round(config.encoderWindowOverlapSeconds * Double(model.sampleRate) / 160.0)))
@@ -111,7 +1008,7 @@ public class StreamingInferenceSession: @unchecked Sendable {
         self.isActive = true
     }
 
-    public func feedAudio(samples: [Float]) {
+    func feedAudio(samples: [Float]) {
         sessionLock.withLock { _ in
             guard isActive else { return }
 
@@ -441,7 +1338,7 @@ public class StreamingInferenceSession: @unchecked Sendable {
         return remainder.joined(separator: " ")
     }
 
-    private static func concatText(_ a: String, _ b: String) -> String {
+    fileprivate static func concatText(_ a: String, _ b: String) -> String {
         var result = a
         appendText(b, to: &result)
         return result

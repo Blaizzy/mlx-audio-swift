@@ -132,6 +132,7 @@ let package = Package(
             dependencies: [
                 "MLXAudioCore",
                 "MLXAudioCodecs",
+                "MLXAudioVAD",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXFast", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
@@ -146,6 +147,7 @@ let package = Package(
                 "Models/FireRedASR2/README.md",
                 "Models/GLMASR/README.md",
                 "Models/GraniteSpeech/README.md",
+                "Models/MossTranscribeDiarize/README.md",
                 "Models/NemotronASR/README.md",
                 "Models/Parakeet/README.md",
                 "Models/Qwen3ASR/README.md",

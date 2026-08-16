@@ -2,6 +2,7 @@ import Foundation
 import MLX
 import MLXNN
 import MLXAudioCore
+import MLXAudioVAD
 import MLXLMCommon
 import HuggingFace
 
@@ -119,6 +120,83 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
             generationTps: decodeTime > 0 ? Double(generated.count) / decodeTime : 0,
             totalTime: totalTime,
             peakMemoryUsage: Double(Memory.peakMemory) / 1e9
+        )
+    }
+
+    public func generate(
+        audio: MLXArray,
+        generationParameters: STTGenerateParameters,
+        vad: (model: SileroVAD, config: SpeechSegmentConfig)?
+    ) -> STTOutput {
+        guard let vad else {
+            return generate(audio: audio, generationParameters: generationParameters)
+        }
+        let audio1D = audio.ndim > 1 ? audio.mean(axis: -1) : audio
+        let chunks: [(MLXArray, Float)]
+        do {
+            chunks = try segmentSpeech(
+                audio: audio1D,
+                sampleRate: VoxtralRealtimeConstants.sampleRate,
+                vadModel: vad.model,
+                config: vad.config
+            )
+        } catch {
+            if generationParameters.verbose {
+                print("VAD pre-processing failed (\(error)); falling back to single-pass generate")
+            }
+            return generate(audio: audio1D, generationParameters: generationParameters)
+        }
+        if chunks.count <= 1 {
+            // One speech region: transcribe the trimmed chunk, not the original buffer
+            // (keeps the VAD's leading/trailing-silence removal). `chunks` is never empty,
+            // but fall back to `audio1D` defensively.
+            return generate(audio: chunks.first?.0 ?? audio1D, generationParameters: generationParameters)
+        }
+
+        var outputs: [STTOutput] = []
+        outputs.reserveCapacity(chunks.count)
+        var remainingTokens = generationParameters.maxTokens
+        for (chunkAudio, offsetSeconds) in chunks {
+            if remainingTokens <= 0 { break }
+            if generationParameters.verbose {
+                print("Voxtral VAD chunk at \(String(format: "%.1f", offsetSeconds))s")
+            }
+            let chunkParameters = STTGenerateParameters(
+                maxTokens: remainingTokens,
+                temperature: generationParameters.temperature,
+                topP: generationParameters.topP,
+                topK: generationParameters.topK,
+                verbose: generationParameters.verbose,
+                language: generationParameters.language,
+                chunkDuration: generationParameters.chunkDuration,
+                minChunkDuration: generationParameters.minChunkDuration
+            )
+            let out = generate(audio: chunkAudio, generationParameters: chunkParameters)
+            outputs.append(out)
+            remainingTokens = max(0, remainingTokens - out.generationTokens)
+        }
+
+        let combinedText = outputs
+            .map(\.text)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        let promptTokens = outputs.reduce(0) { $0 + $1.promptTokens }
+        let generationTokens = outputs.reduce(0) { $0 + $1.generationTokens }
+        let totalTokens = outputs.reduce(0) { $0 + $1.totalTokens }
+        let totalTime = outputs.reduce(0.0) { $0 + $1.totalTime }
+        let peakMemoryUsage = outputs.map(\.peakMemoryUsage).max() ?? 0
+
+        return STTOutput(
+            text: combinedText,
+            language: generationParameters.language,
+            promptTokens: promptTokens,
+            generationTokens: generationTokens,
+            totalTokens: totalTokens,
+            promptTps: totalTime > 0 ? Double(promptTokens) / totalTime : 0,
+            generationTps: totalTime > 0 ? Double(generationTokens) / totalTime : 0,
+            totalTime: totalTime,
+            peakMemoryUsage: peakMemoryUsage
         )
     }
 
@@ -298,8 +376,8 @@ extension VoxtralRealtimeModel {
     /// Causal conv + causal/sliding-window attention make `adapterOut[0..<k]`
     /// identical whether encoded from a prefix or the full buffer.
     /// Conv-stem seam: audio → conv-stem frames (`convOut`, the transformer input),
-    /// the per-token span, and the prompt length. Shared by the offline encode and
-    /// the streaming session (which feeds `convOut` incrementally).
+    /// the per-token span, and the prompt length. Used by the offline encode; the
+    /// streaming session builds the same rows incrementally (`convStemStep`).
     func convStemForAudio(
         audio: MLXArray,
         transcriptionDelayMs: Int?
@@ -555,10 +633,13 @@ public extension VoxtralRealtimeModel {
     }
 
     func shouldQuantize(path: String) -> Bool {
+        // tok_embeddings is deliberately not skipped: the loader's quantize pass is
+        // gated on the checkpoint shipping "<path>.scales", so checkpoints with a
+        // quantized tied embedding load directly while fp16-embedding checkpoints
+        // are structured exactly as before.
         let skipPatterns = [
             "norm",
             "ada_rms_norm",
-            "tok_embeddings",
             "conv_layers",
             "audio_language_projection",
         ]

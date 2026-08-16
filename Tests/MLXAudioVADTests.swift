@@ -45,6 +45,113 @@ import MLXNN
 
 // MARK: - Configuration Tests
 
+struct FSMNVADTests {
+
+    @Test func encoderConfigDefaultsAndShapeSmoke() throws {
+        var encoderConfig = FSMNVADEncoderConfig()
+        encoderConfig.inputDim = 8
+        encoderConfig.inputAffineDim = 6
+        encoderConfig.fsmnLayers = 2
+        encoderConfig.linearDim = 10
+        encoderConfig.projDim = 4
+        encoderConfig.lorder = 3
+        encoderConfig.outputAffineDim = 5
+        encoderConfig.outputDim = 7
+
+        let model = FSMNVADEncoder(config: encoderConfig)
+        let features = MLXRandom.normal([1, 6, encoderConfig.inputDim])
+        let scores = model(features)
+        eval(scores)
+
+        #expect(scores.shape == [1, 6, encoderConfig.outputDim])
+        let rowSums = scores.sum(axis: -1).asArray(Float.self)
+        #expect(rowSums.allSatisfy { abs($0 - 1.0) < 1e-5 })
+    }
+}
+
+struct FSMNVADNetworkTests {
+
+    @Test func fromPretrainedMatchesPythonReferenceScores() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network FSMN VAD test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
+        let repo = env["MLXAUDIO_FSMNVAD_REPO"] ?? FSMNVAD.defaultRepository
+        let model = try await FSMNVAD.fromPretrained(repo)
+        let values = moduloFloatFixtureValues(count: 6 * 400, modulus: 101, subtracting: 50, divisor: 50.0)
+        let features = MLXArray(values, [1, 6, 400])
+        let scores = model(features)
+        eval(scores)
+
+        #expect(scores.shape == [1, 6, 248])
+        #expect(argMax(scores, axis: -1).asArray(Int32.self) == [42, 42, 42, 42, 0, 0])
+
+        let row0 = scores[0, 0, 0..<12].asArray(Float.self)
+        let expectedRow0: [Float] = [
+            0.1140450165, 0.0059785182, 0.0013659892, 0.0000232112,
+            0.0003191938, 0.0002223742, 0.0006398718, 0.0002070427,
+            0.0014147682, 0.0009946637, 0.0675965324, 0.0000362443,
+        ]
+        for (actual, expected) in zip(row0, expectedRow0) {
+            #expect(abs(actual - expected) < 1e-3)
+        }
+
+        let row3 = scores[0, 3, 0..<12].asArray(Float.self)
+        let expectedRow3: [Float] = [
+            0.1232639179, 0.0030032848, 0.0003252966, 0.0000322826,
+            0.0000923602, 0.0000542990, 0.0001371839, 0.0000965531,
+            0.0010185738, 0.0003324346, 0.0428580716, 0.0000095264,
+        ]
+        for (actual, expected) in zip(row3, expectedRow3) {
+            #expect(abs(actual - expected) < 1e-3)
+        }
+    }
+
+    @Test func fromPretrainedExtractsFeaturesAndDetectsLikePythonReference() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network FSMN VAD test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
+        let repo = env["MLXAUDIO_FSMNVAD_REPO"] ?? FSMNVAD.defaultRepository
+        let model = try await FSMNVAD.fromPretrained(repo)
+        let waveform = MLXArray(moduloFloatFixtureValues(count: 16_000, modulus: 97, subtracting: 48, divisor: 96.0))
+        let features = try model.extractFeatures(waveform, sampleRate: 16_000)
+        eval(features)
+
+        #expect(features.shape == [100, 400])
+
+        let first = features[0, 0..<8].asArray(Float.self)
+        let expectedFirst: [Float] = [
+            1.0393178463, 0.6021140814, 0.9425991178, 1.4960573912,
+            1.5817567110, 1.5437985659, 1.3930199146, 0.9451034665,
+        ]
+        for (actual, expected) in zip(first, expectedFirst) {
+            #expect(abs(actual - expected) < 1e-3)
+        }
+
+        let last = features[99, 392..<400].asArray(Float.self)
+        let expectedLast: [Float] = [
+            1.3597297668, 1.3523129225, 1.3584715128, 1.3944844007,
+            1.4115253687, 1.4911217690, 1.5815925598, 1.7701300383,
+        ]
+        for (actual, expected) in zip(last, expectedLast) {
+            #expect(abs(actual - expected) < 1e-3)
+        }
+
+        let segments = try model.detect(waveform, sampleRate: 16_000)
+        #expect(segments == [])
+
+        let audioURL = Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media")!
+        let (_, speechAudio) = try loadAudioArray(from: audioURL, sampleRate: 16_000)
+        let speechSegments = try model.detect(speechAudio, sampleRate: 16_000)
+        #expect(speechSegments == [[0, 1_520]])
+    }
+}
+
 struct SortformerConfigTests {
 
     @Test func fcEncoderConfigDefaults() throws {

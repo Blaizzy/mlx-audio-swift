@@ -221,26 +221,72 @@ class SineGen: Module {
         self.upsampleScale = upsampleScale
     }
 
+    private func linearInterpolate1DToSize(_ x: MLXArray, newSize: Int) -> MLXArray {
+        let currentSize = x.dim(-1)
+        if newSize == currentSize {
+            return x
+        }
+
+        let newPositions = MLX.linspace(Float32(0), Float32(currentSize - 1), count: newSize)
+        let indicesLow = floor(newPositions).asType(.int32)
+        let indicesHigh = MLX.minimum(indicesLow + 1, MLXArray(Int32(currentSize - 1)))
+        let weights = newPositions.asType(x.dtype) - indicesLow.asType(x.dtype)
+
+        let lowValues = MLX.take(x, indicesLow, axis: -1)
+        let highValues = MLX.take(x, indicesHigh, axis: -1)
+        return lowValues + weights * (highValues - lowValues)
+    }
+
+    private func f02SineInterpolation(_ f0Values: MLXArray) -> MLXArray {
+        let b = f0Values.dim(0)
+        let t = f0Values.dim(1)
+        let h = f0Values.dim(2)
+
+        var radValues = (f0Values / Float(samplingRate)) % 1
+        var randIni = MLXRandom.uniform(0.0 ..< 1.0, [b, h])
+        randIni = MLX.concatenated(
+            [MLXArray.zeros([b, 1]).asType(randIni.dtype), randIni[0..., 1...]],
+            axis: 1
+        )
+        let first = radValues[0..., 0..<1, 0...] + randIni.expandedDimensions(axis: 1)
+        if t > 1 {
+            radValues = MLX.concatenated([first, radValues[0..., 1..., 0...]], axis: 1)
+        } else {
+            radValues = first
+        }
+
+        let radValuesT = radValues.transposed(0, 2, 1)
+        let tDown = Swift.max(1, t / upsampleScale)
+        var radValuesDown = linearInterpolate1DToSize(radValuesT, newSize: tDown)
+        radValuesDown = radValuesDown.transposed(0, 2, 1)
+
+        let phase = MLX.cumsum(radValuesDown, axis: 1) * (2.0 * Float.pi)
+        let phaseT = phase.transposed(0, 2, 1) * Float(upsampleScale)
+        let phaseUp = linearInterpolate1DToSize(phaseT, newSize: t).transposed(0, 2, 1)
+        return MLX.sin(phaseUp)
+    }
+
     func callAsFunction(_ f0: MLXArray) -> (MLXArray, MLXArray, MLXArray) {
         // f0: (B, 1, T)
         let B = f0.dim(0)
 
-        // Create harmonics multiplier: [1, 2, ..., harmonicNum+1]
-        let harmonicMult = (MLXArray(1 ... (harmonicNum + 1)).asType(.float32))
-            .reshaped(1, -1, 1)
-        let fMat = f0 * harmonicMult / Float(samplingRate)
+        let harmonicMult = MLXArray(1 ... (harmonicNum + 1)).asType(f0.dtype)
+        let sineWaves: MLXArray
+        if useInterpolation {
+            let fn = f0.transposed(0, 2, 1) * harmonicMult
+            sineWaves = (f02SineInterpolation(fn) * sineAmp).transposed(0, 2, 1)
+        } else {
+            let harmonicMult = harmonicMult.reshaped(1, -1, 1)
+            let fMat = f0 * harmonicMult / Float(samplingRate)
+            let thetaMat = 2.0 * Float.pi * (MLX.cumsum(fMat, axis: -1) % 1.0)
 
-        // Phase computation
-        let thetaMat = 2.0 * Float.pi * (MLX.cumsum(fMat, axis: -1) % 1.0)
-
-        // Random initial phase (zero for fundamental)
-        var phaseVec = MLXRandom.uniform(
-            low: -Float.pi, high: Float.pi,
-            [B, harmonicNum + 1, 1])
-        let phaseMask = (MLXArray(0 ... harmonicNum).reshaped(1, -1, 1) .> 0).asType(.float32)
-        phaseVec = phaseVec * phaseMask
-
-        var sineWaves = sineAmp * MLX.sin(thetaMat + phaseVec)
+            var phaseVec = MLXRandom.uniform(
+                low: -Float.pi, high: Float.pi,
+                [B, harmonicNum + 1, 1])
+            let phaseMask = (MLXArray(0 ... harmonicNum).reshaped(1, -1, 1) .> 0).asType(.float32)
+            phaseVec = phaseVec * phaseMask
+            sineWaves = sineAmp * MLX.sin(thetaMat + phaseVec)
+        }
 
         // Voiced/unvoiced mask
         let uv = (f0 .> voicedThreshold).asType(.float32)
@@ -249,9 +295,9 @@ class SineGen: Module {
         let noiseAmp = uv * noiseStd + (1.0 - uv) * sineAmp / 3.0
         let noise = noiseAmp * MLXRandom.normal(sineWaves.shape)
 
-        sineWaves = sineWaves * uv + noise
+        let noisySineWaves = sineWaves * uv + noise
 
-        return (sineWaves, uv, noise)
+        return (noisySineWaves, uv, noise)
     }
 }
 
