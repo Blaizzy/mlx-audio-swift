@@ -1,3 +1,7 @@
+// Live audio playback via AVAudioEngine/AVAudioPlayer — Apple platforms only. On Linux this
+// type is unavailable (a GStreamer-backed equivalent is planned as a follow-up); file-based
+// audio I/O and model inference do not depend on it.
+#if canImport(AVFoundation)
 import Foundation
 import AVFoundation
 import Combine
@@ -412,3 +416,4 @@ extension AudioPlayer: @MainActor AVAudioPlayerDelegate {
         stopTimer()
     }
 }
+#endif

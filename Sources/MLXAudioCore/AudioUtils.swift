@@ -1,3 +1,7 @@
+// Apple-platform implementation backed by AVFoundation (any input format, AVAudioConverter
+// resampling). The Linux equivalent lives in `AudioUtils+Linux.swift` and provides the same
+// public API using pure-Swift WAV I/O and a windowed-sinc resampler.
+#if canImport(AVFoundation)
 import AVFoundation
 import Foundation
 import MLX
@@ -346,3 +350,4 @@ public class StreamingWAVWriter {
         return newBuffer
     }
 }
+#endif
