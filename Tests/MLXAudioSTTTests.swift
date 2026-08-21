@@ -3910,6 +3910,27 @@ struct FireRedASR2Tests {
         #expect(fbank.shape[1] == 80)
     }
 
+    @Test func fbankScalesClippedFloatInput() {
+        // Regression: extractFbank scales normalized float input by 32768
+        // unconditionally. An earlier version auto-detected the scale with
+        // `amplitude <= 1.0`, so float input that lossy decoders (AAC via
+        // AVFoundation) overshoot past 1.0 on clipped content skipped the
+        // scaling, and decoding silently collapsed (empty segments on iOS).
+        let base = MLXRandom.normal([16000]) * MLXArray(Float(0.1))
+        let clipped = base * MLXArray(Float(1.1)) // max amplitude > 1.0
+        eval(base, clipped)
+
+        let fbankBase = FireRedASR2Audio.extractFbank(base)
+        let fbankClipped = FireRedASR2Audio.extractFbank(clipped)
+
+        // Both must take the float path, so the clipped fbank differs only
+        // by the +2*log(1.1) energy offset, not by the x32768 scale jump.
+        let delta = (fbankClipped - fbankBase).mean()
+        eval(delta)
+        let expected = 2 * log(Float(1.1))
+        #expect(abs(delta.item(Float.self) - expected) < 0.05)
+    }
+
     @Test func tokenizerCleanup() {
         let tokenizer = FireRedASR2Tokenizer(vocabulary: ["<blank>", "\u{2581}Hello", "<sil>", "World"])
         let text = tokenizer.decode(tokenIds: [0, 1, 2, 3])
