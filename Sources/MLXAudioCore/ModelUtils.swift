@@ -73,42 +73,27 @@ public enum ModelUtils {
             ? String(requiredExtension.dropFirst())
             : requiredExtension
 
-        // Store downloaded model snapshots under the configured Hugging Face cache root.
-        let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
-        let modelDir = cache.cacheDirectory
-            .appendingPathComponent("mlx-audio")
-            .appendingPathComponent(modelSubdir)
-
-        // Check if model already exists with required files
-        if FileManager.default.fileExists(atPath: modelDir.path) {
-            let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: [.fileSizeKey])
-            let hasRequiredFile = files?.contains { file in
-                guard file.pathExtension == normalizedRequiredExtension else { return false }
-                let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-                return size > 0
-            } ?? false
-
-            if hasRequiredFile {
-                // Validate that config.json is valid JSON
-                let configPath = modelDir.appendingPathComponent("config.json")
-                if FileManager.default.fileExists(atPath: configPath.path) {
-                    if let configData = try? Data(contentsOf: configPath),
-                       let _ = try? JSONSerialization.jsonObject(with: configData) {
-                        print("Using cached model at: \(modelDir.path)")
-                        return modelDir
-                    } else {
-                        print("Cached config.json is invalid, clearing cache...")
-                        Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
-                    }
-                }
-            } else {
-                print("Cached model appears incomplete, clearing cache...")
-                Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
-            }
+        if let snapshot = existingHubSnapshot(
+            repoID: repoID,
+            cache: cache,
+            requiredExtension: normalizedRequiredExtension
+        ) {
+            print("Using Hub cache at: \(snapshot.path)")
+            return snapshot
         }
 
-        // Create directory if needed
-        try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
+        let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
+        let mlxAudioDir = cache.cacheDirectory
+            .appendingPathComponent("mlx-audio")
+            .appendingPathComponent(modelSubdir)
+        if directoryLooksComplete(mlxAudioDir, requiredExtension: normalizedRequiredExtension) {
+            print("Using cached model at: \(mlxAudioDir.path)")
+            return mlxAudioDir
+        }
+        if FileManager.default.fileExists(atPath: mlxAudioDir.path) {
+            print("Incomplete mlx-audio copy at \(mlxAudioDir.path), ignoring it.")
+            try? FileManager.default.removeItem(at: mlxAudioDir)
+        }
 
         var allowedExtensions: Set<String> = [
             "*.\(normalizedRequiredExtension)",
@@ -119,11 +104,10 @@ public enum ModelUtils {
         ]
         allowedExtensions.formUnion(additionalMatchingPatterns)
 
-        print("Downloading model \(repoID)...")
-        _ = try await client.downloadSnapshot(
+        print("Downloading model \(repoID) into Hugging Face Hub cache...")
+        let snapshot = try await client.downloadSnapshot(
             of: repoID,
             kind: .model,
-            to: modelDir,
             revision: "main",
             matching: Array(allowedExtensions),
             progressHandler: progressHandler ?? { progress in
@@ -131,31 +115,93 @@ public enum ModelUtils {
             }
         )
 
-        // Post-download validation: ensure required files are non-zero
-        let downloadedFiles = try? FileManager.default.contentsOfDirectory(
-            at: modelDir, includingPropertiesForKeys: [.fileSizeKey]
-        )
-        let hasValidFile = downloadedFiles?.contains { file in
-            guard file.pathExtension == normalizedRequiredExtension else { return false }
-            let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-            return size > 0
-        } ?? false
-
-        if !hasValidFile {
-            Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
+        guard directoryLooksComplete(snapshot, requiredExtension: normalizedRequiredExtension) else {
             throw ModelUtilsError.incompleteDownload(repoID.description)
         }
 
-        print("Model downloaded to: \(modelDir.path)")
-        return modelDir
+        print("Model downloaded to: \(snapshot.path)")
+        return snapshot
     }
 
-    private static func clearCaches(modelDir: URL, repoID: Repo.ID, hubCache: HubCache) {
-        try? FileManager.default.removeItem(at: modelDir)
-        let hubRepoDir = hubCache.repoDirectory(repo: repoID, kind: .model)
-        if FileManager.default.fileExists(atPath: hubRepoDir.path) {
-            print("Clearing Hub cache at: \(hubRepoDir.path)")
-            try? FileManager.default.removeItem(at: hubRepoDir)
+    /// Hugging Face Hub snapshot (`models--org--name/snapshots/<rev>`), if complete.
+    public static func existingHubSnapshot(
+        repoID: Repo.ID,
+        cache: HubCache = .default,
+        requiredExtension: String = "safetensors"
+    ) -> URL? {
+        let normalized = requiredExtension.hasPrefix(".")
+            ? String(requiredExtension.dropFirst())
+            : requiredExtension
+        let slug = repoID.description.replacingOccurrences(of: "/", with: "--")
+        var roots = [cache.repoDirectory(repo: repoID, kind: .model)]
+        let defaultHub = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub/models--\(slug)")
+        if defaultHub.standardizedFileURL.path != roots[0].standardizedFileURL.path {
+            roots.append(defaultHub)
+        }
+        for repoDir in roots {
+            if let snapshot = latestHubSnapshot(in: repoDir),
+               directoryLooksComplete(snapshot, requiredExtension: normalized)
+            {
+                return snapshot
+            }
+        }
+        return nil
+    }
+
+    public static func latestHubSnapshot(in repoDir: URL) -> URL? {
+        let fm = FileManager.default
+        let snapshotsDir = repoDir.appendingPathComponent("snapshots")
+        let mainRef = repoDir.appendingPathComponent("refs").appendingPathComponent("main")
+        if let revision = try? String(contentsOf: mainRef, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !revision.isEmpty
+        {
+            let snapshot = snapshotsDir.appendingPathComponent(revision)
+            var isDirectory: ObjCBool = false
+            if fm.fileExists(atPath: snapshot.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                return snapshot
+            }
+        }
+        let snapshots = (try? fm.contentsOfDirectory(
+            at: snapshotsDir,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return snapshots
+            .filter { url in
+                ((try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false)
+            }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .last
+    }
+
+    public static func directoryLooksComplete(_ directory: URL, requiredExtension: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else {
+            return false
+        }
+        let configPath = directory.appendingPathComponent("config.json")
+        guard fm.fileExists(atPath: configPath.path),
+              let configData = try? Data(contentsOf: configPath),
+              (try? JSONSerialization.jsonObject(with: configData)) != nil
+        else {
+            return false
+        }
+        let files = (try? fm.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.fileSizeKey, .isSymbolicLinkKey]
+        )) ?? []
+        return files.contains { file in
+            guard file.pathExtension == requiredExtension else { return false }
+            if (try? file.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true {
+                return fm.fileExists(atPath: file.path)
+            }
+            let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            return size > 0
         }
     }
 }
