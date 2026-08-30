@@ -169,6 +169,7 @@ let package = Package(
             ],
             path: "Sources/MLXAudioVAD",
             exclude: [
+                "Models/SileroVAD/README.md",
                 "Models/SmartTurn/README.md",
                 "Models/Sortformer/README.md",
             ]
