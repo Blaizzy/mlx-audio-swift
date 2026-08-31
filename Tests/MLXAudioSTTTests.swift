@@ -3961,6 +3961,52 @@ struct FireRedASR2Tests {
         #expect(sanitized["encoder.layer_stack.0.conv.pointwise_conv1.weight"]?.shape == [8, 3, 4])
         #expect(sanitized["decoder.tgt_word_prj.weight"]?.shape == [6, 8])
     }
+
+    @Test func topKReturnsTopValuesDescending() {
+        let x1 = MLXArray([Float(0.1), 2.5, -1.0, 3.3, 0.7, 2.4, -0.5])
+        let (values1, indices1) = FireRedASR2TransformerDecoder.topK(x1, k: 3)
+        #expect(values1.asArray(Float.self) == [3.3, 2.5, 2.4])
+        #expect(indices1.asArray(Int32.self) == [3, 1, 5])
+
+        let x2 = MLXArray([Float(0.1), 2.5, -1.0, 3.3, 1.1, -2.0, 4.0, 0.0], [2, 4])
+        let (values2, indices2) = FireRedASR2TransformerDecoder.topK(x2, k: 2)
+        #expect(values2.asArray(Float.self) == [3.3, 2.5, 4.0, 1.1])
+        #expect(indices2.asArray(Int32.self) == [3, 1, 2, 0])
+    }
+
+    @Test func beamSearchMatchesBaselineOutput() {
+        MLXRandom.seed(42)
+        let config = FireRedASR2Config(
+            odim: 32,
+            dModel: 16,
+            encoder: FireRedASR2EncoderConfig(
+                nLayers: 1, nHead: 4, dModel: 16, kernelSize: 15, peMaxlen: 128),
+            decoder: FireRedASR2DecoderConfig(
+                nLayers: 2, nHead: 4, dModel: 16, peMaxlen: 128)
+        )
+        let model = FireRedASR2Model(config)
+        eval(model)
+
+        let encoderOutput = MLXRandom.normal([1, 12, 16])
+        let (sequence, confidences) = model.decoder.beamSearch(
+            encoderOutput: encoderOutput, beamSize: 3)
+
+        // Pinned output of the corrected beam search (topK per-row gather).
+        // The pre-fix implementation scored every beam's candidates with
+        // beam 0's logits and produced eight 3s followed by EOS padding.
+        // Finished beams keep appending EOS (id 4) with confidence 1.0
+        // until maxDecode, so pin the prefix plus the EOS tail.
+        let expectedPrefix: [Int32] = [3, 3, 1, 14, 9, 4, 4, 4]
+        #expect(Array(sequence.prefix(expectedPrefix.count)) == expectedPrefix)
+        #expect(sequence.dropFirst(expectedPrefix.count).allSatisfy { $0 == 4 })
+        let expectedConfidences: [Float] = [
+            0.10417141, 0.09205305, 0.07174433, 0.07743147,
+            0.08286833, 0.058846395,
+        ]
+        #expect(zip(confidences.prefix(expectedConfidences.count), expectedConfidences)
+            .allSatisfy { abs($0 - $1) < 1e-5 })
+        #expect(confidences.dropFirst(expectedConfidences.count).allSatisfy { $0 == 1.0 })
+    }
 }
 
 @Suite("FireRed ASR 2 Cached Tests", .serialized)
