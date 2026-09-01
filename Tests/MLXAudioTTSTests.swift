@@ -1917,6 +1917,101 @@ struct BreezeTTSTests {
         #expect(TTS.resolveModelType(modelRepo: "mlx-community/Breeze-TTS-2-mlx-4bit") == "breeze")
         #expect(TTS.resolveModelType(modelRepo: "anything", modelType: "breeze_tts") == "breeze_tts")
     }
+
+    @Test func textEncoderKeepsSequenceShape() throws {
+        let config = try JSONDecoder().decode(BreezeTextEncoderConfig.self, from: Data("""
+        {
+          "vocab_size": 32,
+          "hidden_size": 16,
+          "intermediate_size": 32,
+          "num_hidden_layers": 2,
+          "num_attention_heads": 2,
+          "num_key_value_heads": 1,
+          "head_dim": 8,
+          "eoi_token_index": 31,
+          "sliding_window": 4,
+          "layer_types": ["sliding_attention", "full_attention"]
+        }
+        """.utf8))
+        let encoder = BreezeTTSTextEncoder(config: config)
+        let output = encoder(MLXArray([1, 2, 31, 3]).reshaped([1, 4]))
+        eval(output)
+        #expect(output.shape == [1, 4, 16])
+    }
+
+    @Test func slidingTextMaskRestrictsDistantKeys() {
+        let mask = breezeTextAttentionMask(length: 5, layerType: "sliding_attention", slidingWindow: 3)!
+        let values = mask.asArray(Float.self)
+        #expect(mask.shape == [1, 1, 5, 5])
+        #expect(values[0] == 0)
+        #expect(values[4] == -Float.infinity)
+    }
+
+    @Test func audioEmbeddingSumsAllCodebooks() {
+        let embedding = BreezeAudioEmbedding(
+            numCodebooks: 3,
+            vocabSize: 8,
+            audioEmbedSize: 4,
+            hiddenSize: 4
+        )
+        let output = embedding(MLXArray([1, 2, 3]).reshaped([1, 1, 3]))
+        eval(output)
+        #expect(output.shape == [1, 1, 4])
+    }
+
+    @Test func depthDecoderSelectsOneHeadPerCodebook() throws {
+        let config = try JSONDecoder().decode(BreezeDepthDecoderConfig.self, from: Data("""
+        {
+          "vocab_size": 8,
+          "num_codebooks": 3,
+          "audio_embed_size": 4,
+          "backbone_hidden_size": 4,
+          "hidden_size": 4,
+          "num_hidden_layers": 1,
+          "intermediate_size": 8,
+          "num_attention_heads": 1,
+          "num_key_value_heads": 1,
+          "head_dim": 4
+        }
+        """.utf8))
+        let decoder = BreezeDepthDecoder(config: config)
+        let first = decoder.nextLogits(
+            tokenIDs: MLXArray([0, 1]).reshaped([1, 2]),
+            backboneHiddenState: MLXArray.zeros([1, 4])
+        )
+        let second = decoder.nextLogits(
+            tokenIDs: MLXArray([0, 1, 2]).reshaped([1, 3]),
+            backboneHiddenState: MLXArray.zeros([1, 4])
+        )
+        eval(first, second)
+        #expect(first.shape == [1, 8])
+        #expect(second.shape == [1, 8])
+    }
+
+    @Test func promptUsesVoiceAsInstruction() {
+        #expect(BreezeTTSModel.promptText(text: "Hello", instruction: nil) == "[S0]Hello")
+        #expect(
+            BreezeTTSModel.promptText(text: "Hello", instruction: "Warm and calm")
+                == "[S0]<ins_bos>Warm and calm<ins_eos>Hello"
+        )
+    }
+
+    @Test func sanitizeSeparatesMainModelFromCodecWeights() {
+        let depth = MLXArray.ones([2, 2])
+        let stale = MLXArray.zeros([2, 2])
+        let sanitized = BreezeTTSModel.sanitize(weights: [
+            "depth_decoder.model.embed_tokens.weight": depth,
+            "backbone_model.embed_tokens.embed_audio_tokens.weight": stale,
+            "codec_model.decoder.weight": MLXArray.ones([1]),
+            "backbone_model.rotary_emb.inv_freq": MLXArray.ones([1]),
+        ])
+        #expect(sanitized["codec_model.decoder.weight"] == nil)
+        #expect(sanitized["backbone_model.rotary_emb.inv_freq"] == nil)
+        #expect(
+            sanitized["backbone_model.embed_tokens.embed_audio_tokens.weight"]?.shape
+                == depth.shape
+        )
+    }
 }
 
 
