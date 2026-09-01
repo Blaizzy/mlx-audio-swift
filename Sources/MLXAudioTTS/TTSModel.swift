@@ -272,6 +272,9 @@ public enum TTS {
 
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
+        if lower.contains("breeze") && lower.contains("tts") {
+            return "breeze"
+        }
         // Repo names are hyphenated (e.g. "Irodori-TTS-600M-…"); match the bare name.
         if lower.contains("irodori") {
             return "irodori_tts"
