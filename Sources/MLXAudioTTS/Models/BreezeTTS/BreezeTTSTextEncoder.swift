@@ -37,8 +37,7 @@ func breezeTextAttentionMask(
         }
     }
 
-    guard let allowed else { return nil }
-    return MLX.where(allowed, MLXArray(Float(0)), MLXArray(-Float.infinity))
+    return allowed
 }
 
 final class BreezeTTSTextEmbedding: Module {

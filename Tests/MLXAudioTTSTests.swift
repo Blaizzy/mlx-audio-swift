@@ -1941,10 +1941,11 @@ struct BreezeTTSTests {
 
     @Test func slidingTextMaskRestrictsDistantKeys() {
         let mask = breezeTextAttentionMask(length: 5, layerType: "sliding_attention", slidingWindow: 3)!
-        let values = mask.asArray(Float.self)
+        let values = mask.asArray(Bool.self)
         #expect(mask.shape == [1, 1, 5, 5])
-        #expect(values[0] == 0)
-        #expect(values[4] == -Float.infinity)
+        #expect(mask.dtype == .bool)
+        #expect(values[0])
+        #expect(!values[4])
     }
 
     @Test func audioEmbeddingSumsAllCodebooks() {
