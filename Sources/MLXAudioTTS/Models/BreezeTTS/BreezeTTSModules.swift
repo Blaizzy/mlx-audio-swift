@@ -1,6 +1,7 @@
 @preconcurrency import MLX
 @preconcurrency import MLXLMCommon
 import MLXNN
+import Foundation
 
 final class BreezeAudioEmbedding: Module {
     let numCodebooks: Int
@@ -80,7 +81,7 @@ final class BreezeBackbone: Module {
     }
 
     func makeCache() -> [KVCache] {
-        layers.map { _ in KVCache() }
+        layers.map { _ in KVCacheSimple() }
     }
 }
 
@@ -96,7 +97,7 @@ final class BreezeDepthAttention: Module {
 
     init(config: BreezeDepthDecoderConfig) {
         self.config = config
-        self.scale = pow(Float(config.headDim), -0.5)
+        self.scale = Foundation.pow(Float(config.headDim), -0.5)
         self.rope = RoPE(dimensions: config.headDim, traditional: false, base: config.ropeTheta, scale: 1)
         _query.wrappedValue = Linear(config.hiddenSize, config.numAttentionHeads * config.headDim, bias: false)
         _key.wrappedValue = Linear(config.hiddenSize, config.numKeyValueHeads * config.headDim, bias: false)

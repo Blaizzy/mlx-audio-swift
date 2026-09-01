@@ -1,5 +1,6 @@
 @preconcurrency import MLX
 import MLXNN
+import Foundation
 
 func breezeTextAttentionMask(
     length: Int,
@@ -55,7 +56,7 @@ final class BreezeTTSTextEmbedding: Module {
     }
 
     func callAsFunction(_ inputIDs: MLXArray) -> MLXArray {
-        let embeddings = weight[inputIDs] * sqrt(Float(dimensions))
+        let embeddings = weight[inputIDs] * Foundation.sqrt(Float(dimensions))
         return MLX.where(
             (inputIDs .== eoiTokenIndex).expandedDimensions(axis: -1),
             eoiEmbedding,
@@ -94,7 +95,7 @@ final class BreezeTTSTextAttention: Module {
     init(config: BreezeTextEncoderConfig, layerIndex: Int) {
         self.config = config
         self.layerType = config.layerTypes[layerIndex]
-        self.scale = pow(config.queryPreAttentionScalar, -0.5)
+        self.scale = Foundation.pow(config.queryPreAttentionScalar, -0.5)
         let ropeBase: Float = layerType == "sliding_attention" ? 10_000 : 1_000_000
         self.rope = RoPE(dimensions: config.headDim, traditional: false, base: ropeBase, scale: 1)
         _query.wrappedValue = Linear(config.hiddenSize, config.numAttentionHeads * config.headDim, bias: false)

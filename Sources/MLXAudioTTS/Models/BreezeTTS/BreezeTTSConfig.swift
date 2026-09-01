@@ -99,7 +99,7 @@ public struct BreezeDepthDecoderConfig: Codable, Sendable {
     }
 }
 
-public struct BreezeTextEncoderConfig: Codable, Sendable {
+public struct BreezeTextEncoderConfig: Decodable, Sendable {
     var vocabSize: Int
     var hiddenSize: Int
     var intermediateSize: Int
@@ -150,12 +150,19 @@ public struct BreezeTextEncoderConfig: Codable, Sendable {
             ?? c.decodeIfPresent(Int.self, forKey: .privateSlidingWindowPattern)
             ?? 6
         eoiTokenIndex = try c.decodeIfPresent(Int.self, forKey: .eoiTokenIndex) ?? 256_000
-        layerTypes = try c.decodeIfPresent([String].self, forKey: .layerTypes)
-            ?? (0..<numHiddenLayers).map { ($0 + 1).isMultiple(of: slidingWindowPattern) ? "full_attention" : "sliding_attention" }
+        if let decodedLayerTypes = try c.decodeIfPresent([String].self, forKey: .layerTypes) {
+            layerTypes = decodedLayerTypes
+        } else {
+            let layerCount = numHiddenLayers
+            let pattern = slidingWindowPattern
+            layerTypes = (0..<layerCount).map {
+                ($0 + 1).isMultiple(of: pattern) ? "full_attention" : "sliding_attention"
+            }
+        }
     }
 }
 
-public struct BreezeCodecConfig: Codable, Sendable {
+public struct BreezeCodecConfig: Decodable, Sendable {
     var samplingRate: Int
     var codebookSize: Int
 
