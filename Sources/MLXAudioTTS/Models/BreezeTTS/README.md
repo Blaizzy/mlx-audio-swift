@@ -1,6 +1,6 @@
 # Breeze TTS 2
 
-TL;DR: This module runs Breeze TTS 2 with MLX on Apple silicon. It supports English and Chinese voice design and voice cloning. The Swift package does not include model weights. Breeze weights and output are limited to research and non-commercial use under the model license.
+Breeze TTS 2 is a bilingual English and Chinese text-to-speech model with natural-language voice design and zero-shot voice cloning.
 
 ## Load a model
 
