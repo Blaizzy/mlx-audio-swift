@@ -24,9 +24,13 @@ enum SenseVoiceAudio {
             return MLXArray.zeros([0, nMels], type: Float.self)
         }
 
-        if abs(audio).max().item(Float.self) <= 1.0 {
-            audio = audio * MLXArray(Float(1 << 15))
-        }
+        // Input is normalized float audio in [-1, 1]; scale it
+        // unconditionally to the int16 range the Kaldi fbank recipe (and
+        // the CMVN stats) expects — same as sherpa-onnx's hard-coded
+        // `normalize_samples = false`. A data-dependent amplitude check
+        // would misfire on clipped content, where lossy decoders (AAC via
+        // AVFoundation) can overshoot past 1.0 (see FireRedASR2Audio).
+        audio = audio * MLXArray(Float(1 << 15))
 
         return computeKaldiFbank(
             audio,
