@@ -54,11 +54,18 @@ public enum TTS {
             throw TTSModelError.invalidRepositoryID(modelRepo)
         }
 
-        let modelType = try await ModelUtils.resolveModelType(
-            repoID: repoID,
-            hfToken: hfToken,
-            cache: cache
-        )
+        // Do not download a repo just to read config.json when the id already
+        // identifies the family. Hub snapshot reuse happens in the model loader.
+        let modelType: String?
+        if let inferred = inferModelType(from: modelRepo) {
+            modelType = inferred
+        } else {
+            modelType = try await ModelUtils.resolveModelType(
+                repoID: repoID,
+                hfToken: hfToken,
+                cache: cache
+            )
+        }
         return try await loadResolvedModel(
             modelType: modelType,
             source: .repository(modelRepo, cache: cache),
@@ -214,6 +221,13 @@ public enum TTS {
                 pretrained: { try await IndexTTSModel.fromPretrained($0, cache: $1) },
                 local: { modelDir, _ in try await IndexTTSModel.fromModelDirectory(modelDir) }
             )
+        case "dramabox", "dramabox-tts", "dramabox_tts":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await DramaBoxModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await DramaBoxModel.fromModelDirectory(modelDir) }
+            )
         default:
             throw TTSModelError.unsupportedModelType(resolvedType)
         }
@@ -328,6 +342,9 @@ public enum TTS {
         }
         if lower.contains("indextts") || lower.contains("index-tts") || lower.contains("index_tts") {
             return "indextts"
+        }
+        if lower.contains("dramabox") {
+            return "dramabox"
         }
         return nil
     }

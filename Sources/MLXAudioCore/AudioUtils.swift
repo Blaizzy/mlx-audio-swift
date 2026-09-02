@@ -33,27 +33,55 @@ public class AudioUtils {
     }
 
     public static func writeWavFile(samples: [Float], sampleRate: Double, fileURL: URL) throws {
-        let frameCount = AVAudioFrameCount(samples.count)
+        try writeWavFile(channels: [samples], sampleRate: sampleRate, fileURL: fileURL)
+    }
 
-        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false),
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)
+    /// Write a WAV without downmixing. `channels` is planar `[channel][frame]`.
+    public static func writeWavFile(channels: [[Float]], sampleRate: Double, fileURL: URL) throws {
+        guard let first = channels.first else {
+            throw AudioUtilsErrors.cannotCreateAudioBuffer
+        }
+        let channelCount = channels.count
+        let frameCount = AVAudioFrameCount(first.count)
+        guard channelCount >= 1, channelCount <= 8,
+              channels.allSatisfy({ $0.count == first.count })
+        else {
+            throw AudioUtilsErrors.cannotCreateAudioBuffer
+        }
+
+        guard let bufferFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: AVAudioChannelCount(channelCount),
+            interleaved: false
+        ),
+            let fileFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: sampleRate,
+                channels: AVAudioChannelCount(channelCount),
+                interleaved: true
+            ),
+            let buffer = AVAudioPCMBuffer(pcmFormat: bufferFormat, frameCapacity: frameCount)
         else {
             throw AudioUtilsErrors.cannotCreateAVAudioFormat
         }
 
         buffer.frameLength = frameCount
-        let channelData = buffer.floatChannelData![0]
-        for i in 0 ..< Int(frameCount) {
-            channelData[i] = samples[i]
+        guard let channelData = buffer.floatChannelData else {
+            throw AudioUtilsErrors.cannotReadFloatChannelData
+        }
+        for channel in 0 ..< channelCount {
+            for frame in 0 ..< first.count {
+                channelData[channel][frame] = channels[channel][frame]
+            }
         }
 
         let audioFile = try AVAudioFile(
             forWriting: fileURL,
-            settings: format.settings,
-            commonFormat: format.commonFormat,
-            interleaved: format.isInterleaved
+            settings: fileFormat.settings,
+            commonFormat: bufferFormat.commonFormat,
+            interleaved: bufferFormat.isInterleaved
         )
-
         try audioFile.write(from: buffer)
     }
 }
@@ -95,26 +123,51 @@ public func loadAudioArray(from url: URL, sampleRate: Int? = nil) throws -> (Int
 }
 
 /// Save audio data to a WAV file.
-func saveAudioArray(_ audio: MLXArray, sampleRate: Double, to url: URL) throws {
-    let samples = audio.asArray(Float.self)
+///
+/// Accepts `[T]` mono or `[C, T]` / `[1, C, T]` planar audio. Stereo is
+/// written as stereo — never downmixed.
+public func saveAudioArray(_ audio: MLXArray, sampleRate: Double, to url: URL) throws {
+    let channels = try planarAudioChannels(audio)
+    try AudioUtils.writeWavFile(channels: channels, sampleRate: sampleRate, fileURL: url)
+}
 
-    let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
-    let audioFile = try AVAudioFile(forWriting: url, settings: format.settings)
-
-    let frameCount = AVAudioFrameCount(samples.count)
-    guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+/// Split an MLX waveform into planar channel arrays without downmixing.
+public func planarAudioChannels(_ audio: MLXArray) throws -> [[Float]] {
+    var array = audio.asType(.float32)
+    if array.ndim == 3 {
+        guard array.dim(0) == 1 else {
+            throw AudioUtils.AudioUtilsErrors.cannotCreateAudioBuffer
+        }
+        array = array[0]
+    }
+    switch array.ndim {
+    case 0:
+        return [[array.item(Float.self)]]
+    case 1:
+        return [array.asArray(Float.self)]
+    case 2:
+        let first = array.dim(0)
+        let second = array.dim(1)
+        let values = array.asArray(Float.self)
+        if first <= 8 && first < second {
+            return (0 ..< first).map { channel -> [Float] in
+                let start = channel * second
+                return Array(values[start ..< (start + second)])
+            }
+        }
+        if second <= 8 {
+            var channels = Array(repeating: Array(repeating: Float(0), count: first), count: second)
+            for frame in 0 ..< first {
+                for channel in 0 ..< second {
+                    channels[channel][frame] = values[frame * second + channel]
+                }
+            }
+            return channels
+        }
+        throw AudioUtils.AudioUtilsErrors.cannotCreateAudioBuffer
+    default:
         throw AudioUtils.AudioUtilsErrors.cannotCreateAudioBuffer
     }
-
-    buffer.frameLength = frameCount
-
-    if let channelData = buffer.floatChannelData {
-        for i in 0 ..< samples.count {
-            channelData[0][i] = samples[i]
-        }
-    }
-
-    try audioFile.write(from: buffer)
 }
 
 private final class AudioConverterInputProvider: @unchecked Sendable {
