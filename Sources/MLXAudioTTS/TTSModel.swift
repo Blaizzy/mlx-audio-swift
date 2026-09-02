@@ -102,6 +102,13 @@ public enum TTS {
         }
 
         switch resolvedType {
+        case "breeze", "breeze_tts":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await BreezeTTSModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await BreezeTTSModel.fromModelDirectory(modelDir) }
+            )
         case "moss_tts_nano":
             return try await load(
                 source,
@@ -272,6 +279,9 @@ public enum TTS {
 
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
+        if lower.contains("breeze") && lower.contains("tts") {
+            return "breeze"
+        }
         // Repo names are hyphenated (e.g. "Irodori-TTS-600M-…"); match the bare name.
         if lower.contains("irodori") {
             return "irodori_tts"
