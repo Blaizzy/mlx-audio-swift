@@ -20,6 +20,7 @@
 //
 
 import XCTest
+import MLX
 
 @testable import MLXAudioCore
 
