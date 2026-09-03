@@ -1055,13 +1055,16 @@ public class Qwen3ASRModel: Module {
     // MARK: - Audio Preprocessing
 
     public func preprocessAudio(_ audio: MLXArray) -> (MLXArray, MLXArray, Int) {
-        // Compute mel spectrogram
+        // Compute mel spectrogram (must match transformers' WhisperFeatureExtractor:
+        // slaney mel scale + periodic hann window)
         let melSpec = MLXAudioCore.computeMelSpectrogram(
             audio: audio,
             sampleRate: 16000,
             nFft: 400,
             hopLength: 160,
-            nMels: config.audioConfig.numMelBins
+            nMels: config.audioConfig.numMelBins,
+            melScale: .slaney,
+            hannPeriodic: true
         )
 
         // melSpec shape: [numFrames, nMels] -> need [1, nMels, numFrames]

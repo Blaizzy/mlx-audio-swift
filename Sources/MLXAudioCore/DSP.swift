@@ -12,9 +12,12 @@ import MLX
 
 
 /// Create a Hanning window of given size.
-public func hanningWindow(size: Int) -> MLXArray {
+/// `periodic: true` matches `torch.hann_window` (librosa/Whisper default);
+/// the previous symmetric-only form is kept as default for compatibility.
+public func hanningWindow(size: Int, periodic: Bool = false) -> MLXArray {
+    let effectiveSize = periodic ? size + 1 : size
+    let denom = Float(effectiveSize - 1)
     var window = [Float](repeating: 0, count: size)
-    let denom = Float(size - 1)
     for n in 0..<size {
         window[n] = 0.5 * (1 - cos(2 * Float.pi * Float(n) / denom))
     }
@@ -227,17 +230,22 @@ public func stft(
 }
 
 /// Compute mel spectrogram from audio waveform.
+/// `melScale`/`hannPeriodic` defaults preserve legacy behavior; Whisper-style
+/// front-ends (Qwen3-ASR) must pass `.slaney` + `true` to match
+/// transformers' WhisperFeatureExtractor.
 public func computeMelSpectrogram(
     audio: MLXArray,
     sampleRate: Int,
     nFft: Int,
     hopLength: Int,
-    nMels: Int
+    nMels: Int,
+    melScale: MelScale = .htk,
+    hannPeriodic: Bool = false
 ) -> MLXArray {
     // If audio is 1D, compute proper mel spectrogram
     if audio.ndim == 1 {
         // Create Hanning window
-        let window = hanningWindow(size: nFft)
+        let window = hanningWindow(size: nFft, periodic: hannPeriodic)
 
         // Compute STFT
         let freqs = stft(audio: audio, window: window, nFft: nFft, hopLength: hopLength)
@@ -251,7 +259,8 @@ public func computeMelSpectrogram(
             sampleRate: sampleRate,
             nFft: nFft,
             nMels: nMels,
-            norm: "slaney"
+            norm: "slaney",
+            melScale: melScale
         )
 
         // Apply mel filterbank: [numFrames, nFreqs] @ [nFreqs, nMels] = [numFrames, nMels]
