@@ -94,8 +94,20 @@ public enum ModelUtils {
                 if FileManager.default.fileExists(atPath: configPath.path) {
                     if let configData = try? Data(contentsOf: configPath),
                        let _ = try? JSONSerialization.jsonObject(with: configData) {
-                        print("Using cached model at: \(modelDir.path)")
-                        return modelDir
+                        // A cache hit is only complete if it was downloaded
+                        // with (a superset of) the requested patterns:
+                        // resolveModelType pre-downloads with no additional
+                        // patterns, so a later load that needs e.g. "*.mvn"
+                        // would otherwise silently get a partial snapshot.
+                        let requestedPatterns = Set(additionalMatchingPatterns)
+                        let recorded = recordedPatterns(modelDir: modelDir)
+                        if requestedPatterns.isEmpty
+                            || (recorded.map { requestedPatterns.isSubset(of: $0) } ?? false) {
+                            print("Using cached model at: \(modelDir.path)")
+                            return modelDir
+                        }
+                        // Fall through and re-download with the union of
+                        // patterns; the hub cache deduplicates large blobs.
                     } else {
                         print("Cached config.json is invalid, clearing cache...")
                         Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
@@ -110,6 +122,9 @@ public enum ModelUtils {
         // Create directory if needed
         try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
 
+        let effectivePatterns = Set(additionalMatchingPatterns)
+            .union(recordedPatterns(modelDir: modelDir) ?? [])
+
         var allowedExtensions: Set<String> = [
             "*.\(normalizedRequiredExtension)",
             "*.safetensors",
@@ -117,7 +132,7 @@ public enum ModelUtils {
             "*.txt",
             "*.wav",
         ]
-        allowedExtensions.formUnion(additionalMatchingPatterns)
+        allowedExtensions.formUnion(effectivePatterns)
 
         print("Downloading model \(repoID)...")
         _ = try await client.downloadSnapshot(
@@ -147,7 +162,29 @@ public enum ModelUtils {
         }
 
         print("Model downloaded to: \(modelDir.path)")
+        recordPatterns(modelDir: modelDir, patterns: effectivePatterns)
         return modelDir
+    }
+
+    /// Name of the manifest recording which `additionalMatchingPatterns` a
+    /// cached snapshot was downloaded with (one pattern per line).
+    private static let patternsManifestName = ".mlx-audio-patterns"
+
+    /// Patterns a cached snapshot was downloaded with, or nil when the
+    /// manifest is missing/unreadable (cache predates this mechanism).
+    private static func recordedPatterns(modelDir: URL) -> Set<String>? {
+        let manifestURL = modelDir.appendingPathComponent(patternsManifestName)
+        guard let data = try? Data(contentsOf: manifestURL),
+              let text = String(data: data, encoding: .utf8)
+        else { return nil }
+        return Set(text.split(separator: "\n").map(String.init))
+    }
+
+    private static func recordPatterns(modelDir: URL, patterns: Set<String>) {
+        let manifestURL = modelDir.appendingPathComponent(patternsManifestName)
+        try? patterns.sorted().joined(separator: "\n").write(
+            to: manifestURL, atomically: true, encoding: .utf8
+        )
     }
 
     private static func clearCaches(modelDir: URL, repoID: Repo.ID, hubCache: HubCache) {
