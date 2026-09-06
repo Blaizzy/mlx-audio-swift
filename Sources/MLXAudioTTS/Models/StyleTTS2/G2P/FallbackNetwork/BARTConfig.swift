@@ -1,3 +1,4 @@
+#if canImport(NaturalLanguage)
 import Foundation
 
 // MARK: - Configuration
@@ -74,3 +75,5 @@ struct BARTConfig: Codable {
     case vocabSize = "vocab_size"
   }
 }
+
+#endif

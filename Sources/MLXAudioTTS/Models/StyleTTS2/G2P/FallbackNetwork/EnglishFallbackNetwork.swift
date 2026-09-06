@@ -1,3 +1,4 @@
+#if canImport(NaturalLanguage)
 import Foundation
 import MLX
 
@@ -114,3 +115,5 @@ final class EnglishFallbackNetwork {
         return weights
     }
 }
+
+#endif

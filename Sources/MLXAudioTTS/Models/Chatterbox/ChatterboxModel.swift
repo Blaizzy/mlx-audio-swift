@@ -8,7 +8,6 @@
 //  Ported from mlx-audio Python: chatterbox/chatterbox.py
 //
 
-import AVFoundation
 import Foundation
 import HuggingFace
 @preconcurrency import MLX

@@ -1,4 +1,3 @@
-import AVFoundation
 import Foundation
 @preconcurrency import MLX
 import MLXAudioCodecs
@@ -146,20 +145,7 @@ enum App {
     }
 
     private static func writeWavFile(samples: [Float], sampleRate: Double, outputURL: URL) throws {
-        let frameCount = AVAudioFrameCount(samples.count)
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
-            throw AppError.failedToCreateAudioBuffer
-        }
-        buffer.frameLength = frameCount
-        guard let channelData = buffer.floatChannelData else {
-            throw AppError.failedToAccessAudioBufferData
-        }
-        for i in 0..<samples.count {
-            channelData[0][i] = samples[i]
-        }
-        let audioFile = try AVAudioFile(forWriting: outputURL, settings: format.settings)
-        try audioFile.write(from: buffer)
+        try writeWAVFloat32(samples, sampleRate: Int(sampleRate.rounded()), to: outputURL)
     }
 }
 

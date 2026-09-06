@@ -1,3 +1,4 @@
+#if canImport(NaturalLanguage)
 import NaturalLanguage
 
 /// Maps Apple's NLTag (lexicalClass) to a Penn Treebank POS tag string.
@@ -153,3 +154,5 @@ func isPersonalPronoun(tag: NLTag, token: String) -> Bool {
   
   return tag == .pronoun && personalPronouns.contains(token.lowercased())
 }
+
+#endif
