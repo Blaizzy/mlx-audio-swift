@@ -1,42 +1,36 @@
-//
-//  SparkFeatCoders.swift
-//  MLXAudio
-//
-//  Feature encoder/decoder for Spark-TTS BiCodec (ports
-//  spark/modules/encoder_decoder/feat_encoder.py and feat_decoder.py).
-//  Both wrap the shared Vocos backbone. The `SamplingBlock` at the checkpoint's
-//  `sample_ratios == [1, 1]` carries no weights and reduces to a factor of 3,
-//  so only the per-stage Vocos backbones are registered (under key "1", matching
-//  the Python `downsample.N.1.*` keys).
-//
-
 import Foundation
 import MLXAudioCodecs
 @preconcurrency import MLX
 import MLXNN
 
-/// One `downsample` stage: a weightless SamplingBlock (scale 1 -> x3) followed by
-/// a 2-layer Vocos backbone. The backbone is keyed "1" to match `downsample.N.1.*`.
-private final class SparkDownStage: Module {
-    @ModuleInfo(key: "1") var backbone: VocosBackbone
+/// Weightless SamplingBlock at the checkpoint's `sample_ratios == [1, 1]`
+/// (both scales 1): it reduces to a factor of 3.
+fileprivate final class SparkSamplingBlock: Module, UnaryLayer {
+    func callAsFunction(_ x: MLXArray) -> MLXArray { 3 * x }
+}
 
-    init(dim: Int, intermediateDim: Int) {
-        self._backbone = ModuleInfo(
-            wrappedValue: VocosBackbone(
-                inputChannels: dim, dim: dim, intermediateDim: intermediateDim, numLayers: 2),
-            key: "1")
-    }
-
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        backbone(3 * x)
+fileprivate func makeDownsample(_ ratios: [Int], dim: Int, intermediateDim: Int) -> [[Module]] {
+    ratios.map { _ in
+        [
+            SparkSamplingBlock(),
+            VocosBackbone(inputChannels: dim, dim: dim, intermediateDim: intermediateDim, numLayers: 2),
+        ]
     }
 }
 
-/// Encoder: Vocos backbone -> downsample stages -> linear projection.
-/// Input [B, input_channels, T] -> [B, out_channels, T'].
+fileprivate func runDownsample(_ stages: [[Module]], _ x: MLXArray) -> MLXArray {
+    var h = x
+    for stage in stages {
+        h = (stage[0] as! SparkSamplingBlock)(h)
+        h = (stage[1] as! VocosBackbone)(h)
+    }
+    return h
+}
+
+/// Feature encoder: Vocos backbone -> downsample stages -> linear projection.
 public final class SparkFeatEncoder: Module {
     @ModuleInfo(key: "encoder") var encoder: VocosBackbone
-    @ModuleInfo(key: "downsample") fileprivate var downsample: [SparkDownStage]
+    @ModuleInfo(key: "downsample") fileprivate var downsample: [[Module]]
     @ModuleInfo(key: "project") var project: Linear
 
     public init(
@@ -49,26 +43,24 @@ public final class SparkFeatEncoder: Module {
                 intermediateDim: vocosIntermediateDim, numLayers: vocosNumLayers),
             key: "encoder")
         self._downsample = ModuleInfo(
-            wrappedValue: sampleRatios.map { _ in
-                SparkDownStage(dim: vocosDim, intermediateDim: vocosIntermediateDim)
-            }, key: "downsample")
+            wrappedValue: makeDownsample(sampleRatios, dim: vocosDim, intermediateDim: vocosIntermediateDim),
+            key: "downsample")
         self._project = ModuleInfo(wrappedValue: Linear(vocosDim, outChannels), key: "project")
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
-        var h = encoder(x)                 // [B, T, vocosDim]
-        for stage in downsample { h = stage(h) }
-        h = project(h)                     // [B, T, outChannels]
-        return h.transposed(0, 2, 1)       // [B, outChannels, T]
+        var h = encoder(x)
+        h = runDownsample(downsample, h)
+        h = project(h)
+        return h.transposed(0, 2, 1)
     }
 }
 
-/// Decoder (used as prenet and postnet): linear_pre -> downsample stages ->
-/// conditioned Vocos backbone -> linear. `conditionDim` enables AdaLayerNorm
-/// (prenet); postnet passes nil.
+/// Feature decoder (prenet/postnet): linear_pre -> downsample -> conditioned
+/// Vocos backbone -> linear. `conditionDim` enables AdaLayerNorm (prenet).
 public final class SparkFeatDecoder: Module {
     @ModuleInfo(key: "linear_pre") var linearPre: Linear
-    @ModuleInfo(key: "downsample") fileprivate var downsample: [SparkDownStage]
+    @ModuleInfo(key: "downsample") fileprivate var downsample: [[Module]]
     @ModuleInfo(key: "vocos_backbone") var vocosBackbone: VocosBackbone
     @ModuleInfo(key: "linear") var linear: Linear
 
@@ -82,9 +74,8 @@ public final class SparkFeatDecoder: Module {
         self.useTanhAtFinal = useTanhAtFinal
         self._linearPre = ModuleInfo(wrappedValue: Linear(inputChannels, vocosDim), key: "linear_pre")
         self._downsample = ModuleInfo(
-            wrappedValue: sampleRatios.map { _ in
-                SparkDownStage(dim: vocosDim, intermediateDim: vocosIntermediateDim)
-            }, key: "downsample")
+            wrappedValue: makeDownsample(sampleRatios, dim: vocosDim, intermediateDim: vocosIntermediateDim),
+            key: "downsample")
         self._vocosBackbone = ModuleInfo(
             wrappedValue: VocosBackbone(
                 inputChannels: vocosDim, dim: vocosDim,
@@ -94,12 +85,11 @@ public final class SparkFeatDecoder: Module {
         self._linear = ModuleInfo(wrappedValue: Linear(vocosDim, outChannels), key: "linear")
     }
 
-    /// `x`: [B, input_channels, T]; `c`: optional AdaLayerNorm condition id.
     public func callAsFunction(_ x: MLXArray, condition c: MLXArray? = nil) -> MLXArray {
-        var h = linearPre(x.transposed(0, 2, 1))   // [B, T, vocosDim]
-        for stage in downsample { h = stage(h) }
-        h = vocosBackbone(h.transposed(0, 2, 1), bandwidthId: c)  // [B, T, vocosDim]
-        h = linear(h).transposed(0, 2, 1)          // [B, outChannels, T]
+        var h = linearPre(x.transposed(0, 2, 1))
+        h = runDownsample(downsample, h)
+        h = vocosBackbone(h.transposed(0, 2, 1), bandwidthId: c)
+        h = linear(h).transposed(0, 2, 1)
         return useTanhAtFinal ? MLX.tanh(h) : h
     }
 }

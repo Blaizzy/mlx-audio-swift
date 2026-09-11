@@ -35,13 +35,16 @@ public final class SparkFactorizedVectorQuantize: Module {
         self._inProject = ModuleInfo(
             wrappedValue: WeightNormedConv(
                 inChannels: inputDim, outChannels: codebookDim,
-                kernelSize: 1, padding: 0, bias: true))
+                kernelSize: 1, padding: 0, bias: true),
+            key: "in_project")
         self._outProject = ModuleInfo(
             wrappedValue: WeightNormedConv(
                 inChannels: codebookDim, outChannels: inputDim,
-                kernelSize: 1, padding: 0, bias: true))
+                kernelSize: 1, padding: 0, bias: true),
+            key: "out_project")
         self._codebook = ModuleInfo(
-            wrappedValue: Embedding(embeddingCount: codebookSize, dimensions: codebookDim))
+            wrappedValue: Embedding(embeddingCount: codebookSize, dimensions: codebookDim),
+            key: "codebook")
     }
 
     /// `z`: [B, D=input_dim, T] -> code indices [B, T].

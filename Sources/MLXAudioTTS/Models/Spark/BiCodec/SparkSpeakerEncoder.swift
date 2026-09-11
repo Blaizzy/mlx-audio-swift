@@ -20,8 +20,8 @@ import MLXNN
 public final class SparkResidualFSQ: Module {
     @ModuleInfo(key: "project_out") public var projectOut: Linear
 
-    private let basis: MLXArray   // cumprod([1, levels[:-1]])
-    private let halfWidth: Int    // levels // 2 (levels are uniform == 4 here)
+    private let basis: [Int32]
+    private let halfWidth: Int
     private let levelSize: Int
 
     public init(dim: Int, levels: [Int]) {
@@ -29,16 +29,14 @@ public final class SparkResidualFSQ: Module {
         self._projectOut = ModuleInfo(wrappedValue: Linear(codebookDim, dim), key: "project_out")
         self.levelSize = levels[0]
         self.halfWidth = levels[0] / 2
-        var b = [Int](); var acc = 1
-        for l in levels { b.append(acc); acc *= l }
-        self.basis = MLXArray(b.map { Int32($0) })
+        var b = [Int32](); var acc: Int32 = 1
+        for l in levels { b.append(acc); acc *= Int32(l) }
+        self.basis = b
     }
 
-    /// FSQ code decode: index -> centered code in the codebook (matches
-    /// `_indices_to_codes` / `_scale_and_shift_inverse`).
     private func indicesToCodes(_ indices: MLXArray) -> MLXArray {
-        // indices: [...] -> codes [..., codebookDim]
-        let levelIdx = MLX.floorDivide(indices[.ellipsis, .newAxis], basis) % levelSize
+        let basisArr = MLXArray(basis)
+        let levelIdx = MLX.floorDivide(indices[.ellipsis, .newAxis], basisArr) % levelSize
         return (levelIdx.asType(.float32) - Float(halfWidth)) / Float(halfWidth)
     }
 
