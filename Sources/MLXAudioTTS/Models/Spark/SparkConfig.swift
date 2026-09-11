@@ -62,7 +62,6 @@ public struct SparkConfiguration: Codable, Sendable {
         self.bosTokenId = try c.decodeIfPresent(Int.self, forKey: .bosTokenId) ?? 151643
         self.eosTokenId = try c.decodeIfPresent(Int.self, forKey: .eosTokenId) ?? 151645
         self.sampleRate = try c.decodeIfPresent(Int.self, forKey: .sampleRate) ?? 16000
-        // Qwen2 omits head_dim; derive it from hidden_size / num_attention_heads.
         self.headDim =
             try c.decodeIfPresent(Int.self, forKey: .headDim) ?? (hiddenSize / attentionHeads)
     }

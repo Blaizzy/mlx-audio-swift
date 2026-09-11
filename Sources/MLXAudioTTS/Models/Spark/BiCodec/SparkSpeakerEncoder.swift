@@ -42,9 +42,9 @@ public final class SparkResidualFSQ: Module {
 
     /// `indices`: [B, n, numQuantizers=1] -> [B, n, dim].
     public func getOutputFromIndices(_ indices: MLXArray) -> MLXArray {
-        let q = indices[.ellipsis, 0]                 // [B, n]  (single quantizer)
-        let codes = indicesToCodes(q)                 // [B, n, codebookDim]
-        return projectOut(codes)                      // [B, n, dim]
+        let q = indices[.ellipsis, 0]
+        let codes = indicesToCodes(q)
+        return projectOut(codes)
     }
 }
 
@@ -61,10 +61,10 @@ public final class SparkSpeakerEncoder: Module {
 
     /// `globalTokens`: [B, 1, tokenNum] -> d-vector [B, outDim].
     public func detokenize(_ globalTokens: MLXArray) -> MLXArray {
-        let idx = globalTokens.swappedAxes(-1, -2)        // [B, tokenNum, 1]
-        let codes = quantizer.getOutputFromIndices(idx)   // [B, tokenNum, latentDim]
-        let zq = codes.swappedAxes(-1, -2)                // [B, latentDim, tokenNum]
-        let flat = zq.reshaped([zq.shape[0], -1])         // [B, latentDim*tokenNum]
-        return project(flat)                              // [B, outDim]
+        let idx = globalTokens.swappedAxes(-1, -2)
+        let codes = quantizer.getOutputFromIndices(idx)
+        let zq = codes.swappedAxes(-1, -2)
+        let flat = zq.reshaped([zq.shape[0], -1])
+        return project(flat)
     }
 }

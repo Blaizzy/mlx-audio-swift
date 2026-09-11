@@ -61,8 +61,8 @@ public final class SparkWaveGenerator: Module {
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
-        var h = x.transposed(0, 2, 1)   // [B, T, input_channel]
+        var h = x.transposed(0, 2, 1)
         for layer in model { h = (layer as! UnaryLayer).callAsFunction(h) }
-        return h.transposed(0, 2, 1)    // [B, 1, samples]
+        return h.transposed(0, 2, 1)
     }
 }

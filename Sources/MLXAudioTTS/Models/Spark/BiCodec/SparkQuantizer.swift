@@ -49,12 +49,12 @@ public final class SparkFactorizedVectorQuantize: Module {
 
     /// `z`: [B, D=input_dim, T] -> code indices [B, T].
     public func tokenize(_ z: MLXArray) -> MLXArray {
-        let zt = z.transposed(0, 2, 1)          // [B, T, input_dim]
-        let ze = inProject(zt)                  // [B, T, codebook_dim]
+        let zt = z.transposed(0, 2, 1)
+        let ze = inProject(zt)
         let b = ze.shape[0], t = ze.shape[1]
         var enc = ze.reshaped([b * t, codebookDim])
         enc = sparkL2Normalize(enc, axis: 1)
-        let cb = sparkL2Normalize(codebook.weight, axis: 1)  // [codebook_size, codebook_dim]
+        let cb = sparkL2Normalize(codebook.weight, axis: 1)
         let dist =
             MLX.sum(enc * enc, axis: 1, keepDims: true)
             - 2 * MLX.matmul(enc, cb.transposed(1, 0))
@@ -65,7 +65,7 @@ public final class SparkFactorizedVectorQuantize: Module {
 
     /// Code indices [B, T] -> latents [B, T, input_dim].
     public func detokenize(_ indices: MLXArray) -> MLXArray {
-        let emb = codebook.weight[indices]      // [B, T, codebook_dim]
-        return outProject(emb)                  // [B, T, input_dim]
+        let emb = codebook.weight[indices]
+        return outProject(emb)
     }
 }

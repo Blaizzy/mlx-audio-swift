@@ -53,12 +53,12 @@ public final class SparkBiCodec: Module {
 
     /// `semanticTokens`: [B, T], `globalTokens`: [B, tokenNum] -> waveform [B*samples].
     public func detokenize(semanticTokens: MLXArray, globalTokens: MLXArray) -> MLXArray {
-        let global = globalTokens.expandedDimensions(axis: 1)          // [B, 1, tokenNum]
-        let zq = quantizer.detokenize(semanticTokens).transposed(0, 2, 1)  // [B, inputDim, T]
-        let dVector = speakerEncoder.detokenize(global)               // [B, outDim]
-        var x = prenet(zq, condition: dVector)                        // [B, inputDim, T]
+        let global = globalTokens.expandedDimensions(axis: 1)
+        let zq = quantizer.detokenize(semanticTokens).transposed(0, 2, 1)
+        let dVector = speakerEncoder.detokenize(global)
+        var x = prenet(zq, condition: dVector)
         x = x + dVector.expandedDimensions(axis: -1)
-        let wav = decoder(x)                                          // [B, 1, samples]
+        let wav = decoder(x)
         return wav.squeezed()
     }
 
