@@ -513,7 +513,7 @@ final class FireRedASR2TransformerDecoder: Module {
         return (row .>= col).expandedDimensions(axis: 0)
     }
 
-    private func topK(_ x: MLXArray, k: Int) -> (MLXArray, MLXArray) {
+    static func topK(_ x: MLXArray, k: Int) -> (MLXArray, MLXArray) {
         let count = min(max(k, 1), x.shape[x.ndim - 1])
         let sortedIndices = MLX.argSort(-x, axis: -1)
         if x.ndim == 1 {
@@ -521,7 +521,9 @@ final class FireRedASR2TransformerDecoder: Module {
             return (take(x, topIndices, axis: -1), topIndices)
         }
         let topIndices = sortedIndices[0..., 0..<count]
-        return (take(x, topIndices, axis: -1), topIndices)
+        // takeAlong binds each index row to the matching input row; plain
+        // `take` would broadcast the flattened indices across every row.
+        return (takeAlong(x, topIndices, axis: -1), topIndices)
     }
 
     private func decoderState(
@@ -617,7 +619,7 @@ final class FireRedASR2TransformerDecoder: Module {
                 stepScores = MLX.concatenated(pieces, axis: -1)
             }
 
-            let (topScores, topTokens) = topK(stepScores, k: beamCount)
+            let (topScores, topTokens) = Self.topK(stepScores, k: beamCount)
             let topScoreValues = topScores.asArray(Float.self)
             let topTokenValues = topTokens.asArray(Int32.self)
 

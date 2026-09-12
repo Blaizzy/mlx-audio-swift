@@ -245,7 +245,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let ovParams = OmniVoiceGenerateParameters()
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
-        Task { @Sendable [weak self] in
+        let task = Task { @Sendable [weak self] in
             guard let self else { return }
             do {
                 guard tokenizer != nil else {
@@ -257,7 +257,10 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
                     refAudio: refAudio,
                     refText: refText,
                     language: language,
-                    ovParameters: ovParams
+                    ovParameters: ovParams,
+                    onStepProgress: { done, total in
+                        continuation.yield(.progress(Double(done) / Double(total)))
+                    }
                 )
                 let info = AudioGenerationInfo(
                     promptTokenCount: 0,
@@ -274,6 +277,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
                 continuation.finish(throwing: error)
             }
         }
+        continuation.onTermination = { _ in task.cancel() }
         return stream
     }
 
@@ -285,10 +289,15 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         refAudio: MLXArray?,
         refText: String?,
         language: String?,
-        ovParameters: OmniVoiceGenerateParameters
+        ovParameters: OmniVoiceGenerateParameters,
+        onStepProgress: (@Sendable (Int, Int) -> Void)? = nil
     ) async throws -> MLXArray {
         guard let audioTok = audioTokenizer else {
             throw AudioGenerationError.modelNotInitialized("Audio tokenizer not loaded")
+        }
+
+        if let seed = ovParameters.seed {
+            MLXRandom.seed(seed)
         }
 
         // 1. Encode reference audio to tokens if provided
@@ -368,8 +377,14 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
         // 7. Iterative diffusion generation
         for step in 0..<numSteps {
+            try Task.checkCancellation()
             let k = schedule[step]
-            if k <= 0 { continue }
+            if k <= 0 {
+                // Nothing left to unmask this step — still report it so
+                // progress always reaches numSteps/numSteps.
+                onStepProgress?(step + 1, numSteps)
+                continue
+            }
 
             // Separate forward passes for cond and uncond (bidirectional attention)
             let condLogits = forward(
@@ -436,6 +451,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             uncondInputIds = tokens  // uncond is just the target region
 
             eval(inputIds, uncondInputIds, tokens)
+            onStepProgress?(step + 1, numSteps)
         }
 
         // Safeguard: fill any remaining mask tokens with a final deterministic prediction
@@ -465,6 +481,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         }
 
         // 8. Decode tokens to waveform
+        try Task.checkCancellation()
         var outputTokens = tokens[0, 0..., 0..<targetLen]
 
         // Replace any remaining mask tokens with 0 (matching Python reference)

@@ -242,6 +242,38 @@ public struct NemotronASRPredictConfig: Codable, Sendable {
         case predRnnLayers = "pred_rnn_layers"
         case vocabSize = "vocab_size"
         case blankAsPad = "blank_as_pad"
+        case prednet
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let prednet = try container.decodeIfPresent(NemotronASRPredictNetworkConfig.self, forKey: .prednet)
+        predHidden = try container.decodeIfPresent(Int.self, forKey: .predHidden)
+            ?? prednet?.predHidden
+            ?? container.decode(Int.self, forKey: .predHidden)
+        predRnnLayers = try container.decodeIfPresent(Int.self, forKey: .predRnnLayers)
+            ?? prednet?.predRnnLayers
+            ?? container.decode(Int.self, forKey: .predRnnLayers)
+        vocabSize = try container.decode(Int.self, forKey: .vocabSize)
+        blankAsPad = try container.decodeIfPresent(Bool.self, forKey: .blankAsPad) ?? true
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(predHidden, forKey: .predHidden)
+        try container.encode(predRnnLayers, forKey: .predRnnLayers)
+        try container.encode(vocabSize, forKey: .vocabSize)
+        try container.encode(blankAsPad, forKey: .blankAsPad)
+    }
+}
+
+private struct NemotronASRPredictNetworkConfig: Decodable {
+    let predHidden: Int
+    let predRnnLayers: Int
+
+    enum CodingKeys: String, CodingKey {
+        case predHidden = "pred_hidden"
+        case predRnnLayers = "pred_rnn_layers"
     }
 }
 
@@ -251,6 +283,7 @@ public struct NemotronASRJointConfig: Codable, Sendable {
     public let encoderHidden: Int
     public let predHidden: Int
     public let numClasses: Int
+    public let vocabulary: [String]?
 
     enum CodingKeys: String, CodingKey {
         case jointHidden = "joint_hidden"
@@ -258,6 +291,51 @@ public struct NemotronASRJointConfig: Codable, Sendable {
         case encoderHidden = "encoder_hidden"
         case predHidden = "pred_hidden"
         case numClasses = "num_classes"
+        case jointnet
+        case vocabulary
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let jointnet = try container.decodeIfPresent(NemotronASRJointNetworkConfig.self, forKey: .jointnet)
+        jointHidden = try container.decodeIfPresent(Int.self, forKey: .jointHidden)
+            ?? jointnet?.jointHidden
+            ?? container.decode(Int.self, forKey: .jointHidden)
+        activation = try container.decodeIfPresent(String.self, forKey: .activation)
+            ?? jointnet?.activation
+            ?? container.decode(String.self, forKey: .activation)
+        encoderHidden = try container.decodeIfPresent(Int.self, forKey: .encoderHidden)
+            ?? jointnet?.encoderHidden
+            ?? container.decode(Int.self, forKey: .encoderHidden)
+        predHidden = try container.decodeIfPresent(Int.self, forKey: .predHidden)
+            ?? jointnet?.predHidden
+            ?? container.decode(Int.self, forKey: .predHidden)
+        numClasses = try container.decode(Int.self, forKey: .numClasses)
+        vocabulary = try container.decodeIfPresent([String].self, forKey: .vocabulary)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(jointHidden, forKey: .jointHidden)
+        try container.encode(activation, forKey: .activation)
+        try container.encode(encoderHidden, forKey: .encoderHidden)
+        try container.encode(predHidden, forKey: .predHidden)
+        try container.encode(numClasses, forKey: .numClasses)
+        try container.encodeIfPresent(vocabulary, forKey: .vocabulary)
+    }
+}
+
+private struct NemotronASRJointNetworkConfig: Decodable {
+    let jointHidden: Int
+    let activation: String
+    let encoderHidden: Int
+    let predHidden: Int
+
+    enum CodingKeys: String, CodingKey {
+        case jointHidden = "joint_hidden"
+        case activation
+        case encoderHidden = "encoder_hidden"
+        case predHidden = "pred_hidden"
     }
 }
 
@@ -273,6 +351,7 @@ public struct NemotronASRConfig: Codable, Sendable {
     public let defaultLanguage: String
     public let defaultAttContextSize: [Int]
     public let maxSymbols: Int?
+    public let hasPromptConditioning: Bool
 
     enum CodingKeys: String, CodingKey {
         case modelType = "model_type"
@@ -297,13 +376,23 @@ public struct NemotronASRConfig: Codable, Sendable {
             ?? NemotronASRPreprocessConfig()
         self.encoder = try container.decodeIfPresent(NemotronASRConformerConfig.self, forKey: .encoder)
             ?? NemotronASRConformerConfig()
-        self.prompt = try container.decodeIfPresent(NemotronASRPromptConfig.self, forKey: .prompt)
-            ?? NemotronASRPromptConfig()
+        if let prompt = try container.decodeIfPresent(NemotronASRPromptConfig.self, forKey: .prompt) {
+            self.prompt = prompt
+            self.hasPromptConditioning = true
+        } else {
+            self.prompt = NemotronASRPromptConfig()
+            self.hasPromptConditioning = false
+        }
         self.decoder = try container.decode(NemotronASRPredictConfig.self, forKey: .decoder)
         self.joint = try container.decode(NemotronASRJointConfig.self, forKey: .joint)
-        self.vocabulary = try container.decodeIfPresent([String].self, forKey: .vocabulary) ?? []
-        self.defaultLanguage = try container.decodeIfPresent(String.self, forKey: .defaultLanguage) ?? "auto"
-        self.defaultAttContextSize = try container.decodeIfPresent([Int].self, forKey: .defaultAttContextSize) ?? [56, 13]
+        self.vocabulary = try container.decodeIfPresent([String].self, forKey: .vocabulary)
+            ?? self.joint.vocabulary
+            ?? []
+        self.defaultLanguage = try container.decodeIfPresent(String.self, forKey: .defaultLanguage)
+            ?? (self.hasPromptConditioning ? "auto" : "en")
+        self.defaultAttContextSize = try container.decodeIfPresent([Int].self, forKey: .defaultAttContextSize)
+            ?? self.encoder.attContextSize.first
+            ?? [56, 13]
         self.maxSymbols = try container.decodeIfPresent(Int.self, forKey: .maxSymbols)
     }
 }

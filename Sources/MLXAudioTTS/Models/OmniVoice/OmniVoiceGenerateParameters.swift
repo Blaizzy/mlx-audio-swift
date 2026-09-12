@@ -63,6 +63,10 @@ public struct OmniVoiceGenerateParameters: Sendable {
     /// Lower values = more deterministic, higher values = more variation.
     public var classTemperature: Float
 
+    /// Optional random seed for reproducible generation.
+    /// When nil, generation continues from MLX's current random state.
+    public var seed: UInt64?
+
     // MARK: - Initialization
 
     public init(
@@ -75,7 +79,8 @@ public struct OmniVoiceGenerateParameters: Sendable {
         postprocessOutput: Bool = true,
         layerPenaltyFactor: Float = 5.0,
         positionTemperature: Float = 5.0,
-        classTemperature: Float = 0.0
+        classTemperature: Float = 0.0,
+        seed: UInt64? = nil
     ) {
         self.numStep = numStep
         self.guidanceScale = guidanceScale
@@ -87,6 +92,7 @@ public struct OmniVoiceGenerateParameters: Sendable {
         self.layerPenaltyFactor = layerPenaltyFactor
         self.positionTemperature = positionTemperature
         self.classTemperature = classTemperature
+        self.seed = seed
     }
 
     /// Default parameters optimized for fast generation.

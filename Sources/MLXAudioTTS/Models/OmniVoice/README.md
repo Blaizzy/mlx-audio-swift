@@ -32,7 +32,7 @@ swift run mlx-audio-swift-tts --model mlx-community/OmniVoice \
     --text "Hello!" --voice "male, british accent" --output out.wav
 ```
 
-Generation knobs live in `OmniVoiceGenerateParameters` (`numStep`, `guidanceScale`, `speed`, `positionTemperature`, `tShift`, ...). Defaults match the Python reference (`num_steps=32`, `guidance_scale=2.0`).
+Generation knobs live in `OmniVoiceGenerateParameters` (`numStep`, `guidanceScale`, `speed`, `positionTemperature`, `tShift`, `seed`, ...). Defaults match the Python reference (`num_steps=32`, `guidance_scale=2.0`). Set `seed` to reproduce generation; leave it `nil` to continue from MLX's current random state.
 
 ## Modes
 

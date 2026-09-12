@@ -144,7 +144,7 @@ enum App {
 
             for try await event in stream {
                 switch event {
-                case .token:
+                case .token, .progress:
                     break
                 case .info(let info):
                     generationInfo = info

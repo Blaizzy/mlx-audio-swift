@@ -20,7 +20,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
     public var computeDType: DType = .bfloat16
 
     @ModuleInfo(key: "encoder") var encoder: NemotronASRConformer
-    @ModuleInfo(key: "prompt_kernel") var promptKernel: NemotronASRPromptKernel
+    @ModuleInfo(key: "prompt_kernel") var promptKernel: NemotronASRPromptKernel?
     @ModuleInfo(key: "decoder") var decoder: NemoPredictNetwork
     @ModuleInfo(key: "joint") var joint: NemoJointNetwork
 
@@ -42,19 +42,21 @@ public final class NemotronASRModel: Module, STTGenerationModel {
         self.preprocessConfig = config.preprocessor
         self.encoderConfig = config.encoder
         self.vocabulary = config.vocabulary
-        self.promptDictionary = config.prompt.promptDictionary
-        self.numPrompts = config.prompt.numPrompts
+        self.promptDictionary = config.hasPromptConditioning ? config.prompt.promptDictionary : [:]
+        self.numPrompts = config.hasPromptConditioning ? config.prompt.numPrompts : 0
         self.blankTokenID = config.decoder.vocabSize
         self.defaultLanguage = config.defaultLanguage
         self.defaultAttContextSize = config.defaultAttContextSize
         self.maxSymbols = config.maxSymbols
 
         self._encoder.wrappedValue = NemotronASRConformer(args: config.encoder)
-        self._promptKernel.wrappedValue = NemotronASRPromptKernel(
-            dModel: config.encoder.dModel,
-            numPrompts: config.prompt.numPrompts,
-            promptHidden: config.prompt.promptHidden
-        )
+        self._promptKernel.wrappedValue = config.hasPromptConditioning
+            ? NemotronASRPromptKernel(
+                dModel: config.encoder.dModel,
+                numPrompts: config.prompt.numPrompts,
+                promptHidden: config.prompt.promptHidden
+            )
+            : nil
         self._decoder.wrappedValue = NemoPredictNetwork(
             args: NemoPredictConfig(
                 blankAsPad: config.decoder.blankAsPad,
@@ -259,6 +261,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
     }
 
     func applyPrompt(_ encoded: MLXArray, language: String? = nil) -> MLXArray {
+        guard let promptKernel else { return encoded }
         let promptIndex = resolvePromptIndex(language)
         let batch = encoded.shape[0]
         let time = encoded.shape[1]
@@ -356,7 +359,10 @@ public extension NemotronASRModel {
             weights.merge(shard) { _, new in new }
         }
 
-        let sanitized = sanitize(weights: weights)
+        let sanitized = sanitize(
+            weights: weights,
+            quantization: quantConfig.perLayerQuantization
+        )
 
         if let perLayerQuant = quantConfig.perLayerQuantization {
             quantize(model: model) { path, _ in
@@ -411,8 +417,11 @@ public extension NemotronASRModel {
     }
 }
 
-private extension NemotronASRModel {
-    static func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+extension NemotronASRModel {
+    static func sanitize(
+        weights: [String: MLXArray],
+        quantization: BaseConfiguration.PerLayerQuantization?
+    ) -> [String: MLXArray] {
         var sanitized: [String: MLXArray] = [:]
         sanitized.reserveCapacity(weights.count)
 
@@ -421,10 +430,44 @@ private extension NemotronASRModel {
             sanitized[remapped] = value
         }
 
+        let pointwiseWeights = sanitized.keys.filter { key in
+            guard key.hasSuffix(".weight"),
+                  key.contains(".conv.pointwise_conv"),
+                  let weight = sanitized[key]
+            else {
+                return false
+            }
+            return weight.dtype == .uint32 && weight.ndim == 2
+        }
+
+        for weightKey in pointwiseWeights {
+            let prefix = String(weightKey.dropLast(".weight".count))
+            let scalesKey = "\(prefix).scales"
+            let biasesKey = "\(prefix).biases"
+            guard let weight = sanitized[weightKey],
+                  let scales = sanitized[scalesKey],
+                  let parameters = quantization?.quantization(layer: prefix)
+            else {
+                continue
+            }
+
+            sanitized[weightKey] = MLX.dequantized(
+                weight,
+                scales: scales,
+                biases: sanitized[biasesKey],
+                groupSize: parameters.groupSize,
+                bits: parameters.bits,
+                mode: parameters.mode,
+                dtype: scales.dtype
+            ).expandedDimensions(axis: 1)
+            sanitized.removeValue(forKey: scalesKey)
+            sanitized.removeValue(forKey: biasesKey)
+        }
+
         return sanitized
     }
 
-    static func remapKey(_ key: String) -> String? {
+    private static func remapKey(_ key: String) -> String? {
         var newKey = key
         newKey = newKey.replacingOccurrences(of: "joint.joint_net.2.", with: "joint.joint_net.")
         newKey = newKey.replacingOccurrences(of: ".pos_bias_u", with: ".posBiasU")
@@ -443,7 +486,7 @@ private extension NemotronASRModel {
         return newKey
     }
 
-    static func remapPreEncodeConvListKey(_ key: String) -> String? {
+    private static func remapPreEncodeConvListKey(_ key: String) -> String? {
         let pieces = key.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
         guard pieces.count >= 5 else { return nil }
         guard pieces[0] == "encoder", pieces[1] == "pre_encode", pieces[2] == "conv" else { return nil }
@@ -472,7 +515,7 @@ private extension NemotronASRModel {
         return nil
     }
 
-    static func shouldSkipPreEncodeConvListKey(_ key: String) -> Bool {
+    private static func shouldSkipPreEncodeConvListKey(_ key: String) -> Bool {
         let pieces = key.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
         guard pieces.count >= 5 else { return false }
         guard pieces[0] == "encoder", pieces[1] == "pre_encode", pieces[2] == "conv" else { return false }
