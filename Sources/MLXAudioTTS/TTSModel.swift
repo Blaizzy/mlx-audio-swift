@@ -214,6 +214,12 @@ public enum TTS {
                 pretrained: { try await IndexTTSModel.fromPretrained($0, cache: $1) },
                 local: { modelDir, _ in try await IndexTTSModel.fromModelDirectory(modelDir) }
             )
+        case "dia":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await DiaTTSModel.fromPretrained($0, cache: $1) }
+            )
         default:
             throw TTSModelError.unsupportedModelType(resolvedType)
         }
@@ -328,6 +334,11 @@ public enum TTS {
         }
         if lower.contains("indextts") || lower.contains("index-tts") || lower.contains("index_tts") {
             return "indextts"
+        }
+        if lower.contains("nari-labs") || lower.contains("nari_labs")
+            || lower.contains("dia-1.6b") || lower.contains("dia-tts") || lower.contains("dia_tts")
+        {
+            return "dia"
         }
         return nil
     }

@@ -105,6 +105,7 @@ let package = Package(
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXFast", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "MLXRandom", package: "mlx-swift"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
@@ -113,6 +114,7 @@ let package = Package(
             path: "Sources/MLXAudioTTS",
             exclude: [
                 "Models/Chatterbox/README.md",
+                "Models/Dia/README.md",
                 "Models/EchoTTS/README.md",
                 "Models/FishSpeech/README.md",
                 "Models/Llama/README.md",
