@@ -1,12 +1,3 @@
-//
-//  SparkConfig.swift
-//  MLXAudio
-//
-//  BiCodec configuration for Spark-TTS (SparkAudio). Only the fields used by the
-//  synthesis (detokenize) path are modelled: the quantizer, the FSQ speaker
-//  encoder, the conditioned prenet, and the wave-generator decoder.
-//
-
 import Foundation
 
 /// BiCodec codec configuration, decoded from the checkpoint's `BiCodec/config.yaml`.

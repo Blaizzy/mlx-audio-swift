@@ -1,11 +1,3 @@
-//
-//  SparkQuantizer.swift
-//  MLXAudio
-//
-//  Factorized vector quantizer for Spark-TTS BiCodec (ports the decode path of
-//  spark/modules/residual.py FactorizedVectorQuantize): code ids -> latents.
-//
-
 import Foundation
 @preconcurrency import MLX
 import MLXNN

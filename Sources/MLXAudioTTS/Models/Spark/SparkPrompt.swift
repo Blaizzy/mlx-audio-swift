@@ -1,11 +1,3 @@
-//
-//  SparkPrompt.swift
-//  MLXAudio
-//
-//  Prompt construction and generated-token parsing for Spark-TTS, mirroring
-//  spark.py (process_prompt_control) and utils/token_parser.py.
-//
-
 import Foundation
 
 public enum SparkLevel: String, CaseIterable, Sendable {

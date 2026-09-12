@@ -1,16 +1,3 @@
-//
-//  SparkSpeakerEncoder.swift
-//  MLXAudio
-//
-//  Speaker encoder for Spark-TTS BiCodec — DETOKENIZE path only (global token ids
-//  -> speaker d-vector), which is all the controllable-TTS synthesis path needs.
-//  The ECAPA/perceiver *encode* path (voice cloning) is intentionally omitted for
-//  now; its checkpoint weights are dropped on load.
-//
-//  Ports the detokenize portions of spark/modules/residual_fsq.py (ResidualFSQ,
-//  num_quantizers == 1, finite-scalar codebook) and speaker/speaker_encoder.py.
-//
-
 import Foundation
 @preconcurrency import MLX
 import MLXNN

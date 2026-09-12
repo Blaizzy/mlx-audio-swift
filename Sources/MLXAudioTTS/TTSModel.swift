@@ -97,7 +97,6 @@ public enum TTS {
         textProcessor: TextProcessor?
     ) async throws -> SpeechGenerationModel {
         var resolvedType = normalizedModelType(modelType) ?? inferModelType(from: source.fallbackName)
-        // Spark-TTS ships a generic `qwen2` config; disambiguate it by repo name.
         if resolvedType == "qwen2", source.fallbackName.lowercased().contains("spark") {
             resolvedType = "spark"
         }

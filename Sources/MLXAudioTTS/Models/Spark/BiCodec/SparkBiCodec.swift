@@ -1,12 +1,3 @@
-//
-//  SparkBiCodec.swift
-//  MLXAudio
-//
-//  BiCodec detokenizer for Spark-TTS: semantic + global tokens -> waveform.
-//  The encode path (voice cloning: mel + Wav2Vec2 + ECAPA + perceiver) is not
-//  included; only the synthesis path used by controllable TTS is implemented.
-//
-
 import Foundation
 @preconcurrency import MLX
 import MLXNN

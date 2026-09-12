@@ -1,13 +1,3 @@
-//
-//  SparkModel.swift
-//  MLXAudio
-//
-//  Spark-TTS (SparkAudio): a Qwen2 language model emits BiCodec semantic (and,
-//  in the controllable path, global) tokens which the BiCodec decodes to audio.
-//  This implements the controllable-TTS path (gender/pitch/speed); voice cloning
-//  (reference-audio encode) is not yet included.
-//
-
 import Foundation
 import HuggingFace
 @preconcurrency import MLX

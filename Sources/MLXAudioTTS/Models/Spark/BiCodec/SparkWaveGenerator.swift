@@ -1,14 +1,3 @@
-//
-//  SparkWaveGenerator.swift
-//  MLXAudio
-//
-//  HiFiGAN/DAC-style wave generator for Spark-TTS BiCodec (ports
-//  spark/modules/encoder_decoder/wave_generator.py). Reuses the Descript DAC
-//  primitives, which are the same classes the Python imports from descript.dac,
-//  so weight keys line up. Spark uses explicit transpose-conv kernel sizes
-//  (not 2*stride) and transposes to NLC at the boundaries.
-//
-
 import Foundation
 import MLXAudioCodecs
 @preconcurrency import MLX
