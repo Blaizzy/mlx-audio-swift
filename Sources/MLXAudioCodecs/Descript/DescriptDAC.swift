@@ -111,8 +111,7 @@ public final class DescriptDecoderBlock: Module, UnaryLayer {
                 outChannels: outputDim,
                 kernelSize: 2 * stride,
                 stride: stride,
-                padding: Int(ceil(Double(stride) / 2.0)),
-                outputPadding: 1
+                padding: Int(ceil(Double(stride) / 2.0))
             ),
             DescriptResidualUnit(dim: outputDim, dilation: 1),
             DescriptResidualUnit(dim: outputDim, dilation: 3),
