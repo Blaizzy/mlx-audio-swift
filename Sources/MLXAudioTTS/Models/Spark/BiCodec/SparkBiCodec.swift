@@ -74,6 +74,7 @@ public final class SparkBiCodec: Module {
         for (key, value) in weights {
             if key == "quantizer.cluster_size" { continue }
             if key.hasPrefix("encoder.") || key.hasPrefix("postnet.")
+                || key.hasPrefix("quantizer.in_project.")
                 || key.hasPrefix("speaker_encoder.speaker_encoder.")
                 || key.hasPrefix("speaker_encoder.perceiver_sampler.")
                 || key.hasPrefix("speaker_encoder.quantizer.project_in.") { continue }

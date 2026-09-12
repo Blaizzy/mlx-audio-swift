@@ -22,16 +22,15 @@ public enum SparkTTSError: Error {
     case noAudioTokens
 }
 
-/// BiCodec configuration for the published `Spark-TTS-0.5B` checkpoint.
+/// BiCodec configuration for the published `Spark-TTS-0.5B` checkpoint (the
+/// subset used by the synthesis path).
 private let sparkBiCodecConfigJSON = """
 {
- "mel_params":{"sample_rate":16000,"n_fft":1024,"win_length":640,"hop_length":320,"mel_fmin":10,"mel_fmax":null,"num_mels":128},
- "encoder":{"input_channels":1024,"vocos_dim":384,"vocos_intermediate_dim":2048,"vocos_num_layers":12,"out_channels":1024,"sample_ratios":[1,1]},
+ "mel_params":{"sample_rate":16000},
  "decoder":{"input_channel":1024,"channels":1536,"rates":[8,5,4,2],"kernel_sizes":[16,11,8,4]},
- "quantizer":{"input_dim":1024,"codebook_size":8192,"codebook_dim":8,"commitment":0.25,"use_l2_normlize":true},
- "speaker_encoder":{"input_dim":128,"out_dim":1024,"latent_dim":128,"token_num":32,"fsq_levels":[4,4,4,4,4,4],"fsq_num_quantizers":1},
- "prenet":{"input_channels":1024,"vocos_dim":384,"vocos_intermediate_dim":2048,"vocos_num_layers":12,"out_channels":1024,"condition_dim":1024,"sample_ratios":[1,1],"use_tanh_at_final":false},
- "postnet":{"input_channels":1024,"vocos_dim":384,"vocos_intermediate_dim":2048,"vocos_num_layers":6,"out_channels":1024,"use_tanh_at_final":false}
+ "quantizer":{"input_dim":1024,"codebook_size":8192,"codebook_dim":8},
+ "speaker_encoder":{"out_dim":1024,"latent_dim":128,"token_num":32,"fsq_levels":[4,4,4,4,4,4]},
+ "prenet":{"input_channels":1024,"vocos_dim":384,"vocos_intermediate_dim":2048,"vocos_num_layers":12,"out_channels":1024,"condition_dim":1024,"sample_ratios":[1,1],"use_tanh_at_final":false}
 }
 """
 

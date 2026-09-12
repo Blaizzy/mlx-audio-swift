@@ -3,15 +3,10 @@
 //  MLXAudio
 //
 //  Prompt construction and generated-token parsing for Spark-TTS, mirroring
-//  spark.py (process_prompt / process_prompt_control) and utils/token_parser.py.
+//  spark.py (process_prompt_control) and utils/token_parser.py.
 //
 
 import Foundation
-
-public enum SparkTaskToken {
-    public static let tts = "<|task_tts|>"
-    public static let controllableTTS = "<|task_controllable_tts|>"
-}
 
 public enum SparkLevel: String, CaseIterable, Sendable {
     case veryLow = "very_low"
@@ -39,33 +34,6 @@ public enum SparkGender: String, Sendable {
 }
 
 enum SparkPrompt {
-    /// Voice-cloning prompt: reference global (+ optional semantic) tokens followed
-    /// by the target text. `globalTokenIds`/`semanticTokenIds` come from BiCodec.
-    static func clone(
-        text: String,
-        refText: String?,
-        globalTokenIds: [Int],
-        semanticTokenIds: [Int]?
-    ) -> String {
-        let globalTokens = globalTokenIds.map { "<|bicodec_global_\($0)|>" }.joined()
-
-        var parts: [String] = [SparkTaskToken.tts, "<|start_content|>"]
-        if let refText, let semanticTokenIds {
-            let semanticTokens = semanticTokenIds.map { "<|bicodec_semantic_\($0)|>" }.joined()
-            parts += [
-                refText, text, "<|end_content|>",
-                "<|start_global_token|>", globalTokens, "<|end_global_token|>",
-                "<|start_semantic_token|>", semanticTokens,
-            ]
-        } else {
-            parts += [
-                text, "<|end_content|>",
-                "<|start_global_token|>", globalTokens, "<|end_global_token|>",
-            ]
-        }
-        return parts.joined()
-    }
-
     /// Controllable-TTS prompt: gender/pitch/speed style labels, no reference audio.
     static func control(
         gender: SparkGender,
@@ -75,7 +43,7 @@ enum SparkPrompt {
     ) -> String {
         let attribute = "<|gender_\(gender.id)|><|pitch_label_\(pitch.id)|><|speed_label_\(speed.id)|>"
         return [
-            SparkTaskToken.controllableTTS,
+            "<|task_controllable_tts|>",
             "<|start_content|>", text, "<|end_content|>",
             "<|start_style_label|>", attribute, "<|end_style_label|>",
         ].joined()
