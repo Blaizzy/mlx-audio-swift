@@ -28,6 +28,7 @@ public final class SparkBiCodec: Module {
             key: "quantizer")
         self._speakerEncoder = ModuleInfo(
             wrappedValue: SparkSpeakerEncoder(
+                inputDim: config.speakerEncoder.inputDim ?? 128,
                 latentDim: config.speakerEncoder.latentDim,
                 outDim: config.speakerEncoder.outDim,
                 tokenNum: config.speakerEncoder.tokenNum,
@@ -79,9 +80,11 @@ public final class SparkBiCodec: Module {
             uniquingKeysWith: { a, _ in a })
         var out: [String: MLXArray] = [:]
         for (key, value) in weights {
-            if key == "quantizer.cluster_size" { continue }
+            if key == "quantizer.cluster_size" || key.hasSuffix(".num_batches_tracked") { continue }
             if key.hasPrefix("postnet.")
-                || key.hasPrefix("speaker_encoder.speaker_encoder.")
+                || key.hasPrefix("speaker_encoder.speaker_encoder.bn.")
+                || key.hasPrefix("speaker_encoder.speaker_encoder.linear.")
+                || key.hasPrefix("speaker_encoder.speaker_encoder.pool.")
                 || key.hasPrefix("speaker_encoder.perceiver_sampler.")
                 || key.hasPrefix("speaker_encoder.quantizer.project_in.") { continue }
             var v = value

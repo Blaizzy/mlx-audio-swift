@@ -37,10 +37,12 @@ public final class SparkResidualFSQ: Module {
 
 /// Global token ids -> speaker d-vector.
 public final class SparkSpeakerEncoder: Module {
+    @ModuleInfo(key: "speaker_encoder") public var ecapa: SparkEcapaTDNN
     @ModuleInfo(key: "quantizer") public var quantizer: SparkResidualFSQ
     @ModuleInfo(key: "project") public var project: Linear
 
-    public init(latentDim: Int, outDim: Int, tokenNum: Int, fsqLevels: [Int]) {
+    public init(inputDim: Int, latentDim: Int, outDim: Int, tokenNum: Int, fsqLevels: [Int]) {
+        self._ecapa = ModuleInfo(wrappedValue: SparkEcapaTDNN(featDim: inputDim), key: "speaker_encoder")
         self._quantizer = ModuleInfo(
             wrappedValue: SparkResidualFSQ(dim: latentDim, levels: fsqLevels), key: "quantizer")
         self._project = ModuleInfo(wrappedValue: Linear(latentDim * tokenNum, outDim), key: "project")
