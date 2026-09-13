@@ -59,6 +59,11 @@ public final class SparkBiCodec: Module {
         quantizer.tokenize(encoder(feat.transposed(0, 2, 1)))
     }
 
+    /// Reference mel [B, T, mel] -> global speaker token ids [B, 1, tokenNum].
+    public func tokenizeGlobal(_ mel: MLXArray) -> MLXArray {
+        speakerEncoder.tokenize(mel)
+    }
+
     /// `semanticTokens`: [B, T], `globalTokens`: [B, tokenNum] -> waveform [B*samples].
     public func detokenize(semanticTokens: MLXArray, globalTokens: MLXArray) -> MLXArray {
         let global = globalTokens.expandedDimensions(axis: 1)
@@ -84,9 +89,19 @@ public final class SparkBiCodec: Module {
             if key.hasPrefix("postnet.")
                 || key.hasPrefix("speaker_encoder.speaker_encoder.bn.")
                 || key.hasPrefix("speaker_encoder.speaker_encoder.linear.")
-                || key.hasPrefix("speaker_encoder.speaker_encoder.pool.")
-                || key.hasPrefix("speaker_encoder.perceiver_sampler.")
-                || key.hasPrefix("speaker_encoder.quantizer.project_in.") { continue }
+                || key.hasPrefix("speaker_encoder.speaker_encoder.pool.") { continue }
+            var key = key
+            if key.hasPrefix("speaker_encoder.perceiver_sampler.layers.") {
+                for (pattern, replacement) in [
+                    (#"\.layers\.(\d+)\.0\.to_q\."#, ".layers.$1.attn.to_q."),
+                    (#"\.layers\.(\d+)\.0\.to_kv\."#, ".layers.$1.attn.to_kv."),
+                    (#"\.layers\.(\d+)\.0\.to_out\."#, ".layers.$1.attn.to_out."),
+                    (#"\.layers\.(\d+)\.1\.0\."#, ".layers.$1.ff.lin_in."),
+                    (#"\.layers\.(\d+)\.1\.2\."#, ".layers.$1.ff.lin_out."),
+                ] {
+                    key = key.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
+                }
+            }
             var v = value
             if let want = expected[key], v.ndim == 3, v.shape != want {
                 for perm in [[0, 2, 1], [1, 2, 0], [2, 1, 0], [2, 0, 1], [1, 0, 2]] {
