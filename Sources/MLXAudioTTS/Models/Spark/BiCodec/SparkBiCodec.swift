@@ -3,12 +3,23 @@ import Foundation
 import MLXNN
 
 public final class SparkBiCodec: Module {
+    @ModuleInfo(key: "encoder") public var encoder: SparkFeatEncoder
     @ModuleInfo(key: "quantizer") public var quantizer: SparkFactorizedVectorQuantize
     @ModuleInfo(key: "speaker_encoder") public var speakerEncoder: SparkSpeakerEncoder
     @ModuleInfo(key: "prenet") public var prenet: SparkFeatDecoder
     @ModuleInfo(key: "decoder") public var decoder: SparkWaveGenerator
 
     public init(_ config: BiCodecConfiguration) {
+        let enc = config.encoder
+        self._encoder = ModuleInfo(
+            wrappedValue: SparkFeatEncoder(
+                inputChannels: enc?.inputChannels ?? 1024,
+                vocosDim: enc?.vocosDim ?? 384,
+                vocosIntermediateDim: enc?.vocosIntermediateDim ?? 2048,
+                vocosNumLayers: enc?.vocosNumLayers ?? 12,
+                outChannels: enc?.outChannels ?? 1024,
+                sampleRatios: enc?.sampleRatios ?? [1, 1]),
+            key: "encoder")
         self._quantizer = ModuleInfo(
             wrappedValue: SparkFactorizedVectorQuantize(
                 inputDim: config.quantizer.inputDim,
@@ -42,6 +53,11 @@ public final class SparkBiCodec: Module {
             key: "decoder")
     }
 
+    /// Wav2Vec2 features `feat` [B, T, D] -> semantic token ids [B, T].
+    public func tokenizeSemantic(_ feat: MLXArray) -> MLXArray {
+        quantizer.tokenize(encoder(feat.transposed(0, 2, 1)))
+    }
+
     /// `semanticTokens`: [B, T], `globalTokens`: [B, tokenNum] -> waveform [B*samples].
     public func detokenize(semanticTokens: MLXArray, globalTokens: MLXArray) -> MLXArray {
         let global = globalTokens.expandedDimensions(axis: 1)
@@ -64,7 +80,7 @@ public final class SparkBiCodec: Module {
         var out: [String: MLXArray] = [:]
         for (key, value) in weights {
             if key == "quantizer.cluster_size" { continue }
-            if key.hasPrefix("encoder.") || key.hasPrefix("postnet.")
+            if key.hasPrefix("postnet.")
                 || key.hasPrefix("speaker_encoder.speaker_encoder.")
                 || key.hasPrefix("speaker_encoder.perceiver_sampler.")
                 || key.hasPrefix("speaker_encoder.quantizer.project_in.") { continue }

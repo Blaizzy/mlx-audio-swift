@@ -63,12 +63,14 @@ public struct BiCodecConfiguration: Codable, Sendable {
 
     /// Finite-scalar-quantized speaker encoder decoding global tokens.
     public struct SpeakerEncoder: Codable, Sendable {
+        public var inputDim: Int?
         public var outDim: Int
         public var latentDim: Int
         public var tokenNum: Int
         public var fsqLevels: [Int]
 
         enum CodingKeys: String, CodingKey {
+            case inputDim = "input_dim"
             case outDim = "out_dim"
             case latentDim = "latent_dim"
             case tokenNum = "token_num"
@@ -77,6 +79,7 @@ public struct BiCodecConfiguration: Codable, Sendable {
     }
 
     public var melParams: MelParams
+    public var encoder: VocosBackbone?
     public var decoder: WaveGenerator
     public var quantizer: Quantizer
     public var speakerEncoder: SpeakerEncoder
@@ -84,7 +87,7 @@ public struct BiCodecConfiguration: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case melParams = "mel_params"
-        case decoder, quantizer
+        case encoder, decoder, quantizer
         case speakerEncoder = "speaker_encoder"
         case prenet
     }

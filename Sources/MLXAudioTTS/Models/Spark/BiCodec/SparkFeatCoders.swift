@@ -27,6 +27,38 @@ fileprivate func runDownsample(_ stages: [[Module]], _ x: MLXArray) -> MLXArray 
     return h
 }
 
+/// Feature encoder: Vocos backbone -> downsample stages -> linear projection.
+/// Maps wav2vec2 features [B, input_channels, T] to latents [B, out_channels, T].
+public final class SparkFeatEncoder: Module {
+    @ModuleInfo(key: "encoder") var encoder: VocosBackbone
+    @ModuleInfo(key: "downsample") fileprivate var downsample: [[Module]]
+    @ModuleInfo(key: "project") var project: Linear
+
+    public init(
+        inputChannels: Int, vocosDim: Int, vocosIntermediateDim: Int,
+        vocosNumLayers: Int, outChannels: Int, sampleRatios: [Int]
+    ) {
+        self._encoder = ModuleInfo(
+            wrappedValue: VocosBackbone(
+                inputChannels: inputChannels, dim: vocosDim,
+                intermediateDim: vocosIntermediateDim, numLayers: vocosNumLayers),
+            key: "encoder")
+        self._downsample = ModuleInfo(
+            wrappedValue: makeDownsample(sampleRatios, dim: vocosDim, intermediateDim: vocosIntermediateDim),
+            key: "downsample")
+        self._project = ModuleInfo(wrappedValue: Linear(vocosDim, outChannels), key: "project")
+    }
+
+    public func callAsFunction(_ x: MLXArray) -> MLXArray {
+        var h = encoder(x)
+        for stage in downsample {
+            h = (stage[0] as! SparkSamplingBlock)(h.transposed(0, 2, 1))
+            h = (stage[1] as! VocosBackbone)(h.transposed(0, 2, 1))
+        }
+        return project(h).transposed(0, 2, 1)
+    }
+}
+
 /// Feature decoder (prenet): linear_pre -> downsample -> conditioned
 /// Vocos backbone -> linear. `conditionDim` enables AdaLayerNorm (prenet).
 public final class SparkFeatDecoder: Module {
