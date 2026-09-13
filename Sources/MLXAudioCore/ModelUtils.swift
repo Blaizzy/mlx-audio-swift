@@ -99,10 +99,18 @@ public enum ModelUtils {
                         // resolveModelType pre-downloads with no additional
                         // patterns, so a later load that needs e.g. "*.mvn"
                         // would otherwise silently get a partial snapshot.
+                        //
+                        // Default patterns (e.g. "*.json", "*.safetensors")
+                        // are downloaded on every snapshot fetch, so they
+                        // count as covered without needing a manifest entry.
                         let requestedPatterns = Set(additionalMatchingPatterns)
-                        let recorded = recordedPatterns(modelDir: modelDir)
-                        if requestedPatterns.isEmpty
-                            || (recorded.map { requestedPatterns.isSubset(of: $0) } ?? false) {
+                        let recorded = recordedPatterns(modelDir: modelDir) ?? []
+                        let covered = recorded.union(
+                            Self.defaultDownloadPatterns(
+                                requiredExtension: normalizedRequiredExtension
+                            )
+                        )
+                        if requestedPatterns.isSubset(of: covered) {
                             print("Using cached model at: \(modelDir.path)")
                             return modelDir
                         }
@@ -125,13 +133,9 @@ public enum ModelUtils {
         let effectivePatterns = Set(additionalMatchingPatterns)
             .union(recordedPatterns(modelDir: modelDir) ?? [])
 
-        var allowedExtensions: Set<String> = [
-            "*.\(normalizedRequiredExtension)",
-            "*.safetensors",
-            "*.json",
-            "*.txt",
-            "*.wav",
-        ]
+        var allowedExtensions = Self.defaultDownloadPatterns(
+            requiredExtension: normalizedRequiredExtension
+        )
         allowedExtensions.formUnion(effectivePatterns)
 
         print("Downloading model \(repoID)...")
@@ -164,6 +168,19 @@ public enum ModelUtils {
         print("Model downloaded to: \(modelDir.path)")
         recordPatterns(modelDir: modelDir, patterns: effectivePatterns)
         return modelDir
+    }
+
+    /// Patterns every snapshot download includes regardless of caller-supplied
+    /// `additionalMatchingPatterns`. A cache hit counts these as covered;
+    /// recording them in the manifest would be redundant.
+    private static func defaultDownloadPatterns(requiredExtension: String) -> Set<String> {
+        [
+            "*.\(requiredExtension)",
+            "*.safetensors",
+            "*.json",
+            "*.txt",
+            "*.wav",
+        ]
     }
 
     /// Name of the manifest recording which `additionalMatchingPatterns` a
