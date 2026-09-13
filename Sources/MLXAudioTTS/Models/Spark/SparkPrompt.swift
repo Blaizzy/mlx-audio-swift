@@ -41,6 +41,29 @@ enum SparkPrompt {
         ].joined()
     }
 
+    /// Voice-cloning prompt: reference speaker (global) tokens, optionally seeded
+    /// with the reference transcript and its semantic tokens.
+    static func clone(
+        text: String,
+        refText: String?,
+        globalTokenIds: [Int],
+        semanticTokenIds: [Int]?
+    ) -> String {
+        let global = globalTokenIds.map { "<|bicodec_global_\($0)|>" }.joined()
+        if let refText, let semanticTokenIds {
+            let semantic = semanticTokenIds.map { "<|bicodec_semantic_\($0)|>" }.joined()
+            return [
+                "<|task_tts|>", "<|start_content|>", refText, text, "<|end_content|>",
+                "<|start_global_token|>", global, "<|end_global_token|>",
+                "<|start_semantic_token|>", semantic,
+            ].joined()
+        }
+        return [
+            "<|task_tts|>", "<|start_content|>", text, "<|end_content|>",
+            "<|start_global_token|>", global, "<|end_global_token|>",
+        ].joined()
+    }
+
     /// Extract the integer ids from `<|bicodec_<kind>_N|>` markers in decoded text.
     static func extractTokenIds(_ text: String, kind: String) -> [Int] {
         guard let re = try? NSRegularExpression(pattern: "bicodec_\(kind)_(\\d+)") else {

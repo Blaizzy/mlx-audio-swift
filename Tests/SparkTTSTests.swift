@@ -33,3 +33,16 @@ import Testing
     #expect(samples.count > 4000)
     #expect(maxAbs > 0.01)
 }
+
+@Test func sparkClonePromptEmbedsSpeakerTokens() {
+    let globalOnly = SparkPrompt.clone(
+        text: "Hello there.", refText: nil, globalTokenIds: [12, 5], semanticTokenIds: nil)
+    #expect(globalOnly == "<|task_tts|><|start_content|>Hello there.<|end_content|>"
+        + "<|start_global_token|><|bicodec_global_12|><|bicodec_global_5|><|end_global_token|>")
+
+    let withRef = SparkPrompt.clone(
+        text: "Say this.", refText: "Reference.", globalTokenIds: [3], semanticTokenIds: [7, 8])
+    #expect(withRef == "<|task_tts|><|start_content|>Reference.Say this.<|end_content|>"
+        + "<|start_global_token|><|bicodec_global_3|><|end_global_token|>"
+        + "<|start_semantic_token|><|bicodec_semantic_7|><|bicodec_semantic_8|>")
+}

@@ -28,15 +28,21 @@ public final class SparkModel: SpeechGenerationModel, @unchecked Sendable {
     private let backbone: Qwen2Model
     private let bicodec: SparkBiCodec
     private let tokenizer: Tokenizers.Tokenizer
+    private let modelDir: URL
+    private var cachedWav2Vec2: SparkWav2Vec2?
 
     public let sampleRate: Int
 
     private static let stopTokens: Set<Int> = [128258, 151645]
 
-    init(backbone: Qwen2Model, bicodec: SparkBiCodec, tokenizer: Tokenizers.Tokenizer, sampleRate: Int) {
+    init(
+        backbone: Qwen2Model, bicodec: SparkBiCodec, tokenizer: Tokenizers.Tokenizer,
+        modelDir: URL, sampleRate: Int
+    ) {
         self.backbone = backbone
         self.bicodec = bicodec
         self.tokenizer = tokenizer
+        self.modelDir = modelDir
         self.sampleRate = sampleRate
     }
 
@@ -54,7 +60,8 @@ public final class SparkModel: SpeechGenerationModel, @unchecked Sendable {
             repoID: repoID,
             requiredExtension: ".safetensors",
             additionalMatchingPatterns: [
-                "BiCodec/*", "*.json", "tokenizer*", "vocab*", "merges*", "special_tokens*",
+                "BiCodec/*", "wav2vec2-large-xlsr-53/*", "*.json",
+                "tokenizer*", "vocab*", "merges*", "special_tokens*",
             ],
             cache: cache)
 
@@ -72,12 +79,50 @@ public final class SparkModel: SpeechGenerationModel, @unchecked Sendable {
         let bcWeights = try MLX.loadArrays(url: dir.appendingPathComponent("BiCodec/model.safetensors"))
         try bicodec.update(
             parameters: ModuleParameters.unflattened(bicodec.sanitize(bcWeights)), verify: .none)
+        bicodec.train(false)
 
         let tokenizer = try await AutoTokenizer.from(modelFolder: dir)
         eval(backbone, bicodec)
         return SparkModel(
             backbone: backbone, bicodec: bicodec, tokenizer: tokenizer,
-            sampleRate: bcConfig.melParams.sampleRate)
+            modelDir: dir, sampleRate: bcConfig.melParams.sampleRate)
+    }
+
+    private func wav2vec2() throws -> SparkWav2Vec2 {
+        if let cachedWav2Vec2 { return cachedWav2Vec2 }
+        let w2v = SparkWav2Vec2()
+        let weights = try MLX.loadArrays(
+            url: modelDir.appendingPathComponent("wav2vec2-large-xlsr-53/model.safetensors"))
+        try w2v.update(parameters: ModuleParameters.unflattened(w2v.sanitize(weights)), verify: .none)
+        w2v.train(false)
+        eval(w2v)
+        cachedWav2Vec2 = w2v
+        return w2v
+    }
+
+    private func referenceClip(_ refAudio: MLXArray) -> MLXArray {
+        let mono = refAudio.ndim > 1 ? refAudio.reshaped([-1]) : refAudio
+        let refLen = (sampleRate * 6) / 320 * 320
+        let n = mono.shape[0]
+        if refLen > n {
+            let reps = refLen / n + 1
+            return MLX.tiled(mono, repetitions: [reps])[0 ..< refLen]
+        }
+        return mono[0 ..< refLen]
+    }
+
+    private func tokenizeReference(_ refAudio: MLXArray, refText: String?) throws -> ([Int], [Int]?) {
+        let mel = SparkMel.melSpectrogram(referenceClip(refAudio))
+        let global = bicodec.tokenizeGlobal(mel)
+        eval(global)
+        let globalIds = global.reshaped([-1]).asArray(Int32.self).map { Int($0) }
+
+        guard refText != nil else { return (globalIds, nil) }
+        let feat = try wav2vec2().features(refAudio)
+        let semantic = bicodec.tokenizeSemantic(feat)
+        eval(semantic)
+        let semanticIds = semantic.reshaped([-1]).asArray(Int32.self).map { Int($0) }
+        return (globalIds, semanticIds)
     }
 
     public func generate(
@@ -88,8 +133,17 @@ public final class SparkModel: SpeechGenerationModel, @unchecked Sendable {
         language: String?,
         generationParameters: GenerateParameters
     ) async throws -> MLXArray {
-        let gender: SparkGender = (voice?.lowercased() == "male") ? .male : .female
-        let prompt = SparkPrompt.control(gender: gender, pitch: .moderate, speed: .moderate, text: text)
+        var refGlobalIds: [Int]? = nil
+        let prompt: String
+        if let refAudio {
+            let (globalIds, semanticIds) = try tokenizeReference(refAudio, refText: refText)
+            refGlobalIds = globalIds
+            prompt = SparkPrompt.clone(
+                text: text, refText: refText, globalTokenIds: globalIds, semanticTokenIds: semanticIds)
+        } else {
+            let gender: SparkGender = (voice?.lowercased() == "male") ? .male : .female
+            prompt = SparkPrompt.control(gender: gender, pitch: .moderate, speed: .moderate, text: text)
+        }
         let promptIds = tokenizer.encode(text: prompt, addSpecialTokens: false)
         let inputIds = MLXArray(promptIds.map { Int32($0) }).reshaped([1, promptIds.count])
 
@@ -124,7 +178,7 @@ public final class SparkModel: SpeechGenerationModel, @unchecked Sendable {
 
         let decoded = tokenizer.decode(tokens: generated, skipSpecialTokens: false)
         let semantic = SparkPrompt.extractTokenIds(decoded, kind: "semantic")
-        let global = SparkPrompt.extractTokenIds(decoded, kind: "global")
+        let global = refGlobalIds ?? SparkPrompt.extractTokenIds(decoded, kind: "global")
         guard !semantic.isEmpty, !global.isEmpty else { throw SparkTTSError.noAudioTokens }
 
         let s = MLXArray(semantic.map { Int32($0) }).reshaped([1, semantic.count])
