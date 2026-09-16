@@ -462,10 +462,10 @@ extension VoxtralRealtimeModel {
         )
     }
 
-    /// Token-id → text seam for the streaming session (which lives in another file
+    /// Token-id → bytes seam for the streaming session (which lives in another file
     /// and cannot reach the private `tokenizer`).
-    func decodeStreaming(_ tokenIds: [Int]) -> String {
-        tokenizer?.decode(tokenIds: tokenIds) ?? ""
+    func streamingTokenBytes(_ tokenId: Int) -> [UInt8] {
+        tokenizer?.tokenBytes(for: tokenId) ?? []
     }
 
     func sample(logits: MLXArray, temperature: Float) -> Int {

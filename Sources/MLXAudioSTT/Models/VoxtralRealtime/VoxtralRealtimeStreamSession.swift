@@ -106,7 +106,7 @@ public final class VoxtralRealtimeStreamSession {
     private var done = false
 
     private var generated: [Int] = []
-    private var emittedText = ""
+    private var transcript = VoxtralRealtimeTranscriptText()
 
     public init(
         model: VoxtralRealtimeModel,
@@ -123,8 +123,9 @@ public final class VoxtralRealtimeStreamSession {
         )
     }
 
-    /// Full transcript decoded so far.
-    public var text: String { emittedText }
+    /// Full transcript decoded so far. Reading it can cost time proportional to its
+    /// length, so hosts that only need each step's new text should use `Delta.text`.
+    public var text: String { transcript.text }
     /// Token ids decoded so far (EOS stripped).
     public var tokens: [Int] { generated }
     /// Whether the stream has emitted EOS / hit maxTokens.
@@ -314,6 +315,7 @@ public final class VoxtralRealtimeStreamSession {
     private func decode(adapter: MLXArray, upTo emitLimit: Int) -> Delta {
         guard prefilled else { return Delta(text: "", tokenIds: []) }
 
+        let deltaStart = transcript.mark
         var newIds: [Int] = []
         // Mirrors the offline `generate` loop exactly (append → check → pop trailing
         // EOS) so the streamed token stream is identical at temperature 0.
@@ -321,6 +323,10 @@ public final class VoxtralRealtimeStreamSession {
             guard let logits = lastLogits else { break }
             let token = model.sample(logits: logits, temperature: temperature)
             generated.append(token)
+            // Only a trailing EOS is left out of the text, as in `generated`.
+            if token != model.config.eosTokenId {
+                transcript.append(model.streamingTokenBytes(token))
+            }
 
             if token == model.config.eosTokenId || generated.count > maxTokens {
                 done = true
@@ -348,15 +354,7 @@ public final class VoxtralRealtimeStreamSession {
             }
         }
 
-        let textSoFar = model.decodeStreaming(generated)
-        let delta: String
-        if textSoFar.hasPrefix(emittedText) {
-            delta = String(textSoFar.dropFirst(emittedText.count))
-        } else {
-            delta = textSoFar
-        }
-        emittedText = textSoFar
-        return Delta(text: delta, tokenIds: newIds)
+        return Delta(text: transcript.delta(since: deltaStart), tokenIds: newIds)
     }
 }
 
