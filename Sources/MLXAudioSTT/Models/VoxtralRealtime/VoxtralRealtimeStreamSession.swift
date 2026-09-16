@@ -40,6 +40,7 @@ extension VoxtralRealtimeAudioEncoder {
     /// new transformer-normed frames (pre-downsample).
     func feedIncremental(
         _ convOut: MLXArray,
+        startIndex: Int,
         upTo: Int,
         state: inout VoxtralRealtimeStreamEncoderState
     ) -> MLXArray {
@@ -48,7 +49,8 @@ extension VoxtralRealtimeAudioEncoder {
         while state.consumed < upTo {
             let blockEnd = state.blockBase + sw
             let end = min(upTo, blockEnd)
-            let block = convOut[state.consumed..<end, 0...]
+            // `convOut` starts at absolute row `startIndex`.
+            let block = convOut[(state.consumed - startIndex)..<(end - startIndex), 0...]
             // Block-relative positions: RoPE is relative, so this matches the absolute
             // positions offline uses within each independent sw-block.
             let relStart = state.consumed - state.blockBase
@@ -81,11 +83,16 @@ public final class VoxtralRealtimeStreamSession {
 
     // Incremental front-end state; all rows are final (see the header notes).
     // `flushed` means `finish()` sealed the stream by appending the offline right-pad.
+    //
+    // `convRows` and `adapterBuf` keep only the rows a later step can still read. The
+    // `...Dropped` counters keep frame and decode positions absolute.
     private var pendingSamples: [Float] = []
     private var realSamplesFed = 0
     private var melStream: VoxtralRealtimeMelStream?
     private var convState = VoxtralRealtimeConvStemState()
     private var convRows: MLXArray?
+    private var convRowsDropped = 0
+    private var adapterRowsDropped = 0
     private var nDelayTokens = 0
     private var flushed = false
 
@@ -123,10 +130,18 @@ public final class VoxtralRealtimeStreamSession {
     /// Whether the stream has emitted EOS / hit maxTokens.
     public var isFinished: Bool { done }
 
+    /// Buffered samples, conv-stem rows and adapter rows currently held. For tests.
+    var retainedCounts: (samples: Int, convRows: Int, adapterRows: Int) {
+        (pendingSamples.count, convRows?.shape[0] ?? 0, adapterBuf?.shape[0] ?? 0)
+    }
+
     /// Ingest a chunk of 16 kHz mono samples; returns the text decoded by this call.
-    /// Calls after `finish()` are ignored (the stream is sealed by the final pad).
+    /// Calls after `finish()` are ignored (the stream is sealed by the final pad), and
+    /// so are calls after the stream finished on EOS or `maxTokens`.
     @discardableResult
     public func step(_ samples: [Float]) -> Delta {
+        // Nothing reads samples buffered after the stream finished.
+        guard !done else { return Delta(text: "", tokenIds: []) }
         pendingSamples.append(contentsOf: samples)
         return advance(final: false)
     }
@@ -198,7 +213,7 @@ public final class VoxtralRealtimeStreamSession {
                 convRows = convRows == nil ? rows : MLX.concatenated([convRows!, rows], axis: 0)
             }
         }
-        let convRowCount = convRows?.shape[0] ?? 0
+        let convRowCount = convRowsDropped + (convRows?.shape[0] ?? 0)
 
         // Emit ceiling: the whole-token span covered by real samples minus the
         // trailing partial-token guard. The offline `min(nAudioTotal, …)` clamp can
@@ -209,17 +224,26 @@ public final class VoxtralRealtimeStreamSession {
         let convFreeze = min(convRowCount / ds, emitLimit) * ds
 
         if convFreeze > encState.consumed, let convRows {
-            let newEnc = model.encoder.feedIncremental(convRows, upTo: convFreeze, state: &encState)
+            let newEnc = model.encoder.feedIncremental(
+                convRows, startIndex: convRowsDropped, upTo: convFreeze, state: &encState
+            )
             let rows = model.encoder.downsampleAndProject(newEnc)   // multiple-of-ds ⇒ whole rows
             adapterBuf = adapterBuf == nil ? rows : MLX.concatenated([adapterBuf!, rows], axis: 0)
         }
+        trimRetainedTails()
         freezeEncoderState()
 
         guard let adapter = adapterBuf else {
+            // Every adapter row was decoded and trimmed. `finish()` still owes the
+            // cache clear below.
+            if final { Memory.clearCache() }
             return Delta(text: "", tokenIds: [])
         }
         prefillIfNeeded(adapter: adapter)
-        let delta = decode(adapter: adapter, upTo: min(emitLimit, adapter.shape[0]))
+        let delta = decode(
+            adapter: adapter,
+            upTo: min(emitLimit, adapterRowsDropped + adapter.shape[0])
+        )
 
         // Per-step clears re-allocate the working set cold 10x/s and defeat the
         // host's `Memory.cacheLimit`. Match the offline `generate` loop instead:
@@ -231,6 +255,25 @@ public final class VoxtralRealtimeStreamSession {
             Memory.clearCache()
         }
         return delta
+    }
+
+    /// Drop the rows no later step reads: conv rows the encoder already consumed, and
+    /// adapter rows below the decode position. `decPos` stays 0 until prefill, so the
+    /// prompt rows are never dropped.
+    ///
+    /// A slice keeps its parent's buffer alive; `.contiguous()` copies the kept rows
+    /// out so the dropped prefix is freed.
+    private func trimRetainedTails() {
+        if let rows = convRows, encState.consumed > convRowsDropped {
+            let drop = encState.consumed - convRowsDropped
+            convRows = drop < rows.shape[0] ? rows[drop..., 0...].contiguous() : nil
+            convRowsDropped = encState.consumed
+        }
+        if let adapter = adapterBuf, decPos > adapterRowsDropped {
+            let drop = decPos - adapterRowsDropped
+            adapterBuf = drop < adapter.shape[0] ? adapter[drop..., 0...].contiguous() : nil
+            adapterRowsDropped = decPos
+        }
     }
 
     /// Materialise the carried front-end arrays (conv rows + conv tails), the adapter
@@ -250,6 +293,7 @@ public final class VoxtralRealtimeStreamSession {
 
     private func prefillIfNeeded(adapter: MLXArray) {
         guard !prefilled, adapter.shape[0] >= promptLength else { return }
+        precondition(adapterRowsDropped == 0, "adapter rows were dropped before prefill")
 
         let nLeft = model.config.nLeftPadTokens
         let nDelay = promptLength - 1 - nLeft
@@ -286,8 +330,8 @@ public final class VoxtralRealtimeStreamSession {
             newIds.append(token)
 
             let tokenEmbed = model.decoder.embedToken(tokenId: token)
-            let inputEmbed = decPos < adapter.shape[0]
-                ? adapter[decPos] + tokenEmbed
+            let inputEmbed = decPos < adapterRowsDropped + adapter.shape[0]
+                ? adapter[decPos - adapterRowsDropped] + tokenEmbed
                 : tokenEmbed
             let next = model.decoder(
                 inputEmbed.expandedDimensions(axis: 0),

@@ -268,6 +268,66 @@ struct VoxtralRealtimeStreamingFrontEndTests {
         #expect(session.tokens.count == offline.generationTokens)
     }
 
+    /// A minute of audio crosses the 64-row encoder window 47 times and takes 760 decode
+    /// steps. The transcript must still equal offline, and the rows the session holds
+    /// must stay bounded.
+    @Test func longStreamMatchesOfflineWithBoundedBuffers() throws {
+        // EOS outside the vocabulary, so the random decoder cannot end the stream early.
+        let fixtureDir = try Self.makeRandomFixture(encoderLayers: 1, eosTokenId: 99)
+        defer { try? FileManager.default.removeItem(at: fixtureDir) }
+
+        let model = try VoxtralRealtimeModel.fromDirectory(fixtureDir)
+        let samples = Self.sweep(60 * 16_000)
+        let params = STTGenerateParameters(maxTokens: 2_000, temperature: 0.0)
+        let offline = model.generate(audio: MLXArray(samples), generationParameters: params)
+
+        let session = model.makeStreamSession(maxTokens: 2_000)
+        var mostConvRows = 0
+        var mostAdapterRows = 0
+        for chunk in Self.chunked(samples) {
+            _ = session.step(chunk)
+            let retained = session.retainedCounts
+            #expect(retained.samples == 0)
+            mostConvRows = max(mostConvRows, retained.convRows)
+            mostAdapterRows = max(mostAdapterRows, retained.adapterRows)
+        }
+        _ = session.finish()
+
+        #expect(session.text == offline.text)
+        #expect(session.tokens.count == offline.generationTokens)
+        #expect(session.tokens.count > 700, "the stream must actually run long")
+
+        // The whole minute is 3 050 conv rows and 762 adapter rows. The encoder leaves
+        // at most `downsample - 1` rows short of a whole token plus the one token the
+        // partial-token guard holds back.
+        let downsample = model.config.encoderArgs.downsampleFactor
+        #expect(mostConvRows <= 2 * downsample)
+        // A step holds the adapter rows its own chunk produced, plus carry-over.
+        let largestChunkTokens = Self.chunkSizes.max()! / Self.samplesPerToken
+        #expect(mostAdapterRows <= largestChunkTokens + 3)
+    }
+
+    /// A stream that ended on `maxTokens` reads no more audio, so a host that keeps
+    /// streaming must not grow the sample buffer.
+    @Test func stepAfterTheStreamFinishedBuffersNoSamples() throws {
+        let fixtureDir = try Self.makeRandomFixture(eosTokenId: 99)
+        defer { try? FileManager.default.removeItem(at: fixtureDir) }
+
+        let model = try VoxtralRealtimeModel.fromDirectory(fixtureDir)
+        let session = model.makeStreamSession(maxTokens: 4)
+        _ = session.step(Self.sweep(20_000))
+        #expect(session.isFinished)
+
+        let tokensBefore = session.tokens
+        for chunk in Self.chunked(Self.sweep(60_000)) {
+            let delta = session.step(chunk)
+            #expect(delta.tokenIds.isEmpty)
+        }
+
+        #expect(session.retainedCounts.samples == 0)
+        #expect(session.tokens == tokensBefore)
+    }
+
     /// finish() with no audio at all must still transcribe the zero-padded empty
     /// stream, exactly like `generate` over an empty buffer.
     @Test func emptyAudioFinishMatchesOffline() throws {
@@ -288,10 +348,12 @@ struct VoxtralRealtimeStreamingFrontEndTests {
     /// Like `VoxtralRealtimeSTTTests.makeEOSFixture`, but with seeded random
     /// weights so the decoded tokens actually depend on the conv-stem rows.
     /// `encoderLayers` may be 0 (front end only) or 1 (exercises the encoder
-    /// transformer + sliding-window cache path too).
+    /// transformer + sliding-window cache path too). An `eosTokenId` outside the
+    /// 8-token vocabulary keeps the decoder from ever ending the stream.
     private static func makeRandomFixture(
         transcriptionDelayMs: Int = 0,
-        encoderLayers: Int = 0
+        encoderLayers: Int = 0,
+        eosTokenId: Int = 0
     ) throws -> URL {
         precondition((0...1).contains(encoderLayers))
         let fixtureDir = FileManager.default.temporaryDirectory
@@ -316,7 +378,7 @@ struct VoxtralRealtimeStreamingFrontEndTests {
             "sampling_rate": 16000, "frame_rate": 12.5, "num_mel_bins": 128,
             "hop_length": 160, "window_size": 400, "global_log_mel_max": 1.5
           },
-          "transcription_delay_ms": \(transcriptionDelayMs), "bos_token_id": 1, "eos_token_id": 0,
+          "transcription_delay_ms": \(transcriptionDelayMs), "bos_token_id": 1, "eos_token_id": \(eosTokenId),
           "streaming_pad_token_id": 2, "n_left_pad_tokens": 1
         }
         """
