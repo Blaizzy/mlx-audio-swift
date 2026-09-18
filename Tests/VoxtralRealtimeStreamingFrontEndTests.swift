@@ -328,6 +328,35 @@ struct VoxtralRealtimeStreamingFrontEndTests {
         #expect(session.tokens == tokensBefore)
     }
 
+    /// With a vocabulary whose tokens split "é", "€" and "😀" into separate bytes, the
+    /// transcript must still equal offline `generate`, which decodes in one pass.
+    @Test func splitMultibyteTokensMatchOfflineTranscript() throws {
+        // No whitespace tokens: `generate` trims its text and the session does not.
+        let fixtureDir = try Self.makeRandomFixture(
+            eosTokenId: 99,
+            vocabBytes: [[0x61], [0xC3], [0xA9], [0xE2], [0x82, 0xAC], [0xF0, 0x9F], [0x98], [0x80]]
+        )
+        defer { try? FileManager.default.removeItem(at: fixtureDir) }
+
+        let model = try VoxtralRealtimeModel.fromDirectory(fixtureDir)
+        let samples = Self.sweep(20 * 16_000)
+        let params = STTGenerateParameters(maxTokens: 1_000, temperature: 0.0)
+        let offline = model.generate(audio: MLXArray(samples), generationParameters: params)
+
+        let session = model.makeStreamSession(maxTokens: 1_000)
+        for chunk in Self.chunked(samples) {
+            _ = session.step(chunk)
+        }
+        _ = session.finish()
+
+        #expect(session.tokens.count == offline.generationTokens)
+        #expect(Array(session.text.unicodeScalars) == Array(offline.text.unicodeScalars))
+        #expect(
+            session.text.unicodeScalars.contains { $0.value > 0x7F },
+            "the vocabulary must actually produce non-ASCII text"
+        )
+    }
+
     /// finish() with no audio at all must still transcribe the zero-padded empty
     /// stream, exactly like `generate` over an empty buffer.
     @Test func emptyAudioFinishMatchesOffline() throws {
@@ -349,12 +378,15 @@ struct VoxtralRealtimeStreamingFrontEndTests {
     /// weights so the decoded tokens actually depend on the conv-stem rows.
     /// `encoderLayers` may be 0 (front end only) or 1 (exercises the encoder
     /// transformer + sliding-window cache path too). An `eosTokenId` outside the
-    /// 8-token vocabulary keeps the decoder from ever ending the stream.
+    /// 8-token vocabulary keeps the decoder from ever ending the stream. `vocabBytes`
+    /// replaces the default "a" to "h" vocabulary and must also have 8 entries.
     private static func makeRandomFixture(
         transcriptionDelayMs: Int = 0,
         encoderLayers: Int = 0,
-        eosTokenId: Int = 0
+        eosTokenId: Int = 0,
+        vocabBytes: [[UInt8]] = (0..<8).map { [UInt8(ascii: "a") + UInt8($0)] }
     ) throws -> URL {
+        precondition(vocabBytes.count == 8)
         precondition((0...1).contains(encoderLayers))
         let fixtureDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("voxtral-random-fixture-\(UUID().uuidString)")
@@ -385,13 +417,12 @@ struct VoxtralRealtimeStreamingFrontEndTests {
         try configJSON.write(
             to: fixtureDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
 
+        let vocabJSON = vocabBytes
+            .map { #"{"token_bytes":"\#(Data($0).base64EncodedString())"}"# }
+            .joined(separator: ",")
         let tekkenJSON = """
         {
-          "vocab": [
-            {"token_bytes":"YQ=="},{"token_bytes":"Yg=="},{"token_bytes":"Yw=="},
-            {"token_bytes":"ZA=="},{"token_bytes":"ZQ=="},{"token_bytes":"Zg=="},
-            {"token_bytes":"Zw=="},{"token_bytes":"aA=="}
-          ],
+          "vocab": [\(vocabJSON)],
           "config":{"default_num_special_tokens":0},"special_tokens":[]
         }
         """
