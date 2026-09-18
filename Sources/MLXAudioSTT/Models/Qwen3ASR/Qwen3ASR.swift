@@ -25,6 +25,10 @@ private func floorDiv(_ a: MLXArray, _ b: Int) -> MLXArray {
     return floor(a.asType(.float32) / Float(b)).asType(.int32)
 }
 
+private func featureLengthAfterConvStem(_ inputLength: Int) -> Int {
+    (0..<3).reduce(inputLength) { length, _ in (length + 1) / 2 }
+}
+
 extension Qwen3ASRModel: STTGenerationModel {
     public var defaultGenerationParameters: STTGenerateParameters {
         STTGenerateParameters(
@@ -103,7 +107,8 @@ func getFeatExtractOutputLengths(_ inputLengths: MLXArray) -> MLXArray {
     let outputLengths = (
         floorDiv(floorDiv(featLengths - 1, 2) + 1 - 1, 2)
         + 1
-        + (inputLengths / 100) * 13
+        // MLX `/` performs floating-point division, even for integer arrays.
+        + floorDiv(inputLengths, 100) * 13
     )
     return outputLengths
 }
@@ -513,14 +518,14 @@ public class Qwen3ASRAudioEncoder: Module {
             }
         }
 
-        let maxChunkLen = chunkLengths.max() ?? 0
+        // Full-width padding preserves the reference conv boundary behavior.
+        let paddedChunkLen = chunkSize
 
-        // Pad chunks to max length
         var paddedChunks: [MLXArray] = []
         for (idx, chunk) in chunks.enumerated() {
             let clen = chunkLengths[idx]
-            if clen < maxChunkLen {
-                let padWidth = maxChunkLen - clen
+            if clen < paddedChunkLen {
+                let padWidth = paddedChunkLen - clen
                 let padded = MLX.padded(chunk, widths: [IntOrPair((0, 0)), IntOrPair((0, padWidth))])
                 paddedChunks.append(padded)
             } else {
@@ -529,11 +534,7 @@ public class Qwen3ASRAudioEncoder: Module {
         }
 
         // Compute output lengths after CNN for each chunk
-        let chunkLensArray = MLXArray(chunkLengths.map { Int32($0) })
-        let featureLensAfterCnn = getFeatExtractOutputLengths(chunkLensArray)
-        let featureLensAfterCnnValues = (0..<chunkLengths.count).map {
-            Int(featureLensAfterCnn[$0].item(Int32.self))
-        }
+        let featureLensAfterCnnValues = chunkLengths.map(featureLengthAfterConvStem)
 
         // Process Conv2d layers in batches
         let convBatchSize = 128
@@ -545,7 +546,7 @@ public class Qwen3ASRAudioEncoder: Module {
             let batchSlice = Array(paddedChunks[batchStart..<batchEnd])
             let batchLen = batchSlice.count
 
-            // Stack batch and apply Conv2d: [batchLen, n_mels, maxChunkLen, 1]
+            // [batchLen, n_mels, paddedChunkLen, 1]
             var x = MLX.stacked(batchSlice, axis: 0).expandedDimensions(axis: -1)
             x = gelu(conv2d1(x))
             x = gelu(conv2d2(x))
@@ -665,14 +666,14 @@ public class Qwen3ASRAudioEncoder: Module {
             chunkLengths.append(end - start)
         }
 
-        let maxChunkLen = chunkLengths.max() ?? 0
+        // Full-width padding preserves the reference conv boundary behavior.
+        let paddedChunkLen = chunkSize
 
-        // Pad chunks to same length
         var paddedChunks: [MLXArray] = []
         for (idx, chunk) in chunks.enumerated() {
             let clen = chunkLengths[idx]
-            if clen < maxChunkLen {
-                let padWidth = maxChunkLen - clen
+            if clen < paddedChunkLen {
+                let padWidth = paddedChunkLen - clen
                 let padded = MLX.padded(chunk, widths: [IntOrPair((0, 0)), IntOrPair((0, padWidth))])
                 paddedChunks.append(padded)
             } else {
@@ -681,11 +682,7 @@ public class Qwen3ASRAudioEncoder: Module {
         }
 
         // Compute output lengths after CNN
-        let chunkLensArray = MLXArray(chunkLengths.map { Int32($0) })
-        let featureLensAfterCnn = getFeatExtractOutputLengths(chunkLensArray)
-        let featureLensAfterCnnValues = (0..<chunkLengths.count).map {
-            Int(featureLensAfterCnn[$0].item(Int32.self))
-        }
+        let featureLensAfterCnnValues = chunkLengths.map(featureLengthAfterConvStem)
 
         // Conv2d frontend: [batch, nMels, time, 1]
         var x = MLX.stacked(paddedChunks, axis: 0).expandedDimensions(axis: -1)
