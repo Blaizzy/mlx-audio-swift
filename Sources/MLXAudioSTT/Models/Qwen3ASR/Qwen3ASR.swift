@@ -25,6 +25,10 @@ private func floorDiv(_ a: MLXArray, _ b: Int) -> MLXArray {
     return floor(a.asType(.float32) / Float(b)).asType(.int32)
 }
 
+private func featureLengthAfterConvStem(_ inputLength: Int) -> Int {
+    (0..<3).reduce(inputLength) { length, _ in (length + 1) / 2 }
+}
+
 extension Qwen3ASRModel: STTGenerationModel {
     public var defaultGenerationParameters: STTGenerateParameters {
         STTGenerateParameters(
@@ -536,11 +540,7 @@ public class Qwen3ASRAudioEncoder: Module {
         }
 
         // Compute output lengths after CNN for each chunk
-        let chunkLensArray = MLXArray(chunkLengths.map { Int32($0) })
-        let featureLensAfterCnn = getFeatExtractOutputLengths(chunkLensArray)
-        let featureLensAfterCnnValues = (0..<chunkLengths.count).map {
-            Int(featureLensAfterCnn[$0].item(Int32.self))
-        }
+        let featureLensAfterCnnValues = chunkLengths.map(featureLengthAfterConvStem)
 
         // Process Conv2d layers in batches
         let convBatchSize = 128
@@ -695,11 +695,7 @@ public class Qwen3ASRAudioEncoder: Module {
         }
 
         // Compute output lengths after CNN
-        let chunkLensArray = MLXArray(chunkLengths.map { Int32($0) })
-        let featureLensAfterCnn = getFeatExtractOutputLengths(chunkLensArray)
-        let featureLensAfterCnnValues = (0..<chunkLengths.count).map {
-            Int(featureLensAfterCnn[$0].item(Int32.self))
-        }
+        let featureLensAfterCnnValues = chunkLengths.map(featureLengthAfterConvStem)
 
         // Conv2d frontend: [batch, nMels, time, 1]
         var x = MLX.stacked(paddedChunks, axis: 0).expandedDimensions(axis: -1)
