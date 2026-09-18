@@ -513,14 +513,21 @@ public class Qwen3ASRAudioEncoder: Module {
             }
         }
 
-        let maxChunkLen = chunkLengths.max() ?? 0
+        // Every chunk is convolved at the full chunk size, zero-padded on the
+        // right. The reference implementation requires the mel length to be a
+        // multiple of `n_window * 2` and splits it with a plain reshape, so its
+        // conv stem always sees a full-width chunk. Padding to the longest
+        // chunk *present* instead would, for a clip shorter than one chunk,
+        // convolve that clip's only chunk at its own length and change the
+        // receptive field of the trailing output positions.
+        let paddedChunkLen = chunkSize
 
-        // Pad chunks to max length
+        // Pad chunks to the fixed chunk length
         var paddedChunks: [MLXArray] = []
         for (idx, chunk) in chunks.enumerated() {
             let clen = chunkLengths[idx]
-            if clen < maxChunkLen {
-                let padWidth = maxChunkLen - clen
+            if clen < paddedChunkLen {
+                let padWidth = paddedChunkLen - clen
                 let padded = MLX.padded(chunk, widths: [IntOrPair((0, 0)), IntOrPair((0, padWidth))])
                 paddedChunks.append(padded)
             } else {
@@ -545,7 +552,7 @@ public class Qwen3ASRAudioEncoder: Module {
             let batchSlice = Array(paddedChunks[batchStart..<batchEnd])
             let batchLen = batchSlice.count
 
-            // Stack batch and apply Conv2d: [batchLen, n_mels, maxChunkLen, 1]
+            // Stack batch and apply Conv2d: [batchLen, n_mels, paddedChunkLen, 1]
             var x = MLX.stacked(batchSlice, axis: 0).expandedDimensions(axis: -1)
             x = gelu(conv2d1(x))
             x = gelu(conv2d2(x))
@@ -665,14 +672,21 @@ public class Qwen3ASRAudioEncoder: Module {
             chunkLengths.append(end - start)
         }
 
-        let maxChunkLen = chunkLengths.max() ?? 0
+        // Every chunk is convolved at the full chunk size, zero-padded on the
+        // right. The reference implementation requires the mel length to be a
+        // multiple of `n_window * 2` and splits it with a plain reshape, so its
+        // conv stem always sees a full-width chunk. Padding to the longest
+        // chunk *present* instead would, for a clip shorter than one chunk,
+        // convolve that clip's only chunk at its own length and change the
+        // receptive field of the trailing output positions.
+        let paddedChunkLen = chunkSize
 
-        // Pad chunks to same length
+        // Pad chunks to the fixed chunk length
         var paddedChunks: [MLXArray] = []
         for (idx, chunk) in chunks.enumerated() {
             let clen = chunkLengths[idx]
-            if clen < maxChunkLen {
-                let padWidth = maxChunkLen - clen
+            if clen < paddedChunkLen {
+                let padWidth = paddedChunkLen - clen
                 let padded = MLX.padded(chunk, widths: [IntOrPair((0, 0)), IntOrPair((0, padWidth))])
                 paddedChunks.append(padded)
             } else {
