@@ -880,11 +880,20 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return embedding
     }
 
+    /// Builds the talker prefill for CustomVoice / VoiceDesign generation.
+    ///
+    /// `nonStreamingMode` selects the official `non_streaming_mode=True` layout,
+    /// the reference default for these model types: every text token is in the
+    /// prefill and decode steps feed only `tts_pad` on the text side. The
+    /// streaming layout prefills one text token and feeds the rest one per
+    /// codec frame, which makes the speaking rate climb over a long utterance
+    /// (QwenLM/Qwen3-TTS#239).
     func prepareGenerationInputs(
         text: String,
         language: String,
         instruct: String?,
-        speaker: String? = nil
+        speaker: String? = nil,
+        nonStreamingMode: Bool = true
     ) -> (MLXArray, MLXArray, MLXArray) {
         guard let tokenizer, let talkerConfig = config.talkerConfig else {
             fatalError("Tokenizer/config not loaded")
@@ -985,13 +994,30 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             concatenated([roleEmbed, combinedEmbed], axis: 1)
         }
 
+        let textEnd = textEmbed.dim(1) - 5
+        if nonStreamingMode {
+            // All text tokens (3 to -5, plus EOS) overlaid with codec_pad, then
+            // one step of tts_pad + codec_bos. Matches the official
+            // Qwen3TTSForConditionalGeneration prompt for non_streaming_mode=True.
+            let textAll = concatenated([textEmbed[0..., 3 ..< textEnd, 0...], ttsEosEmbed], axis: 1)
+            let codecPadEmbed = talker.getInputEmbeddings()(
+                MLXArray([Int32(talkerConfig.codecPadId)]).reshaped(1, 1)
+            )
+            let textWithCodecPad = textAll + broadcast(
+                codecPadEmbed, to: [1, textAll.dim(1), codecPadEmbed.dim(-1)]
+            )
+            let bosStep = ttsPadEmbed + codecEmbed[0..., (-1)..., 0...]
+            inputEmbeds = concatenated([inputEmbeds, textWithCodecPad, bosStep], axis: 1)
+            return (inputEmbeds, ttsPadEmbed, ttsPadEmbed)
+        }
+
         // Add first text token (index 3) + last codec embed
         let firstTextEmbed = textEmbed[0..., 3 ..< 4, 0...] + codecEmbed[0..., (-1)..., 0...]
         inputEmbeds = concatenated([inputEmbeds, firstTextEmbed], axis: 1)
 
         // Trailing text (tokens 4 to -5, plus EOS)
         let trailingTextHidden = concatenated(
-            [textEmbed[0..., 4 ..< (textEmbed.dim(1) - 5), 0...], ttsEosEmbed],
+            [textEmbed[0..., 4 ..< textEnd, 0...], ttsEosEmbed],
             axis: 1
         )
 
