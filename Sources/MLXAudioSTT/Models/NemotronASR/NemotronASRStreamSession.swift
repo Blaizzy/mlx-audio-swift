@@ -44,6 +44,10 @@ final class NemotronASRStreamRNNTState {
     init(blankToken: Int) { lastToken = blankToken }
 }
 
+/// Frames whose greedy RNN-T token is read back per host sync. Frames after an
+/// emission are discarded, so a larger value trades wasted joint work for syncs.
+private let nemoRNNTSyncFrames = 4
+
 extension NemoJointNetwork {
     /// Second half of `callAsFunction`, taking the already projected encoder and
     /// prediction outputs, so a caller can reuse a projection across frames.
@@ -73,6 +77,12 @@ extension NemotronASRModel {
         let chunkLen = prompted.shape[1]
         var time = 0
         var newSymbols = 0
+        // Tokens for frames [specStart, specStart + spec.count), computed against the
+        // current cached prediction in one host sync. Each frame still runs its own
+        // M=1 joint, as before; only the `.item()` per frame is batched. Valid until
+        // the next emission changes the prediction.
+        var spec: [Int] = []
+        var specStart = 0
         while time < chunkLen {
             let frame = prompted[0..., time..<(time + 1), 0...]
             let predProjected: MLXArray
@@ -93,8 +103,18 @@ extension NemotronASRModel {
                 state.cachedPredProjected = predProjected
                 state.cachedProposedState = proposedState
             }
-            let jointOutput = joint.combine(joint.enc(frame), predProjected)
-            let token = jointOutput.argMax(axis: -1).item(Int.self)
+            if time < specStart || time >= specStart + spec.count {
+                let end = min(time + nemoRNNTSyncFrames, chunkLen)
+                var picks: [MLXArray] = []
+                picks.reserveCapacity(end - time)
+                for t in time..<end {
+                    let f = t == time ? frame : prompted[0..., t..<(t + 1), 0...]
+                    picks.append(joint.combine(joint.enc(f), predProjected).argMax(axis: -1).reshaped([1]))
+                }
+                spec = MLX.concatenated(picks, axis: 0).asType(.int32).asArray(Int32.self).map { Int($0) }
+                specStart = time
+            }
+            let token = spec[time - specStart]
             let step = NemoDecodingLogic.rnntStep(
                 predictedToken: token,
                 blankToken: blankTokenID,
@@ -107,6 +127,7 @@ extension NemotronASRModel {
                 state.decoderState = proposedState
                 state.cachedPredProjected = nil
                 state.cachedProposedState = nil
+                spec = []
                 if !NemotronASRTokenizer.isSpecialToken(token, vocabulary: vocabulary) {
                     state.results.append(
                         NemoAlignedToken(
