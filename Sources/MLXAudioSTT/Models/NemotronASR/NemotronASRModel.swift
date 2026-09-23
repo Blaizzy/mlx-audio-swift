@@ -268,17 +268,28 @@ public final class NemotronASRModel: Module, STTGenerationModel {
     }
 
     func applyPrompt(_ encoded: MLXArray, language: String? = nil) -> MLXArray {
+        guard promptKernel != nil else { return encoded }
+        let oneHot = promptOneHot(
+            batch: encoded.shape[0], time: encoded.shape[1],
+            dtype: encoded.dtype, promptIndex: resolvePromptIndex(language)
+        )
+        return applyPrompt(encoded, oneHot: oneHot)
+    }
+
+    /// `applyPrompt` with a precomputed `promptOneHot` of matching shape and dtype,
+    /// so a stream can reuse it across chunks.
+    func applyPrompt(_ encoded: MLXArray, oneHot: MLXArray) -> MLXArray {
         guard let promptKernel else { return encoded }
-        let promptIndex = resolvePromptIndex(language)
-        let batch = encoded.shape[0]
-        let time = encoded.shape[1]
+        let conditioned = MLX.concatenated([encoded, oneHot], axis: 2)
+        return promptKernel(conditioned)
+    }
+
+    func promptOneHot(batch: Int, time: Int, dtype: DType, promptIndex: Int) -> MLXArray {
         let promptIDs = MLXArray(Array(repeating: Int32(promptIndex), count: batch * time))
             .reshaped([batch, time])
             .expandedDimensions(axis: 2)
         let promptRange = MLX.arange(numPrompts, dtype: .int32).reshaped([1, 1, numPrompts])
-        let oneHot = MLX.where(promptRange .== promptIDs, MLXArray(Float(1)), MLXArray(Float(0))).asType(encoded.dtype)
-        let conditioned = MLX.concatenated([encoded, oneHot], axis: 2)
-        return promptKernel(conditioned)
+        return MLX.where(promptRange .== promptIDs, MLXArray(Float(1)), MLXArray(Float(0))).asType(dtype)
     }
 
     func resolvePromptIndex(_ language: String?) -> Int {
