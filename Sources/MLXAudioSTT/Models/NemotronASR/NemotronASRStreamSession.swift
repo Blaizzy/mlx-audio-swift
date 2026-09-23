@@ -275,13 +275,18 @@ public final class NemotronASRStreamSession {
         for c in encState.convCache where c != nil { live.append(c!) }
         if !live.isEmpty { MLX.asyncEval(live) }
 
-        let fullText = NemoAlignment.sentencesToResult(
-            NemoAlignment.tokensToSentences(rnntState.results)
-        ).text
-        let deltaText = fullText.hasPrefix(emittedText)
-            ? String(fullText.dropFirst(emittedText.count))
-            : fullText
-        emittedText = fullText
+        // Rebuilding the text walks every token so far; with no new token it
+        // would equal `emittedText` and the delta would be empty.
+        var deltaText = ""
+        if rnntState.results.count > firstNew {
+            let fullText = NemoAlignment.sentencesToResult(
+                NemoAlignment.tokensToSentences(rnntState.results)
+            ).text
+            deltaText = fullText.hasPrefix(emittedText)
+                ? String(fullText.dropFirst(emittedText.count))
+                : fullText
+            emittedText = fullText
+        }
         let deltaIds = rnntState.results[firstNew...].map { $0.id }
 
         if final {
