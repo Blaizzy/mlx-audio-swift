@@ -34,7 +34,31 @@ final class NemotronASRStreamRNNTState {
     var decoderState: NemoLSTMState?
     var globalTime = 0  // absolute subsampled-frame index, for token timestamps
 
+    // The prediction network output depends only on (lastToken, decoderState),
+    // which change only on emission. Blank frames reuse it, along with the
+    // proposed LSTM state and the joint's pred projection. Cleared on emission
+    // (keying on lastToken alone would reuse a stale output after a repeated token).
+    var cachedPredProjected: MLXArray?
+    var cachedProposedState: NemoLSTMState?
+
     init(blankToken: Int) { lastToken = blankToken }
+}
+
+extension NemoJointNetwork {
+    /// Second half of `callAsFunction`, taking the already projected encoder and
+    /// prediction outputs, so a caller can reuse a projection across frames.
+    func combine(_ encProjected: MLXArray, _ predProjected: MLXArray) -> MLXArray {
+        var x = encProjected.expandedDimensions(axis: 2) + predProjected.expandedDimensions(axis: 1)
+        switch activationName {
+        case "relu":
+            x = relu(x)
+        case "sigmoid":
+            x = sigmoid(x)
+        default:
+            x = tanh(x)
+        }
+        return outputProj(x)
+    }
 }
 
 extension NemotronASRModel {
@@ -51,16 +75,25 @@ extension NemotronASRModel {
         var newSymbols = 0
         while time < chunkLen {
             let frame = prompted[0..., time..<(time + 1), 0...]
-            let currentToken: MLXArray? = state.lastToken == blankTokenID
-                ? nil
-                : MLXArray(Int32(state.lastToken)).reshaped([1, 1]).asType(.int32)
-            let decoderOutput = decoder(currentToken, state: state.decoderState)
-            let pred = decoderOutput.0.asType(frame.dtype)
-            let proposedState: NemoLSTMState = (
-                hidden: decoderOutput.1.hidden?.asType(frame.dtype),
-                cell: decoderOutput.1.cell?.asType(frame.dtype)
-            )
-            let jointOutput = joint(frame, pred)
+            let predProjected: MLXArray
+            let proposedState: NemoLSTMState
+            if let cachedPred = state.cachedPredProjected, let cachedState = state.cachedProposedState {
+                predProjected = cachedPred
+                proposedState = cachedState
+            } else {
+                let currentToken: MLXArray? = state.lastToken == blankTokenID
+                    ? nil
+                    : MLXArray(Int32(state.lastToken)).reshaped([1, 1]).asType(.int32)
+                let decoderOutput = decoder(currentToken, state: state.decoderState)
+                predProjected = joint.pred(decoderOutput.0.asType(frame.dtype))
+                proposedState = (
+                    hidden: decoderOutput.1.hidden?.asType(frame.dtype),
+                    cell: decoderOutput.1.cell?.asType(frame.dtype)
+                )
+                state.cachedPredProjected = predProjected
+                state.cachedProposedState = proposedState
+            }
+            let jointOutput = joint.combine(joint.enc(frame), predProjected)
             let token = jointOutput.argMax(axis: -1).item(Int.self)
             let step = NemoDecodingLogic.rnntStep(
                 predictedToken: token,
@@ -72,6 +105,8 @@ extension NemotronASRModel {
             if step.emittedToken {
                 state.lastToken = token
                 state.decoderState = proposedState
+                state.cachedPredProjected = nil
+                state.cachedProposedState = nil
                 if !NemotronASRTokenizer.isSpecialToken(token, vocabulary: vocabulary) {
                     state.results.append(
                         NemoAlignedToken(

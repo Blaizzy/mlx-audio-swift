@@ -209,22 +209,28 @@ public final class NemotronASRModel: Module, STTGenerationModel {
         var decoderState: NemoLSTMState?
         var time = 0
         var newSymbols = 0
+        // Prediction output for the current (lastToken, decoderState); cleared on
+        // emission, reused on blank frames (see NemotronASRStreamRNNTState).
+        var cached: (predProjected: MLXArray, proposedState: NemoLSTMState)?
 
         while time < maxLength {
             let frame = prompted[0..., time..<(time + 1), 0...]
-            let currentToken: MLXArray? = lastToken == blankTokenID
-                ? nil
-                : MLXArray(Int32(lastToken)).reshaped([1, 1]).asType(.int32)
+            if cached == nil {
+                let currentToken: MLXArray? = lastToken == blankTokenID
+                    ? nil
+                    : MLXArray(Int32(lastToken)).reshaped([1, 1]).asType(.int32)
+                let decoderOutput = decoder(currentToken, state: decoderState)
+                cached = (
+                    joint.pred(decoderOutput.0.asType(frame.dtype)),
+                    (
+                        hidden: decoderOutput.1.hidden?.asType(frame.dtype),
+                        cell: decoderOutput.1.cell?.asType(frame.dtype)
+                    )
+                )
+            }
+            let proposedState = cached!.proposedState
 
-            let decoderOutput = decoder(currentToken, state: decoderState)
-            let pred = decoderOutput.0.asType(frame.dtype)
-            let proposedState: NemoLSTMState = (
-                hidden: decoderOutput.1.hidden?.asType(frame.dtype),
-                cell: decoderOutput.1.cell?.asType(frame.dtype)
-            )
-
-            let jointOutput = joint(frame, pred)
-            eval(jointOutput)
+            let jointOutput = joint.combine(joint.enc(frame), cached!.predProjected)
             let token = jointOutput.argMax(axis: -1).item(Int.self)
             let step = NemoDecodingLogic.rnntStep(
                 predictedToken: token,
@@ -237,6 +243,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
             if step.emittedToken {
                 lastToken = token
                 decoderState = proposedState
+                cached = nil
                 if !NemotronASRTokenizer.isSpecialToken(token, vocabulary: vocabulary) {
                     results.append(
                         NemoAlignedToken(
