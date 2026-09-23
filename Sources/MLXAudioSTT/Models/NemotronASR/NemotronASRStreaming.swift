@@ -107,6 +107,7 @@ extension NemotronASRModel {
         chunkFrames: Int?,
         flushTail: Bool,
         state: NemotronASRStreamEncoderState,
+        melOffset: Int = 0,
         onChunk: (MLXArray) -> Void
     ) {
         var features = mel
@@ -125,7 +126,7 @@ extension NemotronASRModel {
             // Mid-stream: defer a partial trailing chunk until the next call / flush.
             if !flushTail && (end - state.consumed) < chunkMel { break }
 
-            let m = features[0..., state.consumed..<end, 0...]
+            let m = features[0..., (state.consumed - melOffset)..<(end - melOffset), 0...]
             let cacheLen = state.melCache?.shape[1] ?? 0
             let win = state.melCache == nil ? m : MLX.concatenated([state.melCache!, m], axis: 1)
             let winLen = win.shape[1]

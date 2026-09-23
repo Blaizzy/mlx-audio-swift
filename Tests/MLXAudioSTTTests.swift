@@ -3409,6 +3409,53 @@ struct NemotronASRTests {
         #expect(model.parameters().flattened().contains { key, _ in key.hasPrefix("prompt_kernel.") } == false)
     }
 
+    @Test func incrementalMelFramesMatchFullMelBitForBit() {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        // Stream prefixes on both sides of the split-K threshold (257 frames), up to
+        // 90 s (9001 frames, past the 8192-row tile switch on Max/Ultra GPUs).
+        let config = NemotronASRPreprocessConfig()
+        let basis = NemotronASRAudio.MelBasis(config: config)
+        let hop = config.hopLength
+        MLXRandom.seed(7)
+        let audio = MLXRandom.uniform(low: Float(-1), high: Float(1), [90 * 16_000 + 37]).asArray(Float.self)
+        // With an odd nFft and a length that is a multiple of hop, 1 + length / hop overcounts.
+        let oddConfig = NemotronASRPreprocessConfig(nFft: 511)
+        let oddMel = NemotronASRAudio.logMelSpectrogram(MLXArray(Array(audio[..<(300 * hop)])), config: oddConfig)
+        #expect(NemotronASRAudio.frameCount(sampleCount: 300 * hop, config: oddConfig) == oddMel.shape[1])
+        for length in [16_037, 256 * hop, 257 * hop + 5, 30 * 16_000 + 37, audio.count] {
+            let samples = Array(audio[..<length])
+            let full = NemotronASRAudio.logMelSpectrogram(MLXArray(samples), config: config)
+            let total = full.shape[1]
+            #expect(NemotronASRAudio.frameCount(sampleCount: length, config: config) == total)
+            var ranges = [(0, 2), (0, total), (total - 1, total)]
+            for size in [2, 30, 114, 258] where size <= total {
+                ranges.append((((total - size) / 2) & ~1, ((total - size) / 2 & ~1) + size))
+                ranges.append((total - size, total))
+            }
+            for (first, end) in ranges {
+                let lo = first & ~1
+                let offset = max(0, lo * hop - config.nFft / 2 - 1)
+                let usesWhole = total < NemotronASRAudio.gemmMinRows(config: config)
+                // Trimmed like the session: from the first needed sample, once allowed.
+                let start = usesWhole ? 0 : offset
+                let (mel, melOffset) = NemotronASRAudio.streamMelFrames(
+                    Array(samples[start...]), offset: start, first: lo, end: end,
+                    config: config, basis: basis
+                )
+                let got = mel[0..., (first - melOffset)..<(end - melOffset), 0...]
+                let expected = full[0..., first..<end, 0...]
+                #expect(got.shape == expected.shape)
+                #expect(
+                    MLX.all(got .== expected).item(Bool.self),
+                    "length \(length), frames \(first)..<\(end)"
+                )
+            }
+        }
+    }
+
     @Test func legacyQuantizedPointwiseConvolutionSanitizesAsConv1dWeight() {
         guard mlxRuntimeEnabled else {
             print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
