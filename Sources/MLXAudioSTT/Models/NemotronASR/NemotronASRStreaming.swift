@@ -90,6 +90,12 @@ extension NemotronASRModel {
         )
     }
 
+    /// Mel frames per encoder chunk in `streamEncodeChunks`.
+    func streamChunkMelFrames(chunkFrames: Int?) -> Int {
+        let right = defaultAttContextSize.count > 1 ? defaultAttContextSize[1] : 13
+        return (chunkFrames ?? max(1, right + 1)) * encoderConfig.subsamplingFactor
+    }
+
     /// Resumable cache-aware encoder loop shared by `cacheAwareStreamEncode` (one-shot)
     /// and `NemotronASRStreamSession` (incremental). Processes `mel` frames in
     /// `[state.consumed, limit)`:
@@ -115,9 +121,7 @@ extension NemotronASRModel {
         features = features.asType(computeDType)
 
         let sf = encoderConfig.subsamplingFactor
-        let right = defaultAttContextSize.count > 1 ? defaultAttContextSize[1] : 13
-        let cf = chunkFrames ?? max(1, right + 1)
-        let chunkMel = cf * sf
+        let chunkMel = streamChunkMelFrames(chunkFrames: chunkFrames)
         let leftCache = defaultAttContextSize.first ?? 56
         let convLeft = encoderConfig.convKernelSize - 1
 

@@ -192,6 +192,10 @@ public final class NemotronASRStreamSession {
                 if final { done = true; Memory.clearCache() }
                 return Delta(text: "", tokenIds: [])
             }
+            // Fewer frames than a chunk: `streamEncodeChunks` would encode nothing.
+            if !final && limit - encState.consumed < model.streamChunkMelFrames(chunkFrames: chunkFrames) {
+                return Delta(text: "", tokenIds: [])
+            }
             let frames = NemotronASRAudio.streamMelFrames(
                 rawBuffer, offset: rawOffset, first: first, end: end, config: config, basis: melBasis
             )
