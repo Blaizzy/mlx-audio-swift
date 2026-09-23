@@ -150,7 +150,10 @@ public final class NemotronASRModel: Module, STTGenerationModel {
             // caches, greedy RNN-T per chunk. Token-identical to decode() at the
             // native chunk size; shares both loops with NemotronASRStreamSession.
             self.cacheAwareStreamEncode(mel, language: generationParameters.language) { prompted in
+                let before = rnntState.results.count
                 self.streamRNNTDecode(prompted, state: rnntState, frameSeconds: frameSeconds)
+                // No new token: the rebuilt text would equal previousText.
+                guard rnntState.results.count > before else { return }
 
                 let fullText = NemoAlignment.sentencesToResult(
                     NemoAlignment.tokensToSentences(rnntState.results)
