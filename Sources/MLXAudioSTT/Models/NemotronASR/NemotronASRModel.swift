@@ -218,22 +218,25 @@ public final class NemotronASRModel: Module, STTGenerationModel {
 
         while time < maxLength {
             let frame = prompted[0..., time..<(time + 1), 0...]
-            if cached == nil {
+            let prediction: (predProjected: MLXArray, proposedState: NemoLSTMState)
+            if let cached {
+                prediction = cached
+            } else {
                 let currentToken: MLXArray? = lastToken == blankTokenID
                     ? nil
                     : MLXArray(Int32(lastToken)).reshaped([1, 1]).asType(.int32)
                 let decoderOutput = decoder(currentToken, state: decoderState)
-                cached = (
+                prediction = (
                     joint.pred(decoderOutput.0.asType(frame.dtype)),
                     (
                         hidden: decoderOutput.1.hidden?.asType(frame.dtype),
                         cell: decoderOutput.1.cell?.asType(frame.dtype)
                     )
                 )
+                cached = prediction
             }
-            let proposedState = cached!.proposedState
 
-            let jointOutput = joint.combine(joint.enc(frame), cached!.predProjected)
+            let jointOutput = joint.combine(joint.enc(frame), prediction.predProjected)
             let token = jointOutput.argMax(axis: -1).item(Int.self)
             let step = NemoDecodingLogic.rnntStep(
                 predictedToken: token,
@@ -245,7 +248,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
 
             if step.emittedToken {
                 lastToken = token
-                decoderState = proposedState
+                decoderState = prediction.proposedState
                 cached = nil
                 if !NemotronASRTokenizer.isSpecialToken(token, vocabulary: vocabulary) {
                     results.append(
