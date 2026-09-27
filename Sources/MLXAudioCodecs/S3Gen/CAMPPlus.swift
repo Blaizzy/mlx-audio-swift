@@ -379,8 +379,6 @@ class CAMLayer: Module {
     @ModuleInfo(key: "linear_local") var linearLocal: Conv1d
     @ModuleInfo(key: "linear1") var linear1: Conv1d
     @ModuleInfo(key: "linear2") var linear2: Conv1d
-    @ModuleInfo(key: "bn1") var bn1: BatchNorm
-    @ModuleInfo(key: "bn2") var bn2: BatchNorm
 
     let segLen: Int
     let outChannels: Int
@@ -410,8 +408,6 @@ class CAMLayer: Module {
             inputChannels: innerChannels, outputChannels: outChannels,
             kernelSize: 1, stride: 1, padding: 0, bias: true
         )
-        self._bn1.wrappedValue = BatchNorm(featureCount: innerChannels)
-        self._bn2.wrappedValue = BatchNorm(featureCount: outChannels)
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -426,11 +422,10 @@ class CAMLayer: Module {
         let context = globalMean + segPool                 // (B, C, T)
 
         // Bottleneck: reduce -> relu -> expand -> sigmoid
+        // Python CAMLayer has no batch norms here: relu(linear1(ctx)), sigmoid(linear2(...))
         var m = conv1dBCT(linear1, context)
-        m = batchNormBCT(bn1, m)
         m = relu(m)
         m = conv1dBCT(linear2, m)
-        m = batchNormBCT(bn2, m)
         m = sigmoid(m)
 
         return y * m // (B, outChannels, T)
@@ -528,9 +523,11 @@ class TransitLayer: Module {
 
     init(inChannels: Int, outChannels: Int, configStr: String = "batchnorm-relu") {
         self._nonlinear.wrappedValue = makeNonlinear(configStr: configStr, channels: inChannels)
+        // Python: CAMPPlus builds TransitLayer(bias=False); the checkpoint has no transit
+        // bias, so bias: true left a random-init vector polluting the x-vector path.
         self._linear.wrappedValue = Conv1d(
             inputChannels: inChannels, outputChannels: outChannels,
-            kernelSize: 1, stride: 1, padding: 0, bias: true
+            kernelSize: 1, stride: 1, padding: 0, bias: false
         )
     }
 

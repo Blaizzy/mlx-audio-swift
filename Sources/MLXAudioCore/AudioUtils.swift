@@ -226,6 +226,69 @@ public func resampleAudio(
     return MLXArray(resampled)
 }
 
+/// Bandlimited windowed-sinc (Hann) polyphase resampler that matches
+/// `torchaudio.transforms.Resample` defaults exactly (`sinc_interp_hann`,
+/// `lowpass_filter_width=6`, `rolloff=0.99`).
+///
+/// The Kaiser resampler used elsewhere cuts right at Nyquist (rolloff 1.0);
+/// downsampling 44.1k→16k it leaves ~+14 dB of excess energy in the 7–8 kHz band
+/// vs torchaudio. For Chatterbox that extra brightness corrupts the CAMPPlus
+/// speaker x-vector (cos ~0.64 to the PyTorch reference), which conditions the
+/// S3Gen flow decoder and makes regular Chatterbox output audibly brighter/edgier.
+public func sincResampleAudio(
+    _ samples: MLXArray,
+    from sourceSampleRate: Int,
+    to targetSampleRate: Int,
+    lowpassFilterWidth: Int = 6,
+    rolloff: Double = 0.99
+) -> MLXArray {
+    if sourceSampleRate == targetSampleRate || samples.size == 0 {
+        return samples
+    }
+    func gcd(_ a: Int, _ b: Int) -> Int {
+        var a = a, b = b
+        while b != 0 { (a, b) = (b, a % b) }
+        return a
+    }
+    let g = gcd(sourceSampleRate, targetSampleRate)
+    let origFreq = sourceSampleRate / g
+    let newFreq = targetSampleRate / g
+    let lpw = Double(lowpassFilterWidth)
+    let baseFreq = Double(min(origFreq, newFreq)) * rolloff
+    let width = Int(ceil(lpw * Double(origFreq) / baseFreq))
+    let scale = baseFreq / Double(origFreq)
+    let kernelLen = 2 * width + origFreq
+
+    // Kernel (newFreq, kernelLen): one polyphase filter per output phase.
+    // torchaudio: t = (-p/newFreq + idx) * baseFreq, clamp ±lpw, hann window,
+    //             sinc(pi*t) * window * scale.
+    var kernel = [Float](repeating: 0, count: newFreq * kernelLen)
+    for p in 0 ..< newFreq {
+        let tBase = -Double(p) / Double(newFreq)
+        for k in 0 ..< kernelLen {
+            let idx = Double(-width + k) / Double(origFreq)
+            var t = (tBase + idx) * baseFreq
+            t = Swift.max(-lpw, Swift.min(lpw, t))
+            let window = pow(cos(t * Double.pi / lpw / 2.0), 2.0)
+            let tp = t * Double.pi
+            let sinc = tp == 0 ? 1.0 : sin(tp) / tp
+            kernel[p * kernelLen + k] = Float(sinc * window * scale)
+        }
+    }
+
+    let length = samples.size
+    // input (1, L, 1); pad time axis by (width, width + origFreq)
+    var x = samples.reshaped([1, length, 1])
+    x = MLX.padded(x, widths: [.init(0), .init((width, width + origFreq)), .init(0)])
+    // weight (newFreq, kernelLen, 1); conv stride=origFreq → (1, Lout, newFreq)
+    let weight = MLXArray(kernel).reshaped([newFreq, kernelLen, 1])
+    var out = MLX.conv1d(x, weight, stride: origFreq)
+    // interleave phases: (1, Lout, newFreq) → (Lout*newFreq,)
+    out = out.reshaped([-1])
+    let target = Int(ceil(Double(newFreq * length) / Double(origFreq)))
+    return out[0 ..< Swift.min(target, out.size)]
+}
+
 /// A streaming WAV writer that allows writing audio chunks incrementally to a file.
 /// This is more memory efficient than collecting all audio in memory before writing.
 public class StreamingWAVWriter {
