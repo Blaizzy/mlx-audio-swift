@@ -110,64 +110,24 @@ struct OmniVoiceConfigTests {
         #expect(params.numStep == 64)
         #expect(params.guidanceScale == 2.5)
     }
-
-    @Test func testCustomParameters() {
-        let params = OmniVoiceGenerateParameters(
-            numStep: 48,
-            guidanceScale: 3.0,
-            speed: 0.8,
-            duration: 5.0,
-            tShift: 0.2,
-            denoise: false,
-            postprocessOutput: false,
-            layerPenaltyFactor: 3.0,
-            positionTemperature: 3.0,
-            classTemperature: 0.5,
-            seed: 42
-        )
-
-        #expect(params.numStep == 48)
-        #expect(params.guidanceScale == 3.0)
-        #expect(params.speed == 0.8)
-        #expect(params.duration == 5.0)
-        #expect(params.tShift == 0.2)
-        #expect(params.denoise == false)
-        #expect(params.postprocessOutput == false)
-        #expect(params.layerPenaltyFactor == 3.0)
-        #expect(params.positionTemperature == 3.0)
-        #expect(params.classTemperature == 0.5)
-        #expect(params.seed == 42)
-    }
 }
 
 @Suite("OmniVoice TTS Factory Tests")
 struct OmniVoiceFactoryTests {
 
-    @Test func testTTSResolveModelTypeOmniVoice() {
-        let modelType = TTS.resolveModelType(modelRepo: "mlx-community/OmniVoice-bf16")
-        #expect(modelType == "omnivoice")
-    }
-
-    @Test func testTTSResolveModelTypeOmniVoiceCaseInsensitive() {
-        let modelType = TTS.resolveModelType(modelRepo: "mlx-community/omnivoice-bf16")
-        #expect(modelType == "omnivoice")
-    }
-
-    @Test func testTTSResolveModelTypeOmniVoiceWithPrefix() {
-        let modelType = TTS.resolveModelType(modelRepo: "k2-fsa/OmniVoice")
+    @Test(arguments: [
+        "mlx-community/OmniVoice-bf16",
+        "mlx-community/omnivoice-bf16",
+        "k2-fsa/OmniVoice",
+    ])
+    func testTTSResolveModelTypeOmniVoice(modelRepo: String) {
+        let modelType = TTS.resolveModelType(modelRepo: modelRepo)
         #expect(modelType == "omnivoice")
     }
 }
 
 @Suite("OmniVoice Model Tests", .serialized)
 struct OmniVoiceModelTests {
-
-    @Test func testModelTypeRegistered() async throws {
-        // Verify that OmniVoice is registered in the TTS factory
-        // This doesn't load the model, just checks the factory
-        let modelType = TTS.resolveModelType(modelRepo: "mlx-community/OmniVoice-bf16")
-        #expect(modelType == "omnivoice")
-    }
 
     @Test func testAutoVoiceGeneration() async throws {
         let env = ProcessInfo.processInfo.environment
@@ -279,11 +239,8 @@ struct OmniVoiceModelTests {
         let model = try await TTS.loadModel(modelRepo: repo)
 
         // Load reference audio from test media
-        let bundle = Bundle.module
-        guard let audioURL = bundle.url(forResource: "intention", withExtension: "wav") else {
-            print("⚠️ Test audio file not found, skipping test")
-            return
-        }
+        let audioURL = try #require(Bundle.module.url(
+            forResource: "intention", withExtension: "wav", subdirectory: "media"))
 
         let (refSampleRate, refAudio) = try loadAudioArray(from: audioURL, sampleRate: model.sampleRate)
         print("Loaded reference audio: \(refAudio.shape[0]) samples at \(refSampleRate)Hz")
@@ -333,11 +290,8 @@ struct OmniVoiceModelTests {
             return
         }
 
-        let bundle = Bundle.module
-        guard let audioURL = bundle.url(forResource: "intention", withExtension: "wav") else {
-            print("⚠️ Test audio file not found, skipping test")
-            return
-        }
+        let audioURL = try #require(Bundle.module.url(
+            forResource: "intention", withExtension: "wav", subdirectory: "media"))
 
         let (refSampleRate, refAudio) = try loadAudioArray(from: audioURL, sampleRate: model.sampleRate)
         print("Loaded reference audio: \(refAudio.shape[0]) samples at \(refSampleRate)Hz")

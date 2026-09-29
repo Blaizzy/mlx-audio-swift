@@ -103,7 +103,7 @@ func getFeatExtractOutputLengths(_ inputLengths: MLXArray) -> MLXArray {
     let outputLengths = (
         floorDiv(floorDiv(featLengths - 1, 2) + 1 - 1, 2)
         + 1
-        + (inputLengths / 100) * 13
+        + floorDiv(inputLengths, 100) * 13
     )
     return outputLengths
 }
@@ -513,7 +513,8 @@ public class Qwen3ASRAudioEncoder: Module {
             }
         }
 
-        let maxChunkLen = chunkLengths.max() ?? 0
+        // Keep convolution boundaries independent of the other clips in the batch.
+        let maxChunkLen = chunkSize
 
         // Pad chunks to max length
         var paddedChunks: [MLXArray] = []
@@ -665,7 +666,8 @@ public class Qwen3ASRAudioEncoder: Module {
             chunkLengths.append(end - start)
         }
 
-        let maxChunkLen = chunkLengths.max() ?? 0
+        // Match the fixed convolution width used by the batched encoder.
+        let maxChunkLen = chunkSize
 
         // Pad chunks to same length
         var paddedChunks: [MLXArray] = []

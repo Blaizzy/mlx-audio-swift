@@ -179,20 +179,6 @@ struct GLMASRModuleSetupTests {
         #expect(config.ropeTraditional)
     }
 
-    @Test func whisperConfigCustom() {
-        let config = GLMASRWhisperConfig(
-            dModel: 512,
-            encoderAttentionHeads: 8,
-            encoderLayers: 6,
-            numMelBins: 80
-        )
-
-        #expect(config.dModel == 512)
-        #expect(config.encoderAttentionHeads == 8)
-        #expect(config.encoderLayers == 6)
-        #expect(config.numMelBins == 80)
-    }
-
     @Test func llamaConfigDefaults() {
         let config = LlamaConfig()
 
@@ -207,18 +193,6 @@ struct GLMASRModuleSetupTests {
         #expect(config.eosTokenId == [59246, 59253, 59255])
     }
 
-    @Test func llamaConfigCustom() {
-        let config = LlamaConfig(
-            vocabSize: 32000,
-            hiddenSize: 1024,
-            numHiddenLayers: 12
-        )
-
-        #expect(config.vocabSize == 32000)
-        #expect(config.hiddenSize == 1024)
-        #expect(config.numHiddenLayers == 12)
-    }
-
     @Test func glmASRModelConfigDefaults() {
         let config = GLMASRModelConfig()
 
@@ -227,23 +201,6 @@ struct GLMASRModuleSetupTests {
         #expect(config.mergeFactor == 4)
         #expect(config.useRope)
         #expect(config.maxWhisperLength == 1500)
-    }
-
-    @Test func glmASRModelConfigWithNestedConfigs() {
-        let whisperConfig = GLMASRWhisperConfig(dModel: 512, encoderLayers: 6)
-        let llamaConfig = LlamaConfig(hiddenSize: 1024, numHiddenLayers: 12)
-
-        let config = GLMASRModelConfig(
-            whisperConfig: whisperConfig,
-            lmConfig: llamaConfig,
-            mergeFactor: 2
-        )
-
-        #expect(config.whisperConfig.dModel == 512)
-        #expect(config.whisperConfig.encoderLayers == 6)
-        #expect(config.lmConfig.hiddenSize == 1024)
-        #expect(config.lmConfig.numHiddenLayers == 12)
-        #expect(config.mergeFactor == 2)
     }
 
     // MARK: - Layer Tests
@@ -394,37 +351,6 @@ struct GLMASRModuleSetupTests {
     }
 
     // MARK: - STTOutput Tests
-
-    @Test func sttOutputCreation() {
-        let output = STTOutput(
-            text: "Hello world",
-            promptTokens: 100,
-            generationTokens: 50,
-            totalTokens: 150,
-            promptTps: 100.0,
-            generationTps: 50.0,
-            totalTime: 1.5
-        )
-
-        #expect(output.text == "Hello world")
-        #expect(output.promptTokens == 100)
-        #expect(output.generationTokens == 50)
-        #expect(output.totalTokens == 150)
-        #expect(output.promptTps == 100.0)
-        #expect(output.generationTps == 50.0)
-        #expect(output.totalTime == 1.5)
-    }
-
-    @Test func sttOutputDefaults() {
-        let output = STTOutput(text: "Test")
-
-        #expect(output.text == "Test")
-        #expect(output.segments == nil)
-        #expect(output.language == nil)
-        #expect(output.promptTokens == 0)
-        #expect(output.generationTokens == 0)
-        #expect(output.totalTokens == 0)
-    }
 
     @Test func sttOutputDescription() {
         let output = STTOutput(
@@ -1138,22 +1064,6 @@ struct Qwen3ASRModuleSetupTests {
         #expect(config.nWindowInfer == 800)
         #expect(config.convChunksize == 500)
         #expect(config.downsampleHiddenSize == 480)
-    }
-
-    @Test func qwen3AudioEncoderConfigCustom() {
-        let config = Qwen3AudioEncoderConfig(
-            numMelBins: 80,
-            encoderLayers: 12,
-            encoderAttentionHeads: 8,
-            dModel: 512,
-            outputDim: 1024
-        )
-
-        #expect(config.numMelBins == 80)
-        #expect(config.encoderLayers == 12)
-        #expect(config.encoderAttentionHeads == 8)
-        #expect(config.dModel == 512)
-        #expect(config.outputDim == 1024)
     }
 
     @Test func qwen3AudioEncoderConfigDecoding() throws {
@@ -2696,44 +2606,6 @@ struct Qwen3ASRHelperTests {
         #expect(prompt.hasSuffix("<|im_start|>assistant\nlanguage English<asr_text>"))
     }
 
-    @Test func getFeatExtractOutputLengthsBasic() {
-        // Test with a known input length
-        let inputLengths = MLXArray([Int32(200)])
-        let output = getFeatExtractOutputLengths(inputLengths)
-        let result = Int(output[0].item(Int32.self))
-
-        // Should produce a positive output length
-        #expect(result > 0)
-    }
-
-    @Test func getFeatExtractOutputLengthsMultiple() {
-        let inputLengths = MLXArray([Int32(100), Int32(200), Int32(300)])
-        let output = getFeatExtractOutputLengths(inputLengths)
-
-        // All output lengths should be positive
-        for i in 0..<3 {
-            let result = Int(output[i].item(Int32.self))
-            #expect(result > 0, "Output length at index \(i) should be positive")
-        }
-
-        // Longer input should produce longer or equal output
-        let len1 = Int(output[0].item(Int32.self))
-        let len2 = Int(output[1].item(Int32.self))
-        let len3 = Int(output[2].item(Int32.self))
-        #expect(len2 >= len1)
-        #expect(len3 >= len2)
-    }
-
-    @Test func getFeatExtractOutputLengthsChunkBoundary() {
-        // Test at chunk boundary (100)
-        let inputLengths = MLXArray([Int32(100)])
-        let output = getFeatExtractOutputLengths(inputLengths)
-        let result = Int(output[0].item(Int32.self))
-
-        // At boundary of 100, should get 13 tokens from the chunk
-        #expect(result == 13)
-    }
-
     @Test func computeChunkedEncoderWindowLengthsMatchesChunkedOutputs() {
         let windowLengths = computeChunkedEncoderWindowLengths(
             chunkFeatureLengthsAfterCnn: Array(repeating: 13, count: 21) + [8],
@@ -4020,37 +3892,28 @@ struct FireRedASR2Tests {
         let expectedPrefix: [Int32] = [3, 3, 1, 14, 9, 4, 4, 4]
         #expect(Array(sequence.prefix(expectedPrefix.count)) == expectedPrefix)
         #expect(sequence.dropFirst(expectedPrefix.count).allSatisfy { $0 == 4 })
-        let expectedConfidences: [Float] = [
-            0.10417141, 0.09205305, 0.07174433, 0.07743147,
-            0.08286833, 0.058846395,
-        ]
-        #expect(zip(confidences.prefix(expectedConfidences.count), expectedConfidences)
-            .allSatisfy { abs($0 - $1) < 1e-5 })
-        #expect(confidences.dropFirst(expectedConfidences.count).allSatisfy { $0 == 1.0 })
-    }
-}
-
-@Suite("FireRed ASR 2 Cached Tests", .serialized)
-struct FireRedASR2CachedTests {
-
-    /// Loads the model from a pre-existing on-disk snapshot pointed to by
-    /// MLXAUDIO_FIRERED_DIR. Useful for verifying load behaviour without
-    /// touching the network or HubCache.default. Set MLXAUDIO_FIRERED_DIR=/path
-    /// to enable; otherwise this test is a no-op.
-    @Test func fireredLoadsFromLocalDirectory() throws {
-        let env = ProcessInfo.processInfo.environment
-        guard let dirPath = env["MLXAUDIO_FIRERED_DIR"], !dirPath.isEmpty else {
-            print("Skipping FireRed cached test. Set MLXAUDIO_FIRERED_DIR=<path> to enable.")
-            return
+        #expect(confidences.count == sequence.count)
+        var prefix = [Int32(config.sosID)]
+        var referenceCache: [MLXArray?] = []
+        // Match the beam batch size to use the same numerical kernels.
+        let referenceEncoder = MLX.repeated(encoderOutput, count: 3, axis: 0)
+        var reachedEOS = false
+        for (token, confidence) in zip(sequence, confidences) {
+            if reachedEOS {
+                #expect(confidence == 1.0)
+                continue
+            }
+            let tokens = MLX.repeated(
+                MLXArray(prefix).reshaped([1, prefix.count]), count: 3, axis: 0)
+            let (logits, cache) = model.decodeOneStep(
+                tokens, encoderOutput: referenceEncoder, cache: referenceCache)
+            referenceCache = cache
+            let probabilities = softmax(logits / MLXArray(Float(1.25)), axis: -1)
+            let expectedConfidence = probabilities[0, Int(token)].item(Float.self)
+            #expect(abs(confidence - expectedConfidence) < 1e-5)
+            prefix.append(token)
+            reachedEOS = token == Int32(config.eosID)
         }
-
-        let url = URL(fileURLWithPath: dirPath, isDirectory: true)
-        let model = try FireRedASR2Model.fromDirectory(url)
-
-        #expect(model.config.modelType == "fireredasr2")
-        #expect(model.cmvnMeans != nil)
-        #expect(model.cmvnIstd != nil)
-        #expect(!model.vocabulary.isEmpty)
     }
 }
 

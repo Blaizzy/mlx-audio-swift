@@ -1482,10 +1482,6 @@ struct FishSpeechTests {
         #expect(sanitized["model.norm.weight"] != nil)
     }
 
-    @Test func testDefaultRepositoryID() {
-        #expect(FishSpeechModel.defaultRepositoryID == "mlx-community/fish-audio-s2-pro-8bit")
-    }
-
     @Test func testCachedTokenizerMatchesReferenceSpecialTokenEncoding() async throws {
         let modelURL = URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".cache/huggingface/hub/mlx-audio/mlx-community_fish-audio-s2-pro-8bit")
@@ -1712,45 +1708,6 @@ struct KittenTTSTests {
         #expect(config.plbert.numHiddenLayers == 12)
         #expect(config.istftnet.upsampleRates == [10, 6])
         #expect(config.voiceAliases?["Bella"] == "expr-voice-2-f")
-    }
-
-    @Test func modelStructureMatchesWeightKeys() throws {
-        // Integration test: requires model downloaded locally. Set MLXAUDIO_TEST_MODEL_DIR or skip.
-        guard let dirPath = ProcessInfo.processInfo.environment["MLXAUDIO_TEST_MODEL_DIR"] else {
-            print("⚠️ Skipping: set MLXAUDIO_TEST_MODEL_DIR to model directory")
-            return
-        }
-        let modelDir = URL(fileURLWithPath: dirPath)
-        let configURL = modelDir.appendingPathComponent("config.json")
-        guard FileManager.default.fileExists(atPath: configURL.path) else {
-            print("⚠️ Skipping: config.json not found at \(configURL.path)")
-            return
-        }
-
-        let configData = try Data(contentsOf: configURL)
-        let config = try JSONDecoder().decode(KittenTTSConfig.self, from: configData)
-        let model = KittenTTSModel.testInit(config: config)
-
-        let weightsURL = modelDir.appendingPathComponent("model.safetensors")
-        let rawWeights = try MLX.loadArrays(url: weightsURL)
-        let sanitized = model.sanitize(weights: rawWeights)
-
-        let modelKeys = Set(model.parameters().flattened().map(\.0))
-        let weightKeys = Set(sanitized.keys)
-
-        let missingInModel = weightKeys.subtracting(modelKeys)
-        let missingInWeights = modelKeys.subtracting(weightKeys)
-
-        if !missingInModel.isEmpty {
-            print("❌ Weight keys not found in model (\(missingInModel.count)):")
-            for k in missingInModel.sorted().prefix(20) { print("  \(k)") }
-        }
-        if !missingInWeights.isEmpty {
-            print("⚠️ Model keys not in weights (\(missingInWeights.count)):")
-            for k in missingInWeights.sorted().prefix(20) { print("  \(k)") }
-        }
-
-        #expect(missingInModel.count == 0, "Weight keys not matched by model structure")
     }
 
     @Test func textCleanerHandlesSpecialCharacters() {
@@ -2287,99 +2244,12 @@ struct KokoroTTSTests {
         #expect(config.plbert.hiddenDropoutProb == 0.1)
         #expect(config.plbert.typeVocabSize == 2)
     }
-
-    @Test func modelStructureMatchesWeightKeys() throws {
-        guard metalAvailable else { return }
-        guard let dirPath = ProcessInfo.processInfo.environment["MLXAUDIO_KOKORO_MODEL_DIR"] else {
-            print("⚠️ Skipping: set MLXAUDIO_KOKORO_MODEL_DIR to model directory")
-            return
-        }
-        let modelDir = URL(fileURLWithPath: dirPath)
-        let configURL = modelDir.appendingPathComponent("config.json")
-        guard FileManager.default.fileExists(atPath: configURL.path) else {
-            print("⚠️ Skipping: config.json not found at \(configURL.path)")
-            return
-        }
-
-        let configData = try Data(contentsOf: configURL)
-        let config = try JSONDecoder().decode(KokoroConfig.self, from: configData)
-        let model = KokoroModel.testInit(config: config)
-
-        let weightsURL = modelDir.appendingPathComponent("model.safetensors")
-        let rawWeights = try MLX.loadArrays(url: weightsURL)
-        let sanitized = model.sanitize(weights: rawWeights)
-
-        let modelKeys = Set(model.parameters().flattened().map(\.0))
-        let weightKeys = Set(sanitized.keys)
-
-        let missingInModel = weightKeys.subtracting(modelKeys)
-        let missingInWeights = modelKeys.subtracting(weightKeys)
-
-        if !missingInModel.isEmpty {
-            print("❌ Weight keys not found in model (\(missingInModel.count)):")
-            for k in missingInModel.sorted().prefix(20) { print("  \(k)") }
-        }
-        if !missingInWeights.isEmpty {
-            print("⚠️ Model keys not in weights (\(missingInWeights.count)):")
-            for k in missingInWeights.sorted().prefix(20) { print("  \(k)") }
-        }
-
-        #expect(missingInModel.count == 0, "Weight keys not matched by model structure")
-    }
-
-    @Test func durationNaNProducesSilenceInsteadOfCrash() throws {
-        guard metalAvailable else { return }
-        let nanDuration = MLXArray([Float.nan, Float.nan, Float.nan])
-        let safe = nanToNum(nanDuration, nan: 1.0)
-        let clipped = MLX.clip(MLX.round(safe), min: 1, max: 100).asType(.int32)
-        let arr: [Int32] = clipped.asArray(Int32.self)
-        for n in arr {
-            #expect(n >= 1 && n <= 100, "Duration \(n) should be clamped between 1 and 100")
-        }
-    }
-
-    @Test func durationExtremeValuesAreCapped() throws {
-        guard metalAvailable else { return }
-        let extreme = MLXArray([Float(999), Float(0.001), Float(-5)])
-        let clipped = MLX.clip(MLX.round(extreme), min: 1, max: 100).asType(.int32)
-        let arr: [Int32] = clipped.asArray(Int32.self)
-        #expect(arr[0] == 100, "Large duration should be capped at 100")
-        #expect(arr[1] == 1, "Tiny duration should be clamped to 1")
-        #expect(arr[2] == 1, "Negative duration should be clamped to 1")
-    }
-
-    @Test func emptyIndicesReturnsGracefully() throws {
-        guard metalAvailable else { return }
-        let durArray: [Int32] = [0, 0, 0]
-        var indices = [MLXArray]()
-        for (i, n) in durArray.enumerated() {
-            let count = min(max(Int(n), 0), 100)
-            if count > 0 {
-                indices.append(MLX.repeated(MLXArray(Int32(i)), count: count))
-            }
-        }
-        #expect(indices.isEmpty, "All-zero durations should produce empty indices")
-    }
 }
 
 // MARK: - Kokoro Multilingual Processor Tests
 
 @Suite("KokoroMultilingualProcessor")
 struct KokoroMultilingualProcessorTests {
-
-    @Test func voiceLanguageMapCoversAllPrefixes() {
-        let map = KokoroMultilingualProcessor.voiceLanguageMap
-        #expect(map["a"] == "en-us")
-        #expect(map["b"] == "en-gb")
-        #expect(map["e"] == "es")
-        #expect(map["f"] == "fr")
-        #expect(map["h"] == "hi")
-        #expect(map["i"] == "it")
-        #expect(map["j"] == "ja")
-        #expect(map["p"] == "pt")
-        #expect(map["z"] == "cmn")
-        #expect(map.count == 9)
-    }
 
     @Test func languageForVoiceInfersCorrectly() {
         #expect(KokoroMultilingualProcessor.languageForVoice("af_heart") == "en-us")

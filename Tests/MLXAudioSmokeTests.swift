@@ -1,5 +1,6 @@
 //  End-to-end inference smoke tests that download models from HuggingFace and run generation.
 //  These are intentionally separated from the fast unit tests so CI can skip them easily.
+//  Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 in the test process environment to enable them.
 //
 //  Run all smoke tests (serialized):
 //    xcodebuild test \
@@ -67,7 +68,13 @@ private func cleanupTemporaryArtifactDirectory(_ directory: URL) {
 
 // MARK: - Top-level serialized wrapper (all suites run sequentially)
 
-@Suite("SmokeTests", .serialized)
+@Suite(
+    "SmokeTests", .serialized,
+    .enabled(
+        if: ProcessInfo.processInfo.environment["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1",
+        "Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable model downloads and inference."
+    )
+)
 struct SmokeTests {
 
 // MARK: - Codecs Smoke Tests
