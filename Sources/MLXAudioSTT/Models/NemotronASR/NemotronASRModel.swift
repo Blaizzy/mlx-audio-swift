@@ -150,7 +150,10 @@ public final class NemotronASRModel: Module, STTGenerationModel {
             // caches, greedy RNN-T per chunk. Token-identical to decode() at the
             // native chunk size; shares both loops with NemotronASRStreamSession.
             self.cacheAwareStreamEncode(mel, language: generationParameters.language) { prompted in
+                let before = rnntState.results.count
                 self.streamRNNTDecode(prompted, state: rnntState, frameSeconds: frameSeconds)
+                // No new token: the rebuilt text would equal previousText.
+                guard rnntState.results.count > before else { return }
 
                 let fullText = NemoAlignment.sentencesToResult(
                     NemoAlignment.tokensToSentences(rnntState.results)
@@ -209,22 +212,31 @@ public final class NemotronASRModel: Module, STTGenerationModel {
         var decoderState: NemoLSTMState?
         var time = 0
         var newSymbols = 0
+        // Prediction output for the current (lastToken, decoderState); cleared on
+        // emission, reused on blank frames (see NemotronASRStreamRNNTState).
+        var cached: (predProjected: MLXArray, proposedState: NemoLSTMState)?
 
         while time < maxLength {
             let frame = prompted[0..., time..<(time + 1), 0...]
-            let currentToken: MLXArray? = lastToken == blankTokenID
-                ? nil
-                : MLXArray(Int32(lastToken)).reshaped([1, 1]).asType(.int32)
+            let prediction: (predProjected: MLXArray, proposedState: NemoLSTMState)
+            if let cached {
+                prediction = cached
+            } else {
+                let currentToken: MLXArray? = lastToken == blankTokenID
+                    ? nil
+                    : MLXArray(Int32(lastToken)).reshaped([1, 1]).asType(.int32)
+                let decoderOutput = decoder(currentToken, state: decoderState)
+                prediction = (
+                    joint.pred(decoderOutput.0.asType(frame.dtype)),
+                    (
+                        hidden: decoderOutput.1.hidden?.asType(frame.dtype),
+                        cell: decoderOutput.1.cell?.asType(frame.dtype)
+                    )
+                )
+                cached = prediction
+            }
 
-            let decoderOutput = decoder(currentToken, state: decoderState)
-            let pred = decoderOutput.0.asType(frame.dtype)
-            let proposedState: NemoLSTMState = (
-                hidden: decoderOutput.1.hidden?.asType(frame.dtype),
-                cell: decoderOutput.1.cell?.asType(frame.dtype)
-            )
-
-            let jointOutput = joint(frame, pred)
-            eval(jointOutput)
+            let jointOutput = joint.combine(joint.enc(frame), prediction.predProjected)
             let token = jointOutput.argMax(axis: -1).item(Int.self)
             let step = NemoDecodingLogic.rnntStep(
                 predictedToken: token,
@@ -236,7 +248,8 @@ public final class NemotronASRModel: Module, STTGenerationModel {
 
             if step.emittedToken {
                 lastToken = token
-                decoderState = proposedState
+                decoderState = prediction.proposedState
+                cached = nil
                 if !NemotronASRTokenizer.isSpecialToken(token, vocabulary: vocabulary) {
                     results.append(
                         NemoAlignedToken(
@@ -261,17 +274,28 @@ public final class NemotronASRModel: Module, STTGenerationModel {
     }
 
     func applyPrompt(_ encoded: MLXArray, language: String? = nil) -> MLXArray {
+        guard promptKernel != nil else { return encoded }
+        let oneHot = promptOneHot(
+            batch: encoded.shape[0], time: encoded.shape[1],
+            dtype: encoded.dtype, promptIndex: resolvePromptIndex(language)
+        )
+        return applyPrompt(encoded, oneHot: oneHot)
+    }
+
+    /// `applyPrompt` with a precomputed `promptOneHot` of matching shape and dtype,
+    /// so a stream can reuse it across chunks.
+    func applyPrompt(_ encoded: MLXArray, oneHot: MLXArray) -> MLXArray {
         guard let promptKernel else { return encoded }
-        let promptIndex = resolvePromptIndex(language)
-        let batch = encoded.shape[0]
-        let time = encoded.shape[1]
+        let conditioned = MLX.concatenated([encoded, oneHot], axis: 2)
+        return promptKernel(conditioned)
+    }
+
+    func promptOneHot(batch: Int, time: Int, dtype: DType, promptIndex: Int) -> MLXArray {
         let promptIDs = MLXArray(Array(repeating: Int32(promptIndex), count: batch * time))
             .reshaped([batch, time])
             .expandedDimensions(axis: 2)
         let promptRange = MLX.arange(numPrompts, dtype: .int32).reshaped([1, 1, numPrompts])
-        let oneHot = MLX.where(promptRange .== promptIDs, MLXArray(Float(1)), MLXArray(Float(0))).asType(encoded.dtype)
-        let conditioned = MLX.concatenated([encoded, oneHot], axis: 2)
-        return promptKernel(conditioned)
+        return MLX.where(promptRange .== promptIDs, MLXArray(Float(1)), MLXArray(Float(0))).asType(dtype)
     }
 
     func resolvePromptIndex(_ language: String?) -> Int {

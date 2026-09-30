@@ -21,6 +21,8 @@ final class NemotronASRStreamEncoderState {
     var melCache: MLXArray?
     var emitted = 0   // subsampled frames already emitted to the decoder (absolute)
     var consumed = 0  // mel frames already consumed by the encoder (absolute)
+    // Prompt one-hot for the last chunk shape; every whole chunk has the same one.
+    var promptOneHot: (oneHot: MLXArray, time: Int, dtype: DType, promptIndex: Int)?
 
     init(layers: Int) {
         attnCache = [MLXArray?](repeating: nil, count: layers)
@@ -34,17 +36,24 @@ extension NemotronASRModel {
         _ x: MLXArray,
         attnCache: MLXArray?,
         convCache: MLXArray?,
+        posEmb: inout (emb: MLXArray, cacheLen: Int)?,
+        half: inout MLXArray?,
         leftCache: Int,
         convLeft: Int
     ) -> (MLXArray, MLXArray, MLXArray) {
-        var residual = x + MLXArray(Float(0.5)).asType(x.dtype) * block.feedForward1(block.normFeedForward1(x))
+        if half == nil || half!.dtype != x.dtype { half = MLXArray(Float(0.5)).asType(x.dtype) }
+        var residual = x + half! * block.feedForward1(block.normFeedForward1(x))
 
         // cache-aware self-attention (Q = chunk, K/V = [cache ++ chunk])
         let xn = block.normSelfAtt(residual)
         let cacheLen = attnCache?.shape[1] ?? 0
         let kv = attnCache == nil ? xn : MLX.concatenated([attnCache!, xn], axis: 1)
-        let posEmb = encoder.posEnc(xn, offset: cacheLen).1
-        residual = residual + block.selfAttn(xn, kv, kv, posEmb: posEmb, mask: nil)
+        // posEnc depends only on (chunk length, cacheLen, dtype); the chunk length is
+        // fixed within a chunk, so layers share one embedding instead of rebuilding it.
+        if posEmb == nil || posEmb!.cacheLen != cacheLen || posEmb!.emb.dtype != xn.dtype {
+            posEmb = (encoder.posEnc(xn, offset: cacheLen).1, cacheLen)
+        }
+        residual = residual + block.selfAttn(xn, kv, kv, posEmb: posEmb!.emb, mask: nil)
         let kvLen = kv.shape[1]
         let attnNext = kv[0..., max(0, kvLen - leftCache)..<kvLen, 0...]
 
@@ -62,8 +71,8 @@ extension NemotronASRModel {
         y = silu(y)
         residual = residual + block.conv.pointwiseConv2(y)
 
-        residual = residual + MLXArray(Float(0.5)).asType(residual.dtype)
-            * block.feedForward2(block.normFeedForward2(residual))
+        if half!.dtype != residual.dtype { half = MLXArray(Float(0.5)).asType(residual.dtype) }
+        residual = residual + half! * block.feedForward2(block.normFeedForward2(residual))
         return (block.normOut(residual), attnNext, convNext)
     }
 
@@ -90,6 +99,12 @@ extension NemotronASRModel {
         )
     }
 
+    /// Mel frames per encoder chunk in `streamEncodeChunks`.
+    func streamChunkMelFrames(chunkFrames: Int?) -> Int {
+        let right = defaultAttContextSize.count > 1 ? defaultAttContextSize[1] : 13
+        return (chunkFrames ?? max(1, right + 1)) * encoderConfig.subsamplingFactor
+    }
+
     /// Resumable cache-aware encoder loop shared by `cacheAwareStreamEncode` (one-shot)
     /// and `NemotronASRStreamSession` (incremental). Processes `mel` frames in
     /// `[state.consumed, limit)`:
@@ -107,6 +122,7 @@ extension NemotronASRModel {
         chunkFrames: Int?,
         flushTail: Bool,
         state: NemotronASRStreamEncoderState,
+        melOffset: Int = 0,
         onChunk: (MLXArray) -> Void
     ) {
         var features = mel
@@ -114,9 +130,7 @@ extension NemotronASRModel {
         features = features.asType(computeDType)
 
         let sf = encoderConfig.subsamplingFactor
-        let right = defaultAttContextSize.count > 1 ? defaultAttContextSize[1] : 13
-        let cf = chunkFrames ?? max(1, right + 1)
-        let chunkMel = cf * sf
+        let chunkMel = streamChunkMelFrames(chunkFrames: chunkFrames)
         let leftCache = defaultAttContextSize.first ?? 56
         let convLeft = encoderConfig.convKernelSize - 1
 
@@ -125,7 +139,7 @@ extension NemotronASRModel {
             // Mid-stream: defer a partial trailing chunk until the next call / flush.
             if !flushTail && (end - state.consumed) < chunkMel { break }
 
-            let m = features[0..., state.consumed..<end, 0...]
+            let m = features[0..., (state.consumed - melOffset)..<(end - melOffset), 0...]
             let cacheLen = state.melCache?.shape[1] ?? 0
             let win = state.melCache == nil ? m : MLX.concatenated([state.melCache!, m], axis: 1)
             let winLen = win.shape[1]
@@ -145,17 +159,35 @@ extension NemotronASRModel {
             }
             state.emitted = base + hi
             var h = sub[0..., lo..<hi, 0...]
+            var posEmb: (emb: MLXArray, cacheLen: Int)?
+            var half: MLXArray?
             for li in encoder.layers.indices {
                 let r = nemoStreamBlock(
                     encoder.layers[li], h,
                     attnCache: state.attnCache[li], convCache: state.convCache[li],
+                    posEmb: &posEmb,
+                    half: &half,
                     leftCache: leftCache, convLeft: convLeft
                 )
                 h = r.0
                 state.attnCache[li] = r.1
                 state.convCache[li] = r.2
             }
-            onChunk(applyPrompt(h, language: language))
+            guard promptKernel != nil else {
+                onChunk(h)
+                continue
+            }
+            let promptIndex = resolvePromptIndex(language)
+            let t = h.shape[1]
+            if let c = state.promptOneHot, c.time == t, c.dtype == h.dtype, c.promptIndex == promptIndex,
+               c.oneHot.shape[0] == h.shape[0]
+            {
+                onChunk(applyPrompt(h, oneHot: c.oneHot))
+            } else {
+                let oneHot = promptOneHot(batch: h.shape[0], time: t, dtype: h.dtype, promptIndex: promptIndex)
+                state.promptOneHot = (oneHot, t, h.dtype, promptIndex)
+                onChunk(applyPrompt(h, oneHot: oneHot))
+            }
         }
     }
 }
