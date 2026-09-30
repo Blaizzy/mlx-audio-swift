@@ -3,6 +3,12 @@ import MLX
 import MLXAudioCore
 
 enum VoxtralRealtimeAudio {
+    /// Periodic Hann window: N denominator, not N-1.
+    static func periodicHannWindow(size: Int) -> MLXArray {
+        let n = MLXArray(0..<size).asType(.float32)
+        return 0.5 * (1.0 - cos((2.0 * Float.pi * n) / Float(size)))
+    }
+
     static func computeMelFilters(
         numMelBins: Int = 128,
         windowSize: Int = 400,
@@ -26,9 +32,7 @@ enum VoxtralRealtimeAudio {
         hopLength: Int = 160,
         globalLogMelMax: Float = 1.5
     ) -> MLXArray {
-        // Periodic Hann window uses N denominator, not N-1.
-        let n = MLXArray(0..<windowSize).asType(.float32)
-        let window = 0.5 * (1.0 - cos((2.0 * Float.pi * n) / Float(windowSize)))
+        let window = periodicHannWindow(size: windowSize)
 
         let audio1D: MLXArray
         if audio.ndim > 1 {
@@ -79,13 +83,9 @@ enum VoxtralRealtimeAudio {
     static func melColumns(
         frames: MLXArray,
         melFilters: MLXArray,
-        windowSize: Int,
+        window: MLXArray,
         globalLogMelMax: Float
     ) -> MLXArray {
-        // Periodic Hann window uses N denominator, not N-1.
-        let n = MLXArray(0..<windowSize).asType(.float32)
-        let window = 0.5 * (1.0 - cos((2.0 * Float.pi * n) / Float(windowSize)))
-
         let windowed = frames * window.expandedDimensions(axis: 0)
         let spectrum = MLXFFT.rfft(windowed, axis: -1)
         let magnitudes = MLX.abs(spectrum).square().transposed(1, 0)
@@ -144,6 +144,7 @@ enum VoxtralRealtimeAudio {
 /// frame count match the offline count exactly.
 struct VoxtralRealtimeMelStream {
     private let melFilters: MLXArray
+    private let window: MLXArray
     private let windowSize: Int
     private let hopLength: Int
     private let globalLogMelMax: Float
@@ -166,6 +167,7 @@ struct VoxtralRealtimeMelStream {
             "left pad must cover the reflect pad for the zero-seeded carry to be exact"
         )
         self.melFilters = melFilters
+        self.window = VoxtralRealtimeAudio.periodicHannWindow(size: windowSize)
         self.windowSize = windowSize
         self.hopLength = hopLength
         self.globalLogMelMax = globalLogMelMax
@@ -192,7 +194,7 @@ struct VoxtralRealtimeMelStream {
         return VoxtralRealtimeAudio.melColumns(
             frames: frames,
             melFilters: melFilters,
-            windowSize: windowSize,
+            window: window,
             globalLogMelMax: globalLogMelMax
         )
     }
