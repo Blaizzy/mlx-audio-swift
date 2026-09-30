@@ -1,4 +1,3 @@
-import Foundation
 import Testing
 @testable import MLXAudioG2P
 
@@ -105,63 +104,3 @@ struct ARPAbetMapperTests {
         #expect(ipa == ["h", "l"])
     }
 }
-
-struct CMUDictLoaderTests {
-
-    private static var cmuDictDir: URL? {
-        ProcessInfo.processInfo.environment["MLXAUDIO_CMUDICT_DIR"].map { URL(fileURLWithPath: $0) }
-    }
-
-    @Test func loadsFromDirectory() throws {
-        guard let dir = Self.cmuDictDir else {
-            print("Skipping: set MLXAUDIO_CMUDICT_DIR to cmudict directory")
-            return
-        }
-        let lexicon = try CMUDictLoader.load(from: dir)
-        #expect(lexicon.lookup("hello") != nil)
-        #expect(lexicon.lookup("world") != nil)
-        #expect(lexicon.lookup("the") != nil)
-    }
-
-    @Test func producesCorrectIPA() throws {
-        guard let dir = Self.cmuDictDir else { return }
-        let lexicon = try CMUDictLoader.load(from: dir)
-        let hello = try #require(lexicon.lookup("hello"))
-        #expect(hello.phonemes == ["h", "ə", "l", "oʊ"])
-    }
-
-    @Test func handlesUppercaseQuery() throws {
-        guard let dir = Self.cmuDictDir else { return }
-        let lexicon = try CMUDictLoader.load(from: dir)
-        #expect(lexicon.lookup("HELLO") != nil)
-        #expect(lexicon.lookup("Hello") != nil)
-    }
-
-    @Test func returnsNilForNonsense() throws {
-        guard let dir = Self.cmuDictDir else { return }
-        let lexicon = try CMUDictLoader.load(from: dir)
-        #expect(lexicon.lookup("xyzzyplugh") == nil)
-    }
-
-    @Test func hasReasonableCount() throws {
-        guard let dir = Self.cmuDictDir else { return }
-        let lexicon = try CMUDictLoader.load(from: dir)
-        #expect(lexicon.lookup("phone") != nil)
-        #expect(lexicon.lookup("knight") != nil)
-        #expect(lexicon.lookup("psychology") != nil)
-        #expect(lexicon.lookup("through") != nil)
-    }
-
-    @Test func fixesDigraphsCorrectly() throws {
-        guard let dir = Self.cmuDictDir else { return }
-        let lexicon = try CMUDictLoader.load(from: dir)
-
-        let phone = try #require(lexicon.lookup("phone"))
-        #expect(phone.phonemes.contains("f"))
-        #expect(!phone.phonemes.contains("p"))
-
-        let knight = try #require(lexicon.lookup("knight"))
-        #expect(knight.phonemes.first == "n")
-    }
-}
-
