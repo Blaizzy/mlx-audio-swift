@@ -1,3 +1,4 @@
+#if canImport(NaturalLanguage)
 import Foundation
 import MLX
 import MLXNN
@@ -53,3 +54,5 @@ nonisolated final class BARTMultiHeadAttention: Module {
       return outProj(output)
     }
 }
+
+#endif

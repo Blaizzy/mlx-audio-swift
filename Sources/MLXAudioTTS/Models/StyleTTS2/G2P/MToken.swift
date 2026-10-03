@@ -1,3 +1,4 @@
+#if canImport(NaturalLanguage)
 import Foundation
 import NaturalLanguage
 
@@ -65,3 +66,5 @@ class MToken {
             underscore: Underscore(copying: other.`_`))
     }
 }
+
+#endif

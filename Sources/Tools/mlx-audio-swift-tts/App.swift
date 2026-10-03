@@ -1,4 +1,3 @@
-import AVFoundation
 import Foundation
 @preconcurrency import MLX
 import MLXAudioCore
@@ -362,36 +361,16 @@ enum App {
         guard channelCount > 0 else {
             throw AppError.invalidGeneratedAudioShape([audioFrames.frameCount, channelCount])
         }
-        let frameCount = AVAudioFrameCount(audioFrames.frameCount)
-        guard let bufferFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: sampleRate,
-            channels: AVAudioChannelCount(channelCount),
-            interleaved: false
-        ), let fileFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: sampleRate,
-            channels: AVAudioChannelCount(channelCount),
-            interleaved: true
-        ), let buffer = AVAudioPCMBuffer(pcmFormat: bufferFormat, frameCapacity: frameCount) else {
-            throw AppError.failedToCreateAudioBuffer
-        }
-        buffer.frameLength = frameCount
-        guard let channelData = buffer.floatChannelData else {
-            throw AppError.failedToAccessAudioBufferData
-        }
+        // Interleave the per-channel planar frames for the WAV writer.
+        let frameCount = audioFrames.frameCount
+        var interleaved = [Float](repeating: 0, count: frameCount * channelCount)
         for channel in 0 ..< channelCount {
-            for frame in 0 ..< audioFrames.frameCount {
-                channelData[channel][frame] = audioFrames.channels[channel][frame]
+            let channelSamples = audioFrames.channels[channel]
+            for frame in 0 ..< frameCount {
+                interleaved[frame * channelCount + channel] = channelSamples[frame]
             }
         }
-        let audioFile = try AVAudioFile(
-            forWriting: outputURL,
-            settings: fileFormat.settings,
-            commonFormat: bufferFormat.commonFormat,
-            interleaved: bufferFormat.isInterleaved
-        )
-        try audioFile.write(from: buffer)
+        try writeWAVFloat32(interleaved, channels: channelCount, sampleRate: Int(sampleRate.rounded()), to: outputURL)
     }
 
 }

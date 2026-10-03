@@ -1,3 +1,4 @@
+#if canImport(NaturalLanguage)
 import Foundation
 import NaturalLanguage
 
@@ -21,3 +22,5 @@ extension String {
         return result
     }
 }
+
+#endif

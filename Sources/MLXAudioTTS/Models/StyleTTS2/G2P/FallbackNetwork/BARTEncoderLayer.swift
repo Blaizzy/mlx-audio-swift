@@ -1,3 +1,4 @@
+#if canImport(NaturalLanguage)
 import Foundation
 import MLX
 import MLXNN
@@ -41,3 +42,5 @@ nonisolated final class BARTEncoderLayer: Module {
       return output
     }
 }
+
+#endif

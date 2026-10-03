@@ -1,3 +1,4 @@
+#if canImport(NaturalLanguage)
 import Foundation
 import MLX
 import MLXNN
@@ -12,3 +13,5 @@ final class BARTLayerNorm : LayerNorm {
     }
   }
 }
+
+#endif

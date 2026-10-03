@@ -10,7 +10,11 @@ import MLX
 import MLXNN
 import MLXLMCommon
 import Tokenizers
+#if canImport(os)
 import os
+#endif
+// On Linux (no `os`), `OSAllocatedUnfairLock` is provided by a Mutex-backed shim of the same
+// name/API — see UnfairLock+Linux.swift.
 
 // MARK: - Shared State
 
@@ -193,9 +197,9 @@ private final class MossStreamingInferenceSessionCore: @unchecked Sendable, Stre
     private let windowSamples: Int
     private let partialWindowSamples: Int
     private let minimumPartialSamples: Int
-    private let shared = OSAllocatedUnfairLock(initialState: MossStreamingSharedState())
-    private let audioState = OSAllocatedUnfairLock(initialState: MossAudioStreamingSharedState())
-    private let sessionLock = OSAllocatedUnfairLock(initialState: 0)
+    private let shared = OSAllocatedUnfairLock(initialState:MossStreamingSharedState())
+    private let audioState = OSAllocatedUnfairLock(initialState:MossAudioStreamingSharedState())
+    private let sessionLock = OSAllocatedUnfairLock(initialState:0)
 
     private var isActive: Bool = false
     private var continuation: AsyncStream<TranscriptionEvent>.Continuation?
@@ -555,9 +559,9 @@ private final class CohereStreamingInferenceSessionCore: @unchecked Sendable, St
     private let sampleRate: Int
     private let windowSamples: Int
     private let overlapSamples: Int
-    private let shared = OSAllocatedUnfairLock(initialState: SessionSharedState())
-    private let audioState = OSAllocatedUnfairLock(initialState: CohereStreamingSharedState())
-    private let sessionLock = OSAllocatedUnfairLock(initialState: 0)
+    private let shared = OSAllocatedUnfairLock(initialState:SessionSharedState())
+    private let audioState = OSAllocatedUnfairLock(initialState:CohereStreamingSharedState())
+    private let sessionLock = OSAllocatedUnfairLock(initialState:0)
 
     private var isActive: Bool = false
     private var continuation: AsyncStream<TranscriptionEvent>.Continuation?
@@ -969,8 +973,8 @@ private final class QwenStreamingInferenceSessionCore: @unchecked Sendable, Stre
     private let melProcessor: IncrementalMelSpectrogram
     private let encoder: StreamingEncoder
 
-    private let shared = OSAllocatedUnfairLock(initialState: SessionSharedState())
-    private let sessionLock = OSAllocatedUnfairLock(initialState: 0)
+    private let shared = OSAllocatedUnfairLock(initialState:SessionSharedState())
+    private let sessionLock = OSAllocatedUnfairLock(initialState:0)
 
     private var isActive: Bool = false
     private var totalSamplesFed: Int = 0

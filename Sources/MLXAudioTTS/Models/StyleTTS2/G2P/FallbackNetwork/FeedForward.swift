@@ -1,3 +1,4 @@
+#if canImport(NaturalLanguage)
 import Foundation
 import MLX
 import MLXNN
@@ -19,3 +20,5 @@ nonisolated final class FeedForward: Module {
     return output
   }
 }
+
+#endif

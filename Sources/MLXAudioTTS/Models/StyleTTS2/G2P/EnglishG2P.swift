@@ -1,3 +1,4 @@
+#if canImport(NaturalLanguage)
 import Foundation
 import NaturalLanguage
 
@@ -498,3 +499,5 @@ final class EnglishG2P {
     return (result, finalTokens)
   }
 }
+
+#endif

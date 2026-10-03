@@ -1,3 +1,4 @@
+#if canImport(NaturalLanguage)
 import Foundation
 
 class TokenContext {
@@ -9,3 +10,5 @@ class TokenContext {
         self.futureTo = futureTo
     }
 }
+
+#endif

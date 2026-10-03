@@ -5,6 +5,8 @@
 //  Created by Sachin Desai on 5/17/25.
 //
 
+// AVAudioSession management — Apple platforms only (no-op on macOS, active on iOS).
+#if canImport(AVFoundation)
 import Foundation
 import AVFoundation
 #if os(iOS)
@@ -85,3 +87,4 @@ public class AudioSessionManager {
         // No equivalent action needed for macOS
     }
 }
+#endif
