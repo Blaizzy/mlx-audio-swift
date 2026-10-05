@@ -17,7 +17,7 @@ struct FishSpeechTextPart: Sendable {
     let text: String
 }
 
-struct FishSpeechVQPart: Sendable {
+struct FishSpeechVQPart {
     let codes: MLXArray
 
     init(_ codes: MLXArray) {
@@ -25,12 +25,12 @@ struct FishSpeechVQPart: Sendable {
     }
 }
 
-enum FishSpeechPart: Sendable {
+enum FishSpeechPart {
     case text(FishSpeechTextPart)
     case vq(FishSpeechVQPart)
 }
 
-struct FishSpeechMessage: Sendable {
+struct FishSpeechMessage {
     let role: FishSpeechRole
     var parts: [FishSpeechPart] = []
     var addIMStart: Bool = true
@@ -38,7 +38,7 @@ struct FishSpeechMessage: Sendable {
     var modality: FishSpeechModality? = nil
 }
 
-struct FishSpeechConversation: Sendable {
+struct FishSpeechConversation {
     var messages: [FishSpeechMessage] = []
 
     mutating func append(_ message: FishSpeechMessage) {

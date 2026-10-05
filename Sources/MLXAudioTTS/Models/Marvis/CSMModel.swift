@@ -459,8 +459,9 @@ public final class CSMModel: Module {
     public func cachesAreEnabled() -> Bool { cachesEnabled }
 
     public func resetCaches() {
-        backboneCache = makePromptCache(model: backbone, parameters: nil) as? [KVCacheSimple]
-        decoderCache = makePromptCache(model: decoder, parameters: nil) as? [KVCacheSimple]
+        // CSM uses unbounded, unquantized caches with one entry per layer.
+        backboneCache = backbone.kvHeads.map { _ in KVCacheSimple() }
+        decoderCache = decoder.kvHeads.map { _ in KVCacheSimple() }
         cachesEnabled = true
     }
 
@@ -498,7 +499,7 @@ public final class CSMModel: Module {
         let basePos = MLXArray.arange(2).reshaped([1, 2])
         var currPos = repeated(basePos, count: B, axis: 0) // [B, 2]
 
-        decoderCache = makePromptCache(model: decoder, parameters: nil) as? [KVCacheSimple]
+        decoderCache = decoder.kvHeads.map { _ in KVCacheSimple() }
 
         let Cb = maxCodebooks != nil ? min(args.audioNumCodebooks, maxCodebooks ?? args.audioNumCodebooks) : args.audioNumCodebooks
         if Cb > 1 {

@@ -107,7 +107,7 @@ class DetokenizerSlidingWindowAttention: Module {
     }
 
     private func applyRoPE(_ x: MLXArray, offset: Int = 0) -> MLXArray {
-        let (B, H, T, D) = (x.dim(0), x.dim(1), x.dim(2), x.dim(3))
+        let (T, D) = (x.dim(2), x.dim(3))
         let invFreq = 1.0 / MLX.pow(
             MLXArray(ropeTheta),
             MLXArray(stride(from: 0, to: D, by: 2).map { Float($0) / Float(D) })
@@ -304,8 +304,6 @@ public class LFM2AudioDetokenizer: Module {
     }
 
     public func callAsFunction(_ codes: MLXArray) -> MLXArray {
-        let (B, K, T) = (codes.dim(0), codes.dim(1), codes.dim(2))
-
         let clampedCodes = MLX.clip(codes, min: 0, max: config.vocabSize - 1)
         var x = emb(clampedCodes)
         x = MLX.repeated(x, count: config.upsampleFactor, axis: 1)

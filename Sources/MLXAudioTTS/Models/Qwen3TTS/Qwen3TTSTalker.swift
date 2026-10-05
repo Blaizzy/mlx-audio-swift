@@ -55,9 +55,11 @@ final class TalkerRotaryEmbedding: Module {
 
     func applyInterleavedMrope(_ freqs: MLXArray, mropeSection sec: [Int]) -> MLXArray {
         let headDimHalf = freqs.dim(-1)
-        let freqsT = freqs[0]
-        let freqsH = freqs[1]
-        let freqsW = freqs[2]
+        // Slice the transposed tensor to avoid MLX's scalar gather path, which
+        // passes empty index metadata to Metal when API validation is enabled.
+        let freqsT = freqs[0..<1].squeezed(axis: 0)
+        let freqsH = freqs[1..<2].squeezed(axis: 0)
+        let freqsW = freqs[2..<3].squeezed(axis: 0)
 
         let indices = MLXArray(0 ..< headDimHalf)
         let hLength = sec[1] * 3

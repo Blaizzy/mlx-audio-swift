@@ -380,7 +380,7 @@ class TTSViewModel {
 
         do {
             // Load reference audio if this is a cloned voice
-            var refAudio: MLXArray?
+            var refSamples: [Float]?
             var refText: String?
 
             if let voice, voice.isClonedVoice,
@@ -388,7 +388,7 @@ class TTSViewModel {
                let transcription = voice.transcription {
                 generationProgress = "Loading reference audio..."
                 let (_, audioData) = try loadAudioArray(from: audioURL)
-                refAudio = audioData
+                refSamples = audioData.asArray(Float.self)
                 refText = transcription
             }
 
@@ -434,7 +434,7 @@ class TTSViewModel {
                 for try await event in model.generateStream(
                     text: chunk,
                     voice: voiceParam,
-                    refAudio: refAudio,
+                    refAudio: refSamples.map { MLXArray($0) },
                     refText: refText,
                     language: nil,
                     generationParameters: generationParameters

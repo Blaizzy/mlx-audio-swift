@@ -322,8 +322,10 @@ public final class ParakeetModel: Module, STTGenerationModel {
             return compiled
         }
 
-        let compiled: @Sendable (MLXArray) -> MLXArray = compile { [self] features in
-            self.encoder(features).0
+        // Declare weights as compile inputs so updates remain visible after tracing.
+        let encoder = self.encoder
+        let compiled = MLX.compile(inputs: [encoder]) { (features: MLXArray) in
+            encoder(features).0
         }
         compiledEncoderFeaturesByShape[key] = compiled
         return compiled
@@ -904,7 +906,8 @@ private func makeCompiledTDTStep(
 
     let blankTokenArray = MLXArray(Int32(blankTokenId)).reshaped([1, 1])
 
-    return compile { arrays in
+    // The decoder and joint weights must remain live across compiled calls.
+    return MLX.compile(inputs: [decoder, joint]) { arrays in
         let feature = arrays[0]
         let currentToken = arrays[1]
         let hidden = arrays[2]

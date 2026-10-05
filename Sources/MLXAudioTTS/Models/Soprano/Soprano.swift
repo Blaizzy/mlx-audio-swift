@@ -283,11 +283,11 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
     public func generate(
         text: String,
         voice: String?,
-        refAudio _: MLXArray?,
+        refAudio _: sending MLXArray?,
         refText _: String?,
         language _: String?,
         generationParameters: GenerateParameters
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         try await generate(
             text: text,
             voice: voice,
@@ -299,11 +299,11 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio _: MLXArray?,
+        refAudio _: sending MLXArray?,
         refText _: String?,
         language _: String?,
         generationParameters: GenerateParameters
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text,
             voice: voice,
@@ -585,7 +585,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
             repetitionPenalty: 1.5,
             repetitionContextSize: 30
         )
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         guard self.tokenizer != nil else {
             throw SopranoError.modelNotInitialized("Tokenizer not loaded")
         }
@@ -637,7 +637,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
                 let inputIds = self.tokenize(promptText)
                 var allHiddenStates: [MLXArray] = []
 
-                for await (token, hiddenState) in self.streamGenerate(
+                for await step in self.streamGenerate(
                     inputIds: inputIds,
                     maxTokens: maxTokens,
                     temperature: parameters.temperature,
@@ -645,9 +645,9 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
                     repetitionPenalty: parameters.repetitionPenalty ?? 1.0,  // Match Python (no penalty)
                     repetitionContextSize: parameters.repetitionContextSize
                 ) {
-                    allHiddenStates.append(hiddenState)
+                    allHiddenStates.append(step.hiddenState)
 
-                    if token != nil {
+                    if step.token != nil {
                         totalTokens += 1
                     }
                 }
@@ -700,7 +700,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
             repetitionPenalty: 1.5,
             repetitionContextSize: 30
         )
-    ) -> AsyncThrowingStream<SopranoGeneration, Error> {
+    ) -> sending AsyncThrowingStream<SopranoGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<SopranoGeneration, Error>.makeStream()
         let task = Task { @Sendable [weak self, continuation] in
             guard let self else { return }
@@ -725,7 +725,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
                     let inputIds = self.tokenize(promptText)
                     var allHiddenStates: [MLXArray] = []
                     
-                    for await (token, hiddenState) in self.streamGenerate(
+                    for await step in self.streamGenerate(
                         inputIds: inputIds,
                         maxTokens: maxTokens,
                         temperature: parameters.temperature,
@@ -733,9 +733,9 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
                         repetitionPenalty: parameters.repetitionPenalty ?? 1.0,  // Match Python (no penalty)
                         repetitionContextSize: parameters.repetitionContextSize
                     ) {
-                        allHiddenStates.append(hiddenState)
+                        allHiddenStates.append(step.hiddenState)
                         
-                        if let tokenVal = token {
+                        if let tokenVal = step.token {
                             continuation.yield(.token(tokenVal))
                         }
                     }
@@ -797,91 +797,106 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
         return stream
     }
 
+    private struct HiddenStateEvent {
+        let token: Int?
+        let hiddenState: MLXArray
+    }
+
     /// Stream generate tokens and hidden states.
     private func streamGenerate(
-        inputIds: MLXArray,
+        inputIds: sending MLXArray,
         maxTokens: Int,
         temperature: Float,
         topP: Float,
         repetitionPenalty: Float = 1.5,
         repetitionContextSize: Int = 30
-    ) -> AsyncStream<(Int?, MLXArray)> {
-        AsyncStream { continuation in
-            let task = Task {
-                var ids = inputIds
-                if ids.ndim == 1 {
-                    ids = ids.expandedDimensions(axis: 0)
-                }
-
-                // Create KV cache
-                let cache = self.makeCache()
-
-                // Prefill
-                let (logits, hiddenStates) = self.forwardWithHiddenStates(ids, cache: cache)
-                eval(logits, hiddenStates)
-
-                // Yield last hidden state from prefill (last position along sequence dim)
-                let lastHiddenState = hiddenStates[0..., (hiddenStates.shape[1] - 1)..<hiddenStates.shape[1], 0...]
-                continuation.yield((nil, lastHiddenState))
-
-                // Create sampler
-                let sampler = TopPSampler(temperature: temperature, topP: topP)
-
-                // Track generated tokens for repetition penalty
-                var generatedTokens: [Int] = []
-
-                // Generate tokens
-                var currentLogits = logits
-
-                for _ in 0..<maxTokens {
-                    if Task.isCancelled { break }
-                    // Get last logits
-                    var lastLogits = currentLogits[0..., -1, 0...]
-                    eval(lastLogits)
-
-                    // Apply repetition penalty
-                    if repetitionPenalty != 1.0 && !generatedTokens.isEmpty {
-                        let contextTokens = Array(generatedTokens.suffix(repetitionContextSize))
-                        lastLogits = applyRepetitionPenalty(
-                            logits: lastLogits,
-                            tokens: contextTokens,
-                            penalty: repetitionPenalty
-                        )
-                    }
-
-                    // Sample next token
-                    let nextToken: MLXArray
-                    if temperature == 0 {
-                        nextToken = argMax(lastLogits, axis: -1, keepDims: true)
-                    } else {
-                        nextToken = sampler.sample(logits: lastLogits)
-                    }
-
-                    let tokenId = nextToken.item(Int.self)
-
-                    // Check for stop token ([STOP] = token ID 3)
-                    if tokenId == self.stopTokenId {
-                        break
-                    }
-
-                    // Track token for repetition penalty
-                    generatedTokens.append(tokenId)
-
-                    // Forward pass with new token
-                    let nextTokenExpanded = nextToken.reshaped([1, 1])
-                    let (newLogits, newHiddenStates) = self.forwardWithHiddenStates(nextTokenExpanded, cache: cache)
-
-                    let newLastHiddenState = newHiddenStates[0..., (newHiddenStates.shape[1] - 1)..<newHiddenStates.shape[1], 0...]
-                    eval(newLastHiddenState)
-                    continuation.yield((tokenId, newLastHiddenState))
-
-                    currentLogits = newLogits
-                }
-
-                continuation.finish()
+    ) -> sending AsyncStream<HiddenStateEvent> {
+        let input = SendingBox(inputIds)
+        let (stream, continuation) = AsyncStream<HiddenStateEvent>.makeStream()
+        let task = Task { @Sendable in
+            var ids = input.take()
+            if ids.ndim == 1 {
+                ids = ids.expandedDimensions(axis: 0)
             }
-            continuation.onTermination = { @Sendable _ in task.cancel() }
+
+            // Create KV cache
+            let cache = self.makeCache()
+
+            // Prefill
+            let (logits, hiddenStates) = self.forwardWithHiddenStates(ids, cache: cache)
+            eval(logits, hiddenStates)
+
+            // Yield last hidden state from prefill (last position along sequence dim)
+            let lastHiddenState = self.lastHiddenStateForTransfer(hiddenStates)
+            continuation.yield(HiddenStateEvent(token: nil, hiddenState: lastHiddenState))
+
+            // Create sampler
+            let sampler = TopPSampler(temperature: temperature, topP: topP)
+
+            // Track generated tokens for repetition penalty
+            var generatedTokens: [Int] = []
+
+            // Generate tokens
+            var currentLogits = logits
+
+            for _ in 0..<maxTokens {
+                if Task.isCancelled { break }
+                // Get last logits
+                var lastLogits = currentLogits[0..., -1, 0...]
+                eval(lastLogits)
+
+                // Apply repetition penalty
+                if repetitionPenalty != 1.0 && !generatedTokens.isEmpty {
+                    let contextTokens = Array(generatedTokens.suffix(repetitionContextSize))
+                    lastLogits = applyRepetitionPenalty(
+                        logits: lastLogits,
+                        tokens: contextTokens,
+                        penalty: repetitionPenalty
+                    )
+                }
+
+                // Sample next token
+                let nextToken: MLXArray
+                if temperature == 0 {
+                    nextToken = argMax(lastLogits, axis: -1, keepDims: true)
+                } else {
+                    nextToken = sampler.sample(logits: lastLogits)
+                }
+
+                let tokenId = nextToken.item(Int.self)
+
+                // Check for stop token ([STOP] = token ID 3)
+                if tokenId == self.stopTokenId {
+                    break
+                }
+
+                // Track token for repetition penalty
+                generatedTokens.append(tokenId)
+
+                // Forward pass with new token
+                let nextTokenExpanded = nextToken.reshaped([1, 1])
+                let (newLogits, newHiddenStates) = self.forwardWithHiddenStates(nextTokenExpanded, cache: cache)
+
+                let newLastHiddenState = self.lastHiddenStateForTransfer(newHiddenStates)
+                continuation.yield(HiddenStateEvent(token: tokenId, hiddenState: newLastHiddenState))
+
+                currentLogits = newLogits
+            }
+
+            continuation.finish()
         }
+        continuation.onTermination = { @Sendable _ in task.cancel() }
+        return stream
+    }
+
+    /// Return an evaluated view with its own tensor wrapper. The producer retains
+    /// logits and cache, but does not retain or mutate this view after transfer.
+    private func lastHiddenStateForTransfer(_ hiddenStates: MLXArray) -> sending MLXArray {
+        let last = hiddenStates[0..., (hiddenStates.dim(1) - 1)..<hiddenStates.dim(1), 0...]
+        eval(last)
+        // MLX doesn't expose the view's independence to Swift's region checker.
+        nonisolated(unsafe) let output = last
+        return output
     }
 
     /// Apply repetition penalty to logits

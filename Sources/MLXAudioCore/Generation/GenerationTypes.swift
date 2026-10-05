@@ -6,7 +6,7 @@
 //
 
 import Foundation
-@preconcurrency import MLX
+import MLX
 
 // MARK: - Generation Info
 
@@ -46,8 +46,10 @@ public struct AudioGenerationInfo: Sendable {
 
 // MARK: - Generation Events
 
-/// Events emitted during audio generation.
-public enum AudioGeneration: Sendable {
+/// Events transferred from the producer to the consumer during audio generation.
+/// Yielding an event transfers its tensor too; the producer must not subsequently
+/// access that tensor or any aliases to it.
+public enum AudioGeneration {
     /// A generated token ID
     case token(Int)
     /// Generation statistics

@@ -164,11 +164,11 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     public func generate(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         guard tokenizer != nil else {
             throw AudioGenerationError.modelNotInitialized("Tokenizer not loaded")
         }
@@ -197,11 +197,11 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     public func generate(
         text: String,
         voice: String? = nil,
-        refAudio: MLXArray? = nil,
+        refAudio: sending MLXArray? = nil,
         refText: String? = nil,
         language: String? = nil,
         ovParameters: OmniVoiceGenerateParameters
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         guard tokenizer != nil else {
             throw AudioGenerationError.modelNotInitialized("Tokenizer not loaded")
         }
@@ -218,11 +218,11 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text,
             voice: voice,
@@ -237,15 +237,17 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters,
         streamingInterval: Double
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         let ovParams = OmniVoiceGenerateParameters()
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
+        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self] in
+            let refAudio = refAudio.take()
             guard let self else { return }
             do {
                 guard tokenizer != nil else {
@@ -286,12 +288,12 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     private func generateAudio(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         ovParameters: OmniVoiceGenerateParameters,
         onStepProgress: (@Sendable (Int, Int) -> Void)? = nil
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         guard let audioTok = audioTokenizer else {
             throw AudioGenerationError.modelNotInitialized("Audio tokenizer not loaded")
         }

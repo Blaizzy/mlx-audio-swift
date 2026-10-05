@@ -183,7 +183,7 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
     func generateWaveform(
         text: String,
         caption: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         rngSeed: Int,
         secondsOverride: Float?
     ) throws -> MLXArray {
@@ -315,7 +315,7 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
         // Quantize matching Linear layers before loading packed weights (8-bit checkpoints).
         if let q = decodeQuantization(configURL: configURL) {
             quantize(model: model) { path, _ in
-                sanitized["\(path).scales"] != nil ? (q.groupSize, q.bits) : nil
+                sanitized["\(path).scales"] != nil ? (q.groupSize, q.bits, .affine) : nil
             }
         }
 
@@ -364,11 +364,11 @@ extension IrodoriTTSModel: SpeechGenerationModel {
     public func generate(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         _ = refText
         _ = language
         // `voice` carries the VoiceDesign caption.
@@ -380,13 +380,15 @@ extension IrodoriTTSModel: SpeechGenerationModel {
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
+        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self] in
+            let refAudio = refAudio.take()
             guard let self else {
                 continuation.finish(throwing: AudioGenerationError.modelNotInitialized("Model deallocated"))
                 return
@@ -466,12 +468,14 @@ func irodoriSanitizeTokenizerFiles(in dir: URL) {
         }
     }
 
-    if var (url, tok) = loadJSON("tokenizer.json").map({ ($0.url, $0.obj) }) {
+    if let (url, loadedTokenizer) = loadJSON("tokenizer.json") {
+        var tok = loadedTokenizer
         tok["post_processor"] = NSNull()
         tok["decoder"] = NSNull()
         write(url, tok)
     }
-    if var (url, cfg) = loadJSON("tokenizer_config.json").map({ ($0.url, $0.obj) }) {
+    if let (url, loadedConfig) = loadJSON("tokenizer_config.json") {
+        var cfg = loadedConfig
         // Force swift-transformers to instantiate UnigramTokenizer (not BPE).
         cfg["tokenizer_class"] = "XLMRobertaTokenizer"
         if let mml = cfg["model_max_length"] as? NSNumber, mml.doubleValue > 1_000_000 {

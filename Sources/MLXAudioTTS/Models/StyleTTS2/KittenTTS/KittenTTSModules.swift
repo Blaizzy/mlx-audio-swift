@@ -84,7 +84,7 @@ class KittenDurationEncoder: Module {
             h = out.transposed(0, 2, 1)
             let padded = MLXArray.zeros([h.shape[0], h.shape[1], mask.shape[mask.ndim - 1]])
             let validLen = min(h.shape[2], padded.shape[2])
-            var result = padded
+            let result = padded
             result[0..., 0..., ..<validLen] = h[0..., 0..., ..<validLen]
             h = result
 

@@ -122,8 +122,8 @@ final class VoxtralRealtimeDecoderKVCache {
         }
 
         if plan.requiresGrowth {
-            var grownKeys = MLXArray.zeros([plan.capacity, keys.shape[1]], dtype: keys.dtype)
-            var grownValues = MLXArray.zeros([plan.capacity, values.shape[1]], dtype: values.dtype)
+            let grownKeys = MLXArray.zeros([plan.capacity, keys.shape[1]], dtype: keys.dtype)
+            let grownValues = MLXArray.zeros([plan.capacity, values.shape[1]], dtype: values.dtype)
             if count > 0 {
                 grownKeys[0..<count] = keys[0..<count]
                 grownValues[0..<count] = values[0..<count]

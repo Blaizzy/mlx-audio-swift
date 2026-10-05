@@ -247,7 +247,7 @@ public struct BreezeTTSConfig: Decodable, Sendable {
         tieCodebooksEmbeddings = try c.decodeIfPresent(Bool.self, forKey: .tieCodebooksEmbeddings) ?? true
 
         let base = try? BaseConfiguration(from: decoder)
-        quantization = base?.quantization
+        quantization = base?.perLayerQuantization?.quantization
         perLayerQuantization = base?.perLayerQuantization
     }
 }

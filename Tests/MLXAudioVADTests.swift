@@ -336,23 +336,55 @@ struct VADOutputTests {
         #expect(output.numSpeakers == 0)
     }
 
-    @Test func streamingStateInit() {
-        let embDim = 512
-        let nSpk = 4
-        let state = StreamingState(
-            spkcache: MLXArray.zeros([1, 0, embDim]),
-            spkcachePreds: MLXArray.zeros([1, 0, nSpk]),
-            fifo: MLXArray.zeros([1, 0, embDim]),
-            fifoPreds: MLXArray.zeros([1, 0, nSpk]),
-            framesProcessed: 0,
-            meanSilEmb: MLXArray.zeros([1, embDim]),
-            nSilFrames: MLXArray.zeros([1])
-        )
-
+    @Test func streamingStateInit() throws {
+        let state = makeStreamingState()
+        let alias = state
         #expect(state.spkcacheLen == 0)
         #expect(state.fifoLen == 0)
         #expect(state.framesProcessed == 0)
+
+        let tensors = try state.take()
+        #expect(tensors.spkcache.shape == [1, 0, 512])
+        #expect(throws: StreamingState.ConsumptionError.alreadyConsumed) {
+            _ = try alias.take()
+        }
+        // Metadata is a value snapshot, so reading a consumed handle is safe.
+        #expect(alias.framesProcessed == 0)
     }
+
+    @Test func streamingStateHasOnlyOneConcurrentConsumer() async {
+        let state = makeStreamingState()
+        let successes = await withTaskGroup(of: Bool.self) { group in
+            for _ in 0..<32 {
+                group.addTask {
+                    do {
+                        _ = try state.take()
+                        return true
+                    } catch {
+                        #expect(error as? StreamingState.ConsumptionError == .alreadyConsumed)
+                        return false
+                    }
+                }
+            }
+            var successes = 0
+            for await succeeded in group where succeeded { successes += 1 }
+            return successes
+        }
+        #expect(successes == 1)
+    }
+
+    private func makeStreamingState() -> StreamingState {
+        StreamingState(SortformerStreamingState(
+            spkcache: MLXArray.zeros([1, 0, 512]),
+            spkcachePreds: MLXArray.zeros([1, 0, 4]),
+            fifo: MLXArray.zeros([1, 0, 512]),
+            fifoPreds: MLXArray.zeros([1, 0, 4]),
+            framesProcessed: 0,
+            meanSilEmb: MLXArray.zeros([1, 512]),
+            nSilFrames: MLXArray.zeros([1])
+        ))
+    }
+
 }
 
 // MARK: - Feature Extraction Tests
