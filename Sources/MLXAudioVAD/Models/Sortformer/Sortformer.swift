@@ -869,7 +869,7 @@ public class SortformerModel: Module {
     ) -> sending AsyncThrowingStream<DiarizationOutput, Error> {
         let sendableModel = UncheckedSendableBox(self)
         let sendableAudio = SendingBox(audio)
-        return AsyncThrowingStream { continuation in
+        return AsyncThrowingStream { @Sendable continuation in
             let task = Task.detached {
                 let model = sendableModel.value
                 let audio = sendableAudio.take()
