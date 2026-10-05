@@ -16,7 +16,7 @@ packages:
     path: ../..
   mlx-swift-lm:
     url: https://github.com/ml-explore/mlx-swift-lm.git
-    exactVersion: 3.31.3
+    exactVersion: 3.32.3
   swift-huggingface:
     url: https://github.com/huggingface/swift-huggingface.git
     exactVersion: 0.8.1

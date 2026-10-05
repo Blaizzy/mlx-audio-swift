@@ -4,15 +4,22 @@ import MLXFast
 @preconcurrency import MLXLMCommon
 import MLXNN
 
-public struct IndexTTSPreparedEmbedding: Sendable {
+/// Prepared tensors owned by the caller, transferred from the preparation step.
+public struct IndexTTSPreparedEmbedding {
     public let embeddings: MLXArray
     public let textTokenCount: Int
     public let conditioningTokenCount: Int
 }
 
-public struct IndexTTSMelGeneration: Sendable {
+/// Generated tensors owned by the caller, transferred from the generation step.
+public struct IndexTTSMelGeneration {
     public let tokenIDs: [Int]
     public let latentStates: MLXArray
+
+    init(tokenIDs: [Int], latentStates: sending MLXArray) {
+        self.tokenIDs = tokenIDs
+        self.latentStates = latentStates
+    }
 }
 
 final class IndexTTSLearnedPositionEncoding: Module {
@@ -676,7 +683,7 @@ public final class IndexTTSCore: Module {
     public func prepareInputEmbedding(
         textTokenIDs rawTextTokenIDs: [Int],
         conditioningLatents: MLXArray
-    ) throws -> IndexTTSPreparedEmbedding {
+    ) throws -> sending IndexTTSPreparedEmbedding {
         let gptConfig = config.gpt
         guard conditioningLatents.ndim == 3, conditioningLatents.dim(2) == gptConfig.modelDim else {
             throw IndexTTSError.invalidInput(
@@ -695,6 +702,7 @@ public final class IndexTTSCore: Module {
         let tokenArray = MLXArray(tokens.map(Int32.init)).reshaped(1, tokens.count)
         let textEmbeds = textEmbedding(tokenArray) + textPositionEmbedding(sequenceLength: tokens.count)
         let embeddings = concatenated([conditioningLatents, textEmbeds], axis: 1)
+        eval(embeddings)
         return IndexTTSPreparedEmbedding(
             embeddings: embeddings,
             textTokenCount: tokens.count,
@@ -705,7 +713,7 @@ public final class IndexTTSCore: Module {
     public func prepareInputEmbedding(
         textTokenIDs: [Int],
         referenceFeatures: MLXArray
-    ) throws -> IndexTTSPreparedEmbedding {
+    ) throws -> sending IndexTTSPreparedEmbedding {
         try prepareInputEmbedding(
             textTokenIDs: textTokenIDs,
             conditioningLatents: getConditioning(referenceFeatures: referenceFeatures)
@@ -724,7 +732,7 @@ public final class IndexTTSCore: Module {
         topP: Float = 1.0,
         topK: Int = 0,
         minP: Float = 0
-    ) throws -> IndexTTSMelGeneration {
+    ) throws -> sending IndexTTSMelGeneration {
         guard maxTokens > 0 else {
             return IndexTTSMelGeneration(
                 tokenIDs: [],
@@ -763,6 +771,11 @@ public final class IndexTTSCore: Module {
         let latentStates = latents.isEmpty
             ? MLXArray.zeros([1, 0, config.gpt.modelDim])
             : concatenated(latents, axis: 1)
-        return IndexTTSMelGeneration(tokenIDs: tokenIDs, latentStates: latentStates)
+        eval(latentStates)
+        // Concatenation creates the output tensor; the model/cache does not retain
+        // it. Evaluate before transfer so subsequent model work cannot race its
+        // lazy graph. MLX does not express this independence to Swift's checker.
+        nonisolated(unsafe) let outputLatents = latentStates
+        return IndexTTSMelGeneration(tokenIDs: tokenIDs, latentStates: outputLatents)
     }
 }

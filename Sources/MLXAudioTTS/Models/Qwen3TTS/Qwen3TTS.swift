@@ -53,11 +53,11 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     public func generate(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         try requireGenerationComponents()
         let settings = resolveVoiceDesignGenerationSettings(
             language: language,
@@ -82,11 +82,11 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text,
             voice: voice,
@@ -101,17 +101,19 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters,
         streamingInterval: Double
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         let settings = resolveVoiceDesignGenerationSettings(
             language: language,
             generationParameters: generationParameters
         )
+        let refAudio = SendingBox(refAudio)
         return makeGenerationStream { model, onToken, onInfo, onAudioChunk in
+            let refAudio = refAudio.take()
             _ = try model.generateVoiceDesign(
                 text: text,
                 instruct: voice,
@@ -136,7 +138,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         text: String,
         conditioning: Qwen3TTSReferenceConditioning,
         generationParameters: GenerateParameters
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         try requireGenerationComponents()
         let settings = resolveVoiceDesignGenerationSettings(
             language: conditioning.resolvedLanguage,
@@ -163,7 +165,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         text: String,
         conditioning: Qwen3TTSReferenceConditioning,
         generationParameters: GenerateParameters
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text,
             conditioning: conditioning,
@@ -177,7 +179,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         conditioning: Qwen3TTSReferenceConditioning,
         generationParameters: GenerateParameters,
         streamingInterval: Double
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         let settings = resolveVoiceDesignGenerationSettings(
             language: conditioning.resolvedLanguage,
             generationParameters: generationParameters
@@ -308,7 +310,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         instruct: String?,
         language: String,
         conditioning: Qwen3TTSReferenceConditioning? = nil,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         temperature: Float,
         topK: Int,
@@ -319,7 +321,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         streamingInterval: Double = 2.0,
         onToken: ((Int) -> Void)? = nil,
         onInfo: ((AudioGenerationInfo) -> Void)? = nil,
-        onAudioChunk: ((MLXArray) -> Void)? = nil
+        onAudioChunk: ((sending MLXArray) -> Void)? = nil
     ) throws -> MLXArray {
         guard let speechTokenizer, let tokenizer else {
             throw AudioGenerationError.modelNotInitialized(
@@ -668,9 +670,9 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             Qwen3TTSModel,
             @escaping (Int) -> Void,
             @escaping (AudioGenerationInfo) -> Void,
-            @escaping (MLXArray) -> Void
+            @escaping (sending MLXArray) -> Void
         ) throws -> Void
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
         let task = Task { @Sendable [weak self] in
             guard let self else { return }

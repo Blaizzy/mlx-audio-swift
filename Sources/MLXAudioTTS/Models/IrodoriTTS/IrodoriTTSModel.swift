@@ -183,7 +183,7 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
     func generateWaveform(
         text: String,
         caption: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         rngSeed: Int,
         secondsOverride: Float?
     ) throws -> MLXArray {
@@ -364,11 +364,11 @@ extension IrodoriTTSModel: SpeechGenerationModel {
     public func generate(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         _ = refText
         _ = language
         // `voice` carries the VoiceDesign caption.
@@ -380,13 +380,15 @@ extension IrodoriTTSModel: SpeechGenerationModel {
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
+        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self] in
+            let refAudio = refAudio.take()
             guard let self else {
                 continuation.finish(throwing: AudioGenerationError.modelNotInitialized("Model deallocated"))
                 return
