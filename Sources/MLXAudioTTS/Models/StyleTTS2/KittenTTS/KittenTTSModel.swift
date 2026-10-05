@@ -75,7 +75,7 @@ public final class KittenTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         }
         let allIndices = MLX.concatenated(indices, axis: 0)
 
-        var predAlnTrg = MLXArray.zeros([inputIds.shape[1], allIndices.shape[0]])
+        let predAlnTrg = MLXArray.zeros([inputIds.shape[1], allIndices.shape[0]])
         predAlnTrg[allIndices, MLXArray(Array(0..<Int32(allIndices.shape[0])))] = MLXArray(Float(1))
         let predAln = predAlnTrg.expandedDimensions(axis: 0)
 

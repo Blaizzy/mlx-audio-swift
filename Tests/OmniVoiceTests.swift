@@ -367,7 +367,7 @@ struct OmniVoiceModelTests {
             streamingInterval: 0.5
         ) {
             switch event {
-            case .token(let tokenId):
+            case .token:
                 chunkCount += 1
                 if chunkCount % 10 == 0 {
                     print("Generated \(chunkCount) tokens so far")
@@ -400,11 +400,7 @@ struct OmniVoiceModelTests {
             #expect(abs(last - 1.0) < 1e-6, "Progress should reach 1.0, got \(last)")
         }
 
-        // Save streamed audio
         if totalSamples > 0 {
-            let tempDir = FileManager.default.temporaryDirectory
-            let outputURL = tempDir.appendingPathComponent("omnivoice_streaming_test.wav")
-            // Note: In real test, we'd collect all chunks and save
             print("Streaming test passed with \(totalSamples) samples")
         }
     }

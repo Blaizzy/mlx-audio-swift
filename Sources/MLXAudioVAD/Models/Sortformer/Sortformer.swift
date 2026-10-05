@@ -845,7 +845,7 @@ public class SortformerModel: Module {
         let sendableModel = UncheckedSendableBox(self)
         let sendableAudio = UncheckedSendableBox(audio)
         return AsyncThrowingStream { continuation in
-            Task.detached {
+            let task = Task.detached {
                 let model = sendableModel.value
                 let audio = sendableAudio.value
                 let proc = model.config.processorConfig
@@ -908,7 +908,10 @@ public class SortformerModel: Module {
                 var embOffset = 0
 
                 while offsetMel < totalMelFrames {
-                    try Task.checkCancellation()
+                    guard !Task.isCancelled else {
+                        continuation.finish(throwing: CancellationError())
+                        return
+                    }
 
                     let endMel = min(offsetMel + chunkMel, totalMelFrames)
                     let chunkFeat = features[0..., 0..., offsetMel..<endMel]
@@ -984,6 +987,7 @@ public class SortformerModel: Module {
 
                 continuation.finish()
             }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
         }
     }
 

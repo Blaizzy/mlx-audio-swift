@@ -315,7 +315,7 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
         // Quantize matching Linear layers before loading packed weights (8-bit checkpoints).
         if let q = decodeQuantization(configURL: configURL) {
             quantize(model: model) { path, _ in
-                sanitized["\(path).scales"] != nil ? (q.groupSize, q.bits) : nil
+                sanitized["\(path).scales"] != nil ? (q.groupSize, q.bits, .affine) : nil
             }
         }
 
@@ -466,12 +466,14 @@ func irodoriSanitizeTokenizerFiles(in dir: URL) {
         }
     }
 
-    if var (url, tok) = loadJSON("tokenizer.json").map({ ($0.url, $0.obj) }) {
+    if let (url, loadedTokenizer) = loadJSON("tokenizer.json") {
+        var tok = loadedTokenizer
         tok["post_processor"] = NSNull()
         tok["decoder"] = NSNull()
         write(url, tok)
     }
-    if var (url, cfg) = loadJSON("tokenizer_config.json").map({ ($0.url, $0.obj) }) {
+    if let (url, loadedConfig) = loadJSON("tokenizer_config.json") {
+        var cfg = loadedConfig
         // Force swift-transformers to instantiate UnigramTokenizer (not BPE).
         cfg["tokenizer_class"] = "XLMRobertaTokenizer"
         if let mml = cfg["model_max_length"] as? NSNumber, mml.doubleValue > 1_000_000 {

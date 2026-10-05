@@ -147,7 +147,7 @@ public final class SparkModel: SpeechGenerationModel, @unchecked Sendable {
         let promptIds = tokenizer.encode(text: prompt, addSpecialTokens: false)
         let inputIds = MLXArray(promptIds.map { Int32($0) }).reshaped([1, promptIds.count])
 
-        let cache = backbone.newCache(parameters: generationParameters)
+        let cache = try backbone.newCache(parameters: generationParameters)
         let sampler = generationParameters.sampler()
         var processor = generationParameters.processor()
         processor?.prompt(MLXArray(promptIds.map { Int32($0) }))
