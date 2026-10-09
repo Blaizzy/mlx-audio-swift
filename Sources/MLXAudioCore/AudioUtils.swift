@@ -59,7 +59,8 @@ public class AudioUtils {
 }
 
 /// Load audio from a file and return the sample rate and audio data.
-public func loadAudioArray(from url: URL, sampleRate: Int? = nil) throws -> (Int, MLXArray) {
+/// The returned tensor is transferred to the caller and can cross an actor boundary.
+public func loadAudioArray(from url: URL, sampleRate: Int? = nil) throws -> sending (Int, MLXArray) {
     let audioFile = try AVAudioFile(forReading: url)
     let format = audioFile.processingFormat
     let frameCount = AVAudioFrameCount(audioFile.length)

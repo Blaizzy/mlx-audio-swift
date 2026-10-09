@@ -1,14 +1,10 @@
 import Foundation
 import HuggingFace
 @preconcurrency import MLX
+import MLXAudioCodecs
 import MLXAudioCore
 @preconcurrency import MLXLMCommon
 import MLXNN
-
-public protocol MossAudioTokenizing: AnyObject {
-    func encodeAudio(_ audio: MLXArray, numQuantizers: Int) throws -> MLXArray
-    func decodeAudioCodes(_ audioTokenIDs: MLXArray, numQuantizers: Int) throws -> MLXArray
-}
 
 public final class MossTTSNanoModel: Module, SpeechGenerationModel, @unchecked Sendable {
     public let config: MossTTSNanoConfig
@@ -19,6 +15,8 @@ public final class MossTTSNanoModel: Module, SpeechGenerationModel, @unchecked S
 
     public var tokenizer: MossTextTokenizing?
     public var audioTokenizer: MossAudioTokenizing?
+    private var hfToken: String?
+    private var cache: HubCache = .default
 
     public var sampleRate: Int { config.audioTokenizerSampleRate }
 
@@ -91,7 +89,11 @@ public final class MossTTSNanoModel: Module, SpeechGenerationModel, @unchecked S
             }
         }
         let source = resolvedAudioTokenizerSource()
-        audioTokenizer = try await MLXMossAudioTokenizer.fromPretrained(source)
+        audioTokenizer = try await MLXMossAudioTokenizer.fromPretrained(
+            source,
+            hfToken: hfToken,
+            cache: cache
+        )
     }
 
     private func resolvedAudioTokenizerSource() -> String {
@@ -454,11 +456,11 @@ public final class MossTTSNanoModel: Module, SpeechGenerationModel, @unchecked S
     public func generate(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         _ = voice
         _ = refText
         _ = language
@@ -512,13 +514,15 @@ public final class MossTTSNanoModel: Module, SpeechGenerationModel, @unchecked S
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
-        AsyncThrowingStream { continuation in
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+        let refAudio = SendingBox(refAudio)
+        return AsyncThrowingStream { continuation in
             let task = Task { @Sendable in
+                let refAudio = refAudio.take()
                 do {
                     let audio = try await self.generate(
                         text: text,
@@ -553,14 +557,20 @@ public final class MossTTSNanoModel: Module, SpeechGenerationModel, @unchecked S
             hfToken: hfToken,
             cache: cache
         )
-        return try await fromModelDirectory(modelDir)
+        return try await fromModelDirectory(modelDir, hfToken: hfToken, cache: cache)
     }
 
-    public static func fromModelDirectory(_ modelDir: URL) async throws -> MossTTSNanoModel {
+    public static func fromModelDirectory(
+        _ modelDir: URL,
+        hfToken: String? = nil,
+        cache: HubCache = .default
+    ) async throws -> MossTTSNanoModel {
         let configData = try Data(contentsOf: modelDir.appendingPathComponent("config.json"))
         var config = try JSONDecoder().decode(MossTTSNanoConfig.self, from: configData)
         config.modelPath = modelDir.path
         let model = MossTTSNanoModel(config: config)
+        model.hfToken = hfToken
+        model.cache = cache
 
         let weights = try loadWeights(from: modelDir)
         let sanitizedWeights = model.sanitize(weights: weights)

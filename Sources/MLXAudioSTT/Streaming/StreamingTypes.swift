@@ -46,8 +46,8 @@ public struct StreamingConfig: Sendable {
     public var maxCachedWindows: Int
     /// Delay preset controlling provisional → confirmed promotion
     public var delayPreset: DelayPreset
-    /// Language for transcription
-    public var language: String
+    /// Language hint for transcription. `nil` uses the model default/auto behavior.
+    public var language: String?
     /// Sampling temperature (0 = greedy)
     public var temperature: Float
     /// Maximum tokens per decode pass
@@ -68,7 +68,7 @@ public struct StreamingConfig: Sendable {
         encoderWindowOverlapSeconds: Double = 1.0,
         maxCachedWindows: Int = 60,
         delayPreset: DelayPreset = .agent,
-        language: String = "English",
+        language: String? = "English",
         temperature: Float = 0.0,
         maxTokensPerPass: Int = 512,
         minAgreementPasses: Int = 2,

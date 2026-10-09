@@ -257,7 +257,7 @@ public final class EchoTTSModel: Module, @unchecked Sendable {
 
     func generateDetailed(
         text: String,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         rngSeed: Int = 0,
         numSteps: Int? = nil,
         sequenceLength: Int? = nil,
@@ -387,11 +387,11 @@ extension EchoTTSModel: SpeechGenerationModel {
     public func generate(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         _ = voice
         _ = refText
         _ = language
@@ -406,13 +406,15 @@ extension EchoTTSModel: SpeechGenerationModel {
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
+        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self] in
+            let refAudio = refAudio.take()
             guard let self else {
                 continuation.finish(throwing: AudioGenerationError.modelNotInitialized("Model deallocated"))
                 return

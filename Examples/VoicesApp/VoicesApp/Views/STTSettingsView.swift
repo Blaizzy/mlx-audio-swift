@@ -243,7 +243,7 @@ struct STTSettingsView: View {
                     .font(labelFont)
                     .foregroundStyle(.secondary)
 
-                TextField("Language", text: $viewModel.language)
+                TextField("Auto", text: $viewModel.language)
                     .font(textFont)
                     .textFieldStyle(.plain)
                     .padding(8)
@@ -251,7 +251,7 @@ struct STTSettingsView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                     .padding(.top, 4)
 
-                Text("e.g. English, Chinese, Japanese, Korean")
+                Text("Leave empty for model default/auto, or enter e.g. English, Chinese, Japanese, Korean")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
@@ -259,12 +259,7 @@ struct STTSettingsView: View {
 
             // Reset button
             Button(action: {
-                viewModel.modelId = "mlx-community/Qwen3-ASR-0.6B-4bit"
-                viewModel.maxTokens = 1024
-                viewModel.temperature = 0.0
-                viewModel.language = "English"
-                viewModel.chunkDuration = 30.0
-                viewModel.streamingDelayMs = 480
+                viewModel.resetSettingsToDefaults()
             }) {
                 Text("Reset to Defaults")
                     .font(textFont)

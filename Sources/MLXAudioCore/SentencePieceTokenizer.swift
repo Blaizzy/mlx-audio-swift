@@ -461,6 +461,19 @@ public final class SentencePieceTokenizer {
         try SentencePieceTokenizer(sentencePieceModelData: Data(contentsOf: sentencePieceModelURL))
     }
 
+    public var vocabularySize: Int {
+        vocab.count
+    }
+
+    public func tokenID(for token: String) -> Int? {
+        tokensToIds[token]
+    }
+
+    public func token(for id: Int) -> String? {
+        guard id >= 0, id < vocab.count else { return nil }
+        return vocab[id].token
+    }
+
     public func encodeWithByteFallback(_ text: String) -> [Int] {
         if modelType == .bpe {
             return encodeBPEWithByteFallback(text)

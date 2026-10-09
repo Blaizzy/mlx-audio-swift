@@ -11,6 +11,23 @@ import MLXNN
 
 private let nemoPreEncodeMelCache = 16  // >= causal receptive field of 8x dw-striding
 
+/// Per-stream cache-aware encoder state, carried across chunks (and, in a live
+/// session, across `step` calls). Holding it outside the chunk loop is what lets
+/// the same loop serve both the one-shot `generateStream` and the incremental
+/// `NemotronASRStreamSession`.
+final class NemotronASRStreamEncoderState {
+    var attnCache: [MLXArray?]
+    var convCache: [MLXArray?]
+    var melCache: MLXArray?
+    var emitted = 0   // subsampled frames already emitted to the decoder (absolute)
+    var consumed = 0  // mel frames already consumed by the encoder (absolute)
+
+    init(layers: Int) {
+        attnCache = [MLXArray?](repeating: nil, count: layers)
+        convCache = [MLXArray?](repeating: nil, count: layers)
+    }
+}
+
 extension NemotronASRModel {
     private func nemoStreamBlock(
         _ block: NemotronASRConformerBlock,
@@ -52,10 +69,44 @@ extension NemotronASRModel {
 
     /// Run encoder + prompt fusion in cache-aware chunks, invoking `onChunk` with
     /// each chunk's post-prompt encoder frames (1, c, d). Frame-identical to offline.
+    /// One-shot wrapper: encodes the whole `mel` with a fresh state and a flushed tail.
     func cacheAwareStreamEncode(
         _ mel: MLXArray,
         language: String?,
         chunkFrames: Int? = nil,
+        onChunk: (MLXArray) -> Void
+    ) {
+        var features = mel
+        if features.ndim == 2 { features = features.expandedDimensions(axis: 0) }
+        let state = NemotronASRStreamEncoderState(layers: encoder.layers.count)
+        streamEncodeChunks(
+            features,
+            language: language,
+            limit: features.shape[1],
+            chunkFrames: chunkFrames,
+            flushTail: true,
+            state: state,
+            onChunk: onChunk
+        )
+    }
+
+    /// Resumable cache-aware encoder loop shared by `cacheAwareStreamEncode` (one-shot)
+    /// and `NemotronASRStreamSession` (incremental). Processes `mel` frames in
+    /// `[state.consumed, limit)`:
+    ///   * `flushTail == false`: only whole `chunkMel`-sized chunks are emitted; a
+    ///     trailing partial chunk is left for a later call (when more audio arrives).
+    ///   * `flushTail == true`: the final partial chunk is processed and all of its
+    ///     subsampled frames are emitted (matches the offline encoder tail).
+    /// `limit` lets a live caller cap processing to *frozen* mel frames (those whose
+    /// STFT window is fully covered by real audio), keeping the output bit-identical
+    /// to the offline encode. All counters live in `state`, so calls compose.
+    func streamEncodeChunks(
+        _ mel: MLXArray,
+        language: String?,
+        limit: Int,
+        chunkFrames: Int?,
+        flushTail: Bool,
+        state: NemotronASRStreamEncoderState,
         onChunk: (MLXArray) -> Void
     ) {
         var features = mel
@@ -68,46 +119,41 @@ extension NemotronASRModel {
         let chunkMel = cf * sf
         let leftCache = defaultAttContextSize.first ?? 56
         let convLeft = encoderConfig.convKernelSize - 1
-        let n = encoder.layers.count
-        let total = features.shape[1]
 
-        var attnCache = [MLXArray?](repeating: nil, count: n)
-        var convCache = [MLXArray?](repeating: nil, count: n)
-        var melCache: MLXArray?
-        var emitted = 0
-        var consumed = 0
+        while state.consumed < limit {
+            let end = min(state.consumed + chunkMel, limit)
+            // Mid-stream: defer a partial trailing chunk until the next call / flush.
+            if !flushTail && (end - state.consumed) < chunkMel { break }
 
-        while consumed < total {
-            let end = min(consumed + chunkMel, total)
-            let m = features[0..., consumed..<end, 0...]
-            let cacheLen = melCache?.shape[1] ?? 0
-            let win = melCache == nil ? m : MLX.concatenated([melCache!, m], axis: 1)
+            let m = features[0..., state.consumed..<end, 0...]
+            let cacheLen = state.melCache?.shape[1] ?? 0
+            let win = state.melCache == nil ? m : MLX.concatenated([state.melCache!, m], axis: 1)
             let winLen = win.shape[1]
             let lengths = MLXArray([Int32(winLen)]).asType(.int32)
             let sub = encoder.preEncode(win, lengths: lengths).0  // (1, k, d)
 
-            let isFinal = end >= total
-            let base = (consumed - cacheLen) / sf
-            let lo = emitted - base
+            let isFinal = flushTail && (end >= limit)
+            let base = (state.consumed - cacheLen) / sf
+            let lo = state.emitted - base
             let hi = isFinal ? sub.shape[1] : (end / sf - base)
-            consumed = end
-            melCache = win[0..., max(0, winLen - nemoPreEncodeMelCache)..<winLen, 0...]
+            state.consumed = end
+            state.melCache = win[0..., max(0, winLen - nemoPreEncodeMelCache)..<winLen, 0...]
 
             if hi <= lo {
-                emitted = base + max(lo, hi)
+                state.emitted = base + max(lo, hi)
                 continue
             }
-            emitted = base + hi
+            state.emitted = base + hi
             var h = sub[0..., lo..<hi, 0...]
             for li in encoder.layers.indices {
                 let r = nemoStreamBlock(
                     encoder.layers[li], h,
-                    attnCache: attnCache[li], convCache: convCache[li],
+                    attnCache: state.attnCache[li], convCache: state.convCache[li],
                     leftCache: leftCache, convLeft: convLeft
                 )
                 h = r.0
-                attnCache[li] = r.1
-                convCache[li] = r.2
+                state.attnCache[li] = r.1
+                state.convCache[li] = r.2
             }
             onChunk(applyPrompt(h, language: language))
         }

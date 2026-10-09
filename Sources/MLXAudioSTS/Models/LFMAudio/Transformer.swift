@@ -21,10 +21,6 @@ func applyRotaryEmb(
     let f = freqs[offset..<(offset + seqLen)]
     let fExpanded = f.expandedDimensions(axes: [0, 2])
 
-    let shape = xq.shape
-    let lastDim = shape[shape.count - 1]
-    let halfDim = lastDim / 2
-
     let xqR = xq[0..., 0..., 0..., .stride(by: 2)]
     let xqI = xq[0..., 0..., 0..., .stride(from: 1, by: 2)]
     let xkR = xk[0..., 0..., 0..., .stride(by: 2)]
@@ -133,7 +129,7 @@ class DepthformerAttention: Module {
 
         let newCache = (k, v)
 
-        var qT = q.transposed(0, 2, 1, 3)
+        let qT = q.transposed(0, 2, 1, 3)
         var kT = k.transposed(0, 2, 1, 3)
         var vT = v.transposed(0, 2, 1, 3)
 

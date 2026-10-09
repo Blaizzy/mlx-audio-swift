@@ -591,7 +591,7 @@ class StatsPool: Module {
 ///
 /// Default config: feat_dim=80, embedding_size=192, growth_rate=32, bn_size=4, init_channels=128
 /// Block config: (12, 24, 16) layers with kernel_sizes=(3, 3, 3) and dilations=(1, 2, 2).
-class CAMPPlus: Module {
+public class CAMPPlus: Module {
     @ModuleInfo(key: "head") var head: FCM
     @ModuleInfo(key: "tdnn") var tdnn: TDNNLayer
     @ModuleInfo(key: "blocks") var blocks: [CAMDenseTDNNBlock]
@@ -692,7 +692,7 @@ class CAMPPlus: Module {
 
     /// Run inference on raw 16kHz audio waveform(s).
     /// Extracts Kaldi fbank features, pads to uniform length, runs forward pass.
-    func inference(_ wavs: [MLXArray], sampleRate: Int = 16000) -> MLXArray {
+    public func inference(_ wavs: [MLXArray], sampleRate: Int = 16000) -> MLXArray {
         // Extract fbank features for each wav
         var feats: [MLXArray] = []
         for wav in wavs {
@@ -727,7 +727,7 @@ class CAMPPlus: Module {
     /// Handles both raw PyTorch and pre-converted MLX-community weight formats.
     /// Conv weight transpositions are only applied when the weight shape doesn't
     /// already match the model's expected parameter shape.
-    static func sanitize(weights: [String: MLXArray], model: CAMPPlus) -> [String: MLXArray] {
+    public static func sanitize(weights: [String: MLXArray], model: CAMPPlus) -> [String: MLXArray] {
         var sanitized: [String: MLXArray] = [:]
         // Flatten model parameters to a dict of "a.b.c.weight" → MLXArray for shape comparison
         let flatParams = Dictionary(uniqueKeysWithValues: model.parameters().flattened())

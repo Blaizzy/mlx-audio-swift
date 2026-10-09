@@ -18,10 +18,15 @@ enum FireRedASR2Audio {
             return MLXArray.zeros([0, numMels], type: Float.self)
         }
 
-        let amplitude = abs(waveform).max().item(Float.self)
-        if amplitude <= 1.0 {
-            waveform = waveform * MLXArray(Float(32768.0))
-        }
+        // Input is normalized float audio in [-1, 1] (as produced by
+        // `loadAudioArray`); scale it unconditionally to the int16 range
+        // the Kaldi fbank recipe (and the CMVN stats) expects — same as
+        // sherpa-onnx, which hard-codes `normalize_samples = false` for
+        // FireRedASR. An earlier version auto-detected the scale with
+        // `amplitude <= 1.0`, but lossy decoders (AAC via AVFoundation)
+        // can overshoot past 1.0 on clipped content, which flipped the
+        // decision and silently collapsed decoding (empty segments on iOS).
+        waveform = waveform * MLXArray(Float(32768.0))
 
         return computeKaldiFbank(
             waveform,

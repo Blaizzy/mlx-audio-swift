@@ -14,7 +14,8 @@ public struct SileroVADTimestamp: Sendable, Equatable {
     }
 }
 
-public struct SileroVADStreamingState: Sendable {
+/// Tensor state for sequential feed calls in the caller's isolation domain.
+public struct SileroVADStreamingState {
     public var lstmState: MLXArray?
     public var context: MLXArray
     public var sampleRate: Int
@@ -159,7 +160,7 @@ public final class SileroVAD: Module {
         return b(x, state: state)
     }
 
-    public func initialState(batchSize: Int = 1, sampleRate: Int = 16000) throws -> SileroVADStreamingState {
+    public func initialState(batchSize: Int = 1, sampleRate: Int = 16000) throws -> sending SileroVADStreamingState {
         let b = try branch(forSampleRate: sampleRate)
         let context = MLXArray.zeros([batchSize, b.config.contextSize])
         return SileroVADStreamingState(lstmState: nil, context: context, sampleRate: sampleRate)

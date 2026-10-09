@@ -1,6 +1,18 @@
 import MLX
 import MLXNN
 
+private func ecapaReflectPadTime(_ x: MLXArray, pad: Int) -> MLXArray {
+    guard pad > 0 else { return x }
+    let timeLength = x.dim(1)
+    guard timeLength > 1 else { return x }
+    let clampedPad = Swift.min(pad, Swift.max(timeLength - 1, 0))
+    guard clampedPad > 0 else { return x }
+
+    let left = x[0..., 1 ..< (clampedPad + 1), 0...][0..., .stride(by: -1), 0...]
+    let right = x[0..., (-(clampedPad + 1)) ..< (-1), 0...][0..., .stride(by: -1), 0...]
+    return concatenated([left, x, right], axis: 1)
+}
+
 public class EcapaTdnnBackbone: Module {
     @ModuleInfo(key: "block0") var block0: TDNNBlock
     @ModuleInfo(key: "block1") var block1: SERes2NetBlock
@@ -17,33 +29,38 @@ public class EcapaTdnnBackbone: Module {
         _block0.wrappedValue = TDNNBlock(
             inputChannels: config.inputSize,
             outputChannels: channels,
-            kernelSize: config.kernelSizes[0]
+            kernelSize: config.kernelSizes[0],
+            reflectPadding: config.reflectPadding
         )
         _block1.wrappedValue = SERes2NetBlock(
             channels: channels,
             kernelSize: config.kernelSizes[1],
             dilation: config.dilations[1],
             res2netScale: config.res2netScale,
-            seChannels: config.seChannels
+            seChannels: config.seChannels,
+            reflectPadding: config.reflectPadding
         )
         _block2.wrappedValue = SERes2NetBlock(
             channels: channels,
             kernelSize: config.kernelSizes[2],
             dilation: config.dilations[2],
             res2netScale: config.res2netScale,
-            seChannels: config.seChannels
+            seChannels: config.seChannels,
+            reflectPadding: config.reflectPadding
         )
         _block3.wrappedValue = SERes2NetBlock(
             channels: channels,
             kernelSize: config.kernelSizes[3],
             dilation: config.dilations[3],
             res2netScale: config.res2netScale,
-            seChannels: config.seChannels
+            seChannels: config.seChannels,
+            reflectPadding: config.reflectPadding
         )
         _mfa.wrappedValue = TDNNBlock(
             inputChannels: channels * 3,
             outputChannels: channels * 3,
-            kernelSize: config.kernelSizes[4]
+            kernelSize: config.kernelSizes[4],
+            reflectPadding: config.reflectPadding
         )
         _asp.wrappedValue = AttentiveStatisticsPooling(
             channels: channels * 3,
@@ -89,16 +106,27 @@ public class EcapaTdnnBackbone: Module {
 }
 
 class TDNNBlock: Module {
+    let padding: Int
+    let reflectPadding: Bool
     @ModuleInfo var conv: MLXNN.Conv1d
     @ModuleInfo var norm: BatchNorm
 
-    init(inputChannels: Int, outputChannels: Int, kernelSize: Int, dilation: Int = 1, groups: Int = 1) {
+    init(
+        inputChannels: Int,
+        outputChannels: Int,
+        kernelSize: Int,
+        dilation: Int = 1,
+        groups: Int = 1,
+        reflectPadding: Bool = false
+    ) {
         let padding = (kernelSize - 1) * dilation / 2
+        self.padding = padding
+        self.reflectPadding = reflectPadding
         _conv.wrappedValue = MLXNN.Conv1d(
             inputChannels: inputChannels,
             outputChannels: outputChannels,
             kernelSize: kernelSize,
-            padding: padding,
+            padding: reflectPadding ? 0 : padding,
             dilation: dilation,
             groups: groups,
             bias: true
@@ -107,7 +135,8 @@ class TDNNBlock: Module {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        norm(relu(conv(x)))
+        let padded = reflectPadding ? ecapaReflectPadTime(x, pad: padding) : x
+        return norm(relu(conv(padded)))
     }
 }
 
@@ -115,7 +144,13 @@ class Res2NetBlock: Module {
     let scale: Int
     @ModuleInfo var blocks: [TDNNBlock]
 
-    init(channels: Int, kernelSize: Int = 3, dilation: Int = 1, scale: Int = 8) {
+    init(
+        channels: Int,
+        kernelSize: Int = 3,
+        dilation: Int = 1,
+        scale: Int = 8,
+        reflectPadding: Bool = false
+    ) {
         self.scale = scale
         let hidden = channels / scale
         _blocks.wrappedValue = (0 ..< (scale - 1)).map { _ in
@@ -123,7 +158,8 @@ class Res2NetBlock: Module {
                 inputChannels: hidden,
                 outputChannels: hidden,
                 kernelSize: kernelSize,
-                dilation: dilation
+                dilation: dilation,
+                reflectPadding: reflectPadding
             )
         }
     }
@@ -162,15 +198,33 @@ class SERes2NetBlock: Module {
     @ModuleInfo var tdnn2: TDNNBlock
     @ModuleInfo(key: "se_block") var seBlock: SEBlock
 
-    init(channels: Int, kernelSize: Int = 3, dilation: Int = 1, res2netScale: Int = 8, seChannels: Int = 128) {
-        _tdnn1.wrappedValue = TDNNBlock(inputChannels: channels, outputChannels: channels, kernelSize: 1)
+    init(
+        channels: Int,
+        kernelSize: Int = 3,
+        dilation: Int = 1,
+        res2netScale: Int = 8,
+        seChannels: Int = 128,
+        reflectPadding: Bool = false
+    ) {
+        _tdnn1.wrappedValue = TDNNBlock(
+            inputChannels: channels,
+            outputChannels: channels,
+            kernelSize: 1,
+            reflectPadding: reflectPadding
+        )
         _res2netBlock.wrappedValue = Res2NetBlock(
             channels: channels,
             kernelSize: kernelSize,
             dilation: dilation,
-            scale: res2netScale
+            scale: res2netScale,
+            reflectPadding: reflectPadding
         )
-        _tdnn2.wrappedValue = TDNNBlock(inputChannels: channels, outputChannels: channels, kernelSize: 1)
+        _tdnn2.wrappedValue = TDNNBlock(
+            inputChannels: channels,
+            outputChannels: channels,
+            kernelSize: 1,
+            reflectPadding: reflectPadding
+        )
         _seBlock.wrappedValue = SEBlock(inputDim: channels, bottleneck: seChannels)
     }
 

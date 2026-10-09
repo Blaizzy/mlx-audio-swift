@@ -42,6 +42,14 @@ public struct CohereTranscribeTextDecoderConfig: Codable, Sendable {
     }
 }
 
+private struct CohereTranscribeHeadConfig: Decodable {
+    let numClasses: Int
+
+    enum CodingKeys: String, CodingKey {
+        case numClasses = "num_classes"
+    }
+}
+
 public struct CohereTranscribeConfig: Decodable, Sendable {
     public let modelType: String
     public let vocabSize: Int
@@ -72,6 +80,7 @@ public struct CohereTranscribeConfig: Decodable, Sendable {
         case maxAudioClipS = "max_audio_clip_s"
         case encoder
         case transfDecoder = "transf_decoder"
+        case head
         case quantization
         case quantizationConfig = "quantization_config"
     }
@@ -79,7 +88,11 @@ public struct CohereTranscribeConfig: Decodable, Sendable {
     public init(from decoder: Swift.Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         modelType = try container.decode(String.self, forKey: .modelType)
-        vocabSize = try container.decode(Int.self, forKey: .vocabSize)
+        if let topLevelVocabSize = try container.decodeIfPresent(Int.self, forKey: .vocabSize) {
+            vocabSize = topLevelVocabSize
+        } else {
+            vocabSize = try container.decode(CohereTranscribeHeadConfig.self, forKey: .head).numClasses
+        }
         sampleRate = try container.decode(Int.self, forKey: .sampleRate)
         maxAudioClipS = try container.decode(Int.self, forKey: .maxAudioClipS)
         encoder = try container.decode(CohereTranscribeAudioEncoderConfig.self, forKey: .encoder)

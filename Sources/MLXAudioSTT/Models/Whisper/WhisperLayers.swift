@@ -323,7 +323,7 @@ final class WhisperDecoder: Module {
 
     /// Project hidden states to vocab logits using the tied embedding matrix.
     func projectToVocab(_ hidden: MLXArray) -> MLXArray {
-        return hidden.matmul(embedTokens.weight.transposed(1, 0))
+        embedTokens.asLinear(hidden)
     }
 }
 

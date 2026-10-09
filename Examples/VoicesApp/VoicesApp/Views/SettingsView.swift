@@ -426,14 +426,7 @@ struct SettingsView: View {
 
             // Reset button
             Button(action: {
-                viewModel.modelId = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit"
-                viewModel.resetGenerationParameterOverrides()
-                viewModel.useVoiceDesign = false
-                viewModel.voiceDescription = ""
-                viewModel.enableChunking = true
-                viewModel.maxChunkLength = 200
-                viewModel.splitPattern = "\n"
-                viewModel.streamingPlayback = true
+                viewModel.resetSettingsToDefaults()
             }) {
                 Text("Reset to Defaults")
                     .font(textFont)

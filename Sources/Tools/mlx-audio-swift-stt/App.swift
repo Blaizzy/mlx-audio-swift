@@ -17,7 +17,7 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
         case .inputFileNotFound(let path):
             "Input audio file not found: \(path)"
         case .unsupportedModelRepo(let repo):
-            "Unsupported STT model repo: \(repo). Expected NemotronASR, FireRedASR2, SenseVoice, GLMASR, Qwen3ASR, VoxtralRealtime, CohereTranscribe, Parakeet, Whisper, or Qwen3ForcedAligner."
+            "Unsupported STT model repo: \(repo)."
         case .missingTextForForcedAlignment:
             "--text is required when using a forced aligner model."
         case .streamUnsupportedForForcedAligner:
@@ -222,7 +222,6 @@ private struct Options {
             Options:
               --model <repo>                Model repo id.
                                             Default: mlx-community/Qwen3-ASR-0.6B-4bit
-                                            Supported families: FireRedASR2, SenseVoice, Qwen3-ASR, GLM-ASR, Voxtral, Cohere, Parakeet, Whisper, Qwen3-ForcedAligner
               --audio <path>                Input audio file (required if not passed as trailing arg)
               --output-path <path>          Output path stem (required). Extension is appended from --format.
               --format <txt|srt|vtt|json>   Output format. Default: txt
@@ -369,6 +368,16 @@ enum App {
         if let voxtral = model as? VoxtralRealtimeModel {
             return runVoxtralStreaming(model: voxtral, audio: audio, parameters: parameters)
         }
+        // Nemotron has a true online session — feed audio as it arrives instead of the
+        // whole-buffer generateStream. The chunked-feed logic lives in the model. The
+        // session needs NA (frozen) mel normalization; for per-utterance normalization
+        // fall through to the generic stream instead of aborting on its precondition.
+        if let nemotron = model as? NemotronASRModel {
+            let norm = nemotron.preprocessConfig.normalize.lowercased()
+            if norm == "na" || norm == "none" {
+                return runNemotronStreaming(model: nemotron, audio: audio, parameters: parameters)
+            }
+        }
 
         var finalOutput: STTOutput?
         var streamedText = ""
@@ -417,41 +426,31 @@ enum App {
         return output
     }
 
+    /// Drive Nemotron's streaming transcription from a file, printing each delta live.
+    /// The chunked-feed logic lives in `NemotronASRModel.transcribeStreaming` so other
+    /// callers can reuse it; the CLI only renders the deltas.
+    private static func runNemotronStreaming(
+        model: NemotronASRModel,
+        audio: MLXArray,
+        parameters: STTGenerateParameters
+    ) -> STTOutput {
+        var emitted = false
+        let output = model.transcribeStreaming(audio: audio, generationParameters: parameters) { delta in
+            emitted = true
+            print(delta, terminator: "")
+            fflush(stdout)
+        }
+        if emitted { print() }
+        return output
+    }
+
     private static func loadModel(repo: String) async throws -> LoadedModel {
         let lower = repo.lowercased()
 
         if lower.contains("forcedalign") || lower.contains("forced-align") {
             return .forcedAligner(try await Qwen3ForcedAlignerModel.fromPretrained(repo))
         }
-        if lower.contains("glmasr") || lower.contains("glm-asr") {
-            return .stt(try await GLMASRModel.fromPretrained(repo))
-        }
-        if lower.contains("qwen3-asr") || lower.contains("qwen3_asr") {
-            return .stt(try await Qwen3ASRModel.fromPretrained(repo))
-        }
-        if lower.contains("voxtral") {
-            return .stt(try await VoxtralRealtimeModel.fromPretrained(repo))
-        }
-        if lower.contains("cohere") {
-            return .stt(try await CohereTranscribeModel.fromPretrained(repo))
-        }
-        if lower.contains("parakeet") {
-            return .stt(try await ParakeetModel.fromPretrained(repo))
-        }
-        if lower.contains("nemotron") {
-            return .stt(try await NemotronASRModel.fromPretrained(repo))
-        }
-        if lower.contains("firered") || lower.contains("fire-red") {
-            return .stt(try await FireRedASR2Model.fromPretrained(repo))
-        }
-        if lower.contains("sensevoice") {
-            return .stt(try await SenseVoiceModel.fromPretrained(repo))
-        }
-        if lower.contains("whisper") {
-            return .stt(try await WhisperModel.fromPretrained(repo))
-        }
-
-        throw AppError.unsupportedModelRepo(repo)
+        return .stt(try await STT.loadModel(modelRepo: repo))
     }
 
     private static func normalizeLanguage(_ language: String?) -> String? {

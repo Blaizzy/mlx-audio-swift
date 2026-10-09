@@ -399,6 +399,13 @@ private func fishSpeechAdjustSpeed(_ audio: MLXArray, speed: Float) -> MLXArray 
     return leftWeight * audio[left] + rightWeight * audio[right]
 }
 
+func fishSpeechStreamingChunkBytes(interval: Double) throws -> Int {
+    guard interval.isFinite, interval > 0 else {
+        throw AudioGenerationError.invalidInput("Streaming interval must be a finite positive number")
+    }
+    return max(40, Int(min(interval, 60) * 40))
+}
+
 private func fishSpeechSampleToken(
     logits: MLXArray,
     temperature: Float,
@@ -533,15 +540,16 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
     public func generate(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         _ = voice
         _ = language
 
-        let segments = try generateSegments(
+        var segments: [FishSpeechGeneratedSegment] = []
+        try generateSegments(
             text: text,
             refAudio: refAudio,
             refText: refText,
@@ -550,7 +558,8 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
             topP: generationParameters.topP,
             topK: 30,
             speed: 1.0,
-            chunkLength: 300
+            chunkLength: 300,
+            onSegment: { segments.append($0) }
         )
         try Task.checkCancellation()
         return concatenateAudioSegments(segments)
@@ -559,11 +568,11 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text,
             voice: voice,
@@ -578,25 +587,31 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters,
         streamingInterval: Double
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         _ = voice
         _ = language
-        _ = streamingInterval
 
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
+        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self] in
+            let refAudio = refAudio.take()
             guard let self else {
                 continuation.finish()
                 return
             }
 
             do {
-                let segments = try self.generateSegments(
+                let chunkLength = try fishSpeechStreamingChunkBytes(interval: streamingInterval)
+                var totalPromptTokens = 0
+                var totalGenerationTokens = 0
+                var totalTime = 0.0
+                var peakMemory = 0.0
+                try self.generateSegments(
                     text: text,
                     refAudio: refAudio,
                     refText: refText,
@@ -605,24 +620,31 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
                     topP: generationParameters.topP,
                     topK: 30,
                     speed: 1.0,
-                    chunkLength: 300
+                    chunkLength: chunkLength,
+                    onSegment: { segment in
+                        try Task.checkCancellation()
+                        totalPromptTokens += segment.promptTokenCount
+                        totalGenerationTokens += segment.generationTokenCount
+                        totalTime += segment.elapsed
+                        peakMemory = max(peakMemory, segment.peakMemoryUsage)
+                        if case .terminated = continuation.yield(.audio(segment.audio)) {
+                            throw CancellationError()
+                        }
+                    }
                 )
                 try Task.checkCancellation()
-                let audio = self.concatenateAudioSegments(segments)
-                let totalPromptTokens = segments.reduce(into: 0) { $0 += $1.promptTokenCount }
-                let totalGenerationTokens = segments.reduce(into: 0) { $0 += $1.generationTokenCount }
-                let totalTime = segments.reduce(0.0) { $0 + $1.elapsed }
-                let peakMemory = segments.map(\.peakMemoryUsage).max() ?? 0
-
-                continuation.yield(.info(AudioGenerationInfo(
+                if case .terminated = continuation.yield(.info(AudioGenerationInfo(
                     promptTokenCount: totalPromptTokens,
                     generationTokenCount: totalGenerationTokens,
                     prefillTime: 0,
                     generateTime: totalTime,
-                    tokensPerSecond: totalTime > 0 ? Double(totalGenerationTokens) / totalTime : 0,
+                    tokensPerSecond: totalTime > 0
+                        ? Double(totalGenerationTokens) / totalTime
+                        : 0,
                     peakMemoryUsage: peakMemory
-                )))
-                continuation.yield(.audio(audio))
+                ))) {
+                    throw CancellationError()
+                }
                 continuation.finish()
             } catch {
                 continuation.finish(throwing: error)
@@ -894,7 +916,7 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
         return MLXArray(rows.flatMap { $0 }).reshaped([model.numCodebooks, generatedSteps.count])
     }
 
-    private func decodeCodes(_ codes: MLXArray) throws -> MLXArray {
+    private func decodeCodes(_ codes: MLXArray, speed: Float) throws -> sending MLXArray {
         guard let codec else {
             throw AudioGenerationError.modelNotInitialized("Codec not loaded")
         }
@@ -902,7 +924,16 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
         let featureLengths = MLXArray([Int32(codes.dim(1))])
         let (audio, audioLengths) = codec.decode(codes.expandedDimensions(axis: 0), featureLengths: featureLengths)
         let length = Int(audioLengths.item(Int32.self))
-        return audio[0, 0, 0..<length]
+        var waveform = audio[0, 0, 0..<length]
+        if abs(speed - 1.0) > 1e-6 {
+            waveform = fishSpeechAdjustSpeed(waveform, speed: speed)
+        }
+        eval(waveform)
+        // The codec does not retain this output. Evaluation completes its lazy
+        // graph before transfer; no producer accesses this waveform afterward.
+        // MLX's operations do not express that independence to Swift's checker.
+        nonisolated(unsafe) let output = waveform
+        return output
     }
 
     private func generateSegments(
@@ -914,8 +945,9 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
         topP: Float,
         topK: Int,
         speed: Float,
-        chunkLength: Int
-    ) throws -> [FishSpeechGeneratedSegment] {
+        chunkLength: Int,
+        onSegment: (sending FishSpeechGeneratedSegment) throws -> Void
+    ) throws {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw AudioGenerationError.invalidInput("Text prompt cannot be empty")
         }
@@ -937,15 +969,9 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
         }
 
         let baseConversation = buildConversation(promptTexts: promptTexts, promptTokens: promptTokens)
-        let turns = fishSpeechSplitTextBySpeaker(text)
-        let batches = turns.isEmpty
-            ? [text]
-            : fishSpeechGroupTurnsIntoBatches(turns, maxSpeakers: 5, maxBytes: chunkLength)
+        let batches = fishSpeechGenerationBatches(text, maxBytes: chunkLength)
 
         var conversation = baseConversation
-        var segments: [FishSpeechGeneratedSegment] = []
-        segments.reserveCapacity(batches.count)
-
         for batchText in batches {
             try Task.checkCancellation()
             conversation.append(FishSpeechMessage(
@@ -966,11 +992,7 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
                 temperature: temperature
             )
             try Task.checkCancellation()
-            var audio = try decodeCodes(codes)
-            if abs(speed - 1.0) > 1e-6 {
-                audio = fishSpeechAdjustSpeed(audio, speed: speed)
-            }
-            eval(audio)
+            let audio = try decodeCodes(codes, speed: speed)
 
             conversation.append(FishSpeechMessage(
                 role: .assistant,
@@ -981,16 +1003,15 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
             ))
 
             let elapsed = max(CFAbsoluteTimeGetCurrent() - startTime, 1e-6)
-            segments.append(FishSpeechGeneratedSegment(
+            let segment = FishSpeechGeneratedSegment(
                 audio: audio,
                 promptTokenCount: tokenizer.encode(batchText, addSpecialTokens: false).count,
                 generationTokenCount: codes.dim(1),
                 elapsed: elapsed,
                 peakMemoryUsage: Double(Memory.peakMemory) / 1e9
-            ))
+            )
+            try onSegment(segment)
         }
-
-        return segments
     }
 
     private func concatenateAudioSegments(_ segments: [FishSpeechGeneratedSegment]) -> MLXArray {

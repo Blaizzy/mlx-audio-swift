@@ -20,7 +20,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
     public var computeDType: DType = .bfloat16
 
     @ModuleInfo(key: "encoder") var encoder: NemotronASRConformer
-    @ModuleInfo(key: "prompt_kernel") var promptKernel: NemotronASRPromptKernel
+    @ModuleInfo(key: "prompt_kernel") var promptKernel: NemotronASRPromptKernel?
     @ModuleInfo(key: "decoder") var decoder: NemoPredictNetwork
     @ModuleInfo(key: "joint") var joint: NemoJointNetwork
 
@@ -42,19 +42,21 @@ public final class NemotronASRModel: Module, STTGenerationModel {
         self.preprocessConfig = config.preprocessor
         self.encoderConfig = config.encoder
         self.vocabulary = config.vocabulary
-        self.promptDictionary = config.prompt.promptDictionary
-        self.numPrompts = config.prompt.numPrompts
+        self.promptDictionary = config.hasPromptConditioning ? config.prompt.promptDictionary : [:]
+        self.numPrompts = config.hasPromptConditioning ? config.prompt.numPrompts : 0
         self.blankTokenID = config.decoder.vocabSize
         self.defaultLanguage = config.defaultLanguage
         self.defaultAttContextSize = config.defaultAttContextSize
         self.maxSymbols = config.maxSymbols
 
         self._encoder.wrappedValue = NemotronASRConformer(args: config.encoder)
-        self._promptKernel.wrappedValue = NemotronASRPromptKernel(
-            dModel: config.encoder.dModel,
-            numPrompts: config.prompt.numPrompts,
-            promptHidden: config.prompt.promptHidden
-        )
+        self._promptKernel.wrappedValue = config.hasPromptConditioning
+            ? NemotronASRPromptKernel(
+                dModel: config.encoder.dModel,
+                numPrompts: config.prompt.numPrompts,
+                promptHidden: config.prompt.promptHidden
+            )
+            : nil
         self._decoder.wrappedValue = NemoPredictNetwork(
             args: NemoPredictConfig(
                 blankAsPad: config.decoder.blankAsPad,
@@ -141,61 +143,18 @@ public final class NemotronASRModel: Module, STTGenerationModel {
             let frameSeconds = Double(self.encoderConfig.subsamplingFactor * self.preprocessConfig.hopLength)
                 / Double(sampleRate)
 
-            var results: [NemoAlignedToken] = []
-            var lastToken = self.blankTokenID
-            var decoderState: NemoLSTMState?
+            let rnntState = NemotronASRStreamRNNTState(blankToken: self.blankTokenID)
             var previousText = ""
-            var globalTime = 0
 
             // Cache-aware streaming: incremental subsampling + per-layer attn/conv
-            // caches. Token-identical to decode() at the native chunk size.
+            // caches, greedy RNN-T per chunk. Token-identical to decode() at the
+            // native chunk size; shares both loops with NemotronASRStreamSession.
             self.cacheAwareStreamEncode(mel, language: generationParameters.language) { prompted in
-                let chunkLen = prompted.shape[1]
-                var time = 0
-                var newSymbols = 0
-                while time < chunkLen {
-                    let frame = prompted[0..., time..<(time + 1), 0...]
-                    let currentToken: MLXArray? = lastToken == self.blankTokenID
-                        ? nil
-                        : MLXArray(Int32(lastToken)).reshaped([1, 1]).asType(.int32)
-                    let decoderOutput = self.decoder(currentToken, state: decoderState)
-                    let pred = decoderOutput.0.asType(frame.dtype)
-                    let proposedState: NemoLSTMState = (
-                        hidden: decoderOutput.1.hidden?.asType(frame.dtype),
-                        cell: decoderOutput.1.cell?.asType(frame.dtype)
-                    )
-                    let jointOutput = self.joint(frame, pred)
-                    let token = jointOutput.argMax(axis: -1).item(Int.self)
-                    let step = NemoDecodingLogic.rnntStep(
-                        predictedToken: token,
-                        blankToken: self.blankTokenID,
-                        time: time,
-                        newSymbols: newSymbols,
-                        maxSymbols: self.maxSymbols
-                    )
-                    if step.emittedToken {
-                        lastToken = token
-                        decoderState = proposedState
-                        if !NemotronASRTokenizer.isSpecialToken(token, vocabulary: self.vocabulary) {
-                            results.append(
-                                NemoAlignedToken(
-                                    id: token,
-                                    text: NemotronASRTokenizer.decode(tokens: [token], vocabulary: self.vocabulary),
-                                    start: Double(globalTime + time) * frameSeconds,
-                                    duration: frameSeconds
-                                )
-                            )
-                        }
-                    }
-                    time = step.nextTime
-                    newSymbols = step.nextNewSymbols
-                }
-                globalTime += chunkLen
+                self.streamRNNTDecode(prompted, state: rnntState, frameSeconds: frameSeconds)
 
-                let currentResult = NemoAlignment.sentencesToResult(
-                    NemoAlignment.tokensToSentences(results)
-                )
-                let fullText = currentResult.text
+                let fullText = NemoAlignment.sentencesToResult(
+                    NemoAlignment.tokensToSentences(rnntState.results)
+                ).text
                 let nextText = fullText.hasPrefix(previousText)
                     ? String(fullText.dropFirst(previousText.count))
                     : fullText
@@ -206,7 +165,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
             }
 
             let finalResult = NemoAlignment.sentencesToResult(
-                NemoAlignment.tokensToSentences(results)
+                NemoAlignment.tokensToSentences(rnntState.results)
             )
             continuation.yield(
                 .result(
@@ -302,6 +261,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
     }
 
     func applyPrompt(_ encoded: MLXArray, language: String? = nil) -> MLXArray {
+        guard let promptKernel else { return encoded }
         let promptIndex = resolvePromptIndex(language)
         let batch = encoded.shape[0]
         let time = encoded.shape[1]
@@ -399,7 +359,10 @@ public extension NemotronASRModel {
             weights.merge(shard) { _, new in new }
         }
 
-        let sanitized = sanitize(weights: weights)
+        let sanitized = sanitize(
+            weights: weights,
+            quantization: quantConfig.perLayerQuantization
+        )
 
         if let perLayerQuant = quantConfig.perLayerQuantization {
             quantize(model: model) { path, _ in
@@ -454,8 +417,11 @@ public extension NemotronASRModel {
     }
 }
 
-private extension NemotronASRModel {
-    static func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+extension NemotronASRModel {
+    static func sanitize(
+        weights: [String: MLXArray],
+        quantization: BaseConfiguration.PerLayerQuantization?
+    ) -> [String: MLXArray] {
         var sanitized: [String: MLXArray] = [:]
         sanitized.reserveCapacity(weights.count)
 
@@ -464,10 +430,44 @@ private extension NemotronASRModel {
             sanitized[remapped] = value
         }
 
+        let pointwiseWeights = sanitized.keys.filter { key in
+            guard key.hasSuffix(".weight"),
+                  key.contains(".conv.pointwise_conv"),
+                  let weight = sanitized[key]
+            else {
+                return false
+            }
+            return weight.dtype == .uint32 && weight.ndim == 2
+        }
+
+        for weightKey in pointwiseWeights {
+            let prefix = String(weightKey.dropLast(".weight".count))
+            let scalesKey = "\(prefix).scales"
+            let biasesKey = "\(prefix).biases"
+            guard let weight = sanitized[weightKey],
+                  let scales = sanitized[scalesKey],
+                  let parameters = quantization?.quantization(layer: prefix)
+            else {
+                continue
+            }
+
+            sanitized[weightKey] = MLX.dequantized(
+                weight,
+                scales: scales,
+                biases: sanitized[biasesKey],
+                groupSize: parameters.groupSize,
+                bits: parameters.bits,
+                mode: parameters.mode,
+                dtype: scales.dtype
+            ).expandedDimensions(axis: 1)
+            sanitized.removeValue(forKey: scalesKey)
+            sanitized.removeValue(forKey: biasesKey)
+        }
+
         return sanitized
     }
 
-    static func remapKey(_ key: String) -> String? {
+    private static func remapKey(_ key: String) -> String? {
         var newKey = key
         newKey = newKey.replacingOccurrences(of: "joint.joint_net.2.", with: "joint.joint_net.")
         newKey = newKey.replacingOccurrences(of: ".pos_bias_u", with: ".posBiasU")
@@ -486,7 +486,7 @@ private extension NemotronASRModel {
         return newKey
     }
 
-    static func remapPreEncodeConvListKey(_ key: String) -> String? {
+    private static func remapPreEncodeConvListKey(_ key: String) -> String? {
         let pieces = key.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
         guard pieces.count >= 5 else { return nil }
         guard pieces[0] == "encoder", pieces[1] == "pre_encode", pieces[2] == "conv" else { return nil }
@@ -515,7 +515,7 @@ private extension NemotronASRModel {
         return nil
     }
 
-    static func shouldSkipPreEncodeConvListKey(_ key: String) -> Bool {
+    private static func shouldSkipPreEncodeConvListKey(_ key: String) -> Bool {
         let pieces = key.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
         guard pieces.count >= 5 else { return false }
         guard pieces[0] == "encoder", pieces[1] == "pre_encode", pieces[2] == "conv" else { return false }

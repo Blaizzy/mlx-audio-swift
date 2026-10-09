@@ -823,7 +823,7 @@ class CausalConditionalCFM: Module {
 ///
 /// Pipeline: tokens → inputEmbedding → Conformer encoder (2x upsample) → encoderProj
 /// → flow matching decoder (Euler ODE) → mel spectrogram → HiFi-GAN vocoder → waveform.
-class CausalMaskedDiffWithXvec: Module {
+public class CausalMaskedDiffWithXvec: Module {
     let outputSize: Int
     let vocabSize: Int
     let tokenMelRatio: Int
@@ -836,9 +836,9 @@ class CausalMaskedDiffWithXvec: Module {
     @ModuleInfo(key: "encoder_proj") var encoderProj: Linear
     @ModuleInfo(key: "decoder") var decoder: CausalConditionalCFM
     @ModuleInfo(key: "mel2wav") var vocoderModule: HiFTGenerator
-    @ModuleInfo(key: "speaker_encoder") var speakerEncoder: CAMPPlus
+    @ModuleInfo(key: "speaker_encoder") public var speakerEncoder: CAMPPlus
 
-    init(
+    public init(
         inputSize: Int = 512, outputSize: Int = 80,
         spkEmbedDim: Int = 192, vocabSize: Int = 6561,
         decoderInChannels: Int = 320,
@@ -875,7 +875,7 @@ class CausalMaskedDiffWithXvec: Module {
     }
 
     /// Run vocoder (HiFi-GAN) on mel spectrogram to produce waveform.
-    func vocoder(_ mel: MLXArray) -> (MLXArray, MLXArray) {
+    public func vocoder(_ mel: MLXArray) -> (MLXArray, MLXArray) {
         return vocoderModule(mel)
     }
 
@@ -891,7 +891,7 @@ class CausalMaskedDiffWithXvec: Module {
     ///   - nTimesteps: Number of Euler ODE steps for flow matching
     ///   - streaming: Whether to use streaming/causal mode
     /// - Returns: Generated mel spectrogram, shape `(B, 80, T_gen_mel)`
-    func inference(
+    public func inference(
         token: MLXArray, tokenLen: MLXArray,
         promptToken: MLXArray, promptTokenLen: MLXArray,
         promptFeat: MLXArray,

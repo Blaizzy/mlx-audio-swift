@@ -38,7 +38,7 @@ func s3genReflectPad2D(_ x: MLXArray, padAmount: Int) -> MLXArray {
 ///   - fmin: Minimum frequency (default: 0)
 ///   - fmax: Maximum frequency (default: 8000)
 /// - Returns: Mel-spectrogram (B, numMels, T')
-func s3genMelSpectrogram(
+public func s3genMelSpectrogram(
     y: MLXArray,
     nFft: Int = 1920, numMels: Int = 80,
     samplingRate: Int = 24000, hopSize: Int = 480,

@@ -12,10 +12,15 @@ import AVFoundation
 import Foundation
 import HuggingFace
 @preconcurrency import MLX
+import MLXAudioCodecs
 import MLXAudioCore
 import MLXNN
 @preconcurrency import MLXLMCommon
 import Tokenizers
+
+func resolveChatterboxEmotionAdv(default value: MLXArray, override: Float?) -> MLXArray {
+    override.map { MLXArray(Float($0)) } ?? value
+}
 
 // MARK: - Default Voice Conditioning
 
@@ -676,11 +681,11 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
     public func generate(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         // Use reference audio, or fall back to default conditioning
         let t3Cond: T3Cond
         let xVector: MLXArray
@@ -703,7 +708,8 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
                 speakerEmb: defaults.speakerEmb,
                 condPromptSpeechTokens: defaults.condPromptSpeechTokens,
                 condPromptSpeechEmb: nil,
-                emotionAdv: defaults.emotionAdv
+                emotionAdv: resolveChatterboxEmotionAdv(
+                    default: defaults.emotionAdv, override: emotionAdvOverride)
             )
             xVector = defaults.xVector
             promptTokens = defaults.promptToken
@@ -856,14 +862,16 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
 
+        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self] in
+            let refAudio = refAudio.take()
             guard let self else {
                 continuation.finish(throwing: AudioGenerationError.modelNotInitialized("Model deallocated"))
                 return
@@ -880,8 +888,6 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
                 )
                 let generateTime = Date().timeIntervalSince(startTime)
 
-                continuation.yield(.audio(audio))
-
                 let info = AudioGenerationInfo(
                     promptTokenCount: 0,
                     generationTokenCount: audio.dim(audio.ndim - 1),
@@ -890,6 +896,7 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
                     tokensPerSecond: Double(audio.dim(audio.ndim - 1)) / max(generateTime, 0.001),
                     peakMemoryUsage: 0
                 )
+                continuation.yield(.audio(audio))
                 continuation.yield(.info(info))
                 continuation.finish()
             } catch {
@@ -1024,26 +1031,11 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
         // Load S3TokenizerV2 from separate HuggingFace repo (needed for voice cloning)
         let s3TokenizerRepo = "mlx-community/S3TokenizerV2"
         do {
-            guard let s3RepoID = Repo.ID(rawValue: s3TokenizerRepo) else {
-                throw AudioGenerationError.invalidInput("Invalid S3Tokenizer repo ID")
-            }
-            let s3Dir = try await ModelUtils.resolveOrDownloadModel(
-                repoID: s3RepoID,
-                requiredExtension: "safetensors",
+            model.s3Tokenizer = try await S3TokenizerV2.fromPretrained(
+                s3TokenizerRepo,
                 hfToken: hfToken
             )
-            let s3WeightsURL = s3Dir.appendingPathComponent("model.safetensors")
-            if FileManager.default.fileExists(atPath: s3WeightsURL.path) {
-                let s3Tokenizer = S3TokenizerV2()
-                var s3Weights = try MLX.loadArrays(url: s3WeightsURL)
-                s3Weights = S3TokenizerV2.sanitize(weights: s3Weights, model: s3Tokenizer)
-                try s3Tokenizer.update(
-                    parameters: ModuleParameters.unflattened(s3Weights), verify: []
-                )
-                eval(s3Tokenizer)
-                model.s3Tokenizer = s3Tokenizer
-                print("[Chatterbox] Loaded S3TokenizerV2 from \(s3TokenizerRepo)")
-            }
+            print("[Chatterbox] Loaded S3TokenizerV2 from \(s3TokenizerRepo)")
         } catch {
             print("Warning: Could not load S3TokenizerV2: \(error)")
             print("  Voice cloning will fall back to default conditioning tokens.")

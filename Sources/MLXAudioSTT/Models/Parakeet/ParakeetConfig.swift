@@ -117,6 +117,40 @@ public struct ParakeetConformerConfig: Codable, Sendable {
         case subsamplingConvChunkingFactor = "subsampling_conv_chunking_factor"
     }
 
+    public init(
+        featIn: Int,
+        nLayers: Int,
+        dModel: Int,
+        nHeads: Int,
+        ffExpansionFactor: Int,
+        subsamplingFactor: Int,
+        selfAttentionModel: String,
+        subsampling: String,
+        convKernelSize: Int,
+        subsamplingConvChannels: Int,
+        posEmbMaxLen: Int,
+        causalDownsampling: Bool = false,
+        useBias: Bool = true,
+        xscaling: Bool = false,
+        subsamplingConvChunkingFactor: Int = 1
+    ) {
+        self.featIn = featIn
+        self.nLayers = nLayers
+        self.dModel = dModel
+        self.nHeads = nHeads
+        self.ffExpansionFactor = ffExpansionFactor
+        self.subsamplingFactor = subsamplingFactor
+        self.selfAttentionModel = selfAttentionModel
+        self.subsampling = subsampling
+        self.convKernelSize = convKernelSize
+        self.subsamplingConvChannels = subsamplingConvChannels
+        self.posEmbMaxLen = posEmbMaxLen
+        self.causalDownsampling = causalDownsampling
+        self.useBias = useBias
+        self.xscaling = xscaling
+        self.subsamplingConvChunkingFactor = subsamplingConvChunkingFactor
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         featIn = try container.decode(Int.self, forKey: .featIn)

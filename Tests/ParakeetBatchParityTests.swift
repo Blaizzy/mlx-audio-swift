@@ -235,6 +235,31 @@ struct ParakeetBatchParityTests {
         #expect(plainDecoded.map(alignedResultSignature) == compiledDecoded.map(alignedResultSignature))
     }
 
+    @Test("Compiled encoder observes weight updates after tracing")
+    func compiledEncoderObservesWeightUpdates() throws {
+        let model = try makeTDTFixtureModel()
+        let features = model.makeBatchFeatures([
+            makeChunkAudio(sampleCount: 4_800, frequency: 180)
+        ]).features
+        model.encoderExecutionImplementation = .compiled
+        let before = model.encodeBatchFeatures(features).0
+        eval(before)
+        let beforeValues = before.asArray(Float.self)
+
+        let preEncoder = try #require(model.encoder.preEncodeDw)
+        let bias = try #require(preEncoder.out.bias)
+        preEncoder.out.update(parameters: .unflattened(["bias": MLXArray.ones(like: bias)]))
+
+        let compiled = model.encodeBatchFeatures(features).0
+        eval(compiled)
+        model.encoderExecutionImplementation = .plain
+        let plain = model.encodeBatchFeatures(features).0
+        eval(plain)
+
+        #expect(plain.asArray(Float.self) != beforeValues)
+        #expect(compiled.asArray(Float.self) == plain.asArray(Float.self))
+    }
+
     @Test("Parakeet stage benchmark harness measures mel encoder decode and full batch")
     func parakeetStageBenchmarkHarnessMeasuresMelEncoderDecodeAndFullBatch() throws {
         let model = try makeTDTFixtureModel()

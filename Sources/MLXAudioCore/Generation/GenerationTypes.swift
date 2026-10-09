@@ -6,7 +6,7 @@
 //
 
 import Foundation
-@preconcurrency import MLX
+import MLX
 
 // MARK: - Generation Info
 
@@ -46,14 +46,20 @@ public struct AudioGenerationInfo: Sendable {
 
 // MARK: - Generation Events
 
-/// Events emitted during audio generation.
-public enum AudioGeneration: Sendable {
+/// Events transferred from the producer to the consumer during audio generation.
+/// Yielding an event transfers its tensor too; the producer must not subsequently
+/// access that tensor or any aliases to it.
+public enum AudioGeneration {
     /// A generated token ID
     case token(Int)
     /// Generation statistics
     case info(AudioGenerationInfo)
-    /// Final generated audio
+    /// Generated audio chunk. Concatenate repeated values for the complete waveform.
     case audio(MLXArray)
+    /// Fractional progress through generation (0-1). Emitted by models with a
+    /// deterministic step count (e.g. diffusion denoise steps), where the
+    /// fraction is exact rather than an estimate.
+    case progress(Double)
 }
 
 // MARK: - Generation Errors
