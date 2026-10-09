@@ -75,7 +75,7 @@ Low-level single-chunk API for real-time streaming.
 
 ```swift
 var state = model.initStreamingState()
-let (result, state) = try await model.feed(
+let (result, newState) = try await model.feed(
     chunk: audioChunk,        // MLXArray — 1-D audio samples
     state: state,             // StreamingState
     sampleRate: 16000,
@@ -83,7 +83,20 @@ let (result, state) = try await model.feed(
     spkcacheMax: 188,
     fifoMax: 188
 )
+state = newState
 ```
+
+`StreamingState` is an opaque, single-use `Sendable` handle. You can store it in
+an actor, a property, or a collection and pass it back for the next chunk. Each
+successful `feed` returns a fresh handle. Copies share the same consumption
+status: reusing any copy of an already-consumed handle throws
+`StreamingState.ConsumptionError.alreadyConsumed`. Handles are continuations,
+not reusable checkpoints. Continue to serialize access to each model instance.
+
+Create handles with `initStreamingState()` rather than constructing tensor state
+directly. The read-only `framesProcessed`, `spkcacheLen`, and `fifoLen` values are
+snapshots and remain available after consumption; tensor fields are internal.
+The lower-level `streamingStep` also consumes its handle and now requires `try`.
 
 ## Examples
 
@@ -128,6 +141,12 @@ for try await result in model.generateStream(
     }
 }
 ```
+
+`generate` and `generateStream` transfer the input tensor and return transferred
+results. After passing audio to either method, do not access that tensor or its
+aliases again. `DiarizationOutput` no longer conforms to `Sendable`; helpers that
+forward results or streams across actors should preserve the `sending` return
+annotation. Keep model access serialized while generation is in progress.
 
 ### Streaming from chunks
 

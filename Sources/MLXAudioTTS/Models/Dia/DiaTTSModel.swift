@@ -82,26 +82,14 @@ public final class DiaTTSModel: SpeechGenerationModel, @unchecked Sendable {
         return (src, positions, paddingMask, encMask)
     }
 
-    private func sampleChannels(_ logits: MLXArray, temperature: Float, topK: Int) -> MLXArray {
-        if temperature == 0 { return logits.argMax(axis: -1) }
-        var l = logits
-        let v = l.shape[l.ndim - 1]
-        if topK > 0 && topK < v {
-            let sorted = MLX.sorted(l, axis: -1)
-            let kth = sorted[0..., (v - topK)].expandedDimensions(axis: -1)
-            l = MLX.where(MLX.less(l, kth), MLXArray(-Float.infinity), l)
-        }
-        return MLXRandom.categorical(l * (1.0 / temperature), axis: -1)
-    }
-
-    private func generateCodes(_ text: String, temperature: Float, topK: Int, maxTokens: Int) -> MLXArray {
+    // Includes BOS and every generated frame; delay removal happens in DiaAudio.
+    func generateCodes(_ text: String, temperature: Float, topP: Float, topK: Int, maxTokens: Int) throws -> MLXArray {
         let numChannels = config.data.channels
         let bos = Int32(config.data.audioBosValue)
         let eos = Int32(config.data.audioEosValue)
         let padV = Int32(config.data.audioPadValue)
         let delay = config.data.delayPattern
         let maxDelay = delay.max() ?? 0
-        let extraStepsAfterEos = 30
 
         let (condSrc, condPos, condPad, condEncMask) = prepareTextInput(text)
         let uncondSrc = MLXArray.zeros(like: condSrc)
@@ -120,12 +108,10 @@ public final class DiaTTSModel: SpeechGenerationModel, @unchecked Sendable {
         let tgtPad = MLXArray.ones([2, 1], dtype: .bool)
         let crossAttnMask = createAttnMask(tgtPad, srcPad, causal: false)
 
-        var eosDetected = false
-        var eosCountdown = -1
-        var lastStep = 0
+        var eosStep: Int?
 
         for step in 0 ..< maxTokens {
-            lastStep = step
+            try Task.checkCancellation()
             let currentFrame = frames[step]
             let inputFrame = MLXArray(currentFrame + currentFrame).reshaped([2, 1, numChannels])
             let tgtPos = MLXArray([Int32(step), Int32(step)]).reshaped([2, 1])
@@ -143,67 +129,68 @@ public final class DiaTTSModel: SpeechGenerationModel, @unchecked Sendable {
                 [cfg[0..., 0 ..< 1025], MLXArray.full([numChannels, v - 1025], values: MLXArray(-Float.infinity))],
                 axis: 1)
 
-            let predArr = sampleChannels(cfg, temperature: temperature, topK: topK)
+            let predArr = diaSampleChannels(cfg, temperature: temperature, topP: topP, topK: topK)
             eval(predArr)
             var frame = predArr.asArray(Int32.self)
 
             for c in 0 ..< numChannels where step < delay[c] { frame[c] = bos }
 
-            if !eosDetected && frame[0] == eos {
-                eosDetected = true
-                eosCountdown = extraStepsAfterEos
-            }
-            if eosCountdown > 0 {
-                let stepAfterEos = maxDelay - eosCountdown
+            if eosStep == nil && frame[0] == eos { eosStep = step }
+            if let eosStep {
+                let stepAfterEos = step - eosStep
                 for (i, d) in delay.enumerated() {
                     if stepAfterEos == d { frame[i] = eos } else if stepAfterEos > d { frame[i] = padV }
                 }
-                eosCountdown -= 1
             }
 
             frames.append(frame)
-            if eosCountdown == 0 { break }
+            if let eosStep, step - eosStep >= maxDelay { break }
         }
 
-        let outCount = max(lastStep, 0)
+        let outCount = frames.count
         var flat = [Int32]()
         flat.reserveCapacity(outCount * numChannels)
-        for c in 0 ..< numChannels {
-            for t in 0 ..< outCount { flat.append(frames[1 + t][c]) }
+        for c in 0..<numChannels {
+            for frame in frames { flat.append(frame[c]) }
         }
         return MLXArray(flat).reshaped([numChannels, outCount])
     }
 
     public func generate(
-        text: String, voice: String?, refAudio: MLXArray?, refText: String?,
+        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
         language: String?, generationParameters: GenerateParameters
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         let temperature = Float(generationParameters.temperature)
         let requested = generationParameters.maxTokens ?? config.data.audioLength
         let maxTokens = max(1, min(requested, config.data.audioLength))
-        let codes = generateCodes(text, temperature: temperature, topK: cfgFilterTopK, maxTokens: maxTokens)
-        let audio = diaCodebookToAudio(
+        let codes = try generateCodes(
+            text, temperature: temperature, topP: generationParameters.topP,
+            topK: cfgFilterTopK, maxTokens: maxTokens)
+        let audio = try diaCodebookToAudio(
             codes, dac: dac, delayPattern: config.data.delayPattern,
-            maxT: config.data.audioLength, channels: config.data.channels)
+            maxT: config.data.audioLength, channels: config.data.channels,
+            eosValue: config.data.audioEosValue)
         eval(audio)
         return audio.squeezed()
     }
 
     public func generateStream(
-        text: String, voice: String?, refAudio: MLXArray?, refText: String?,
+        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
         language: String?, generationParameters: GenerateParameters
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text, voice: voice, refAudio: refAudio, refText: refText,
             language: language, generationParameters: generationParameters, streamingInterval: 2.0)
     }
 
     public func generateStream(
-        text: String, voice: String?, refAudio: MLXArray?, refText: String?,
+        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
         language: String?, generationParameters: GenerateParameters, streamingInterval: Double
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
+        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self] in
+            let refAudio = refAudio.take()
             guard let self else { continuation.finish(); return }
             do {
                 let audio = try await self.generate(

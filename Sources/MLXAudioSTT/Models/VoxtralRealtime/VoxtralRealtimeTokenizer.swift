@@ -74,7 +74,9 @@ final class VoxtralRealtimeTokenizer {
         return String(decoding: out, as: UTF8.self)
     }
 
-    private func tokenBytes(for tokenId: Int) -> [UInt8] {
+    /// The bytes `decode(tokenIds:)` emits for one token: empty for special tokens and
+    /// ids outside the vocabulary.
+    func tokenBytes(for tokenId: Int) -> [UInt8] {
         if let cached = bytesCache[tokenId] {
             return cached
         }

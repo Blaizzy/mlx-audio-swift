@@ -318,7 +318,7 @@ public extension MarvisTTSModel {
         text: [String],
         voice: Voice? = .conversationalA,
         qualityLevel: QualityLevel = .maximum,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         splitPattern: String? = #"(\n+)"#,
         streamingInterval: Double = 0.5
@@ -341,7 +341,7 @@ public extension MarvisTTSModel {
         text: String,
         voice: Voice? = .conversationalA,
         qualityLevel: QualityLevel = .maximum,
-        refAudio: MLXArray? = nil,
+        refAudio: sending MLXArray? = nil,
         refText: String? = nil,
         splitPattern: String? = #"(\n+)"#,
         streamingInterval: Double = 0.5
@@ -360,13 +360,15 @@ public extension MarvisTTSModel {
         text: [String],
         voice: Voice? = .conversationalA,
         qualityLevel: QualityLevel = .maximum,
-        refAudio: MLXArray? = nil,
+        refAudio: sending MLXArray? = nil,
         refText: String? = nil,
         streamingInterval: Double = 0.5
     ) -> AsyncThrowingStream<GenerationResult, Error> {
         let (stream, continuation) = AsyncThrowingStream<GenerationResult, Error>.makeStream()
 
+        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self, continuation] in
+            let refAudio = refAudio.take()
             guard let self else { return }
             do {
                 guard voice != nil || refAudio != nil else {
@@ -555,11 +557,11 @@ extension MarvisTTSModel: SpeechGenerationModel, @unchecked Sendable {
     public func generate(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         _ = generationParameters
         let resolvedVoice = try resolveVoice(from: voice)
 
@@ -578,11 +580,11 @@ extension MarvisTTSModel: SpeechGenerationModel, @unchecked Sendable {
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text,
             voice: voice,
@@ -597,15 +599,17 @@ extension MarvisTTSModel: SpeechGenerationModel, @unchecked Sendable {
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters,
         streamingInterval: Double
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
 
+        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self, continuation] in
+            let refAudio = refAudio.take()
             guard let self else { return }
 
             do {

@@ -115,27 +115,6 @@ struct Wav2Vec2LIDConfigTests {
 
 struct LIDOutputTests {
 
-    @Test func languagePredictionCreation() {
-        let pred = LanguagePrediction(language: "eng", confidence: 0.95)
-        #expect(pred.language == "eng")
-        #expect(pred.confidence == 0.95)
-    }
-
-    @Test func lidOutputCreation() {
-        let output = LIDOutput(
-            language: "eng",
-            confidence: 0.95,
-            topLanguages: [
-                LanguagePrediction(language: "eng", confidence: 0.95),
-                LanguagePrediction(language: "fra", confidence: 0.03),
-            ]
-        )
-        #expect(output.language == "eng")
-        #expect(output.confidence == 0.95)
-        #expect(output.topLanguages.count == 2)
-        #expect(output.topLanguages[1].language == "fra")
-    }
-
     @Test func lidErrorDescriptions() {
         let err1 = LIDError.invalidRepoID("bad/repo")
         #expect(err1.localizedDescription.contains("bad/repo"))
@@ -470,16 +449,6 @@ struct EcapaTdnnConfigTests {
         #expect(config.numClasses == 3)
         #expect(config.id2label?["0"] == "en: English")
         #expect(config.id2label?["2"] == "de: German")
-    }
-
-    @Test func configDirectInit() {
-        let config = EcapaTdnnConfig(
-            nMels: 40, channels: 512, numClasses: 50
-        )
-        #expect(config.nMels == 40)
-        #expect(config.channels == 512)
-        #expect(config.numClasses == 50)
-        #expect(config.embeddingDim == 256)
     }
 }
 

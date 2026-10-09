@@ -62,7 +62,11 @@ struct ContentView: View {
             if newValue {
                 Task {
                     if !viewModel.conversationController.isActive {
-                        try await viewModel.startConversation()
+                        do {
+                            try await viewModel.startConversation()
+                        } catch {
+                            print("Failed to start conversation: \(error)")
+                        }
                     }
                 }
             }
@@ -85,7 +89,7 @@ struct ContentView: View {
                             }
                         }
 
-                        try await toggleConversation()
+                        await toggleConversation()
                     }
                 }
             } label: {
@@ -103,7 +107,7 @@ struct ContentView: View {
         .animation(.easeOut(duration: 0.4), value: viewModel.conversationController.isSpeaking)
     }
 
-    private func toggleConversation() async throws {
+    private func toggleConversation() async {
         do {
             if !viewModel.conversationController.isActive {
                 try await viewModel.startConversation()
@@ -111,7 +115,7 @@ struct ContentView: View {
                 try await viewModel.stopConversation()
             }
         } catch {
-            print("Failed to start conversation: \(error)")
+            print("Failed to toggle conversation: \(error)")
         }
     }
 }

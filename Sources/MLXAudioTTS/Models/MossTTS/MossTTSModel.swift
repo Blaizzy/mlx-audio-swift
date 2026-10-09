@@ -703,11 +703,11 @@ public final class MossTTSModel: Module, SpeechGenerationModel, @unchecked Senda
     public func generate(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         _ = voice
         guard let tokenizer else {
             throw AudioGenerationError.modelNotInitialized("MOSS tokenizer is not initialized")
@@ -770,13 +770,15 @@ public final class MossTTSModel: Module, SpeechGenerationModel, @unchecked Senda
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
-        AsyncThrowingStream { continuation in
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+        let refAudio = SendingBox(refAudio)
+        return AsyncThrowingStream { continuation in
             let task = Task { @Sendable in
+                let refAudio = refAudio.take()
                 do {
                     let audio = try await self.generate(
                         text: text,

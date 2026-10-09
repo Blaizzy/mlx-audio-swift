@@ -9,7 +9,7 @@ import Foundation
 @preconcurrency import MLX
 import HuggingFace
 import Tokenizers
-@preconcurrency import MLXLMCommon
+import MLXLMCommon
 import MLXNN
 import MLXAudioCodecs
 import MLXAudioCore
@@ -534,7 +534,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         }
     }
 
-    public func makeCache() -> [KVCache] {
+    public func makeCache() -> sending [KVCache] {
         return (0..<self.configuration.hiddenLayers).map { _ in
             KVCacheSimple()
         }
@@ -543,11 +543,11 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
     public func generate(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language _: String?,
         generationParameters: GenerateParameters
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         try await generate(
             text: text,
             voice: voice,
@@ -561,11 +561,11 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language _: String?,
         generationParameters: GenerateParameters
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text,
             voice: voice,
@@ -590,14 +590,15 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
     ///   - voice: Optional voice identifier (e.g., "en-us-1")
     ///   - refAudio: Optional reference audio for voice cloning
     ///   - refText: Optional transcription of the reference audio
+    ///   - cache: Optional reusable cache container; calls sharing it are serialized
     ///   - parameters: Generation parameters (temperature, topP, maxTokens, etc.)
     /// - Returns: Generated audio as MLXArray
     public func generate(
         text: String,
         voice: String? = nil,
-        refAudio: MLXArray? = nil,
+        refAudio: sending MLXArray? = nil,
         refText: String? = nil,
-        cache: [KVCache]? = nil,
+        cache: TTSGenerationCache? = nil,
         parameters: GenerateParameters = GenerateParameters(
             maxTokens: 1200,
             temperature: 0.6,
@@ -605,105 +606,106 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
             repetitionPenalty: 1.3,
             repetitionContextSize: 20
         )
-    ) async throws -> MLXArray {
-        guard let snacModel = _snacModel else {
-            throw Qwen3Error.modelNotInitialized("SNAC model not loaded")
-        }
-        guard tokenizer != nil else {
-            throw Qwen3Error.modelNotInitialized("Tokenizer not loaded")
-        }
+    ) async throws -> sending MLXArray {
+        let refAudio = SendingBox(refAudio)
+        let result = try await (cache ?? TTSGenerationCache()).withCache(
+            model: self, makeCache: { self.makeCache() }
+        ) { cache in
+            let refAudio = refAudio.take()
+            guard let snacModel = _snacModel else {
+                throw Qwen3Error.modelNotInitialized("SNAC model not loaded")
+            }
+            guard tokenizer != nil else {
+                throw Qwen3Error.modelNotInitialized("Tokenizer not loaded")
+            }
 
-        // Prepare input
-        let prompt = text.replacingOccurrences(of: "\\n", with: "\n")
-            .replacingOccurrences(of: "\\t", with: "\t")
+            // Prepare input
+            let prompt = text.replacingOccurrences(of: "\\n", with: "\n")
+                .replacingOccurrences(of: "\\t", with: "\t")
 
-        let (inputIds, _) = prepareInputIds(
-            prompts: [prompt],
-            voice: voice,
-            refAudio: refAudio,
-            refText: refText
-        )
+            let (inputIds, _) = prepareInputIds(
+                prompts: [prompt],
+                voice: voice,
+                refAudio: refAudio,
+                refText: refText
+            )
 
-        // Create sampler and processor from parameters
-        let sampler = parameters.sampler()
-        var processor = parameters.processor()
+            // Create sampler and processor from parameters
+            let sampler = parameters.sampler()
+            var processor = parameters.processor()
 
-        // Initialize prompt tokens for processor
-        let promptTokens = inputIds.squeezed(axis: 0)
-        processor?.prompt(promptTokens)
+            // Initialize prompt tokens for processor
+            let promptTokens = inputIds.squeezed(axis: 0)
+            processor?.prompt(promptTokens)
 
-        // Create KV cache
-        var cache = cache
-        if cache == nil {
-            cache = self.makeCache()
-        }
+            let maxTokens = parameters.maxTokens ?? 1200
 
-        let maxTokens = parameters.maxTokens ?? 1200
+            let promptTokensList = inputIds.squeezed(axis: 0).asArray(Int32.self)
 
-        let promptTokensList = inputIds.squeezed(axis: 0).asArray(Int32.self)
+            var generatedOnly = ContiguousArray<Int32>()
+            generatedOnly.reserveCapacity(maxTokens)
 
-        var generatedOnly = ContiguousArray<Int32>()
-        generatedOnly.reserveCapacity(maxTokens)
+            // Prefill: process the prompt, slice immediately to [1, V]
+            var logits = self(inputIds, cache: cache)
+            logits = logits[0..., -1, 0...]  // [1, V] - avoid keeping [1, L, V]
+            eval(logits)
 
-        // Prefill: process the prompt, slice immediately to [1, V]
-        var logits = self(inputIds, cache: cache)
-        logits = logits[0..., -1, 0...]  // [1, V] - avoid keeping [1, L, V]
-        eval(logits)
+            // Generate tokens
+            for _ in 0..<maxTokens {
+                try Task.checkCancellation()
+                let tokenValue: Int = autoreleasepool {
+                    var lastLogits = logits
+                    lastLogits = processor?.process(logits: lastLogits) ?? lastLogits
 
-        // Generate tokens
-        for _ in 0..<maxTokens {
-            try Task.checkCancellation()
-            let tokenValue: Int = autoreleasepool {
-                var lastLogits = logits
-                lastLogits = processor?.process(logits: lastLogits) ?? lastLogits
+                    let nextToken = sampler.sample(logits: lastLogits)
+                    processor?.didSample(token: nextToken)
 
-                let nextToken = sampler.sample(logits: lastLogits)
-                processor?.didSample(token: nextToken)
+                    let value = nextToken.item(Int.self)
 
-                let value = nextToken.item(Int.self)
+                    if value != endOfSpeech {
+                        let nextTokenExpanded = nextToken.reshaped([1, 1])
+                        logits = self(nextTokenExpanded, cache: cache)
+                        logits = logits[0..., -1, 0...]  // [1, V]
+                        eval(logits)
+                    }
 
-                if value != endOfSpeech {
-                    let nextTokenExpanded = nextToken.reshaped([1, 1])
-                    logits = self(nextTokenExpanded, cache: cache)
-                    logits = logits[0..., -1, 0...]  // [1, V]
-                    eval(logits)
+                    return value
                 }
 
-                return value
+                if tokenValue == endOfSpeech {
+                    break
+                }
+
+                // Only store generated tokens (not prompt)
+                generatedOnly.append(Int32(tokenValue))
             }
 
-            if tokenValue == endOfSpeech {
-                break
+            Memory.clearCache()
+            try Task.checkCancellation()
+
+            // Reconstruct full tokens only once at the end for parsing
+            var fullTokens = ContiguousArray<Int32>()
+            fullTokens.reserveCapacity(promptTokensList.count + generatedOnly.count)
+            fullTokens.append(contentsOf: promptTokensList)
+            fullTokens.append(contentsOf: generatedOnly)
+
+            // Parse output to audio codes using CPU-based parsing
+            let codeList = parseOutputRow(Array(fullTokens))
+
+            guard !codeList.isEmpty else {
+                throw Qwen3Error.generationFailed("No audio codes generated")
             }
 
-            // Only store generated tokens (not prompt)
-            generatedOnly.append(Int32(tokenValue))
+            // Decode audio using SNAC
+            let audio = decodeAudioFromCodes(codeList: codeList, snacModel: snacModel)
+            audio.eval()
+
+            // Clear SNAC decoder intermediates
+            Memory.clearCache()
+
+            return SendingBox(audio)
         }
-
-        Memory.clearCache()
-        try Task.checkCancellation()
-
-        // Reconstruct full tokens only once at the end for parsing
-        var fullTokens = ContiguousArray<Int32>()
-        fullTokens.reserveCapacity(promptTokensList.count + generatedOnly.count)
-        fullTokens.append(contentsOf: promptTokensList)
-        fullTokens.append(contentsOf: generatedOnly)
-
-        // Parse output to audio codes using CPU-based parsing
-        let codeList = parseOutputRow(Array(fullTokens))
-
-        guard !codeList.isEmpty else {
-            throw Qwen3Error.generationFailed("No audio codes generated")
-        }
-
-        // Decode audio using SNAC
-        let audio = decodeAudioFromCodes(codeList: codeList, snacModel: snacModel)
-        audio.eval()
-
-        // Clear SNAC decoder intermediates
-        Memory.clearCache()
-
-        return audio
+        return result.take()
     }
 
     /// Generate audio with streaming token output.
@@ -715,14 +717,15 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
     ///   - voice: Optional voice name/style identifier
     ///   - refAudio: Optional reference audio for voice cloning
     ///   - refText: Optional transcription of the reference audio
+    ///   - cache: Optional reusable cache container; calls sharing it are serialized
     ///   - parameters: Generation parameters
     /// - Returns: AsyncThrowingStream of Qwen3Generation events
     public func generateStream(
         text: String,
         voice: String? = nil,
-        refAudio: MLXArray? = nil,
+        refAudio: sending MLXArray? = nil,
         refText: String? = nil,
-        cache: [KVCache]? = nil,
+        cache: TTSGenerationCache? = nil,
         parameters: GenerateParameters = GenerateParameters(
             maxTokens: 1200,
             temperature: 0.6,
@@ -730,133 +733,138 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
             repetitionPenalty: 1.3,
             repetitionContextSize: 20
         )
-    ) -> AsyncThrowingStream<Qwen3Generation, Error> {
+    ) -> sending AsyncThrowingStream<Qwen3Generation, Error> {
         let (stream, continuation) = AsyncThrowingStream<Qwen3Generation, Error>.makeStream()
 
+        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self, continuation] in
-            guard let self else { return }
+            guard let self else {
+                continuation.finish(throwing: CancellationError())
+                return
+            }
 
             do {
-                guard let snacModel = self._snacModel else {
-                    throw Qwen3Error.modelNotInitialized("SNAC model not loaded")
-                }
-                guard self.tokenizer != nil else {
-                    throw Qwen3Error.modelNotInitialized("Tokenizer not loaded")
-                }
+                try await (cache ?? TTSGenerationCache()).withCache(
+                    model: self, makeCache: { self.makeCache() }
+                ) { cache in
+                    let refAudio = refAudio.take()
+                    guard let snacModel = self._snacModel else {
+                        throw Qwen3Error.modelNotInitialized("SNAC model not loaded")
+                    }
+                    guard self.tokenizer != nil else {
+                        throw Qwen3Error.modelNotInitialized("Tokenizer not loaded")
+                    }
 
-                let prompt = text.replacingOccurrences(of: "\\n", with: "\n")
-                    .replacingOccurrences(of: "\\t", with: "\t")
+                    let prompt = text.replacingOccurrences(of: "\\n", with: "\n")
+                        .replacingOccurrences(of: "\\t", with: "\t")
 
-                let (inputIds, _) = self.prepareInputIds(
-                    prompts: [prompt],
-                    voice: voice,
-                    refAudio: refAudio,
-                    refText: refText
-                )
+                    let (inputIds, _) = self.prepareInputIds(
+                        prompts: [prompt],
+                        voice: voice,
+                        refAudio: refAudio,
+                        refText: refText
+                    )
 
-                let sampler = parameters.sampler()
-                var processor = parameters.processor()
+                    let sampler = parameters.sampler()
+                    var processor = parameters.processor()
 
-                let promptTokens = inputIds.squeezed(axis: 0)
-                processor?.prompt(promptTokens)
-                var cache = cache
-                if cache == nil {
-                    cache = self.makeCache()
-                }
+                    let promptTokens = inputIds.squeezed(axis: 0)
+                    processor?.prompt(promptTokens)
 
-                let maxTokens = parameters.maxTokens ?? 1200
+                    let maxTokens = parameters.maxTokens ?? 1200
 
-                // DEDUP: Pull prompt tokens ONCE to CPU - this is your anchor
-                let promptTokensList = inputIds.squeezed(axis: 0).asArray(Int32.self)
+                    // DEDUP: Pull prompt tokens ONCE to CPU - this is your anchor
+                    let promptTokensList = inputIds.squeezed(axis: 0).asArray(Int32.self)
 
-                // Store only generated tokens (not prompt tokens) - dedup approach
-                var generatedTokens = ContiguousArray<Int32>()
-                generatedTokens.reserveCapacity(maxTokens)
+                    // Store only generated tokens (not prompt tokens) - dedup approach
+                    var generatedTokens = ContiguousArray<Int32>()
+                    generatedTokens.reserveCapacity(maxTokens)
 
-                let startTime = Date()
+                    let startTime = Date()
 
-                // Prefill: process the prompt, slice immediately to [1, V]
-                var tokenCount: Int = 0
-                var logits = self(inputIds, cache: cache)
-                logits = logits[0..., -1, 0...]  // [1, V] - avoid keeping [1, L, V]
-                eval(logits)
-                let prefillTime = Date().timeIntervalSince(startTime)
+                    // Prefill: process the prompt, slice immediately to [1, V]
+                    var tokenCount: Int = 0
+                    var logits = self(inputIds, cache: cache)
+                    logits = logits[0..., -1, 0...]  // [1, V] - avoid keeping [1, L, V]
+                    eval(logits)
+                    let prefillTime = Date().timeIntervalSince(startTime)
 
-                let generateStartTime = Date()
+                    let generateStartTime = Date()
 
-                // Generate tokens
-                for _ in 0..<maxTokens {
-                    try Task.checkCancellation()
+                    // Generate tokens
+                    for _ in 0..<maxTokens {
+                        try Task.checkCancellation()
 
-                    // Extract token value and advance - minimize intermediate tensor lifetime
-                    let tokenValue: Int = autoreleasepool {
-                        var lastLogits = logits
-                        lastLogits = processor?.process(logits: lastLogits) ?? lastLogits
+                        // Extract token value and advance - minimize intermediate tensor lifetime
+                        let tokenValue: Int = autoreleasepool {
+                            var lastLogits = logits
+                            lastLogits = processor?.process(logits: lastLogits) ?? lastLogits
 
-                        let nextToken = sampler.sample(logits: lastLogits)
-                        processor?.didSample(token: nextToken)
+                            let nextToken = sampler.sample(logits: lastLogits)
+                            processor?.didSample(token: nextToken)
 
-                        let value = nextToken.item(Int.self)
+                            let value = nextToken.item(Int.self)
 
-                        // Forward pass with cache
-                        if value != endOfSpeech {
-                            let nextTokenExpanded = nextToken.reshaped([1, 1])
-                            logits = self(nextTokenExpanded, cache: cache)
-                            logits = logits[0..., -1, 0...]  // [1, V]
-                            eval(logits)
+                            // Forward pass with cache
+                            if value != endOfSpeech {
+                                let nextTokenExpanded = nextToken.reshaped([1, 1])
+                                logits = self(nextTokenExpanded, cache: cache)
+                                logits = logits[0..., -1, 0...]  // [1, V]
+                                eval(logits)
+                            }
+
+                            return value
                         }
 
-                        return value
+                        tokenCount += 1
+
+                        continuation.yield(.token(tokenValue))
+
+                        if tokenValue == endOfSpeech {
+                            break
+                        }
+
+                        generatedTokens.append(Int32(tokenValue))
                     }
 
-                    tokenCount += 1
+                    Memory.clearCache()
+                    try Task.checkCancellation()
 
-                    continuation.yield(.token(tokenValue))
+                    let generateTime = Date().timeIntervalSince(generateStartTime)
 
-                    if tokenValue == endOfSpeech {
-                        break
+                    // Reconstruct full tokens only once at the end for parsing
+                    var fullTokens = ContiguousArray<Int32>()
+                    fullTokens.reserveCapacity(promptTokensList.count + generatedTokens.count)
+                    fullTokens.append(contentsOf: promptTokensList)
+                    fullTokens.append(contentsOf: generatedTokens)
+
+                    // Parse output to audio codes using CPU-based parsing
+                    let codeList = self.parseOutputRow(Array(fullTokens))
+
+                    guard !codeList.isEmpty else {
+                        throw Qwen3Error.generationFailed("No audio codes generated")
                     }
 
-                    generatedTokens.append(Int32(tokenValue))
+                    let audio = decodeAudioFromCodes(codeList: codeList, snacModel: snacModel)
+                    audio.eval()
+
+                    Memory.clearCache()
+
+                    // Yield completion info
+                    let info = Qwen3GenerationInfo(
+                        promptTokenCount: inputIds.shape[1],
+                        generationTokenCount: tokenCount,
+                        prefillTime: prefillTime,
+                        generateTime: generateTime,
+                        tokensPerSecond: Double(tokenCount) / generateTime,
+                        peakMemoryUsage: Double(Memory.peakMemory) / 1e9
+                    )
+                    continuation.yield(.info(info))
+
+                    // Yield final audio
+                    continuation.yield(.audio(audio))
+
                 }
-
-                Memory.clearCache()
-                try Task.checkCancellation()
-
-                let generateTime = Date().timeIntervalSince(generateStartTime)
-
-                // Reconstruct full tokens only once at the end for parsing
-                var fullTokens = ContiguousArray<Int32>()
-                fullTokens.reserveCapacity(promptTokensList.count + generatedTokens.count)
-                fullTokens.append(contentsOf: promptTokensList)
-                fullTokens.append(contentsOf: generatedTokens)
-
-                // Parse output to audio codes using CPU-based parsing
-                let codeList = self.parseOutputRow(Array(fullTokens))
-
-                guard !codeList.isEmpty else {
-                    throw Qwen3Error.generationFailed("No audio codes generated")
-                }
-
-                let audio = decodeAudioFromCodes(codeList: codeList, snacModel: snacModel)
-                audio.eval()
-
-                Memory.clearCache()
-
-                // Yield completion info
-                let info = Qwen3GenerationInfo(
-                    promptTokenCount: inputIds.shape[1],
-                    generationTokenCount: tokenCount,
-                    prefillTime: prefillTime,
-                    generateTime: generateTime,
-                    tokensPerSecond: Double(tokenCount) / generateTime,
-                    peakMemoryUsage: Double(Memory.peakMemory) / 1e9
-                )
-                continuation.yield(.info(info))
-
-                // Yield final audio
-                continuation.yield(.audio(audio))
-
                 continuation.finish()
             } catch {
                 continuation.finish(throwing: error)

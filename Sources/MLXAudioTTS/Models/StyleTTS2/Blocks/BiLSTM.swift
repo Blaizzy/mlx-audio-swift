@@ -33,7 +33,7 @@ public class BiLSTM: Module {
     }
 
     private func forwardDirection(_ x: MLXArray) -> MLXArray {
-        let xProj = MLX.addmm(bias_ih_forward + bias_hh_forward, x, Wx_forward.transposed())
+        let xProj = MLX.addMM(bias_ih_forward + bias_hh_forward, x, Wx_forward.transposed())
 
         let seqLen = x.shape[x.ndim - 2]
         let batchSize = x.ndim == 3 ? x.shape[0] : 1
@@ -61,7 +61,7 @@ public class BiLSTM: Module {
     }
 
     private func backwardDirection(_ x: MLXArray) -> MLXArray {
-        let xProj = MLX.addmm(bias_ih_backward + bias_hh_backward, x, Wx_backward.transposed())
+        let xProj = MLX.addMM(bias_ih_backward + bias_hh_backward, x, Wx_backward.transposed())
 
         let seqLen = x.shape[x.ndim - 2]
         let batchSize = x.ndim == 3 ? x.shape[0] : 1

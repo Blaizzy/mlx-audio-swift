@@ -30,5 +30,6 @@ swift run mlx-audio-swift-tts --model mlx-community/Dia-1.6B \
 ## Notes
 
 - Speaker turns are written as `[S1]`/`[S2]` tags inside the text; they are mapped to the control bytes the model was trained on.
-- Generation is stochastic (top-k CFG filtering, `cfg_scale=3.0`); pass `temperature: 0` for greedy, reproducible output.
-- The encoder pass, first decode-step logits, and the full greedy waveform match the Python `mlx-audio` reference to a relative error of ~1e-4 (float32).
+- Generation is stochastic (nucleus sampling with `topP` and top-k CFG filtering, `cfg_scale=3.0`); pass `temperature: 0` for greedy, reproducible output.
+- Generation preserves every complete codebook frame, removes BOS once, and flushes codebook delays at EOS. Requests too short to form a complete audio frame throw `DiaError.noAudio`.
+- The shared DAC decoder uses the Python/Transformers padding convention. Waveforms can differ from the Python Dia generation path because its duplicated BOS removal and fixed tail trimming are corrected here.

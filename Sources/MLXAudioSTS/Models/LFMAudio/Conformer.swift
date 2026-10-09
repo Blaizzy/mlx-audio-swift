@@ -168,7 +168,7 @@ class RelativeMultiHeadAttention: Module {
     func callAsFunction(_ x: MLXArray, posEmb: MLXArray, mask: MLXArray? = nil) -> MLXArray {
         let (B, T, _) = (x.dim(0), x.dim(1), x.dim(2))
 
-        var q = qProj(x).reshaped(B, T, numHeads, headDim)
+        let q = qProj(x).reshaped(B, T, numHeads, headDim)
         let k = kProj(x).reshaped(B, T, numHeads, headDim)
         let v = vProj(x).reshaped(B, T, numHeads, headDim)
 
@@ -267,8 +267,6 @@ class ConvSubsampling: Module {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let (B, T, D) = (x.dim(0), x.dim(1), x.dim(2))
-
         var h = x.expandedDimensions(axis: 3)
 
         h = relu(conv[0]!(h))
@@ -277,7 +275,7 @@ class ConvSubsampling: Module {
         h = conv[5]!(h)
         h = relu(conv[6]!(h))
 
-        let (B2, TOut, DOut, C) = (h.dim(0), h.dim(1), h.dim(2), h.dim(3))
+        let (B2, TOut) = (h.dim(0), h.dim(1))
         h = h.transposed(0, 1, 3, 2).reshaped(B2, TOut, -1)
         return out(h)
     }

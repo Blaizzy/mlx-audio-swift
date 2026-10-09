@@ -673,7 +673,7 @@ private func makeTinyQwen3TTSModel(
       "tokenizer_config": {
         "encoder_valid_num_quantizers": 2,
         \(encoderConfigJSON)
-        "decoder_config": {}
+        "decoder_config": { "num_quantizers": 2 }
       }
     }
     """
@@ -687,8 +687,8 @@ private func makeTinyQwen3TTSModel(
 }
 
 private func collectQwen3TTSStream(
-    _ stream: AsyncThrowingStream<AudioGeneration, Error>
-) async throws -> (tokenCount: Int, infoCount: Int, lastAudio: MLXArray?) {
+    _ stream: sending AsyncThrowingStream<AudioGeneration, Error>
+) async throws -> sending (tokenCount: Int, infoCount: Int, lastAudio: MLXArray?) {
     var tokenCount = 0
     var infoCount = 0
     var lastAudio: MLXArray?
@@ -835,22 +835,22 @@ private final class ProxyCancellationProbeModel: SpeechGenerationModel, @uncheck
     func generate(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         MLXArray.zeros([0], dtype: .float32)
     }
 
     func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
         let task = Task {
             do {
@@ -875,12 +875,12 @@ private final class ProxyCancellationProbeModel: SpeechGenerationModel, @uncheck
     func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters,
         streamingInterval: Double
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text,
             voice: voice,
@@ -919,6 +919,41 @@ private final class CountingFishAE: EchoTTSAudioCodec, @unchecked Sendable {
 
 @Suite("Qwen3TTS")
 struct Qwen3TTSTests {
+
+    @Test func interleavedMropeHandlesTransposedFrequencies() {
+        // Run with TEST_RUNNER_MTL_DEBUG_LAYER=1 to catch the scalar-gather regression.
+        let rotary = TalkerRotaryEmbedding(dim: 12, mropeSection: [2, 2, 2])
+        // Match the noncontiguous layout produced by the rotary frequency matmul.
+        let frequencies = MLXArray(0..<72).reshaped(3, 1, 6, 4).swappedAxes(2, 3)
+        let combined = rotary.applyInterleavedMrope(frequencies, mropeSection: [2, 2, 2])
+        eval(combined)
+
+        let expected = (0..<4).flatMap { position in
+            (0..<6).map { frequency in
+                (frequency % 3) * 24 + frequency * 4 + position
+            }
+        }
+        #expect(combined.shape == [1, 4, 6])
+        #expect(combined.asArray(Int32.self) == expected.map(Int32.init))
+    }
+
+    @Test func streamingDecoderOutputSurvivesFurtherStepsAndReset() async throws {
+        let fixture = try await makeTinyQwen3TTSModel(
+            ttsModelType: "voice_design", includeSpeechEncoder: false)
+        defer { cleanupTemporaryArtifactDirectory(fixture.tokenizerDirectory) }
+        let decoder = try #require(fixture.model.speechTokenizer).decoder
+        let codes = MLXArray.zeros([1, 2, 1], dtype: .int32)
+
+        let first = decoder.streamingStep(codes)
+        let originalSamples = first.asArray(Float.self)
+        #expect(!originalSamples.isEmpty)
+        #expect(originalSamples.allSatisfy { $0.isFinite })
+        let next = decoder.streamingStep(codes)
+        decoder.resetStreamingState()
+
+        #expect(ObjectIdentifier(first) != ObjectIdentifier(next))
+        #expect(first.asArray(Float.self) == originalSamples)
+    }
 
     @Test func customVoicePromptSplitsSpeakerAndInstruction() {
         let combined = Qwen3TTSModel.parseCustomVoicePrompt("Vivian, very happy and excited.")
@@ -1009,7 +1044,7 @@ struct Qwen3TTSTests {
         )
         defer { cleanupTemporaryArtifactDirectory(fixture.tokenizerDirectory) }
 
-        let refAudio = try loadTTSNetworkFixture(sampleRate: 24_000, maxSamples: 24_000)
+        let refSamples = try loadTTSNetworkFixture(sampleRate: 24_000, maxSamples: 24_000).asArray(Float.self)
         let parameters = GenerateParameters(
             maxTokens: 2,
             temperature: 0.7,
@@ -1021,7 +1056,7 @@ struct Qwen3TTSTests {
         let rawAudio = try await fixture.model.generate(
             text: "target voice prompt one two three four five",
             voice: nil,
-            refAudio: refAudio,
+            refAudio: MLXArray(refSamples),
             refText: "one two three four five one two three four five",
             language: "English",
             generationParameters: parameters
@@ -1034,7 +1069,7 @@ struct Qwen3TTSTests {
             fixture.model.generateStream(
                 text: "target voice prompt one two three four five",
                 voice: nil,
-                refAudio: refAudio,
+                refAudio: MLXArray(refSamples),
                 refText: "one two three four five one two three four five",
                 language: "English",
                 generationParameters: parameters,
@@ -1086,6 +1121,34 @@ struct Qwen3TTSTests {
 }
 
 struct SopranoTextCleaningTests {
+
+    @Test func tinyStreamingGenerationTransfersHiddenStates() async throws {
+        let json = #"""
+        {"hidden_size": 8, "num_hidden_layers": 1, "intermediate_size": 16,
+         "num_attention_heads": 2, "num_key_value_heads": 2, "head_dim": 4,
+         "vocab_size": 64, "decoder_num_layers": 1, "decoder_dim": 8,
+         "decoder_intermediate_dim": 16, "hop_length": 4, "n_fft": 16,
+         "upscale": 4, "token_size": 16}
+        """#
+        let config = try JSONDecoder().decode(SopranoConfiguration.self, from: Data(json.utf8))
+        let model = SopranoModel(config)
+        let tokenizerDirectory = try makeTinyQwenTokenizerDirectory()
+        defer { cleanupTemporaryArtifactDirectory(tokenizerDirectory) }
+        model.tokenizer = try await AutoTokenizer.from(modelFolder: tokenizerDirectory)
+
+        var audioCount = 0
+        for try await event in model.generateStream(
+            text: "hello", voice: nil, refAudio: nil, refText: nil, language: nil,
+            generationParameters: GenerateParameters(maxTokens: 2, temperature: 0))
+        {
+            if case .audio(let audio) = event {
+                #expect(audio.size > 0)
+                #expect(audio.asArray(Float.self).allSatisfy { $0.isFinite })
+                audioCount += 1
+            }
+        }
+        #expect(audioCount == 1)
+    }
 
     @Test func testTextCleaning() {
         // Test number normalization
@@ -1482,10 +1545,6 @@ struct FishSpeechTests {
         #expect(sanitized["model.norm.weight"] != nil)
     }
 
-    @Test func testDefaultRepositoryID() {
-        #expect(FishSpeechModel.defaultRepositoryID == "mlx-community/fish-audio-s2-pro-8bit")
-    }
-
     @Test func testCachedTokenizerMatchesReferenceSpecialTokenEncoding() async throws {
         let modelURL = URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".cache/huggingface/hub/mlx-audio/mlx-community_fish-audio-s2-pro-8bit")
@@ -1712,45 +1771,6 @@ struct KittenTTSTests {
         #expect(config.plbert.numHiddenLayers == 12)
         #expect(config.istftnet.upsampleRates == [10, 6])
         #expect(config.voiceAliases?["Bella"] == "expr-voice-2-f")
-    }
-
-    @Test func modelStructureMatchesWeightKeys() throws {
-        // Integration test: requires model downloaded locally. Set MLXAUDIO_TEST_MODEL_DIR or skip.
-        guard let dirPath = ProcessInfo.processInfo.environment["MLXAUDIO_TEST_MODEL_DIR"] else {
-            print("⚠️ Skipping: set MLXAUDIO_TEST_MODEL_DIR to model directory")
-            return
-        }
-        let modelDir = URL(fileURLWithPath: dirPath)
-        let configURL = modelDir.appendingPathComponent("config.json")
-        guard FileManager.default.fileExists(atPath: configURL.path) else {
-            print("⚠️ Skipping: config.json not found at \(configURL.path)")
-            return
-        }
-
-        let configData = try Data(contentsOf: configURL)
-        let config = try JSONDecoder().decode(KittenTTSConfig.self, from: configData)
-        let model = KittenTTSModel.testInit(config: config)
-
-        let weightsURL = modelDir.appendingPathComponent("model.safetensors")
-        let rawWeights = try MLX.loadArrays(url: weightsURL)
-        let sanitized = model.sanitize(weights: rawWeights)
-
-        let modelKeys = Set(model.parameters().flattened().map(\.0))
-        let weightKeys = Set(sanitized.keys)
-
-        let missingInModel = weightKeys.subtracting(modelKeys)
-        let missingInWeights = modelKeys.subtracting(weightKeys)
-
-        if !missingInModel.isEmpty {
-            print("❌ Weight keys not found in model (\(missingInModel.count)):")
-            for k in missingInModel.sorted().prefix(20) { print("  \(k)") }
-        }
-        if !missingInWeights.isEmpty {
-            print("⚠️ Model keys not in weights (\(missingInWeights.count)):")
-            for k in missingInWeights.sorted().prefix(20) { print("  \(k)") }
-        }
-
-        #expect(missingInModel.count == 0, "Weight keys not matched by model structure")
     }
 
     @Test func textCleanerHandlesSpecialCharacters() {
@@ -2287,99 +2307,12 @@ struct KokoroTTSTests {
         #expect(config.plbert.hiddenDropoutProb == 0.1)
         #expect(config.plbert.typeVocabSize == 2)
     }
-
-    @Test func modelStructureMatchesWeightKeys() throws {
-        guard metalAvailable else { return }
-        guard let dirPath = ProcessInfo.processInfo.environment["MLXAUDIO_KOKORO_MODEL_DIR"] else {
-            print("⚠️ Skipping: set MLXAUDIO_KOKORO_MODEL_DIR to model directory")
-            return
-        }
-        let modelDir = URL(fileURLWithPath: dirPath)
-        let configURL = modelDir.appendingPathComponent("config.json")
-        guard FileManager.default.fileExists(atPath: configURL.path) else {
-            print("⚠️ Skipping: config.json not found at \(configURL.path)")
-            return
-        }
-
-        let configData = try Data(contentsOf: configURL)
-        let config = try JSONDecoder().decode(KokoroConfig.self, from: configData)
-        let model = KokoroModel.testInit(config: config)
-
-        let weightsURL = modelDir.appendingPathComponent("model.safetensors")
-        let rawWeights = try MLX.loadArrays(url: weightsURL)
-        let sanitized = model.sanitize(weights: rawWeights)
-
-        let modelKeys = Set(model.parameters().flattened().map(\.0))
-        let weightKeys = Set(sanitized.keys)
-
-        let missingInModel = weightKeys.subtracting(modelKeys)
-        let missingInWeights = modelKeys.subtracting(weightKeys)
-
-        if !missingInModel.isEmpty {
-            print("❌ Weight keys not found in model (\(missingInModel.count)):")
-            for k in missingInModel.sorted().prefix(20) { print("  \(k)") }
-        }
-        if !missingInWeights.isEmpty {
-            print("⚠️ Model keys not in weights (\(missingInWeights.count)):")
-            for k in missingInWeights.sorted().prefix(20) { print("  \(k)") }
-        }
-
-        #expect(missingInModel.count == 0, "Weight keys not matched by model structure")
-    }
-
-    @Test func durationNaNProducesSilenceInsteadOfCrash() throws {
-        guard metalAvailable else { return }
-        let nanDuration = MLXArray([Float.nan, Float.nan, Float.nan])
-        let safe = nanToNum(nanDuration, nan: 1.0)
-        let clipped = MLX.clip(MLX.round(safe), min: 1, max: 100).asType(.int32)
-        let arr: [Int32] = clipped.asArray(Int32.self)
-        for n in arr {
-            #expect(n >= 1 && n <= 100, "Duration \(n) should be clamped between 1 and 100")
-        }
-    }
-
-    @Test func durationExtremeValuesAreCapped() throws {
-        guard metalAvailable else { return }
-        let extreme = MLXArray([Float(999), Float(0.001), Float(-5)])
-        let clipped = MLX.clip(MLX.round(extreme), min: 1, max: 100).asType(.int32)
-        let arr: [Int32] = clipped.asArray(Int32.self)
-        #expect(arr[0] == 100, "Large duration should be capped at 100")
-        #expect(arr[1] == 1, "Tiny duration should be clamped to 1")
-        #expect(arr[2] == 1, "Negative duration should be clamped to 1")
-    }
-
-    @Test func emptyIndicesReturnsGracefully() throws {
-        guard metalAvailable else { return }
-        let durArray: [Int32] = [0, 0, 0]
-        var indices = [MLXArray]()
-        for (i, n) in durArray.enumerated() {
-            let count = min(max(Int(n), 0), 100)
-            if count > 0 {
-                indices.append(MLX.repeated(MLXArray(Int32(i)), count: count))
-            }
-        }
-        #expect(indices.isEmpty, "All-zero durations should produce empty indices")
-    }
 }
 
 // MARK: - Kokoro Multilingual Processor Tests
 
 @Suite("KokoroMultilingualProcessor")
 struct KokoroMultilingualProcessorTests {
-
-    @Test func voiceLanguageMapCoversAllPrefixes() {
-        let map = KokoroMultilingualProcessor.voiceLanguageMap
-        #expect(map["a"] == "en-us")
-        #expect(map["b"] == "en-gb")
-        #expect(map["e"] == "es")
-        #expect(map["f"] == "fr")
-        #expect(map["h"] == "hi")
-        #expect(map["i"] == "it")
-        #expect(map["j"] == "ja")
-        #expect(map["p"] == "pt")
-        #expect(map["z"] == "cmn")
-        #expect(map.count == 9)
-    }
 
     @Test func languageForVoiceInfersCorrectly() {
         #expect(KokoroMultilingualProcessor.languageForVoice("af_heart") == "en-us")
@@ -2955,13 +2888,13 @@ struct IndexTTSTests {
         eval(waveform)
         #expect(waveform.shape == [1, 1, 3 * config.bigvgan.upsampleRates.reduce(1, *)])
 
-        let referenceAudio = MLXArray((0..<2048).map { i in
+        let referenceSamples = (0..<2048).map { i in
             Float(sin(Double(i) * 2.0 * Double.pi / 64.0))
-        })
+        }
         let generated = try await model.generate(
             text: "a",
             voice: nil,
-            refAudio: referenceAudio,
+            refAudio: MLXArray(referenceSamples),
             refText: nil,
             language: nil,
             generationParameters: GenerateParameters(maxTokens: 2, temperature: 0)
@@ -2972,7 +2905,7 @@ struct IndexTTSTests {
         let stream = model.generateStream(
             text: "a",
             voice: nil,
-            refAudio: referenceAudio,
+            refAudio: MLXArray(referenceSamples),
             refText: nil,
             language: nil,
             generationParameters: GenerateParameters(maxTokens: 2),

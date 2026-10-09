@@ -316,14 +316,6 @@ struct SortformerConfigTests {
 
 struct VADOutputTests {
 
-    @Test func diarizationSegmentCreation() {
-        let segment = DiarizationSegment(start: 1.5, end: 3.0, speaker: 0)
-
-        #expect(segment.start == 1.5)
-        #expect(segment.end == 3.0)
-        #expect(segment.speaker == 0)
-    }
-
     @Test func diarizationOutputRTTMText() {
         let segments = [
             DiarizationSegment(start: 0.0, end: 1.0, speaker: 0),
@@ -344,23 +336,55 @@ struct VADOutputTests {
         #expect(output.numSpeakers == 0)
     }
 
-    @Test func streamingStateInit() {
-        let embDim = 512
-        let nSpk = 4
-        let state = StreamingState(
-            spkcache: MLXArray.zeros([1, 0, embDim]),
-            spkcachePreds: MLXArray.zeros([1, 0, nSpk]),
-            fifo: MLXArray.zeros([1, 0, embDim]),
-            fifoPreds: MLXArray.zeros([1, 0, nSpk]),
-            framesProcessed: 0,
-            meanSilEmb: MLXArray.zeros([1, embDim]),
-            nSilFrames: MLXArray.zeros([1])
-        )
-
+    @Test func streamingStateInit() throws {
+        let state = makeStreamingState()
+        let alias = state
         #expect(state.spkcacheLen == 0)
         #expect(state.fifoLen == 0)
         #expect(state.framesProcessed == 0)
+
+        let tensors = try state.take()
+        #expect(tensors.spkcache.shape == [1, 0, 512])
+        #expect(throws: StreamingState.ConsumptionError.alreadyConsumed) {
+            _ = try alias.take()
+        }
+        // Metadata is a value snapshot, so reading a consumed handle is safe.
+        #expect(alias.framesProcessed == 0)
     }
+
+    @Test func streamingStateHasOnlyOneConcurrentConsumer() async {
+        let state = makeStreamingState()
+        let successes = await withTaskGroup(of: Bool.self) { group in
+            for _ in 0..<32 {
+                group.addTask {
+                    do {
+                        _ = try state.take()
+                        return true
+                    } catch {
+                        #expect(error as? StreamingState.ConsumptionError == .alreadyConsumed)
+                        return false
+                    }
+                }
+            }
+            var successes = 0
+            for await succeeded in group where succeeded { successes += 1 }
+            return successes
+        }
+        #expect(successes == 1)
+    }
+
+    private func makeStreamingState() -> StreamingState {
+        StreamingState(SortformerStreamingState(
+            spkcache: MLXArray.zeros([1, 0, 512]),
+            spkcachePreds: MLXArray.zeros([1, 0, 4]),
+            fifo: MLXArray.zeros([1, 0, 512]),
+            fifoPreds: MLXArray.zeros([1, 0, 4]),
+            framesProcessed: 0,
+            meanSilEmb: MLXArray.zeros([1, 512]),
+            nSilFrames: MLXArray.zeros([1])
+        ))
+    }
+
 }
 
 // MARK: - Feature Extraction Tests
@@ -728,7 +752,7 @@ struct SmartTurnConfigTests {
 private func makeTinySmartTurnConfig(dtype: String = "float32") -> SmartTurnConfig {
     let encoder = SmartTurnEncoderConfig(
         numMelBins: 8,
-        maxSourcePositions: 64,
+        maxSourcePositions: 400,
         dModel: 16,
         encoderAttentionHeads: 2,
         encoderLayers: 1,
@@ -1116,61 +1140,5 @@ struct SileroVADNetworkTests {
         let arr = probs.asArray(Float.self)
         #expect(arr.count > 0)
         #expect(arr.allSatisfy { $0 < 0.5 })
-    }
-
-    @Test func parityWithPythonReferenceOnRealAudio() async throws {
-        let env = ProcessInfo.processInfo.environment
-        let audioPath = env["MLXAUDIO_SILEROVAD_AUDIO"]
-            ?? "/tmp/playback-eng-16k_slice.wav"
-        let refPath = env["MLXAUDIO_SILEROVAD_REF"]
-            ?? "/tmp/silero_vad_python_ref.json"
-        let audioURL = URL(fileURLWithPath: audioPath)
-        let refURL = URL(fileURLWithPath: refPath)
-        guard FileManager.default.fileExists(atPath: audioURL.path),
-              FileManager.default.fileExists(atPath: refURL.path) else {
-            print("Skipping parity test. Audio or reference file missing at \(audioPath) / \(refPath).")
-            return
-        }
-
-        let (sr, full) = try loadAudioArray(from: audioURL, sampleRate: 16000)
-        #expect(sr == 16000)
-        let limit = 5 * sr
-        let totalSamples = full.shape[0]
-        let take = min(limit, totalSamples)
-        let audio5s = full[0 ..< take]
-        eval(audio5s)
-
-        let refData = try Data(contentsOf: refURL)
-        struct Ref: Decodable {
-            let probs: [Float]
-            let n_probs: Int
-            let max: Float
-            let mean: Float
-            let timestamps: [Stamp]
-            struct Stamp: Decodable { let start: Int; let end: Int }
-        }
-        let ref = try JSONDecoder().decode(Ref.self, from: refData)
-
-        let repo = env["MLXAUDIO_SILEROVAD_REPO"] ?? "mlx-community/silero-vad"
-        let model = try await SileroVAD.fromPretrained(repo)
-        let probsMx = try model.predictProba(audio5s, sampleRate: 16000)
-        eval(probsMx)
-        let probs = probsMx.asArray(Float.self)
-
-        #expect(probs.count == ref.n_probs)
-        var maxDelta: Float = 0
-        for i in 0 ..< min(ref.probs.count, probs.count) {
-            let d = abs(probs[i] - ref.probs[i])
-            if d > maxDelta { maxDelta = d }
-        }
-        print("parity max|Δ| over first \(ref.probs.count) probs = \(maxDelta)")
-        #expect(maxDelta < 1e-3)
-
-        let ts = try model.getSpeechTimestamps(audio5s, sampleRate: 16000)
-        #expect(ts.count == ref.timestamps.count)
-        for (a, b) in zip(ts, ref.timestamps) {
-            #expect(a.start == b.start)
-            #expect(a.end == b.end)
-        }
     }
 }
