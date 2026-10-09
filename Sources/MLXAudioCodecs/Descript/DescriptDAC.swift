@@ -111,8 +111,7 @@ public final class DescriptDecoderBlock: Module, UnaryLayer {
                 outChannels: outputDim,
                 kernelSize: 2 * stride,
                 stride: stride,
-                padding: Int(ceil(Double(stride) / 2.0)),
-                outputPadding: 1
+                padding: Int(ceil(Double(stride) / 2.0))
             ),
             DescriptResidualUnit(dim: outputDim, dilation: 1),
             DescriptResidualUnit(dim: outputDim, dilation: 3),
@@ -273,13 +272,22 @@ public final class DescriptDAC: Module {
 
         let decoded = decode(z)
         return (
-            audio: decoded[0..., 0..<length, 0...],
+            audio: restoreLength(decoded, to: length),
             z: z,
             codes: codes,
             latents: latents,
             commitmentLoss: commitmentLoss,
             codebookLoss: codebookLoss
         )
+    }
+
+    /// Odd decoder strides can leave the reference waveform a few samples short.
+    /// Preserve its samples and right-pad only APIs that promise an original length.
+    private func restoreLength(_ audio: MLXArray, to length: Int) -> MLXArray {
+        if audio.shape[1] < length {
+            return MLX.padded(audio, widths: [0, IntOrPair((0, length - audio.shape[1])), 0])
+        }
+        return audio[0..., 0..<length, 0...]
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
@@ -346,6 +354,6 @@ extension DescriptDAC: AudioCodecModel {
 
     public func decodeAudio(_ input: DescriptEncodedAudio) -> MLXArray {
         let decoded = decodeFromCodes(input.codes)
-        return decoded[0..., 0..<input.originalLength, 0...]
+        return restoreLength(decoded, to: input.originalLength)
     }
 }
