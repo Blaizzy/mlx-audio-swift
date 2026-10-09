@@ -257,11 +257,11 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
     public func generate(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> MLXArray {
+    ) async throws -> sending MLXArray {
         let maxTokens = generationParameters.maxTokens ?? config.maxLength
         let minTokens = 2
         let inferenceTimesteps = config.inferenceTimesteps
@@ -418,11 +418,12 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: MLXArray?,
+        refAudio: sending MLXArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+        let refAudio = SendingBox(refAudio)
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
 
         let task = Task { @Sendable [weak self] in
@@ -433,13 +434,11 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
             do {
                 let startTime = Date()
                 let audio = try await self.generate(
-                    text: text, voice: voice, refAudio: refAudio,
+                    text: text, voice: voice, refAudio: refAudio.take(),
                     refText: refText, language: language,
                     generationParameters: generationParameters
                 )
                 let generateTime = Date().timeIntervalSince(startTime)
-
-                continuation.yield(.audio(audio))
 
                 let info = AudioGenerationInfo(
                     promptTokenCount: 0,
@@ -449,6 +448,7 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
                     tokensPerSecond: Double(audio.dim(audio.ndim - 1)) / max(generateTime, 0.001),
                     peakMemoryUsage: 0
                 )
+                continuation.yield(.audio(audio))
                 continuation.yield(.info(info))
                 continuation.finish()
             } catch {

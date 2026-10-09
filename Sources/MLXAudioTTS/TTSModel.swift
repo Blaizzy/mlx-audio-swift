@@ -217,6 +217,7 @@ public enum TTS {
                 modelType: resolvedType,
                 pretrained: { try await VoxCPM2Model.fromPretrained($0, cache: $1) },
                 local: { modelDir, _ in try await VoxCPM2Model.fromModelDirectory(modelDir, hfToken: nil) }
+            )
         case "omnivoice":
             return try await load(
                 source,

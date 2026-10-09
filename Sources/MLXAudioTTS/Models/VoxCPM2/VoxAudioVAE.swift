@@ -642,6 +642,7 @@ class VoxAudioVAE: Module {
         // @ModuleInfo var conv, adding ".conv." to the key path.
         // Python uses inheritance (flat). Insert ".conv." for wrapper types.
         var finalWeights = [String: MLXArray]()
+        let modelParameters = Dictionary(uniqueKeysWithValues: parameters().flattened())
         let convWrapperSuffixes = [
             ".conv_t", ".conv_in", ".conv_out", ".fc_mu",
             ".conv1", ".conv2", ".conv", ".linear", ".out_conv"
@@ -659,7 +660,19 @@ class VoxAudioVAE: Module {
                     k = stem + ".conv" + terminal
                 }
             }
-            finalWeights[k] = value
+            // Match Python's shape-based conversion for raw convolution kernels
+            // and Snake parameters, while preserving tensors already in MLX layout.
+            var weight = value
+            if let expected = modelParameters[k], weight.ndim == 3, expected.ndim == 3,
+               weight.shape != expected.shape
+            {
+                if weight.transposed(0, 2, 1).shape == expected.shape {
+                    weight = weight.transposed(0, 2, 1)
+                } else if weight.transposed(1, 2, 0).shape == expected.shape {
+                    weight = weight.transposed(1, 2, 0)
+                }
+            }
+            finalWeights[k] = weight
         }
 
         return finalWeights

@@ -16,7 +16,7 @@ import MLXAudioCore
 let model = try await VoxCPM2Model.fromPretrained("mlx-community/VoxCPM2-4bit")
 
 // Voice cloning requires reference audio
-let (_, refAudio) = try loadAudioArray(from: referenceAudioURL)
+let (_, refAudio) = try loadAudioArray(from: referenceAudioURL, sampleRate: model.sampleRate)
 let audio = try await model.generate(
     text: "Hello, this is a test of VoxCPM2.",
     voice: nil, refAudio: refAudio, refText: nil, language: nil,
@@ -40,6 +40,7 @@ let audio = try await model.generate(
 VoxCPM2 streaming wraps the full generation and yields the result as a single audio event:
 
 ```swift
+let (_, refAudio) = try loadAudioArray(from: referenceAudioURL, sampleRate: model.sampleRate)
 for try await event in model.generateStream(
     text: "Streaming test.", voice: nil, refAudio: refAudio,
     refText: nil, language: nil,
@@ -51,7 +52,7 @@ for try await event in model.generateStream(
         break
     case .info(let info):
         print("Generated in \(info.generateTime)s")
-    case .token(_):
+    case .token, .progress:
         break
     }
 }
@@ -61,7 +62,8 @@ for try await event in model.generateStream(
 
 - **Sample rate**: 48kHz
 - **Format**: Mono Float32 PCM
-- **VAE encoder rate**: 16kHz (internal; resampling is handled automatically)
+- **Reference input rate**: 48kHz mono; pass `sampleRate: model.sampleRate` when loading a file.
+- **VAE encoder rate**: 16kHz (internal; the model resamples reference input from 48kHz).
 
 ## Known Limitations
 

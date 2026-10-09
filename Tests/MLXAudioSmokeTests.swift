@@ -598,12 +598,11 @@ struct TTSSmokeTests {
             Issue.record("Test audio file 'conversational_a.wav' not found in bundle")
             return
         }
-        let (_, refAudio) = try loadAudioArray(from: audioURL)
-        print("\u{001B}[36mLoaded reference audio: \(refAudio.shape)\u{001B}[0m")
 
         print("\u{001B}[33mLoading VoxCPM2 model...\u{001B}[0m")
         let model = try await VoxCPM2Model.fromPretrained("mlx-community/VoxCPM2-4bit")
         print("\u{001B}[32mVoxCPM2 model loaded!\u{001B}[0m")
+        let (_, refAudio) = try loadAudioArray(from: audioURL, sampleRate: model.sampleRate)
 
         #expect(model.tokenizer != nil, "Tokenizer should be loaded")
         #expect(model.sampleRate == 48000, "Sample rate should be 48kHz")
@@ -619,6 +618,7 @@ struct TTSSmokeTests {
         print("\u{001B}[32mGenerated audio shape: \(audio.shape)\u{001B}[0m")
         let sampleCount = audio.shape[audio.ndim - 1]
         #expect(sampleCount > 0, "Audio should have samples")
+        #expect(audio.asArray(Float.self).allSatisfy { $0.isFinite })
         let duration = Float(sampleCount) / Float(model.sampleRate)
         print("\u{001B}[32mGenerated \(String(format: "%.2f", duration))s of audio\u{001B}[0m")
         #expect(duration > 0.1, "Audio duration should be > 0.1s")
@@ -639,11 +639,11 @@ struct TTSSmokeTests {
             Issue.record("Test audio file 'conversational_a.wav' not found in bundle")
             return
         }
-        let (_, refAudio) = try loadAudioArray(from: audioURL)
 
         print("\u{001B}[33mLoading VoxCPM2 model...\u{001B}[0m")
         let model = try await VoxCPM2Model.fromPretrained("mlx-community/VoxCPM2-4bit")
         print("\u{001B}[32mVoxCPM2 model loaded!\u{001B}[0m")
+        let (_, refAudio) = try loadAudioArray(from: audioURL, sampleRate: model.sampleRate)
 
         let text = "Streaming test for VoxCPM2 model."
         print("\u{001B}[33mStreaming audio for: \"\(text)\"...\u{001B}[0m")
@@ -659,7 +659,7 @@ struct TTSSmokeTests {
                 print("\u{001B}[32mReceived audio chunk: \(audio.shape)\u{001B}[0m")
             case .info(let info):
                 print("\u{001B}[36mGeneration info: \(String(format: "%.2f", info.generateTime))s\u{001B}[0m")
-            case .token(_):
+            case .token, .progress:
                 break
             }
         }
