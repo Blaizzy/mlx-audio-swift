@@ -970,6 +970,44 @@ struct BigVGANTests {
 
 struct DescriptDACTests {
 
+    @Test(arguments: [16_000, 24_000])
+    func testOddStrideRoundTripsPreserveOriginalLength(sampleRate: Int) {
+        let model = DescriptDAC(config: DescriptDACConfig(
+            encoderDim: 2, encoderRates: [2, 4, 5, 8], latentDim: 32,
+            decoderDim: 32, decoderRates: [8, 5, 4, 2],
+            nCodebooks: 1, codebookSize: 8, codebookDim: 2, sampleRate: sampleRate))
+        for length in [319, 320, 321, 632, 633, 640, 641] {
+            let waveform = MLX.sin(MLXArray((0..<length).map { Float($0) * 0.05 }))
+                .reshaped([1, length, 1])
+            let encoded = model.encodeAudio(waveform)
+            let raw = model.decodeFromCodes(encoded.codes)
+            let decoded = model.decodeAudio(encoded)
+            #expect(raw.shape[1] == encoded.codes.shape[2] * model.hopLength - 8)
+            #expect(decoded.shape == waveform.shape)
+            let retainedLength = min(raw.shape[1], length)
+            let difference = decoded[0..., 0..<retainedLength, 0...] - raw[0..., 0..<retainedLength, 0...]
+            #expect(MLX.max(MLX.abs(difference)).item(Float.self) == 0)
+            if retainedLength < length {
+                #expect(MLX.max(MLX.abs(decoded[0..., retainedLength..., 0...])).item(Float.self) == 0)
+            }
+            let forward = model(waveform).audio
+            #expect(forward.shape == waveform.shape)
+            #expect(MLX.max(MLX.abs(forward - decoded)).item(Float.self) < 1e-6)
+        }
+    }
+
+    @Test func testTransposeConvolutionMatchesReferenceSamples() {
+        // PyTorch ConvTranspose1d: stride=5, padding=3, output_padding=0.
+        let conv = DescriptWNConvTranspose1d(
+            inChannels: 1, outChannels: 1, kernelSize: 10, stride: 5, padding: 3)
+        conv.weight_v = MLXArray((1...10).map(Float.init), [1, 10, 1])
+        conv.weight_g = MLX.sqrt(MLX.sum(conv.weight_v * conv.weight_v, axes: [0, 1], keepDims: true))
+        let output = conv(MLXArray([Float(1), 2, 3], [1, 3, 1]))
+        let expected: [Float] = [4, 5, 8, 11, 14, 17, 20, 15, 20, 25, 30, 35, 18, 21]
+        #expect(output.shape == [1, 14, 1])
+        #expect(MLX.max(MLX.abs(output.reshaped([-1]) - MLXArray(expected))).item(Float.self) < 1e-5)
+    }
+
     @Test func testDescript16kHzShapes() throws {
         let model = DescriptDAC(config: DescriptDACConfig(
             encoderDim: 64,
@@ -990,7 +1028,7 @@ struct DescriptDACTests {
         #expect(z.shape == [1, 1024, 250])
         #expect(codes.shape == [1, 12, 250])
         #expect(latents.shape == [1, 96, 250])
-        #expect(decoded.shape == [1, 80_043, 1])
+        #expect(decoded.shape == [1, 79_992, 1])
     }
 
     @Test func testDescript24kHzShapes() throws {
@@ -1013,7 +1051,7 @@ struct DescriptDACTests {
         #expect(z.shape == [1, 1024, 375])
         #expect(codes.shape == [1, 32, 375])
         #expect(latents.shape == [1, 256, 375])
-        #expect(decoded.shape == [1, 120_043, 1])
+        #expect(decoded.shape == [1, 119_992, 1])
     }
 
     @Test func testDescript44kHzShapes() throws {
@@ -1036,7 +1074,7 @@ struct DescriptDACTests {
         #expect(z.shape == [1, 1024, 430])
         #expect(codes.shape == [1, 9, 430])
         #expect(latents.shape == [1, 72, 430])
-        #expect(decoded.shape == [1, 220_235, 1])
+        #expect(decoded.shape == [1, 220_160, 1])
     }
 
     @Test func testDescriptAudioCodecRoundTripUsesCodes() throws {
