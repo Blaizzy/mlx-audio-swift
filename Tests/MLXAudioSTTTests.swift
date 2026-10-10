@@ -3868,51 +3868,53 @@ struct FireRedASR2Tests {
     }
 
     @Test func beamSearchMatchesBaselineOutput() {
-        MLXRandom.seed(42)
-        let config = FireRedASR2Config(
-            odim: 32,
-            dModel: 16,
-            encoder: FireRedASR2EncoderConfig(
-                nLayers: 1, nHead: 4, dModel: 16, kernelSize: 15, peMaxlen: 128),
-            decoder: FireRedASR2DecoderConfig(
-                nLayers: 2, nHead: 4, dModel: 16, peMaxlen: 128)
-        )
-        let model = FireRedASR2Model(config)
-        eval(model)
+        // Other suites run concurrently, so isolate initialization and sampling from the global RNG.
+        withRandomState(MLXRandom.RandomState(seed: 42)) {
+            let config = FireRedASR2Config(
+                odim: 32,
+                dModel: 16,
+                encoder: FireRedASR2EncoderConfig(
+                    nLayers: 1, nHead: 4, dModel: 16, kernelSize: 15, peMaxlen: 128),
+                decoder: FireRedASR2DecoderConfig(
+                    nLayers: 2, nHead: 4, dModel: 16, peMaxlen: 128)
+            )
+            let model = FireRedASR2Model(config)
+            eval(model)
 
-        let encoderOutput = MLXRandom.normal([1, 12, 16])
-        let (sequence, confidences) = model.decoder.beamSearch(
-            encoderOutput: encoderOutput, beamSize: 3)
+            let encoderOutput = MLXRandom.normal([1, 12, 16])
+            let (sequence, confidences) = model.decoder.beamSearch(
+                encoderOutput: encoderOutput, beamSize: 3)
 
-        // Pinned output of the corrected beam search (topK per-row gather).
-        // The pre-fix implementation scored every beam's candidates with
-        // beam 0's logits and produced eight 3s followed by EOS padding.
-        // Finished beams keep appending EOS (id 4) with confidence 1.0
-        // until maxDecode, so pin the prefix plus the EOS tail.
-        let expectedPrefix: [Int32] = [3, 3, 1, 14, 9, 4, 4, 4]
-        #expect(Array(sequence.prefix(expectedPrefix.count)) == expectedPrefix)
-        #expect(sequence.dropFirst(expectedPrefix.count).allSatisfy { $0 == 4 })
-        #expect(confidences.count == sequence.count)
-        var prefix = [Int32(config.sosID)]
-        var referenceCache: [MLXArray?] = []
-        // Match the beam batch size to use the same numerical kernels.
-        let referenceEncoder = MLX.repeated(encoderOutput, count: 3, axis: 0)
-        var reachedEOS = false
-        for (token, confidence) in zip(sequence, confidences) {
-            if reachedEOS {
-                #expect(confidence == 1.0)
-                continue
+            // Pinned output of the corrected beam search (topK per-row gather).
+            // The pre-fix implementation scored every beam's candidates with
+            // beam 0's logits and produced eight 3s followed by EOS padding.
+            // Finished beams keep appending EOS (id 4) with confidence 1.0
+            // until maxDecode, so pin the prefix plus the EOS tail.
+            let expectedPrefix: [Int32] = [3, 3, 1, 14, 9, 4, 4, 4]
+            #expect(Array(sequence.prefix(expectedPrefix.count)) == expectedPrefix)
+            #expect(sequence.dropFirst(expectedPrefix.count).allSatisfy { $0 == 4 })
+            #expect(confidences.count == sequence.count)
+            var prefix = [Int32(config.sosID)]
+            var referenceCache: [MLXArray?] = []
+            // Match the beam batch size to use the same numerical kernels.
+            let referenceEncoder = MLX.repeated(encoderOutput, count: 3, axis: 0)
+            var reachedEOS = false
+            for (token, confidence) in zip(sequence, confidences) {
+                if reachedEOS {
+                    #expect(confidence == 1.0)
+                    continue
+                }
+                let tokens = MLX.repeated(
+                    MLXArray(prefix).reshaped([1, prefix.count]), count: 3, axis: 0)
+                let (logits, cache) = model.decodeOneStep(
+                    tokens, encoderOutput: referenceEncoder, cache: referenceCache)
+                referenceCache = cache
+                let probabilities = softmax(logits / MLXArray(Float(1.25)), axis: -1)
+                let expectedConfidence = probabilities[0, Int(token)].item(Float.self)
+                #expect(abs(confidence - expectedConfidence) < 1e-5)
+                prefix.append(token)
+                reachedEOS = token == Int32(config.eosID)
             }
-            let tokens = MLX.repeated(
-                MLXArray(prefix).reshaped([1, prefix.count]), count: 3, axis: 0)
-            let (logits, cache) = model.decodeOneStep(
-                tokens, encoderOutput: referenceEncoder, cache: referenceCache)
-            referenceCache = cache
-            let probabilities = softmax(logits / MLXArray(Float(1.25)), axis: -1)
-            let expectedConfidence = probabilities[0, Int(token)].item(Float.self)
-            #expect(abs(confidence - expectedConfidence) < 1e-5)
-            prefix.append(token)
-            reachedEOS = token == Int32(config.eosID)
         }
     }
 }

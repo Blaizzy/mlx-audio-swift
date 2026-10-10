@@ -429,35 +429,37 @@ struct VoxtralRealtimeStreamingFrontEndTests {
         try tekkenJSON.write(
             to: fixtureDir.appendingPathComponent("tekken.json"), atomically: true, encoding: .utf8)
 
-        MLXRandom.seed(7)
-        var weights: [String: MLXArray] = [
-            "encoder.conv_layers_0_conv.conv.weight": MLXRandom.normal([16, 3, 128]) * 0.2,
-            "encoder.conv_layers_0_conv.conv.bias": MLXRandom.normal([16]) * 0.1,
-            "encoder.conv_layers_1_conv.conv.weight": MLXRandom.normal([16, 3, 16]) * 0.2,
-            "encoder.conv_layers_1_conv.conv.bias": MLXRandom.normal([16]) * 0.1,
-            "encoder.transformer_norm.weight": MLXArray.ones([16], type: Float.self),
-            "encoder.audio_language_projection_0.weight": MLXRandom.normal([16, 64]) * 0.2,
-            "encoder.audio_language_projection_2.weight": MLXRandom.normal([16, 16]) * 0.2,
-            "decoder.tok_embeddings.weight": MLXRandom.normal([8, 16]) * 0.5,
-            "decoder.norm.weight": MLXArray.ones([16], type: Float.self),
-        ]
-        if encoderLayers == 1 {
-            let layer = "encoder.transformer_layers.0"
-            weights["\(layer).attention_norm.weight"] = MLXArray.ones([16], type: Float.self)
-            weights["\(layer).attention.wq.weight"] = MLXRandom.normal([16, 16]) * 0.2
-            weights["\(layer).attention.wq.bias"] = MLXRandom.normal([16]) * 0.1
-            weights["\(layer).attention.wk.weight"] = MLXRandom.normal([16, 16]) * 0.2
-            weights["\(layer).attention.wv.weight"] = MLXRandom.normal([16, 16]) * 0.2
-            weights["\(layer).attention.wv.bias"] = MLXRandom.normal([16]) * 0.1
-            weights["\(layer).attention.wo.weight"] = MLXRandom.normal([16, 16]) * 0.2
-            weights["\(layer).attention.wo.bias"] = MLXRandom.normal([16]) * 0.1
-            weights["\(layer).ffn_norm.weight"] = MLXArray.ones([16], type: Float.self)
-            weights["\(layer).feed_forward_w1.weight"] = MLXRandom.normal([32, 16]) * 0.2
-            weights["\(layer).feed_forward_w3.weight"] = MLXRandom.normal([32, 16]) * 0.2
-            weights["\(layer).feed_forward_w2.weight"] = MLXRandom.normal([16, 32]) * 0.2
-            weights["\(layer).feed_forward_w2.bias"] = MLXRandom.normal([16]) * 0.1
+        // Keep fixture weights deterministic even when other suites use the global RNG.
+        try withRandomState(MLXRandom.RandomState(seed: 7)) {
+            var weights: [String: MLXArray] = [
+                "encoder.conv_layers_0_conv.conv.weight": MLXRandom.normal([16, 3, 128]) * 0.2,
+                "encoder.conv_layers_0_conv.conv.bias": MLXRandom.normal([16]) * 0.1,
+                "encoder.conv_layers_1_conv.conv.weight": MLXRandom.normal([16, 3, 16]) * 0.2,
+                "encoder.conv_layers_1_conv.conv.bias": MLXRandom.normal([16]) * 0.1,
+                "encoder.transformer_norm.weight": MLXArray.ones([16], type: Float.self),
+                "encoder.audio_language_projection_0.weight": MLXRandom.normal([16, 64]) * 0.2,
+                "encoder.audio_language_projection_2.weight": MLXRandom.normal([16, 16]) * 0.2,
+                "decoder.tok_embeddings.weight": MLXRandom.normal([8, 16]) * 0.5,
+                "decoder.norm.weight": MLXArray.ones([16], type: Float.self),
+            ]
+            if encoderLayers == 1 {
+                let layer = "encoder.transformer_layers.0"
+                weights["\(layer).attention_norm.weight"] = MLXArray.ones([16], type: Float.self)
+                weights["\(layer).attention.wq.weight"] = MLXRandom.normal([16, 16]) * 0.2
+                weights["\(layer).attention.wq.bias"] = MLXRandom.normal([16]) * 0.1
+                weights["\(layer).attention.wk.weight"] = MLXRandom.normal([16, 16]) * 0.2
+                weights["\(layer).attention.wv.weight"] = MLXRandom.normal([16, 16]) * 0.2
+                weights["\(layer).attention.wv.bias"] = MLXRandom.normal([16]) * 0.1
+                weights["\(layer).attention.wo.weight"] = MLXRandom.normal([16, 16]) * 0.2
+                weights["\(layer).attention.wo.bias"] = MLXRandom.normal([16]) * 0.1
+                weights["\(layer).ffn_norm.weight"] = MLXArray.ones([16], type: Float.self)
+                weights["\(layer).feed_forward_w1.weight"] = MLXRandom.normal([32, 16]) * 0.2
+                weights["\(layer).feed_forward_w3.weight"] = MLXRandom.normal([32, 16]) * 0.2
+                weights["\(layer).feed_forward_w2.weight"] = MLXRandom.normal([16, 32]) * 0.2
+                weights["\(layer).feed_forward_w2.bias"] = MLXRandom.normal([16]) * 0.1
+            }
+            try MLX.save(arrays: weights, url: fixtureDir.appendingPathComponent("model.safetensors"))
         }
-        try MLX.save(arrays: weights, url: fixtureDir.appendingPathComponent("model.safetensors"))
         return fixtureDir
     }
 }
