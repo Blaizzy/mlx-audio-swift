@@ -124,6 +124,7 @@ let package = Package(
                 "Models/Qwen3/README.md",
                 "Models/Qwen3TTS/README.md",
                 "Models/Soprano/README.md",
+                "Models/VoxCPM2/README.md",
                 "Models/StyleTTS2/KittenTTS/README.md",
                 "Models/StyleTTS2/Kokoro/README.md",
             ]
