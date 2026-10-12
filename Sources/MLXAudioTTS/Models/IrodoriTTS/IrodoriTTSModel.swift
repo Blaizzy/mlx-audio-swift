@@ -22,6 +22,9 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
     var tokenizer: Tokenizers.Tokenizer?
     var captionTokenizer: Tokenizers.Tokenizer?
 
+    /// Wall-clock phase timings of the most recent generation.
+    public private(set) var lastTimings: IrodoriTTSTimings?
+
     /// Default VoiceDesign caption used when no `voice` is supplied.
     static let defaultCaption = "落ち着いた自然な声で、はっきりと読み上げてください。"
 
@@ -60,7 +63,7 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
         for (rawKey, v) in weights {
             var bareKey = rawKey.hasPrefix("model.") ? String(rawKey.dropFirst("model.".count)) : rawKey
             // PyTorch Sequential integer keys → MLX nn.Sequential "layers.N"
-            if bareKey.hasPrefix("cond_module.") {
+            if bareKey.hasPrefix("cond_module.") || bareKey.hasPrefix("delta_cond_module.") {
                 var parts = bareKey.split(separator: ".").map(String.init)
                 if parts.count > 1, Int(parts[1]) != nil {
                     parts.insert("layers", at: 1)
@@ -79,20 +82,44 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
 
     // MARK: - Text / caption preparation
 
+    /// v4 checkpoints use the upstream normaliser; v1–v3 keep the original Swift
+    /// port's normaliser so their output stays unchanged.
+    func normalizeText(_ text: String) -> String {
+        config.dit.usePretrainedTextEncoder
+            ? irodoriNormalizeTextUpstream(text).irodoriPythonStripped()
+            : irodoriNormalizeText(text)
+    }
+
     func prepareText(_ text: String) throws -> (ids: MLXArray, mask: MLXArray) {
         guard let tokenizer else { throw IrodoriTTSError.tokenizer("Text tokenizer not loaded") }
-        let normalized = irodoriNormalizeText(text)
-        return try irodoriEncodeText(
-            normalized, tokenizer: tokenizer,
+        let encoded = try irodoriEncodeText(
+            normalizeText(text), tokenizer: tokenizer,
             maxLength: config.maxTextLength, addBos: config.dit.textAddBos)
+        return trimForPretrainedEncoder(encoded)
     }
 
     func prepareCaption(_ caption: String) throws -> (ids: MLXArray, mask: MLXArray) {
         let tok = captionTokenizer ?? tokenizer
         guard let tok else { throw IrodoriTTSError.tokenizer("Caption tokenizer not loaded") }
-        return try irodoriEncodeText(
+        var encoded = try irodoriEncodeText(
             caption, tokenizer: tok,
             maxLength: config.maxCaptionLength, addBos: config.dit.captionAddBosResolved)
+        if caption.isEmpty {
+            // An empty caption still tokenizes to a BOS token. Leaving it unmasked would
+            // present it as a real caption to the DiT and the duration predictor.
+            encoded.mask = MLXArray.zeros(like: encoded.mask)
+        }
+        return trimForPretrainedEncoder(encoded)
+    }
+
+    /// v4: drop the right padding. Every consumer masks padded keys out (attention,
+    /// duration token sum, caption mean), so the result is unchanged while the
+    /// ModernBERT backbone and the DiT's context attention run on the real tokens only.
+    private func trimForPretrainedEncoder(_ encoded: (ids: MLXArray, mask: MLXArray)) -> (ids: MLXArray, mask: MLXArray) {
+        guard config.dit.usePretrainedTextEncoder else { return encoded }
+        // An all-masked (empty) caption keeps its BOS slot so the sequence is non-empty.
+        let length = max(1, encoded.mask.asType(.int32).sum().item(Int.self))
+        return (encoded.ids[0..., 0 ..< length], encoded.mask[0..., 0 ..< length])
     }
 
     // MARK: - Reference-audio encoding (optional voice clone)
@@ -103,7 +130,12 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
         if audio.ndim == 1 { audio = audio.expandedDimensions(axis: 0) }
         else if audio.ndim == 2 && audio.shape[0] > 1 { audio = mean(audio, axis: 0, keepDims: true) }
 
-        let maxSamples = config.maxSpeakerLatentLength * config.audioDownsampleFactor
+        var maxSteps = config.maxSpeakerLatentLength
+        if let refMaxSeconds = config.refMaxSeconds, refMaxSeconds > 0 {
+            let steps = Int(refMaxSeconds * Float(config.sampleRate) / Float(config.audioDownsampleFactor))
+            maxSteps = min(maxSteps, max(1, steps))
+        }
+        let maxSamples = maxSteps * config.audioDownsampleFactor
         if audio.shape[1] > maxSamples { audio = audio[0..., 0..<maxSamples] }
 
         // DACVAE.encode expects (B, L, 1) → returns (B, 128, T) channels-first
@@ -125,16 +157,21 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
         return (latent, mask)
     }
 
+    /// Placeholder reference latent used when no reference audio is given (masked out).
+    /// It spans one full speaker patch, otherwise patching yields an empty sequence
+    /// (v4 uses speaker_patch_size = 4).
+    func zeroReferenceLatent() -> MLXArray {
+        MLXArray.zeros([1, config.dit.speakerPatchSize, config.dit.latentDim])
+    }
+
     // MARK: - Duration → latent step count
 
     private func computeLatentSteps(
         text: String,
         textMask: MLXArray,
-        textInputIDs: MLXArray,
-        refLatent: MLXArray?,
         refMask: MLXArray?,
-        captionInputIDs: MLXArray?,
         captionMask: MLXArray?,
+        encoded enc: IrodoriEncodedConditions,
         secondsOverride: Float?
     ) throws -> Int {
         let dsr = Float(config.sampleRate) / Float(config.audioDownsampleFactor)
@@ -149,18 +186,13 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
             return config.sampler.sequenceLength  // fallback
         }
 
-        let normalized = irodoriNormalizeText(text)
+        let normalized = normalizeText(text)
         let tokenCount = textMask.sum().item(Int.self)
         let hasSpeaker = refMask.map { $0.any().item(Bool.self) } ?? false
 
         let features = irodoriBuildDurationFeatures(
             texts: [normalized], tokenCounts: [tokenCount],
             maxTextLen: config.maxTextLength, hasSpeaker: [hasSpeaker])
-
-        let enc = model.encodeConditionsFull(
-            textInputIDs: textInputIDs, textMask: textMask,
-            refLatent: refLatent, refMask: refMask,
-            captionInputIDs: captionInputIDs, captionMask: captionMask)
 
         let hasCaption = (captionMask?.any().item(Bool.self)) ?? false
         let predLog = try model.predictDurationLogFrames(
@@ -191,12 +223,21 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
             throw AudioGenerationError.modelNotInitialized("Irodori-TTS requires DACVAE to be loaded")
         }
 
+        var timings = IrodoriTTSTimings()
+        var clock = CFAbsoluteTimeGetCurrent()
+        func lap() -> Double {
+            let now = CFAbsoluteTimeGetCurrent()
+            defer { clock = now }
+            return now - clock
+        }
+
         let (textIDs, textMask) = try prepareText(text)
 
         var captionIDs: MLXArray?
         var captionMask: MLXArray?
         if config.dit.useCaptionCondition {
-            let cap = caption ?? Self.defaultCaption
+            // Upstream strips the caption but does not normalise it.
+            let cap = (caption ?? Self.defaultCaption).trimmingCharacters(in: .whitespacesAndNewlines)
             let c = try prepareCaption(cap)
             captionIDs = c.ids
             captionMask = c.mask
@@ -211,15 +252,24 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
         }
         // Zero speaker context when needed (matches Python defaults)
         if config.dit.useSpeakerConditionResolved || !config.dit.useCaptionCondition {
-            if refLatent == nil { refLatent = MLXArray.zeros([1, 1, config.dit.latentDim]) }
+            if refLatent == nil { refLatent = zeroReferenceLatent() }
             if refMask == nil { refMask = MLXArray.zeros([1, refLatent!.shape[1]], dtype: .bool) }
         }
 
-        let latentSteps = try computeLatentSteps(
-            text: text, textMask: textMask, textInputIDs: textIDs,
+        // Encode once: duration prediction and the sampler share these states.
+        let encoded = model.encodeConditionsFull(
+            textInputIDs: textIDs, textMask: textMask,
             refLatent: refLatent, refMask: refMask,
-            captionInputIDs: captionIDs, captionMask: captionMask,
+            captionInputIDs: captionIDs, captionMask: captionMask)
+        eval([encoded.textState, encoded.speakerState, encoded.captionState].compactMap { $0 })
+        timings.encode = lap()
+
+        let latentSteps = try computeLatentSteps(
+            text: text, textMask: textMask,
+            refMask: refMask, captionMask: captionMask,
+            encoded: encoded,
             secondsOverride: secondsOverride)
+        timings.duration = lap()
 
         let patchedSteps = Int(ceil(Double(latentSteps) / Double(config.dit.latentPatchSize)))
 
@@ -242,14 +292,26 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
         params.tScheduleMode = s.tScheduleMode
         params.swayCoeff = s.swayCoeff
 
-        let latentOut = try irodoriSampleEulerCFG(
-            model: model,
-            textInputIDs: textIDs, textMask: textMask,
-            refLatent: refLatent, refMask: refMask,
-            captionInputIDs: captionIDs, captionMask: captionMask,
-            latentDim: config.dit.patchedLatentDim,
-            sequenceLength: patchedSteps,
-            rngSeed: rngSeed, params: params)
+        let latentOut: MLXArray
+        if config.dit.useMeanflow {
+            // MeanFlow bakes CFG into distillation: RF-only knobs above do not apply.
+            latentOut = try irodoriSampleEulerMeanFlow(
+                model: model, encoded: encoded,
+                latentDim: config.dit.patchedLatentDim,
+                sequenceLength: patchedSteps,
+                rngSeed: rngSeed, numSteps: s.numSteps)
+        } else {
+            latentOut = try irodoriSampleEulerCFG(
+                model: model,
+                textInputIDs: textIDs, textMask: textMask,
+                refLatent: refLatent, refMask: refMask,
+                captionInputIDs: captionIDs, captionMask: captionMask,
+                latentDim: config.dit.patchedLatentDim,
+                sequenceLength: patchedSteps,
+                rngSeed: rngSeed, params: params,
+                encoded: encoded)
+        }
+        timings.sampler = lap()
 
         // Decode latent → waveform. (1, T, latentDim) → (1, latentDim, T)
         let latentForDecode = latentOut.transposed(0, 2, 1)
@@ -268,6 +330,9 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
 
         let waveform = audioOut[0]
         eval(waveform)
+        timings.decode = lap()
+        timings.latentFrames = latentSteps
+        lastTimings = timings
         return waveform
     }
 
@@ -284,7 +349,7 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
             requiredExtension: ".safetensors",
-            additionalMatchingPatterns: ["dacvae/*"],
+            additionalMatchingPatterns: ["dacvae/*", "tokenizer/*"],
             cache: cache)
         return try await fromModelDirectory(modelDir, cache: cache)
     }
@@ -331,9 +396,18 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
             model.dacvae = try await DACVAE.fromPretrained(config.dacvaeRepo, cache: cache)
         }
 
-        // Tokenizer (separate repo — not bundled with the model).
+        // Prefer a tokenizer bundled with the converted weights (v4 ships one) so
+        // inference does not depend on the upstream repo staying available.
         let tokRepo = config.dit.textTokenizerRepo
-        if let tokRepoID = Repo.ID(rawValue: tokRepo) {
+        let bundledTokenizer = modelDir.appendingPathComponent("tokenizer")
+        if FileManager.default.fileExists(atPath: bundledTokenizer.appendingPathComponent("tokenizer_config.json").path) {
+            let tokDir = try irodoriSanitizedTokenizerCopy(of: bundledTokenizer)
+            model.tokenizer = try await AutoTokenizer.from(modelFolder: tokDir)
+            if config.dit.captionTokenizerRepoResolved == tokRepo {
+                model.captionTokenizer = model.tokenizer
+            }
+        }
+        if model.tokenizer == nil, let tokRepoID = Repo.ID(rawValue: tokRepo) {
             let tokDir = try await ModelUtils.resolveOrDownloadModel(
                 repoID: tokRepoID, requiredExtension: ".json", cache: cache)
             // swift-transformers' tokenizer loader crashes on llm-jp's config; strip the
@@ -483,6 +557,51 @@ func irodoriSanitizeTokenizerFiles(in dir: URL) {
         }
         write(url, cfg)
     }
+}
+
+/// Copy a bundled tokenizer (`tokenizer.json` + `tokenizer_config.json`) into the
+/// user cache and apply `irodoriSanitizeTokenizerFiles` to the copy, leaving the
+/// downloaded files (often symlinks into a shared HF blob store) untouched.
+/// The copy is refreshed whenever the source is newer.
+func irodoriSanitizedTokenizerCopy(of source: URL) throws -> URL {
+    let fm = FileManager.default
+    // Stable per-source directory name (FNV-1a; String.hashValue is seeded per process).
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    for byte in source.standardizedFileURL.path.utf8 {
+        hash = (hash ^ UInt64(byte)) &* 0x0000_0100_0000_01b3
+    }
+    let caches = try fm.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+    let dest = caches.appendingPathComponent("mlx-audio/irodori-tokenizer/\(String(hash, radix: 16))")
+    try fm.createDirectory(at: dest, withIntermediateDirectories: true)
+
+    func modified(_ url: URL) -> Date? {
+        (try? url.resolvingSymlinksInPath().resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate
+    }
+    var refreshed = false
+    for name in ["tokenizer.json", "tokenizer_config.json"] {
+        let src = source.appendingPathComponent(name)
+        let dst = dest.appendingPathComponent(name)
+        guard fm.fileExists(atPath: src.path) else { continue }
+        if let s = modified(src), let d = modified(dst), d >= s { continue }
+        try? fm.removeItem(at: dst)
+        try fm.copyItem(at: src.resolvingSymlinksInPath(), to: dst)
+        refreshed = true
+    }
+    if refreshed { irodoriSanitizeTokenizerFiles(in: dest) }
+    return dest
+}
+
+/// Wall-clock phase timings of one Irodori-TTS generation, in seconds.
+public struct IrodoriTTSTimings: Sendable {
+    /// Text + caption (+ reference) condition encoding, run once per utterance.
+    public var encode: Double = 0
+    public var duration: Double = 0
+    public var sampler: Double = 0
+    /// DACVAE decode plus silence trimming.
+    public var decode: Double = 0
+    /// Latent frames requested from the sampler (predicted or manual duration).
+    public var latentFrames: Int = 0
 }
 
 /// Minimal quantization spec read straight from config.json.
