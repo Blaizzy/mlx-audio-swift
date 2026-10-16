@@ -350,7 +350,7 @@ public extension NemotronASRModel {
         let config = try JSONDecoder().decode(NemotronASRConfig.self, from: configData)
         let quantConfig = try JSONDecoder().decode(NemotronASRQuantizationConfig.self, from: configData)
 
-        let model = NemotronASRModel(config)
+        let model = withThrowawayRandomState { NemotronASRModel(config) }
         var weights: [String: MLXArray] = [:]
         let files = try FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
         let safetensors = files.filter { $0.pathExtension == "safetensors" }
@@ -365,7 +365,7 @@ public extension NemotronASRModel {
         )
 
         if let perLayerQuant = quantConfig.perLayerQuantization {
-            quantize(model: model) { path, _ in
+            quantizeWithPlaceholderArrays(model: model) { path, _ in
                 if sanitized["\(path).scales"] != nil {
                     return perLayerQuant.quantization(layer: path)?.asTuple
                 }

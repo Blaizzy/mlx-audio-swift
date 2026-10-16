@@ -885,7 +885,7 @@ public extension CohereTranscribeModel {
         let configData = try Data(contentsOf: configURL)
         let config = try JSONDecoder().decode(CohereTranscribeConfig.self, from: configData)
 
-        let model = CohereTranscribeModel(config)
+        let model = withThrowawayRandomState { CohereTranscribeModel(config) }
         model.tokenizer = try CohereTranscribeTokenizer(modelDir: modelDir, config: config)
 
         let files = try FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
@@ -906,7 +906,7 @@ public extension CohereTranscribeModel {
         let sanitizedWeights = normalizeCohereWeightKeys(weights)
 
         if config.quantization != nil || config.perLayerQuantization != nil {
-            quantize(model: model) { path, _ in
+            quantizeWithPlaceholderArrays(model: model) { path, _ in
                 guard sanitizedWeights["\(path).scales"] != nil else {
                     return nil
                 }

@@ -494,7 +494,7 @@ public extension VoxtralRealtimeModel {
 
         let quantConfig = try JSONDecoder().decode(VoxtralQuantizationConfig.self, from: configData)
 
-        let model = VoxtralRealtimeModel(config)
+        let model = withThrowawayRandomState { VoxtralRealtimeModel(config) }
         model.tokenizer = try VoxtralRealtimeTokenizer.fromModelDirectory(modelDir)
         guard model.tokenizer != nil else {
             throw NSError(
@@ -519,7 +519,7 @@ public extension VoxtralRealtimeModel {
         let sanitized = sanitize(weights: weights)
 
         if let perLayerQuantization = quantConfig.perLayerQuantization {
-            quantize(model: model) { path, _ in
+            quantizeWithPlaceholderArrays(model: model) { path, _ in
                 guard model.shouldQuantize(path: path) else {
                     return nil
                 }

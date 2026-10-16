@@ -366,12 +366,12 @@ public final class BreezeTTSModel: Module, SpeechGenerationModel, @unchecked Sen
     public static func fromModelDirectory(_ modelDir: URL) async throws -> BreezeTTSModel {
         let data = try Data(contentsOf: modelDir.appendingPathComponent("config.json"))
         let config = try JSONDecoder().decode(BreezeTTSConfig.self, from: data)
-        let model = BreezeTTSModel(config: config)
+        let model = withThrowawayRandomState { BreezeTTSModel(config: config) }
         let weights = try loadSafetensors(in: modelDir)
         let sanitized = sanitize(weights: weights)
 
         if config.quantization != nil || config.perLayerQuantization != nil {
-            quantize(model: model) { path, _ in
+            quantizeWithPlaceholderArrays(model: model) { path, _ in
                 guard sanitized["\(path).scales"] != nil else { return nil }
                 if let layer = config.perLayerQuantization?.quantization(layer: path) {
                     return layer.asTuple

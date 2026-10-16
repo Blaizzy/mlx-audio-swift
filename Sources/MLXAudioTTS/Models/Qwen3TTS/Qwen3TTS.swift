@@ -1140,7 +1140,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         let configData = try Data(contentsOf: modelDir.appendingPathComponent("config.json"))
         let config = try JSONDecoder().decode(Qwen3TTSModelConfig.self, from: configData)
 
-        let model = Qwen3TTSModel(config: config)
+        let model = withThrowawayRandomState { Qwen3TTSModel(config: config) }
 
         // Load talker weights
         var allWeights = [String: MLXArray]()
@@ -1158,7 +1158,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         // Quantized checkpoints store packed weights and companion .scales tensors.
         // Convert talker Linear layers before loading those tensors.
         if config.quantization != nil || config.perLayerQuantization != nil {
-            quantize(model: model.talker) { path, _ in
+            quantizeWithPlaceholderArrays(model: model.talker) { path, _ in
                 guard talkerWeights["\(path).scales"] != nil else {
                     return nil
                 }

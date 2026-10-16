@@ -906,7 +906,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         let config = try JSONDecoder().decode(Qwen3Configuration.self, from: configData)
         let perLayerQuantization = config.perLayerQuantization
 
-        let model = Qwen3Model(config)
+        let model = withThrowawayRandomState { Qwen3Model(config) }
 
         // Load weights from safetensors
         let weights = try loadWeights(from: modelDir)
@@ -921,7 +921,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
                 print(" Per-layer: \(perLayerQuant)")
             }
 
-            quantize(model: model) { path, module in
+            quantizeWithPlaceholderArrays(model: model) { path, module in
                 // Only quantize if scales exist for this layer
                 if weights["\(path).scales"] != nil {
                     return perLayerQuantization?.quantization(layer: path)?.asTuple

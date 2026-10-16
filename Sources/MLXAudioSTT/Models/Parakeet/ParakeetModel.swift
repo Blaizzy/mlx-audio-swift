@@ -957,60 +957,61 @@ public extension ParakeetModel {
         let quantConfig = try JSONDecoder().decode(ParakeetQuantizationConfig.self, from: configData)
         let variant = try ParakeetVariantResolver.resolve(rawConfig)
 
-        let model: ParakeetModel
-        switch variant {
-        case .tdt:
-            let cfg = try ParakeetConfigParser.parseTDT(rawConfig)
-            model = ParakeetModel(
-                variant: .tdt,
-                preprocessConfig: cfg.preprocessor,
-                encoderConfig: cfg.encoder,
-                vocabulary: cfg.joint.vocabulary,
-                durations: cfg.decoding.durations,
-                maxSymbols: cfg.decoding.greedy?.maxSymbols,
-                decoderConfig: cfg.decoder,
-                jointConfig: cfg.joint,
-                ctcConfig: nil
-            )
-        case .tdtCtc:
-            let cfg = try ParakeetConfigParser.parseTDTCTC(rawConfig)
-            model = ParakeetModel(
-                variant: .tdtCtc,
-                preprocessConfig: cfg.preprocessor,
-                encoderConfig: cfg.encoder,
-                vocabulary: cfg.joint.vocabulary,
-                durations: cfg.decoding.durations,
-                maxSymbols: cfg.decoding.greedy?.maxSymbols,
-                decoderConfig: cfg.decoder,
-                jointConfig: cfg.joint,
-                ctcConfig: cfg.auxCTC.decoder
-            )
-        case .rnnt:
-            let cfg = try ParakeetConfigParser.parseRNNT(rawConfig)
-            model = ParakeetModel(
-                variant: .rnnt,
-                preprocessConfig: cfg.preprocessor,
-                encoderConfig: cfg.encoder,
-                vocabulary: cfg.joint.vocabulary,
-                durations: [1],
-                maxSymbols: cfg.decoding.greedy?.maxSymbols,
-                decoderConfig: cfg.decoder,
-                jointConfig: cfg.joint,
-                ctcConfig: nil
-            )
-        case .ctc:
-            let cfg = try ParakeetConfigParser.parseCTC(rawConfig)
-            model = ParakeetModel(
-                variant: .ctc,
-                preprocessConfig: cfg.preprocessor,
-                encoderConfig: cfg.encoder,
-                vocabulary: cfg.decoder.vocabulary,
-                durations: [1],
-                maxSymbols: nil,
-                decoderConfig: nil,
-                jointConfig: nil,
-                ctcConfig: cfg.decoder
-            )
+        let model: ParakeetModel = try withThrowawayRandomState {
+            switch variant {
+            case .tdt:
+                let cfg = try ParakeetConfigParser.parseTDT(rawConfig)
+                return ParakeetModel(
+                    variant: .tdt,
+                    preprocessConfig: cfg.preprocessor,
+                    encoderConfig: cfg.encoder,
+                    vocabulary: cfg.joint.vocabulary,
+                    durations: cfg.decoding.durations,
+                    maxSymbols: cfg.decoding.greedy?.maxSymbols,
+                    decoderConfig: cfg.decoder,
+                    jointConfig: cfg.joint,
+                    ctcConfig: nil
+                )
+            case .tdtCtc:
+                let cfg = try ParakeetConfigParser.parseTDTCTC(rawConfig)
+                return ParakeetModel(
+                    variant: .tdtCtc,
+                    preprocessConfig: cfg.preprocessor,
+                    encoderConfig: cfg.encoder,
+                    vocabulary: cfg.joint.vocabulary,
+                    durations: cfg.decoding.durations,
+                    maxSymbols: cfg.decoding.greedy?.maxSymbols,
+                    decoderConfig: cfg.decoder,
+                    jointConfig: cfg.joint,
+                    ctcConfig: cfg.auxCTC.decoder
+                )
+            case .rnnt:
+                let cfg = try ParakeetConfigParser.parseRNNT(rawConfig)
+                return ParakeetModel(
+                    variant: .rnnt,
+                    preprocessConfig: cfg.preprocessor,
+                    encoderConfig: cfg.encoder,
+                    vocabulary: cfg.joint.vocabulary,
+                    durations: [1],
+                    maxSymbols: cfg.decoding.greedy?.maxSymbols,
+                    decoderConfig: cfg.decoder,
+                    jointConfig: cfg.joint,
+                    ctcConfig: nil
+                )
+            case .ctc:
+                let cfg = try ParakeetConfigParser.parseCTC(rawConfig)
+                return ParakeetModel(
+                    variant: .ctc,
+                    preprocessConfig: cfg.preprocessor,
+                    encoderConfig: cfg.encoder,
+                    vocabulary: cfg.decoder.vocabulary,
+                    durations: [1],
+                    maxSymbols: nil,
+                    decoderConfig: nil,
+                    jointConfig: nil,
+                    ctcConfig: cfg.decoder
+                )
+            }
         }
 
         var weights: [String: MLXArray] = [:]
@@ -1024,7 +1025,7 @@ public extension ParakeetModel {
         let sanitized = sanitize(weights: weights, variant: model.variant)
 
         if let perLayerQuant = quantConfig.perLayerQuantization {
-            quantize(model: model) { path, _ in
+            quantizeWithPlaceholderArrays(model: model) { path, _ in
                 if sanitized["\(path).scales"] != nil {
                     return perLayerQuant.quantization(layer: path)?.asTuple
                 }

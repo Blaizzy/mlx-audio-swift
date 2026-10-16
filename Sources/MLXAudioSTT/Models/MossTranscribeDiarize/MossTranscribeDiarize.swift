@@ -1022,7 +1022,7 @@ extension MossTranscribeDiarizeModel {
         let configURL = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configURL)
         let config = try JSONDecoder().decode(MossTranscribeDiarizeConfig.self, from: configData)
-        let model = MossTranscribeDiarizeModel(config)
+        let model = withThrowawayRandomState { MossTranscribeDiarizeModel(config) }
 
         model.tokenizer = try await AutoTokenizer.from(modelFolder: modelDir)
         try model.loadProcessorConfig(from: modelDir)
@@ -1050,7 +1050,7 @@ extension MossTranscribeDiarizeModel {
         }
         let sanitized = sanitize(weights: weights)
         if config.quantization != nil || config.perLayerQuantization != nil {
-            quantize(model: model) { path, _ in
+            quantizeWithPlaceholderArrays(model: model) { path, _ in
                 // Only layers shipping quantized tensors are swapped.
                 guard sanitized["\(path).scales"] != nil else {
                     return nil
