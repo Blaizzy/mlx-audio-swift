@@ -1,6 +1,5 @@
 import Foundation
 @preconcurrency import MLX
-import MLXLLM
 import MLXLMCommon
 import MLXNN
 import Testing

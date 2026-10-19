@@ -4,6 +4,7 @@ import MLX
 import MLXAudioCore
 import MLXAudioTTS
 import MLXHuggingFace
+@preconcurrency import MLXLLM
 @preconcurrency import MLXLMCommon
 import Tokenizers
 

@@ -1,7 +1,6 @@
 import Foundation
 import HuggingFace
 @preconcurrency import MLX
-@preconcurrency import MLXLLM
 @preconcurrency import MLXLMCommon
 import MLXAudioCore
 import MLXNN
