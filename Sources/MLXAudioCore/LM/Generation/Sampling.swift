@@ -1,6 +1,3 @@
-// Adapted from mlx-vlm-swift 28194b61: Generation/Sampling.swift.
-// See LICENSES/mlx-vlm-swift.txt.
-
 // Copyright © 2024 Apple Inc.
 
 import MLX

@@ -1,6 +1,3 @@
-// Adapted from mlx-vlm-swift 28194b61: Cache/KVCacheTree.swift.
-// See LICENSES/mlx-vlm-swift.txt.
-
 // Copyright © 2026 Apple Inc.
 
 /// A classified leaf in a potentially nested cache topology.

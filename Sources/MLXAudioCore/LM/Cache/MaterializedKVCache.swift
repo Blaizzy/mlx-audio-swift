@@ -1,6 +1,3 @@
-// Adapted from mlx-vlm-swift 28194b61: Cache/MaterializedKVCache.swift.
-// See LICENSES/mlx-vlm-swift.txt.
-
 import MLX
 
 /// Keeps attention state materialized for models that reuse stored keys/values or

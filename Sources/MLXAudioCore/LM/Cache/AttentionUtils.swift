@@ -1,6 +1,3 @@
-// Adapted from mlx-vlm-swift 28194b61: Cache/AttentionUtils.swift.
-// See LICENSES/mlx-vlm-swift.txt.
-
 import Foundation
 import MLX
 

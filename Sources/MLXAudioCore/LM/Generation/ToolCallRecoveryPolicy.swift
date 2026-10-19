@@ -1,6 +1,3 @@
-// Adapted from mlx-vlm-swift 28194b61: Output/Types/ToolCallRecoveryPolicy.swift.
-// See LICENSES/mlx-vlm-swift.txt.
-
 // Copyright © 2026 Apple Inc.
 
 public enum ToolCallRecoveryPolicy: String, Hashable, Sendable, CaseIterable {

@@ -1,6 +1,3 @@
-// Adapted from mlx-vlm-swift 28194b61: Cache/CacheCapabilities.swift.
-// See LICENSES/mlx-vlm-swift.txt.
-
 /// Verified operations on a cache. Absence means unsupported, not best-effort.
 /// Rewind capabilities still require checking the current offset/isTrimmable.
 /// Persistence and batch row insertion/removal are deliberately not advertised.

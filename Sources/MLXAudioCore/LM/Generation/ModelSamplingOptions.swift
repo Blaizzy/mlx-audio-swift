@@ -1,6 +1,3 @@
-// Adapted from mlx-vlm-swift 28194b61: Execution/ModelGeneration.swift.
-// See LICENSES/mlx-vlm-swift.txt.
-
 public struct ModelSamplingOptions: Sendable {
     public struct Penalty: Sendable {
         public var value: Float

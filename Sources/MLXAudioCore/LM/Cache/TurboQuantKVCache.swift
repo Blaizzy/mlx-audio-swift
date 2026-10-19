@@ -1,6 +1,3 @@
-// Adapted from mlx-vlm-swift 28194b61: Cache/TurboQuantKVCache.swift.
-// See LICENSES/mlx-vlm-swift.txt.
-
 // Copyright © 2026 Apple Inc.
 //
 // Implements TurboQuant Algorithm 1 (MSE-optimal, arXiv:2504.19874) for KV cache:

@@ -1,6 +1,3 @@
-// Adapted from mlx-vlm-swift 28194b61: Cache/CacheConfiguration.swift.
-// See LICENSES/mlx-vlm-swift.txt.
-
 // Copyright © 2026 Apple Inc.
 
 import Foundation
