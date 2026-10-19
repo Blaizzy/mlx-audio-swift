@@ -46,6 +46,8 @@ targets:
       - package: mlx-swift-lm
         product: MLXLMCommon
       - package: mlx-swift-lm
+        product: MLXLLM
+      - package: mlx-swift-lm
         product: MLXHuggingFace
       - package: swift-huggingface
         product: HuggingFace

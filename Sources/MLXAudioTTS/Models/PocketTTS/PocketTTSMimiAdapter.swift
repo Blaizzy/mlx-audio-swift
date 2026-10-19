@@ -1,7 +1,7 @@
 import Foundation
 @preconcurrency import MLX
 import MLXAudioCodecs
-import MLXLMCommon
+import MLXAudioCore
 import MLXNN
 
 @inline(__always)
@@ -155,7 +155,7 @@ public final class MimiAdapter: Module {
     }
 
     public static func fromConfig(_ config: PocketTTSMimiConfig) -> MimiAdapter {
-        let padMode: PadMode = (config.seanet.padMode == "constant") ? .constant : .edge
+        let padMode: MLX.PadMode = (config.seanet.padMode == "constant") ? .constant : .edge
         let seanetCfg = SeanetConfig(
             dimension: config.seanet.dimension,
             channels: config.seanet.channels,

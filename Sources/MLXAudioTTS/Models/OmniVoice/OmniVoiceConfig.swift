@@ -1,5 +1,5 @@
 import Foundation
-import MLXLMCommon
+import MLXAudioCore
 
 // MARK: - LLM Config (nested within OmniVoice config)
 

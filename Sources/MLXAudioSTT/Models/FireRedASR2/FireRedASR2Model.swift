@@ -2,7 +2,6 @@ import Foundation
 import HuggingFace
 import MLX
 import MLXAudioCore
-import MLXLMCommon
 import MLXNN
 
 final class FireRedASR2Conv2dSubsampling: Module {

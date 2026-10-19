@@ -1,7 +1,7 @@
 import Foundation
 @preconcurrency import MLX
 import MLXFast
-@preconcurrency import MLXLMCommon
+@preconcurrency import MLXAudioCore
 import MLXNN
 
 /// Prepared tensors owned by the caller, transferred from the preparation step.

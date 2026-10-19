@@ -10,9 +10,8 @@
 import Foundation
 import HuggingFace
 @preconcurrency import MLX
-import MLXAudioCore
 import MLXNN
-@preconcurrency import MLXLMCommon
+@preconcurrency import MLXAudioCore
 import Tokenizers
 
 // MARK: - Scalar Quantization

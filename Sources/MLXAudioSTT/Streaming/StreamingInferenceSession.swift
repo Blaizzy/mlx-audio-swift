@@ -8,7 +8,7 @@
 import Foundation
 import MLX
 import MLXNN
-import MLXLMCommon
+import MLXAudioCore
 import Tokenizers
 import os
 

@@ -1,6 +1,6 @@
 import Foundation
 import MLX
-import MLXLMCommon
+import MLXAudioCore
 import MLXNN
 
 // MARK: - RoPE Utilities

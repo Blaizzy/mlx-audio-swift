@@ -1,5 +1,5 @@
 import Foundation
-import MLXLMCommon
+import MLXAudioCore
 
 public struct KittenTTSConfig: Decodable {
     public let modelType: String

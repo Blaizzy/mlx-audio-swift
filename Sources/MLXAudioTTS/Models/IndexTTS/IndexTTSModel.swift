@@ -2,7 +2,6 @@ import Foundation
 import HuggingFace
 @preconcurrency import MLX
 import MLXAudioCore
-import MLXLMCommon
 import MLXNN
 
 public enum IndexTTSError: Error, LocalizedError {

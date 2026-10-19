@@ -1,5 +1,5 @@
 import Foundation
-import MLXLMCommon
+import MLXAudioCore
 
 public struct ISTFTNetConfig: Codable {
     public let resblockKernelSizes: [Int]

@@ -1,6 +1,5 @@
 @preconcurrency import MLX
-import MLXAudioCore
-@preconcurrency import MLXLMCommon
+@preconcurrency import MLXAudioCore
 #if canImport(AVFoundation)
 @preconcurrency import AVFoundation
 #endif

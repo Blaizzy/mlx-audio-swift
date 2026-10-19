@@ -2,7 +2,6 @@ import Foundation
 import MLX
 import MLXAudioCore
 import MLXNN
-import MLXLMCommon
 
 // MARK: - Config
 
