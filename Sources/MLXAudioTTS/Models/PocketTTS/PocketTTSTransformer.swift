@@ -1,7 +1,7 @@
 import Foundation
 @preconcurrency import MLX
 import MLXNN
-import MLXLMCommon
+import MLXAudioCore
 
 @inline(__always)
 private func pocketCreateAdditiveCausalMask(_ n: Int, offset: Int = 0) -> MLXArray {

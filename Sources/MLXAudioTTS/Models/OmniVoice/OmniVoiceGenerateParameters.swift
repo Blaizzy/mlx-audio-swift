@@ -4,7 +4,7 @@ import Foundation
 ///
 /// These parameters control the diffusion process, voice characteristics,
 /// and output quality. They supplement the standard `GenerateParameters`
-/// (temperature, topP, maxTokens) from MLXLMCommon.
+/// (temperature, topP, maxTokens) from MLXAudioCore.
 public struct OmniVoiceGenerateParameters: Sendable {
     // MARK: - Diffusion Parameters
 

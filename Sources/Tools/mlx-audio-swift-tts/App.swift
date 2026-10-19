@@ -4,7 +4,6 @@ import Foundation
 import MLXAudioCore
 import MLXAudioSTT
 import MLXAudioTTS
-import MLXLMCommon
 
 enum AppError: Error, LocalizedError, CustomStringConvertible {
     case invalidRepositoryID(String)

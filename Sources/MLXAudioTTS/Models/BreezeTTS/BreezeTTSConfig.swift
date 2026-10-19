@@ -1,5 +1,5 @@
 import Foundation
-import MLXLMCommon
+import MLXAudioCore
 
 public struct BreezeBackboneConfig: Codable, Sendable {
     var modelType: String

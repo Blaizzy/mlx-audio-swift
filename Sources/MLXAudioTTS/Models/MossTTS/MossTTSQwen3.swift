@@ -1,7 +1,6 @@
 @preconcurrency import MLX
-import MLXAudioCore
 import MLXFast
-@preconcurrency import MLXLMCommon
+@preconcurrency import MLXAudioCore
 import MLXNN
 
 final class MossQwen3Attention: Module {

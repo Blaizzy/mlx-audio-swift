@@ -51,7 +51,6 @@ import Foundation
 import Testing
 import MLX
 import MLXNN
-import MLXLMCommon
 
 @testable import MLXAudioCore
 @testable import MLXAudioSTT

@@ -1,16 +1,10 @@
 // Copyright © 2024, 2025, 2026 Apple Inc.
 
 import MLX
-import MLXLMCommon
+import MLXAudioCore
 
 /// Marker protocol for LLMModels
-public protocol LLMModel: LanguageModel, LoRAModel {
-
-    /// Models can implement this if they need a custom `MessageGenerator`.
-    ///
-    /// The default implementation returns `DefaultMessageGenerator`.
-    func messageGenerator(tokenizer: Tokenizer) -> MessageGenerator
-}
+public protocol LLMModel: LanguageModel, LoRAModel {}
 
 extension LLMModel {
 
@@ -58,7 +52,4 @@ extension LLMModel {
         return .tokens(y[processed...])
     }
 
-    public func messageGenerator(tokenizer: Tokenizer) -> MessageGenerator {
-        DefaultMessageGenerator()
-    }
 }

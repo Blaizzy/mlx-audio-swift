@@ -7,7 +7,7 @@
 //
 
 import Foundation
-import MLXLMCommon
+import MLXAudioCore
 
 // MARK: - LLaMA 520M Configuration (T3 backbone)
 

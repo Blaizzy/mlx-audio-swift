@@ -1,5 +1,5 @@
 import Foundation
-import MLXLMCommon
+import MLXAudioCore
 
 // MARK: - Code Predictor Config
 
@@ -590,6 +590,4 @@ public struct Qwen3TTSModelConfig: Decodable, Sendable {
 
 // MARK: - StringOrNumber helper for rope_scaling
 
-// Note: StringOrNumber is already defined in MLXLMCommon (imported by the existing Qwen3 config).
-// We re-use that type here for rope_scaling parsing.
-// If needed, add: import MLXLMCommon
+// StringOrNumber is provided by MLXAudioCore for rope_scaling parsing.

@@ -1,5 +1,5 @@
 import Foundation
-import MLXLMCommon
+import MLXAudioCore
 
 public struct MossTranscribeDiarizeConfig: Codable {
     public var modelType: String

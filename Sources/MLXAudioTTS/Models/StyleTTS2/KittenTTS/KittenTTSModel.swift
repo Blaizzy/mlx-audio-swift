@@ -1,8 +1,7 @@
 import Foundation
 import HuggingFace
 @preconcurrency import MLX
-import MLXAudioCore
-@preconcurrency import MLXLMCommon
+@preconcurrency import MLXAudioCore
 import MLXNN
 
 public final class KittenTTSModel: Module, SpeechGenerationModel, @unchecked Sendable {

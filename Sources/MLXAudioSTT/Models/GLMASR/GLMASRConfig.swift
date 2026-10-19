@@ -4,7 +4,7 @@
 //
 // Created by Prince Canuma on 04/01/2026.
 //
-import MLXLMCommon
+import MLXAudioCore
 
 import Foundation
 

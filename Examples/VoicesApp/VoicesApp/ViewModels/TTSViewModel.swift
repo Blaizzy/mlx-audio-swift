@@ -4,7 +4,6 @@ import Foundation
 import MLX
 import MLXAudioCore
 import MLXAudioTTS
-import MLXLMCommon
 import SwiftUI
 #if os(macOS)
 import AppKit

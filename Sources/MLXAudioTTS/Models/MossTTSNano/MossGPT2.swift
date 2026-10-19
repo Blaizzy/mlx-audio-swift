@@ -1,7 +1,7 @@
 import Foundation
 @preconcurrency import MLX
 import MLXFast
-@preconcurrency import MLXLMCommon
+@preconcurrency import MLXAudioCore
 import MLXNN
 
 final class MossRotaryEmbedding: @unchecked Sendable {

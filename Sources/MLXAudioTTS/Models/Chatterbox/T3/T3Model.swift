@@ -10,7 +10,7 @@ import Foundation
 import MLX
 import MLXFast
 import MLXNN
-@preconcurrency import MLXLMCommon
+@preconcurrency import MLXAudioCore
 
 // MARK: - Llama3 Scaled RoPE for T3
 

@@ -25,7 +25,6 @@
 
 import Testing
 import MLX
-import MLXLMCommon
 import Foundation
 
 @testable import MLXAudioCore

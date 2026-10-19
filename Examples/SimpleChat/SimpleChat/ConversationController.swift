@@ -29,7 +29,7 @@ private actor LanguageSessionStore {
         session = ChatSession(
             model,
             instructions: instructions,
-            generateParameters: GenerateParameters(maxTokens: 4096, temperature: 0.6, topP: 0.95)
+            generateParameters: MLXLMCommon.GenerateParameters(maxTokens: 4096, temperature: 0.6, topP: 0.95)
         )
     }
 

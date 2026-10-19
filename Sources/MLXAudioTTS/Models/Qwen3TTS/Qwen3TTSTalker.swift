@@ -1,6 +1,6 @@
 import Foundation
 @preconcurrency import MLX
-@preconcurrency import MLXLMCommon
+@preconcurrency import MLXAudioCore
 import MLXNN
 
 // MARK: - RoPE helpers

@@ -1,6 +1,6 @@
 import Foundation
 @preconcurrency import MLX
-import MLXLMCommon
+import MLXAudioCore
 import MLXNN
 import Testing
 import Tokenizers

@@ -7,7 +7,7 @@
 //
 
 import Foundation
-import MLXLMCommon
+import MLXAudioCore
 
 // MARK: - LM Configuration
 
