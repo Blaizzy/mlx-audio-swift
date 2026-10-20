@@ -249,6 +249,10 @@ let audio = try await model.generate(
 
 ## Examples
 
+[Phonon Translate](Examples/PhononTranslate) is an XcodeGen example for iOS and
+macOS: type in English, translate into French with a small local language model,
+and listen with Phonon’s English and French voices.
+
 Check out the [Examples/VoicesApp](Examples/VoicesApp) directory for a complete SwiftUI application demonstrating:
 - Loading and running TTS models
 - Playing generated audio
