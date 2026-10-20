@@ -10,23 +10,30 @@ private func pocketModulate(_ x: MLXArray, shift: MLXArray, scale: MLXArray) -> 
 
 public final class PocketRMSNorm: Module, UnaryLayer {
     public let eps: Float
+    public let mode: String
     public var alpha: MLXArray
 
-    public init(dim: Int, eps: Float = 1e-5) {
+    public init(dim: Int, eps: Float = 1e-5, mode: String = "rms_var") {
+        precondition(["rms", "rms_var"].contains(mode), "Unsupported timestep normalization: \(mode)")
         self.eps = eps
+        self.mode = mode
         self.alpha = MLXArray.ones([dim])
         super.init()
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
         let x32 = x.asType(.float32)
-        let mean = MLX.mean(x32, axis: -1, keepDims: true)
-        let diff = x32 - mean
-        let n = max(x32.shape.last ?? 1, 1)
-        let denom = MLXArray(Float(max(n - 1, 1)))
-        let varr = MLX.sum(diff * diff, axis: -1, keepDims: true) / denom
-        let inv = MLXArray(1.0) / MLX.sqrt(varr + MLXArray(eps))
-        let y = x32 * inv * alpha.asType(.float32)
+        let varr: MLXArray
+        if mode == "rms" {
+            varr = MLX.mean(x32 * x32, axis: -1, keepDims: true)
+        } else {
+            let mean = MLX.mean(x32, axis: -1, keepDims: true)
+            let diff = x32 - mean
+            let n = max(x32.shape.last ?? 1, 1)
+            let denom = MLXArray(Float(max(n - 1, 1)))
+            varr = MLX.sum(diff * diff, axis: -1, keepDims: true) / denom
+        }
+        let y = x32 * (alpha.asType(.float32) * MLX.rsqrt(varr + MLXArray(eps)))
         return y.asType(x.dtype)
     }
 }
@@ -58,7 +65,7 @@ public final class PocketTimestepEmbedder: Module {
     public let freqs: MLXArray
     @ModuleInfo(key: "mlp") public var mlp: [Module]
 
-    public init(hiddenSize: Int, frequencyEmbeddingSize: Int = 256, maxPeriod: Double = 10000.0) {
+    public init(hiddenSize: Int, frequencyEmbeddingSize: Int = 256, maxPeriod: Double = 10000.0, timeRmsNorm: String = "rms_var") {
         self.frequencyEmbeddingSize = frequencyEmbeddingSize
         let half = frequencyEmbeddingSize / 2
         let indices = MLXArray(stride(from: 0, to: half, by: 1)).asType(.float32)
@@ -68,7 +75,7 @@ public final class PocketTimestepEmbedder: Module {
             Linear(frequencyEmbeddingSize, hiddenSize, bias: true),
             SiLU(),
             Linear(hiddenSize, hiddenSize, bias: true),
-            PocketRMSNorm(dim: hiddenSize)
+            PocketRMSNorm(dim: hiddenSize, mode: timeRmsNorm)
         ])
         super.init()
     }
@@ -191,7 +198,8 @@ public final class SimpleMLPAdaLN: Module {
         outChannels: Int,
         condChannels: Int,
         numResBlocks: Int,
-        numTimeConds: Int = 2
+        numTimeConds: Int = 2,
+        timeRmsNorm: String = "rms_var"
     ) {
         self.in_channels = inChannels
         self.model_channels = modelChannels
@@ -202,7 +210,7 @@ public final class SimpleMLPAdaLN: Module {
         precondition(numTimeConds != 1, "num_time_conds must be != 1 for AdaLN conditioning")
 
         self._time_embed = ModuleInfo(wrappedValue: (0..<numTimeConds).map { _ in
-            PocketTimestepEmbedder(hiddenSize: modelChannels)
+            PocketTimestepEmbedder(hiddenSize: modelChannels, timeRmsNorm: timeRmsNorm)
         })
         self._cond_embed = ModuleInfo(wrappedValue: Linear(condChannels, modelChannels, bias: true))
         self._input_proj = ModuleInfo(wrappedValue: Linear(inChannels, modelChannels, bias: true))

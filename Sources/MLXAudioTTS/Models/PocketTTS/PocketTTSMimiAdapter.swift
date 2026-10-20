@@ -43,9 +43,9 @@ public final class DummyQuantizer: Module {
 }
 
 public final class MimiAdapter: Module {
-    @ModuleInfo(key: "encoder") public var encoder: SeanetEncoder
+    @ModuleInfo(key: "encoder") public var encoder: SeanetEncoder?
     @ModuleInfo(key: "decoder") public var decoder: SeanetDecoder
-    @ModuleInfo(key: "encoder_transformer") public var encoder_transformer: ProjectedTransformer
+    @ModuleInfo(key: "encoder_transformer") public var encoder_transformer: ProjectedTransformer?
     @ModuleInfo(key: "decoder_transformer") public var decoder_transformer: ProjectedTransformer
     @ModuleInfo(key: "quantizer") public var quantizer: DummyQuantizer
     @ModuleInfo(key: "downsample") public var downsample: ConvDownsample1d?
@@ -61,14 +61,14 @@ public final class MimiAdapter: Module {
     public var decoderCache: [KVCacheSimple]
 
     public init(
-        encoder: SeanetEncoder,
+        encoder: SeanetEncoder?,
         decoder: SeanetDecoder,
         quantizer: DummyQuantizer,
         frameRate: Double,
         encoderFrameRate: Double,
         sampleRate: Int,
         channels: Int,
-        encoderTransformer: ProjectedTransformer,
+        encoderTransformer: ProjectedTransformer?,
         decoderTransformer: ProjectedTransformer,
         dimension: Int
     ) {
@@ -87,14 +87,14 @@ public final class MimiAdapter: Module {
             let strideDouble = encoderFrameRate / frameRate
             precondition(strideDouble == floor(strideDouble), "Only integer strides are supported")
             let stride = Int(strideDouble)
-            self._downsample = ModuleInfo(wrappedValue: ConvDownsample1d(stride: stride, dim: dimension, causal: true))
+            self._downsample = ModuleInfo(wrappedValue: encoder == nil ? nil : ConvDownsample1d(stride: stride, dim: dimension, causal: true))
             self._upsample = ModuleInfo(wrappedValue: ConvTrUpsample1d(stride: stride, dim: dimension, causal: true))
         } else {
             self._downsample = ModuleInfo(wrappedValue: nil)
             self._upsample = ModuleInfo(wrappedValue: nil)
         }
 
-        self.encoderCache = encoderTransformer.makeCache()
+        self.encoderCache = encoderTransformer?.makeCache() ?? []
         self.decoderCache = decoderTransformer.makeCache()
         super.init()
     }
@@ -102,7 +102,7 @@ public final class MimiAdapter: Module {
     public var frameSize: Int { Int(Double(sampleRate) / frameRate) }
 
     public func resetState() {
-        encoder.resetState()
+        encoder?.resetState()
         decoder.resetState()
         downsample?.resetState()
         upsample?.resetState()
@@ -126,6 +126,9 @@ public final class MimiAdapter: Module {
     }
 
     public func encodeToLatent(_ x: MLXArray) -> MLXArray {
+        guard let encoder, let encoder_transformer else {
+            preconditionFailure("This checkpoint omits the speaker encoder; use a bundled voice embedding")
+        }
         precondition(x.ndim == 3, "encodeToLatent expects audio of shape [B,C,T]")
         encoder.resetState()
         for c in encoderCache { c.trim(c.offset) }
@@ -154,7 +157,8 @@ public final class MimiAdapter: Module {
         return decoder.step(emb)
     }
 
-    public static func fromConfig(_ config: PocketTTSMimiConfig) -> MimiAdapter {
+    public static func fromConfig(_ config: PocketTTSMimiConfig, encoderEnabled: Bool? = nil) -> MimiAdapter {
+        let encoderEnabled = encoderEnabled ?? config.encoderEnabled
         let padMode: MLX.PadMode = (config.seanet.padMode == "constant") ? .constant : .edge
         let seanetCfg = SeanetConfig(
             dimension: config.seanet.dimension,
@@ -172,7 +176,7 @@ public final class MimiAdapter: Module {
             compress: config.seanet.compress
         )
 
-        let encoder = SeanetEncoder(cfg: seanetCfg)
+        let encoder = encoderEnabled ? SeanetEncoder(cfg: seanetCfg) : nil
         let decoder = SeanetDecoder(cfg: seanetCfg)
 
         let transformerCfg = TransformerConfig(
@@ -196,14 +200,15 @@ public final class MimiAdapter: Module {
             maxSeqLen: 8192,
             kvRepeat: 1,
             dimFeedforward: config.transformer.dimFeedforward,
-            convLayout: true
+            convLayout: true,
+            gelu: config.gelu
         )
 
-        let encoderTransformer = ProjectedTransformer(
+        let encoderTransformer = encoderEnabled ? ProjectedTransformer(
             cfg: transformerCfg,
             inputDim: config.transformer.inputDimension,
             outputDims: config.transformer.outputDimensions
-        )
+        ) : nil
         let decoderTransformer = ProjectedTransformer(
             cfg: transformerCfg,
             inputDim: config.transformer.inputDimension,

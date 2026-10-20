@@ -359,6 +359,20 @@ struct TTSSmokeTests {
         }
     }
 
+    @Test func phononGeneratesAudio() async throws {
+        let model = try await TTS.loadModel(modelRepo: "gradium/phonon-31m-en")
+        #expect(model is PocketTTSModel)
+        #expect(model.sampleRate == 24_000)
+        let audio = try await model.generate(
+            text: "Hello, this is Phonon running on Apple Silicon.", voice: nil,
+            refAudio: nil, refText: nil, language: nil,
+            generationParameters: GenerateParameters(maxTokens: 128, temperature: 0.8))
+        let samples = audio.asType(.float32).asArray(Float.self)
+        #expect(samples.count > 24_000)
+        #expect(samples.allSatisfy { $0.isFinite })
+        #expect((samples.map { abs($0) }.max() ?? 0) > 0.01)
+    }
+
     @Test func pocketTTSGenerate() async throws {
         testHeader("pocketTTSGenerate")
         defer { testCleanup("pocketTTSGenerate") }

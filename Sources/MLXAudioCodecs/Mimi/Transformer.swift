@@ -27,6 +27,7 @@ public struct TransformerConfig {
     public let kvRepeat: Int
     public let dimFeedforward: Int
     public let convLayout: Bool
+    public let gelu: String
 
     public init(
         dModel: Int,
@@ -49,7 +50,8 @@ public struct TransformerConfig {
         maxSeqLen: Int,
         kvRepeat: Int,
         dimFeedforward: Int,
-        convLayout: Bool
+        convLayout: Bool,
+        gelu: String = "erf"
     ) {
         self.dModel = dModel
         self.numHeads = numHeads
@@ -72,6 +74,7 @@ public struct TransformerConfig {
         self.kvRepeat = kvRepeat
         self.dimFeedforward = dimFeedforward
         self.convLayout = convLayout
+        self.gelu = gelu
     }
 
     public var headDim: Int { dModel / numHeads }
@@ -215,16 +218,20 @@ public final class MlpGating: Module {
 }
 
 public final class MlpNoGating: Module {
+    private let _useExactGELU: Bool
     @ModuleInfo public var linear1: Linear
     @ModuleInfo public var linear2: Linear
 
     public init(cfg: TransformerConfig) {
+        precondition(["erf", "tanh"].contains(cfg.gelu), "Unsupported GELU activation: \(cfg.gelu)")
+        self._useExactGELU = cfg.gelu == "erf"
         self._linear1 = ModuleInfo(wrappedValue: Linear(cfg.dModel, cfg.dimFeedforward, bias: cfg.biasFF))
         self._linear2 = ModuleInfo(wrappedValue: Linear(cfg.dimFeedforward, cfg.dModel, bias: cfg.biasFF))
     }
 
     public func callAsFunction(_ xs: MLXArray) -> MLXArray {
-        linear2(gelu(linear1(xs)))
+        let hidden = linear1(xs)
+        return linear2(_useExactGELU ? gelu(hidden) : geluApproximate(hidden))
     }
 }
 
