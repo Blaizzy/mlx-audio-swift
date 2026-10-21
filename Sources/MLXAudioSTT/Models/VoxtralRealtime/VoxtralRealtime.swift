@@ -475,7 +475,7 @@ extension VoxtralRealtimeModel {
     func evalPrediction(_ logits: MLXArray, temperature: Float) -> MLXArray {
         let prediction: MLXArray
         if temperature == 0 {
-            prediction = (logits.ndim > 1 ? logits.squeezed() : logits).argMax(axis: -1)
+            prediction = logits.argMax(axis: -1)
         } else {
             prediction = logits
         }

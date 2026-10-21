@@ -211,7 +211,10 @@ final class VoxtralRealtimeDecoderAttention: Module {
 
     fileprivate static func ropeInvFreq(headDim: Int, ropeTheta: Float) -> MLXArray {
         let idx = MLXArray(stride(from: 0, to: headDim, by: 2)).asType(.float32)
-        return 1.0 / MLX.pow(MLXArray(ropeTheta), idx / Float(headDim))
+        let invFreq = 1.0 / MLX.pow(MLXArray(ropeTheta), idx / Float(headDim))
+        // Cached for the decoder's lifetime and shared by concurrent sessions.
+        MLX.eval(invFreq)
+        return invFreq
     }
 
     /// Interleaved-RoPE cos/sin tables for `positions`. Every decoder layer rotates
@@ -363,8 +366,7 @@ final class VoxtralRealtimeDecoder: Module {
         let invFreq = VoxtralRealtimeDecoderAttention.ropeInvFreq(
             headDim: config.headDim, ropeTheta: config.ropeTheta
         )
-        // `eval(model)` does not reach the box, and concurrent sessions share this array.
-        MLX.eval(invFreq)
+        // `eval(model)` does not reach the box; `ropeInvFreq` returns it evaluated.
         self.ropeInvFreq = ArrayBox(invFreq)
         self._tokEmbeddings.wrappedValue = Embedding(
             embeddingCount: config.vocabSize,
