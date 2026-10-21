@@ -6,7 +6,10 @@ enum VoxtralRealtimeAudio {
     /// Periodic Hann window: N denominator, not N-1.
     static func periodicHannWindow(size: Int) -> MLXArray {
         let n = MLXArray(0..<size).asType(.float32)
-        return 0.5 * (1.0 - cos((2.0 * Float.pi * n) / Float(size)))
+        let window = 0.5 * (1.0 - cos((2.0 * Float.pi * n) / Float(size)))
+        // The stream keeps this for its lifetime, so materialize it once here.
+        eval(window)
+        return window
     }
 
     static func computeMelFilters(
