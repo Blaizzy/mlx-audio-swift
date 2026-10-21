@@ -945,7 +945,7 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
         }
 
         // Create model (T3 variant selected by config)
-        let model = ChatterboxModel(config)
+        let model = withThrowawayRandomState { ChatterboxModel(config) }
         model.modelDir = modelDir
 
         // Load main weights
@@ -956,7 +956,7 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
 
         // Quantization
         if config.quantization != nil || config.perLayerQuantization != nil {
-            quantize(model: model) { path, _ in
+            quantizeWithPlaceholderArrays(model: model) { path, _ in
                 guard sanitizedWeights["\(path).scales"] != nil else { return nil }
                 if let perLayerQuant = config.perLayerQuantization,
                    let layerQuant = perLayerQuant.quantization(layer: path)

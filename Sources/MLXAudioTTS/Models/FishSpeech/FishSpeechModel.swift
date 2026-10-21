@@ -1040,13 +1040,13 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
         let configURL = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configURL)
         let config = try JSONDecoder().decode(FishSpeechConfig.self, from: configData)
-        let model = FishSpeechModel(config: config)
+        let model = withThrowawayRandomState { FishSpeechModel(config: config) }
 
         let weights = try fishSpeechLoadWeights(from: modelDir)
         let sanitizedWeights = model.sanitize(weights: weights)
 
         if config.quantization != nil || config.perLayerQuantization != nil {
-            quantize(model: model) { path, _ in
+            quantizeWithPlaceholderArrays(model: model) { path, _ in
                 guard sanitizedWeights["\(path).scales"] != nil else { return nil }
                 if let perLayerQuantization = config.perLayerQuantization,
                    let layerQuant = perLayerQuantization.quantization(layer: path)

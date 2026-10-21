@@ -511,11 +511,11 @@ public final class CanaryModel: Module, STTGenerationModel {
         let configURL = modelDir.appendingPathComponent("config.json")
         let config = try JSONDecoder().decode(CanaryConfig.self, from: Data(contentsOf: configURL))
         let tokenizer = try CanaryTokenizer.fromModelDirectory(modelDir, config: config)
-        let model = CanaryModel(config: config, tokenizer: tokenizer)
+        let model = withThrowawayRandomState { CanaryModel(config: config, tokenizer: tokenizer) }
         let weights = try loadCanarySafetensorWeights(from: modelDir)
         let sanitized = sanitize(weights: weights)
         if config.quantization != nil || config.perLayerQuantization != nil {
-            quantize(model: model) { path, _ in
+            quantizeWithPlaceholderArrays(model: model) { path, _ in
                 guard sanitized["\(path).scales"] != nil else {
                     return nil
                 }

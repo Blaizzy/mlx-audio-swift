@@ -1813,7 +1813,7 @@ public class Qwen3ASRModel: Module {
         let perLayerQuantization = config.perLayerQuantization
 
         // Create model
-        let model = Qwen3ASRModel(config)
+        let model = withThrowawayRandomState { Qwen3ASRModel(config) }
 
         // Generate tokenizer.json if missing (Qwen3 ASR models don't ship it)
         try generateTokenizerJSONIfMissing(in: modelDir)
@@ -1838,7 +1838,7 @@ public class Qwen3ASRModel: Module {
 
         // Quantize if needed
         if perLayerQuantization != nil {
-            quantize(model: model) { path, module in
+            quantizeWithPlaceholderArrays(model: model) { path, module in
                 // Don't quantize audio tower
                 if path.hasPrefix("audio_tower") {
                     return nil

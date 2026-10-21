@@ -560,7 +560,7 @@ public class Qwen3ForcedAlignerModel: Module {
 
         let perLayerQuantization = config.perLayerQuantization
 
-        let model = Qwen3ForcedAlignerModel(config)
+        let model = withThrowawayRandomState { Qwen3ForcedAlignerModel(config) }
 
 
         try Qwen3ASRModel.generateTokenizerJSONIfMissing(in: modelDir)
@@ -581,7 +581,7 @@ public class Qwen3ForcedAlignerModel: Module {
         let sanitizedWeights = Qwen3ForcedAlignerModel.sanitize(weights: weights)
 
         if perLayerQuantization != nil {
-            quantize(model: model) { path, module in
+            quantizeWithPlaceholderArrays(model: model) { path, module in
                 if path.hasPrefix("audio_tower") {
                     return nil
                 }

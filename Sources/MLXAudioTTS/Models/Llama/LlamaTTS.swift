@@ -953,7 +953,7 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
 
         let perLayerQuantization = config.perLayerQuantization
 
-        let model = LlamaTTSModel(config)
+        let model = withThrowawayRandomState { LlamaTTSModel(config) }
 
         // Load weights from safetensors
         let weights = try llamaTTSLoadWeights(from: modelDir)
@@ -963,7 +963,7 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
         if perLayerQuantization != nil {
             print("Applying quantization from config...")
 
-            quantize(model: model) { path, module in
+            quantizeWithPlaceholderArrays(model: model) { path, module in
                 if weights["\(path).scales"] != nil {
                     return perLayerQuantization?.quantization(layer: path)?.asTuple
                 } else {

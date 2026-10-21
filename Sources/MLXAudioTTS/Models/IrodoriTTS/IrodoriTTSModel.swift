@@ -295,7 +295,7 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
         let configURL = modelDir.appendingPathComponent("config.json")
         let configData = try Data(contentsOf: configURL)
         let config = try JSONDecoder().decode(IrodoriTTSConfig.self, from: configData)
-        let model = try IrodoriTTSModel(config: config)
+        let model = try withThrowawayRandomState { try IrodoriTTSModel(config: config) }
 
         // Load DiT weights (top-level safetensors only — exclude dacvae/)
         let files = try FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
@@ -313,7 +313,7 @@ public final class IrodoriTTSModel: Module, @unchecked Sendable {
 
         // Quantize matching Linear layers before loading packed weights (8-bit checkpoints).
         if let q = decodeQuantization(configURL: configURL) {
-            quantize(model: model) { path, _ in
+            quantizeWithPlaceholderArrays(model: model) { path, _ in
                 sanitized["\(path).scales"] != nil ? (q.groupSize, q.bits, .affine) : nil
             }
         }

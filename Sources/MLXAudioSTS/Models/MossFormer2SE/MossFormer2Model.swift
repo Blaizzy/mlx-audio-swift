@@ -349,11 +349,11 @@ public final class MossFormer2SEModel: STSModel {
     }
 
     private static func buildModel(config: MossFormer2SEConfig, weights: [String: MLXArray]) throws -> MossFormer2SEModel {
-        let model = MossFormer2SE(config: config)
+        let model = withThrowawayRandomState { MossFormer2SE(config: config) }
         let sanitizedWeights = sanitize(weights: weights)
 
         if let quantization = config.quantizationConfig {
-            quantize(model: model, groupSize: quantization.groupSize, bits: quantization.bits) { path, _ in
+            quantizeWithPlaceholderArrays(model: model, groupSize: quantization.groupSize, bits: quantization.bits) { path, _ in
                 sanitizedWeights["\(path).scales"] != nil
             }
         }

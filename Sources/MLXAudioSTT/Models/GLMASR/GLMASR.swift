@@ -624,7 +624,7 @@ public class GLMASRModel: Module {
         let perLayerQuantization = config.perLayerQuantization
 
         // Create model
-        let model = GLMASRModel(config: config)
+        let model = withThrowawayRandomState { GLMASRModel(config: config) }
 
         // Load tokenizer
         model.tokenizer = try await AutoTokenizer.from(modelFolder: modelDir)
@@ -651,7 +651,7 @@ public class GLMASRModel: Module {
                 print(" Per-layer: \(perLayerQuant)")
             }
 
-            quantize(model: model) { path, module in
+            quantizeWithPlaceholderArrays(model: model) { path, module in
                 // Convert model path back to original weight path for scales check
                 var origPath = path
                 if origPath.hasPrefix("language_model.model.") {

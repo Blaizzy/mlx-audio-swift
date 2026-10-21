@@ -1081,7 +1081,7 @@ public class GraniteSpeechModel: Module {
         let configData = try Data(contentsOf: configPath)
         let config = try JSONDecoder().decode(GraniteSpeechModelConfig.self, from: configData)
 
-        let model = GraniteSpeechModel(config)
+        let model = withThrowawayRandomState { GraniteSpeechModel(config) }
 
         model.tokenizer = try await AutoTokenizer.from(modelFolder: modelDir)
 
@@ -1098,7 +1098,7 @@ public class GraniteSpeechModel: Module {
         let sanitizedWeights = GraniteSpeechModel.sanitize(weights: weights)
 
         if let perLayerQuantization = config.perLayerQuantization {
-            quantize(model: model) { path, module in
+            quantizeWithPlaceholderArrays(model: model) { path, module in
                 if sanitizedWeights["\(path).scales"] != nil {
                     return perLayerQuantization.quantization(layer: path)?.asTuple
                 }

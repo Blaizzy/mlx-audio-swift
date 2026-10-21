@@ -181,13 +181,15 @@ public extension MarvisTTSModel {
         let textTokenizer = try await AutoTokenizer.from(modelFolder: modelDirectoryURL)
         let codec = try await Mimi.fromPretrained(cache: cache, progressHandler: progressHandler)
         let audioTokenizer = MimiTokenizer(codec)
-        let model = MarvisTTSModel(
-            config: args,
-            repoId: modelRepo,
-            promptURLs: audioPromptURLs,
-            textTokenizer: textTokenizer,
-            audioTokenizer: audioTokenizer
-        )
+        let model = withThrowawayRandomState {
+            MarvisTTSModel(
+                config: args,
+                repoId: modelRepo,
+                promptURLs: audioPromptURLs,
+                textTokenizer: textTokenizer,
+                audioTokenizer: audioTokenizer
+            )
+        }
 
         var weights = try marvisLoadWeights(from: modelDirectoryURL)
         
@@ -195,7 +197,7 @@ public extension MarvisTTSModel {
            let groupSize = quantization["group_size"],
            let bits = quantization["bits"] {
             if case let .number(g) = groupSize, case let .number(b) = bits {
-                quantize(model: model, groupSize: Int(g), bits: Int(b)) { path, _ in
+                quantizeWithPlaceholderArrays(model: model, groupSize: Int(g), bits: Int(b)) { path, _ in
                     weights["\(path).scales"] != nil
                 }
             }

@@ -580,7 +580,7 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
             tokenizer = nil
         }
 
-        let model = VoxCPM2Model(config, tokenizer: tokenizer)
+        let model = withThrowawayRandomState { VoxCPM2Model(config, tokenizer: tokenizer) }
 
         // Load weights (single or sharded)
         let weights = try loadWeights(modelDir: modelDir)
@@ -590,7 +590,7 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
 
         // Quantization (only base_lm and residual_lm)
         if config.quantization != nil || config.perLayerQuantization != nil {
-            quantize(model: model) { path, _ in
+            quantizeWithPlaceholderArrays(model: model) { path, _ in
                 guard sanitizedWeights["\(path).scales"] != nil else { return nil }
                 if let perLayerQuant = config.perLayerQuantization,
                    let layerQuant = perLayerQuant.quantization(layer: path)

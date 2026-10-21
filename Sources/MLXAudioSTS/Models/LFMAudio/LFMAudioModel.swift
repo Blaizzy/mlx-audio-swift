@@ -737,7 +737,7 @@ public class LFM2AudioModel: Module, STSModel, @unchecked Sendable {
         let configData = try Data(contentsOf: configURL)
         let config = try JSONDecoder().decode(LFM2AudioConfig.self, from: configData)
 
-        let model = LFM2AudioModel(config)
+        let model = withThrowawayRandomState { LFM2AudioModel(config) }
 
         // Load weights
         let files = try FileManager.default.contentsOfDirectory(
@@ -758,7 +758,7 @@ public class LFM2AudioModel: Module, STSModel, @unchecked Sendable {
         // Quantize if needed (follows Python model_quant_predicate: skip norm/conv)
         let perLayerQuantization = config.perLayerQuantization
         if perLayerQuantization != nil {
-            quantize(model: model) { path, module in
+            quantizeWithPlaceholderArrays(model: model) { path, module in
                 if path.contains("norm") || path.contains("conv") {
                     return nil
                 }

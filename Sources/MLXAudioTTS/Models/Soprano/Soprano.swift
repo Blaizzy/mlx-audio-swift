@@ -954,7 +954,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
             config.inputKernel = 3
         }
 
-        let model = SopranoModel(config)
+        let model = withThrowawayRandomState { SopranoModel(config) }
 
         // Load weights
         let weights = try loadSopranoWeights(from: modelDir)
@@ -962,7 +962,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
 
         // Apply quantization if needed
         if config.quantization != nil || config.perLayerQuantization != nil {
-            quantize(model: model) { path, _ in
+            quantizeWithPlaceholderArrays(model: model) { path, _ in
                 guard sanitizedWeights["\(path).scales"] != nil else {
                     return nil
                 }
