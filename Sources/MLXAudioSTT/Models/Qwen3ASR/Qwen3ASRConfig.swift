@@ -6,7 +6,7 @@
 //
 
 import Foundation
-import MLXLMCommon
+import MLXAudioCore
 
 // MARK: - Audio Encoder Config
 

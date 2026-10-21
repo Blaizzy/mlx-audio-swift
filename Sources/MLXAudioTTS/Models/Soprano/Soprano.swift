@@ -9,9 +9,8 @@ import Foundation
 @preconcurrency import MLX
 import HuggingFace
 import Tokenizers
-import MLXLMCommon
-import MLXNN
 import MLXAudioCore
+import MLXNN
 
 // MARK: - Type Aliases
 

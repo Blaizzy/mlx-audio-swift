@@ -2,8 +2,7 @@ import Foundation
 import HuggingFace
 @preconcurrency import MLX
 import MLXAudioCodecs
-import MLXAudioCore
-@preconcurrency import MLXLMCommon
+@preconcurrency import MLXAudioCore
 import MLXNN
 
 public let mossTTSDefaultAudioTokenizerRepo = "OpenMOSS-Team/MOSS-Audio-Tokenizer"

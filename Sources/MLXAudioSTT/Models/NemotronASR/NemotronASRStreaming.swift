@@ -90,6 +90,12 @@ extension NemotronASRModel {
         )
     }
 
+    /// Mel frames per encoder chunk in `streamEncodeChunks`.
+    func streamChunkMelFrames(chunkFrames: Int?) -> Int {
+        let right = defaultAttContextSize.count > 1 ? defaultAttContextSize[1] : 13
+        return (chunkFrames ?? max(1, right + 1)) * encoderConfig.subsamplingFactor
+    }
+
     /// Resumable cache-aware encoder loop shared by `cacheAwareStreamEncode` (one-shot)
     /// and `NemotronASRStreamSession` (incremental). Processes `mel` frames in
     /// `[state.consumed, limit)`:
@@ -107,6 +113,7 @@ extension NemotronASRModel {
         chunkFrames: Int?,
         flushTail: Bool,
         state: NemotronASRStreamEncoderState,
+        melOffset: Int = 0,
         onChunk: (MLXArray) -> Void
     ) {
         var features = mel
@@ -114,9 +121,7 @@ extension NemotronASRModel {
         features = features.asType(computeDType)
 
         let sf = encoderConfig.subsamplingFactor
-        let right = defaultAttContextSize.count > 1 ? defaultAttContextSize[1] : 13
-        let cf = chunkFrames ?? max(1, right + 1)
-        let chunkMel = cf * sf
+        let chunkMel = streamChunkMelFrames(chunkFrames: chunkFrames)
         let leftCache = defaultAttContextSize.first ?? 56
         let convLeft = encoderConfig.convKernelSize - 1
 
@@ -125,7 +130,7 @@ extension NemotronASRModel {
             // Mid-stream: defer a partial trailing chunk until the next call / flush.
             if !flushTail && (end - state.consumed) < chunkMel { break }
 
-            let m = features[0..., state.consumed..<end, 0...]
+            let m = features[0..., (state.consumed - melOffset)..<(end - melOffset), 0...]
             let cacheLen = state.melCache?.shape[1] ?? 0
             let win = state.melCache == nil ? m : MLX.concatenated([state.melCache!, m], axis: 1)
             let winLen = win.shape[1]

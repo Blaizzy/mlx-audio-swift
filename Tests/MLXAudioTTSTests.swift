@@ -19,7 +19,6 @@ import Testing
 import MLX
 import MLXNN
 import Metal
-import MLXLMCommon
 import Tokenizers
 import Foundation
 import HuggingFace

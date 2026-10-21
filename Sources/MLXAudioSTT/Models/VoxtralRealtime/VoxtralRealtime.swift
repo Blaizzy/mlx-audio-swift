@@ -3,7 +3,6 @@ import MLX
 import MLXNN
 import MLXAudioCore
 import MLXAudioVAD
-import MLXLMCommon
 import HuggingFace
 
 private enum VoxtralRealtimeConstants {

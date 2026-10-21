@@ -4,7 +4,7 @@
 //
 
 import Foundation
-import MLXLMCommon
+import MLXAudioCore
 
 // MARK: - Encoder Config (CTC Conformer)
 

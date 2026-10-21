@@ -13,9 +13,8 @@ import Foundation
 import HuggingFace
 @preconcurrency import MLX
 import MLXAudioCodecs
-import MLXAudioCore
 import MLXNN
-@preconcurrency import MLXLMCommon
+@preconcurrency import MLXAudioCore
 import Tokenizers
 
 func resolveChatterboxEmotionAdv(default value: MLXArray, override: Float?) -> MLXArray {

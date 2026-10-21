@@ -1,5 +1,5 @@
 @preconcurrency import MLX
-@preconcurrency import MLXLMCommon
+@preconcurrency import MLXAudioCore
 import MLXNN
 import Foundation
 

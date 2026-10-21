@@ -1,0 +1,357 @@
+// Copyright © 2024, 2025, 2026 Apple Inc.
+
+import Foundation
+import MLX
+
+public struct BaseConfiguration: Codable, Sendable {
+
+    /// The architecture identifier (e.g., "bert", "roberta", "xlm-roberta").
+    public let modelType: String
+
+    /// Configuration parameters for weight quantization.
+    ///
+    /// MLX uses group-wise quantization to reduce memory footprint. This struct
+    /// defines how weights are grouped and the precision (bits) used for each group.
+    public struct Quantization: Codable, Sendable, Equatable {
+
+        /// Initializes a new quantization configuration.
+        /// - Parameters:
+        ///   - groupSize: The number of weights that share the same scale and bias.
+        ///   - bits: The bit-depth of the quantized weights (e.g., 4 or 8).
+        public init(groupSize: Int, bits: Int, mode: QuantizationMode = .affine) {
+            self.groupSize = groupSize
+            self.bits = bits
+            self._mode = mode == .affine ? nil : mode
+        }
+
+        /// The size of the quantization group.
+        public let groupSize: Int
+
+        /// The number of bits per weight.
+        public let bits: Int
+
+        /// Internal storage for the quantization mode.
+        private var _mode: QuantizationMode? = nil
+
+        /// The quantization method to use (defaults to `.affine`).
+        ///
+        /// Affine quantization (asymmetric) uses both a scale and a zero-point
+        /// to map floating point values to integers.
+        public var mode: QuantizationMode { _mode ?? .affine }
+
+        /// Converts the configuration into a tuple format compatible with `MLX.quantize`.
+        public var asTuple: (Int, Int, QuantizationMode) { (groupSize, bits, mode) }
+
+        enum CodingKeys: String, CodingKey {
+            case groupSize = "group_size"
+            case bits = "bits"
+            case _mode = "mode"
+        }
+    }
+
+    /// handling instructions for ``PerLayerQuantization``
+    public enum QuantizationOption: Sendable {
+        /// Do not quantize this specific layer (keep it in high precision).
+        case skip
+        /// Quantize this layer using the provided parameters.
+        case quantize(Quantization)
+    }
+
+    /// A container for per-layer ``Quantization`` settings.
+    ///
+    /// This allows for "Mixed-Precision" or "Heterogeneous" quantization, where
+    /// sensitive layers (like the embedding head) can be kept at higher precision
+    /// while the rest of the model is compressed.
+    public struct PerLayerQuantization: Sendable {
+        /// The default quantization for any layer not explicitly named in `perLayerQuantization`.
+        public var quantization: Quantization? = nil
+
+        /// A dictionary mapping layer paths (e.g., "model.embed_tokens") to their quantization options.
+        public var perLayerQuantization: [String: QuantizationOption]
+
+        public init(
+            quantization: BaseConfiguration.Quantization? = nil,
+            perLayerQuantization: [String: BaseConfiguration.QuantizationOption]
+        ) {
+            self.quantization = quantization
+            self.perLayerQuantization = perLayerQuantization
+        }
+
+        /// Resolves the quantization parameters for a specific layer.
+        /// - Parameter layer: The path/name of the layer.
+        /// - Returns: The `Quantization` settings to apply, or `nil` if the layer should be skipped.
+        public func quantization(layer: String) -> Quantization? {
+            if let perLayer = perLayerQuantization[layer] {
+                switch perLayer {
+                case .skip:
+                    return nil
+                case .quantize(let quantization):
+                    return quantization
+                }
+            } else {
+                return quantization
+            }
+        }
+    }
+
+    /// An internal container designed to handle the mixed JSON structure found in `config.json`.
+    ///
+    /// ```
+    /// "quantization": {
+    ///     "group_size": 64,
+    ///     "bits": 4,
+    ///     "model.embed_tokens": {
+    ///         "group_size": 32,
+    ///         "bits": 4
+    ///     },
+    ///     "model.layers.0.self_attn.q_norm": false,
+    /// ```
+    ///
+    /// Quantization configs in MLX often interleave global keys (like `bits`) with
+    /// specific layer keys (like `model.layers.0...`). This container uses manual
+    /// decoding to separate these interleaved values.
+    struct QuantizationContainer: Codable, Sendable {
+        var quantization: Quantization
+        var perLayerQuantization: PerLayerQuantization
+
+        /// A custom CodingKey used to iterate over arbitrary layer names in JSON.
+        internal struct _DictionaryCodingKey: CodingKey {
+            internal let stringValue: String
+            internal let intValue: Int?
+
+            internal init(stringValue: String) {
+                self.stringValue = stringValue
+                self.intValue = Int(stringValue)
+            }
+
+            internal init(intValue: Int) {
+                self.stringValue = "\(intValue)"
+                self.intValue = intValue
+            }
+        }
+
+        init(from decoder: any Decoder) throws {
+            // handle the embedded Quantization
+            self.quantization = try Quantization(from: decoder)
+
+            // and the interleaved per-layer values
+            var perLayerQuantization = [String: QuantizationOption]()
+            let container = try decoder.container(keyedBy: _DictionaryCodingKey.self)
+            for key in container.allKeys {
+                switch key.stringValue {
+                case Quantization.CodingKeys.groupSize.rawValue: continue
+                case Quantization.CodingKeys.bits.rawValue: continue
+                case Quantization.CodingKeys._mode.rawValue: continue
+
+                // additional keys that are not layer instructions, see
+                // mlx-community/bitnet-b1.58-2B-4T-4bit
+                case "quant_method", "linear_class", "quantization_mode": continue
+
+                default:
+                    // If the value is a boolean 'false', we treat it as .skip
+                    if let f = try? container.decode(Bool.self, forKey: key) {
+                        if !f {
+                            perLayerQuantization[key.stringValue] = .skip
+                        }
+                    } else {
+                        // Otherwise, try to decode a specific Quantization object for this layer
+                        perLayerQuantization[key.stringValue] = .quantize(
+                            try container.decode(Quantization.self, forKey: key))
+                    }
+                }
+            }
+            self.perLayerQuantization = PerLayerQuantization(
+                quantization: quantization, perLayerQuantization: perLayerQuantization)
+        }
+
+        func encode(to encoder: any Encoder) throws {
+            try quantization.encode(to: encoder)
+
+            var container = encoder.container(keyedBy: _DictionaryCodingKey.self)
+            for (key, value) in perLayerQuantization.perLayerQuantization {
+                switch value {
+                case .skip:
+                    try container.encode(false, forKey: .init(stringValue: key))
+                case .quantize(let q):
+                    try container.encode(q, forKey: .init(stringValue: key))
+                }
+            }
+        }
+    }
+
+    private struct TextConfiguration: Codable, Sendable {
+        var eosTokenIds: IntOrIntArray?
+
+        enum CodingKeys: String, CodingKey {
+            case eosTokenIds = "eos_token_id"
+        }
+    }
+
+    /// Internal storage for quantization details extracted from `config.json`.
+    var quantizationContainer: QuantizationContainer?
+
+    /// Text-model metadata nested by composite model configurations.
+    private var textConfiguration: TextConfiguration?
+
+    /// EOS token IDs from config.json. Can be a single Int or an array of Ints.
+    public var eosTokenIds: IntOrIntArray?
+
+    /// EOS token IDs declared at either the model root or in `text_config`.
+    public var effectiveEOSTokenIds: Set<Int> {
+        Set(eosTokenIds?.values ?? textConfiguration?.eosTokenIds?.values ?? [])
+    }
+
+    /// The per-layer quantization settings, including the default fallback.
+    public var perLayerQuantization: PerLayerQuantization? {
+        quantizationContainer?.perLayerQuantization
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case modelType = "model_type"
+        case quantizationContainer = "quantization"
+        case textConfiguration = "text_config"
+        case eosTokenIds = "eos_token_id"
+    }
+}
+
+public struct IntOrIntArray: Codable, Sendable, Equatable {
+    public let values: [Int]
+
+    public init(_ values: [Int]) {
+        self.values = values
+    }
+
+    public init(_ value: Int) {
+        self.values = [value]
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let array = try? container.decode([Int].self) {
+            self.values = array
+        } else if let single = try? container.decode(Int.self) {
+            self.values = [single]
+        } else {
+            throw DecodingError.typeMismatch(
+                IntOrIntArray.self,
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Expected Int or [Int]"
+                )
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        if values.count == 1 {
+            try container.encode(values[0])
+        } else {
+            try container.encode(values)
+        }
+    }
+
+    /// Get the intermediate size for a specific layer
+    public subscript(layerIdx: Int) -> Int {
+        if values.count == 1 {
+            return values[0]
+        }
+        return values[layerIdx]
+    }
+}
+
+public enum StringOrNumber: Codable, Equatable, Sendable {
+    case string(String)
+    case int(Int)
+    case float(Float)
+    case ints([Int])
+    case floats([Float])
+    case bool(Bool)
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.singleValueContainer()
+
+        if let v = try? values.decode(Int.self) {
+            self = .int(v)
+        } else if let v = try? values.decode(Float.self) {
+            self = .float(v)
+        } else if let v = try? values.decode([Int].self) {
+            self = .ints(v)
+        } else if let v = try? values.decode([Float].self) {
+            self = .floats(v)
+        } else if let v = try? values.decode(Bool.self) {
+            self = .bool(v)
+        } else {
+            let v = try values.decode(String.self)
+            self = .string(v)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let v): try container.encode(v)
+        case .int(let v): try container.encode(v)
+        case .float(let v): try container.encode(v)
+        case .ints(let v): try container.encode(v)
+        case .floats(let v): try container.encode(v)
+        case .bool(let v): try container.encode(v)
+        }
+    }
+
+    /// Return the value as an optional array of integers.
+    ///
+    /// This will not coerce `Float` or `String` to `Int`.
+    public func asInts() -> [Int]? {
+        switch self {
+        case .string(_): nil
+        case .int(let v): [v]
+        case .float(_): nil
+        case .ints(let array): array
+        case .floats(_): nil
+        case .bool(_): nil
+        }
+    }
+
+    /// Return the value as an optional integer.
+    ///
+    /// This will not coerce `Float` or `String` to `Int`.
+    public func asInt() -> Int? {
+        switch self {
+        case .string(_): nil
+        case .int(let v): v
+        case .float(_): nil
+        case .ints(let array): array.count == 1 ? array[0] : nil
+        case .floats(_): nil
+        case .bool(let bool): bool ? 1 : 0
+        }
+    }
+
+    /// Return the value as an optional array of floats.
+    ///
+    /// This will not coerce `Int` or `String` to `Float`.
+    public func asFloats() -> [Float]? {
+        switch self {
+        case .string(_): nil
+        case .int(let v): [Float(v)]
+        case .float(let float): [float]
+        case .ints(let array): array.map { Float($0) }
+        case .floats(let array): array
+        case .bool(let bool): [bool ? 1.0 : 0.0]
+        }
+    }
+
+    /// Return the value as an optional float.
+    ///
+    /// This will not coerce `Int` or `String` to `Float`.
+    public func asFloat() -> Float? {
+        switch self {
+        case .string(_): nil
+        case .int(let v): Float(v)
+        case .float(let float): float
+        case .ints(let array): array.count == 1 ? Float(array[0]) : nil
+        case .floats(let array): array.count == 1 ? array[0] : nil
+        case .bool(let bool): bool ? 1.0 : 0.0
+        }
+    }
+}

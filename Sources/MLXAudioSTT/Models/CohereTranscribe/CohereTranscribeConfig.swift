@@ -1,6 +1,6 @@
 import Foundation
 import MLX
-import MLXLMCommon
+import MLXAudioCore
 
 public struct CohereTranscribeAudioEncoderConfig: Codable, Sendable {
     public let dModel: Int

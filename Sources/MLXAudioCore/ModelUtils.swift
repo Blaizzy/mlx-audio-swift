@@ -11,6 +11,7 @@ public enum ModelUtils {
         let modelURL = try await resolveOrDownloadModel(
             repoID: repoID,
             requiredExtension: "safetensors",
+            additionalMatchingPatterns: ["*.model"],
             hfToken: hfToken,
             cache: cache
         )
@@ -19,6 +20,7 @@ public enum ModelUtils {
             return (config["model_type"] as? String)
                 ?? (config["architecture"] as? String)
                 ?? (config["model_version"] as? String)
+                ?? (config["flow_lm"] != nil && config["mimi"] != nil ? "pocket_tts" : nil)
                 ?? modelNameComponents?.first?.lowercased()
         }
         return nil

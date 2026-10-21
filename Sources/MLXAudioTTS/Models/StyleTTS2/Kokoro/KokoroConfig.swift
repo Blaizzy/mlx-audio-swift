@@ -1,5 +1,5 @@
 import Foundation
-@preconcurrency import MLXLMCommon
+@preconcurrency import MLXAudioCore
 
 public struct KokoroConfig: Decodable {
     let modelType: String

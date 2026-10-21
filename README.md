@@ -129,6 +129,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | IndexTTS | — | [mlx-community/IndexTTS](https://huggingface.co/mlx-community/IndexTTS), [mlx-community/IndexTTS-1.5](https://huggingface.co/mlx-community/IndexTTS-1.5) |
 | Marvis TTS | [Marvis TTS README](Sources/MLXAudioTTS/Models/Marvis/README.md) | [Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit](https://huggingface.co/Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit) |
 | Pocket TTS | [Pocket TTS README](Sources/MLXAudioTTS/Models/PocketTTS/README.md) | [mlx-community/pocket-tts](https://huggingface.co/mlx-community/pocket-tts) |
+| Phonon | [Phonon README](Sources/MLXAudioTTS/Models/PocketTTS/README.md) | [Gradium 31M](https://huggingface.co/gradium/phonon-31m-en), [Gradium 40M](https://huggingface.co/gradium/phonon-40m-en) |
 | Irodori TTS | [Irodori TTS README](Sources/MLXAudioTTS/Models/IrodoriTTS/README.md) | [mlx-community/Irodori-TTS-600M-v3-VoiceDesign-8bit](https://huggingface.co/mlx-community/Irodori-TTS-600M-v3-VoiceDesign-8bit), [mlx-community/Irodori-TTS-v4.1-Small-8bit](https://huggingface.co/mlx-community/Irodori-TTS-v4.1-Small-8bit), [mlx-community/Irodori-TTS-v4.1-Small-MF-8bit](https://huggingface.co/mlx-community/Irodori-TTS-v4.1-Small-MF-8bit) |
 | Spark-TTS | [Spark-TTS README](Sources/MLXAudioTTS/Models/Spark/README.md) | [mlx-community/Spark-TTS-0.5B-bf16](https://huggingface.co/mlx-community/Spark-TTS-0.5B-bf16) |
 | Dia | [Dia README](Sources/MLXAudioTTS/Models/Dia/README.md) | [mlx-community/Dia-1.6B](https://huggingface.co/mlx-community/Dia-1.6B) |
@@ -247,6 +248,10 @@ let audio = try await model.generate(
 - **Swift 5.9+**
 
 ## Examples
+
+[Phonon Translate](Examples/PhononTranslate) is an XcodeGen example for iOS and
+macOS: type in English, translate into French with a small local language model,
+and listen with Phonon’s English and French voices.
 
 Check out the [Examples/VoicesApp](Examples/VoicesApp) directory for a complete SwiftUI application demonstrating:
 - Loading and running TTS models

@@ -2,7 +2,7 @@
 import Foundation
 import Hub
 import MLX
-import MLXLMCommon
+import MLXAudioCore
 import MLXNN
 import Tokenizers
 

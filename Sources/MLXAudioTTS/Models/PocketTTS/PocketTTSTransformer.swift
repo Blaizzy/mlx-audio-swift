@@ -1,7 +1,7 @@
 import Foundation
 @preconcurrency import MLX
 import MLXNN
-import MLXLMCommon
+import MLXAudioCore
 
 @inline(__always)
 private func pocketCreateAdditiveCausalMask(_ n: Int, offset: Int = 0) -> MLXArray {
@@ -152,6 +152,7 @@ public final class PocketStreamingMultiheadAttention: Module {
 }
 
 public final class PocketStreamingTransformerLayer: Module {
+    private let _useExactGELU: Bool
     @ModuleInfo(key: "self_attn") public var self_attn: PocketStreamingMultiheadAttention
     @ModuleInfo(key: "norm1") public var norm1: PocketLayerNorm
     @ModuleInfo(key: "norm2") public var norm2: PocketLayerNorm
@@ -160,7 +161,9 @@ public final class PocketStreamingTransformerLayer: Module {
     @ModuleInfo(key: "layer_scale_1") public var layer_scale_1: PocketLayerScale?
     @ModuleInfo(key: "layer_scale_2") public var layer_scale_2: PocketLayerScale?
 
-    public init(dModel: Int, numHeads: Int, dimFeedforward: Int, rope: PocketRotaryEmbedding, layerScale: Float?) {
+    public init(dModel: Int, numHeads: Int, dimFeedforward: Int, rope: PocketRotaryEmbedding, layerScale: Float?, gelu: String = "erf") {
+        precondition(["erf", "tanh"].contains(gelu), "Unsupported GELU activation: \(gelu)")
+        self._useExactGELU = gelu == "erf"
         self._self_attn = ModuleInfo(wrappedValue: PocketStreamingMultiheadAttention(embedDim: dModel, numHeads: numHeads, rope: rope))
         self._norm1 = ModuleInfo(wrappedValue: PocketLayerNorm(channels: dModel, eps: 1e-5))
         self._norm2 = ModuleInfo(wrappedValue: PocketLayerNorm(channels: dModel, eps: 1e-5))
@@ -184,7 +187,8 @@ public final class PocketStreamingTransformerLayer: Module {
     public func callAsFunction(_ x: MLXArray, cache: KVCacheSimple?) -> MLXArray {
         let attnOut = self_attn(norm1(x), cache: cache)
         var h = x + applyScale(attnOut, layer_scale_1)
-        let ff = linear2(gelu(linear1(norm2(h))))
+        let hidden = linear1(norm2(h))
+        let ff = linear2(_useExactGELU ? gelu(hidden) : geluApproximate(hidden))
         h = h + applyScale(ff, layer_scale_2)
         return h
     }
@@ -199,7 +203,7 @@ public final class PocketStreamingTransformer: Module {
 
     @ModuleInfo(key: "layers") public var layers: [PocketStreamingTransformerLayer]
 
-    public init(dModel: Int, numHeads: Int, numLayers: Int, dimFeedforward: Int, maxPeriod: Double, layerScale: Float? = nil) {
+    public init(dModel: Int, numHeads: Int, numLayers: Int, dimFeedforward: Int, maxPeriod: Double, layerScale: Float? = nil, gelu: String = "erf") {
         self.dModel = dModel
         self.numHeads = numHeads
         self.numLayers = numLayers
@@ -212,7 +216,8 @@ public final class PocketStreamingTransformer: Module {
                 numHeads: numHeads,
                 dimFeedforward: dimFeedforward,
                 rope: rope,
-                layerScale: layerScale
+                layerScale: layerScale,
+                gelu: gelu
             )
         })
         super.init()

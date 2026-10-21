@@ -4,7 +4,6 @@ import MLX
 import MLXNN
 import MLXAudioCore
 import MLXAudioVAD
-import MLXLMCommon
 
 private struct CoherePrefillContext {
     let adapterOut: MLXArray

@@ -1,6 +1,6 @@
 import Foundation
 import MLX
-import MLXLMCommon
+import MLXAudioCore
 
 /// An opaque, reusable KV cache for Llama and Qwen TTS generation.
 ///

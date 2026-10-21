@@ -8,6 +8,8 @@
 Examples/VoicesApp/Config/Local.xcconfig
 Examples/SimpleChat/Config/Local.xcconfig
 Examples/SimpleChat/SimpleChat.xcodeproj/
+Examples/PhononTranslate/Config/Local.xcconfig
+Examples/PhononTranslate/PhononTranslate.xcodeproj/
 xcuserdata/*
 *.pbxproj
 *.resolved

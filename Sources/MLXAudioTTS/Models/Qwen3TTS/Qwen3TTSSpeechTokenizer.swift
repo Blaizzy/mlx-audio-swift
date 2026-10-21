@@ -1,7 +1,7 @@
 import Foundation
 @preconcurrency import MLX
 import MLXAudioCodecs
-@preconcurrency import MLXLMCommon
+@preconcurrency import MLXAudioCore
 import MLXNN
 
 // MARK: - Vector Quantization

@@ -1,5 +1,5 @@
 import Foundation
-import MLXLMCommon
+import MLXAudioCore
 
 public struct FishTextConfig: Codable, Sendable {
     public var modelType: String

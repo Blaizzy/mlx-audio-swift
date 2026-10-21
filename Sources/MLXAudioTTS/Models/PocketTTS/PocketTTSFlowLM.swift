@@ -1,7 +1,7 @@
 import Foundation
 @preconcurrency import MLX
 import MLXNN
-import MLXLMCommon
+import MLXAudioCore
 
 @inline(__always)
 private func pocketLsdDecode(
@@ -34,6 +34,9 @@ public final class FlowLMModel: Module {
     @ModuleInfo(key: "transformer") public var transformer: PocketStreamingTransformer
     @ModuleInfo(key: "out_norm") public var out_norm: PocketLayerNorm
     @ModuleInfo(key: "out_eos") public var out_eos: Linear
+    @ModuleInfo(key: "num_speakers") public var num_speakers: SpeakerCountConditioner?
+    @ModuleInfo(key: "duration_delta") public var duration_delta: ContinuousConditioner?
+    private var _conditioningEmbedding: MLXArray?
 
     public let ldim: Int
     public let dim: Int
@@ -43,7 +46,9 @@ public final class FlowLMModel: Module {
         flowNet: SimpleMLPAdaLN,
         transformer: PocketStreamingTransformer,
         dim: Int,
-        ldim: Int
+        ldim: Int,
+        numSpeakers: SpeakerCountConditioner? = nil,
+        durationDelta: ContinuousConditioner? = nil
     ) {
         self._conditioner = ModuleInfo(wrappedValue: conditioner)
         self._flow_net = ModuleInfo(wrappedValue: flowNet)
@@ -54,6 +59,8 @@ public final class FlowLMModel: Module {
         self._transformer = ModuleInfo(wrappedValue: transformer)
         self._out_norm = ModuleInfo(wrappedValue: PocketLayerNorm(channels: dim, eps: 1e-5))
         self._out_eos = ModuleInfo(wrappedValue: Linear(dim, 1, bias: true))
+        self._num_speakers = ModuleInfo(wrappedValue: numSpeakers)
+        self._duration_delta = ModuleInfo(wrappedValue: durationDelta)
         self.ldim = ldim
         self.dim = dim
         super.init()
@@ -61,8 +68,25 @@ public final class FlowLMModel: Module {
 
     public func makeCache() -> [KVCacheSimple] { transformer.makeCache() }
 
+    public func cacheConditioning() {
+        var embedding = num_speakers?(MLXArray([Int32(1)]))
+        if let duration = duration_delta?(MLXArray([Float(0)])) {
+            embedding = embedding.map { $0 + duration } ?? duration
+        }
+        _conditioningEmbedding = embedding
+        if let embedding { eval(embedding) }
+    }
+
+    // The speaker and duration sum conditions apply only to audio tokens. Text and
+    // voice prompts prefill the transformer without it.
+    func conditionAudioInput(_ input: MLXArray) -> MLXArray {
+        guard num_speakers != nil || duration_delta != nil else { return input }
+        if _conditioningEmbedding == nil { cacheConditioning() }
+        return input + _conditioningEmbedding!
+    }
+
     private func backbone(input: MLXArray, textEmbeddings: MLXArray, sequence: MLXArray, cache: [KVCacheSimple]) -> MLXArray {
-        let combined = concatenated([textEmbeddings, input], axis: 1)
+        let combined = concatenated([textEmbeddings, conditionAudioInput(input)], axis: 1)
         var out = transformer(combined, cache: cache)
         out = out_norm(out)
         let seqLen = sequence.shape[1]
@@ -111,7 +135,11 @@ public final class FlowLMModel: Module {
         return (nextLatent, isEos)
     }
 
-    public static func fromConfig(_ config: PocketTTSFlowLMConfig, latentDim: Int, modelFolder: URL) async throws -> FlowLMModel {
+    public static func fromConfig(
+        _ config: PocketTTSFlowLMConfig, latentDim: Int, modelFolder: URL,
+        tokenizerPath: String? = nil, numSpeakers: SpeakerCountConditioner? = nil,
+        durationDelta: ContinuousConditioner? = nil
+    ) async throws -> FlowLMModel {
         let dModel = config.transformer.dModel
         let flowNet = SimpleMLPAdaLN(
             inChannels: latentDim,
@@ -119,23 +147,26 @@ public final class FlowLMModel: Module {
             outChannels: latentDim,
             condChannels: dModel,
             numResBlocks: config.flow.depth,
-            numTimeConds: 2
+            numTimeConds: 2,
+            timeRmsNorm: config.timeRmsNorm
         )
 
         let conditioner = try await LUTConditioner(
             nBins: config.lookupTable.nBins,
             modelFolder: modelFolder,
             dim: config.lookupTable.dim,
-            outputDim: dModel
+            outputDim: dModel,
+            tokenizerPath: tokenizerPath ?? config.lookupTable.tokenizerPath
         )
 
         let transformer = PocketStreamingTransformer(
             dModel: dModel,
             numHeads: config.transformer.numHeads,
             numLayers: config.transformer.numLayers,
-            dimFeedforward: Int(config.transformer.hiddenScale * dModel),
+            dimFeedforward: Int(config.transformer.hiddenScale * Double(dModel)),
             maxPeriod: config.transformer.maxPeriod,
-            layerScale: nil
+            layerScale: nil,
+            gelu: config.transformer.gelu
         )
 
         return FlowLMModel(
@@ -143,7 +174,9 @@ public final class FlowLMModel: Module {
             flowNet: flowNet,
             transformer: transformer,
             dim: dModel,
-            ldim: latentDim
+            ldim: latentDim,
+            numSpeakers: numSpeakers,
+            durationDelta: durationDelta
         )
     }
 }

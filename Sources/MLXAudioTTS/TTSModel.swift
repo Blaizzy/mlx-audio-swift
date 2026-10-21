@@ -181,7 +181,7 @@ public enum TTS {
                 pretrained: { try await SopranoModel.fromPretrained($0, cache: $1) },
                 local: { modelDir, repoHint in try await SopranoModel.fromModelDirectory(modelDir, repo: repoHint) }
             )
-        case "pocket_tts":
+        case "pocket_tts", "phonon":
             return try await load(
                 source,
                 modelType: resolvedType,
@@ -297,6 +297,7 @@ public enum TTS {
         return (config["model_type"] as? String)
             ?? (config["architecture"] as? String)
             ?? (config["model_version"] as? String)
+            ?? (config["flow_lm"] != nil && config["mimi"] != nil ? "pocket_tts" : nil)
     }
 
     private static func inferModelType(from modelRepo: String) -> String? {
@@ -346,7 +347,7 @@ public enum TTS {
         if lower.contains("csm") || lower.contains("sesame") {
             return "csm"
         }
-        if lower.contains("pocket_tts") {
+        if lower.contains("pocket_tts") || lower.contains("pocket-tts") || lower.contains("phonon") {
             return "pocket_tts"
         }
         if lower.contains("chatterbox") {

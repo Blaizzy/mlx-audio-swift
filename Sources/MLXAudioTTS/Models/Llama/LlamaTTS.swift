@@ -9,10 +9,9 @@ import Foundation
 @preconcurrency import MLX
 import HuggingFace
 import Tokenizers
-import MLXLMCommon
+import MLXAudioCore
 import MLXNN
 import MLXAudioCodecs
-import MLXAudioCore
 
 // MARK: - Orpheus TTS Special Token IDs
 

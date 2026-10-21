@@ -1,7 +1,7 @@
 import Foundation
 import MLX
 import MLXAudioCodecs
-import MLXLMCommon
+import MLXAudioCore
 import MLXNN
 import Testing
 

@@ -11,7 +11,6 @@ import AVFoundation
 
 @testable import MLXAudioCore
 @testable import MLXAudioTTS
-@testable import MLXLMCommon
 
 @Suite("OmniVoice Configuration Tests")
 struct OmniVoiceConfigTests {

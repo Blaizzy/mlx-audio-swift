@@ -1,5 +1,5 @@
 import Foundation
-import MLXLMCommon
+import MLXAudioCore
 
 public struct CanaryPreprocessConfig: Decodable, Sendable {
     public let sampleRate: Int
