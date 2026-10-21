@@ -485,7 +485,10 @@ public final class CanaryModel: Module, STTGenerationModel {
         return mlxNative ? sanitizeMLXNative(weights: weights) : sanitizeNemo(weights: weights)
     }
 
-    public static func fromPretrained(_ modelName: String) async throws -> CanaryModel {
+    public static func fromPretrained(
+        _ modelName: String,
+        cache: HubCache = .default
+    ) async throws -> CanaryModel {
         let expanded = (modelName as NSString).expandingTildeInPath
         if FileManager.default.fileExists(atPath: expanded) {
             return try await fromModelDirectory(URL(fileURLWithPath: expanded))
@@ -502,7 +505,8 @@ public final class CanaryModel: Module, STTGenerationModel {
             repoID: repoID,
             requiredExtension: "safetensors",
             additionalMatchingPatterns: ["*.json", "*.model", "tokens.txt"],
-            hfToken: hfToken
+            hfToken: hfToken,
+            cache: cache
         )
         return try await fromModelDirectory(modelDir)
     }
