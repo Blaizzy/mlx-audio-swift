@@ -34,7 +34,36 @@ final class NemotronASRStreamRNNTState {
     var decoderState: NemoLSTMState?
     var globalTime = 0  // absolute subsampled-frame index, for token timestamps
 
+    // The prediction network output depends only on (lastToken, decoderState),
+    // which change only on emission. Blank frames reuse it, along with the
+    // proposed LSTM state and the joint's pred projection. Cleared on emission
+    // (keying on lastToken alone would reuse a stale output after a repeated token).
+    // Not evaluated here: the host sync that reads the next frames' tokens evaluates
+    // it, and an eval of its own would add a sync per emission.
+    var cachedPrediction: (predProjected: MLXArray, proposedState: NemoLSTMState)?
+
     init(blankToken: Int) { lastToken = blankToken }
+}
+
+/// Frames whose greedy RNN-T token is read back per host sync. Frames after an
+/// emission are discarded, so a larger value trades wasted joint work for syncs.
+private let nemoRNNTSyncFrames = 4
+
+extension NemoJointNetwork {
+    /// Second half of `callAsFunction`, taking the already projected encoder and
+    /// prediction outputs, so a caller can reuse a projection across frames.
+    func combine(_ encProjected: MLXArray, _ predProjected: MLXArray) -> MLXArray {
+        var x = encProjected.expandedDimensions(axis: 2) + predProjected.expandedDimensions(axis: 1)
+        switch activationName {
+        case "relu":
+            x = relu(x)
+        case "sigmoid":
+            x = sigmoid(x)
+        default:
+            x = tanh(x)
+        }
+        return outputProj(x)
+    }
 }
 
 extension NemotronASRModel {
@@ -49,19 +78,43 @@ extension NemotronASRModel {
         let chunkLen = prompted.shape[1]
         var time = 0
         var newSymbols = 0
+        // Tokens for frames [specStart, specStart + spec.count), computed against the
+        // current cached prediction in one host sync. Each frame still runs its own
+        // M=1 joint, as before; only the `.item()` per frame is batched. Valid until
+        // the next emission changes the prediction.
+        var spec: [Int] = []
+        var specStart = 0
         while time < chunkLen {
             let frame = prompted[0..., time..<(time + 1), 0...]
-            let currentToken: MLXArray? = state.lastToken == blankTokenID
-                ? nil
-                : MLXArray(Int32(state.lastToken)).reshaped([1, 1]).asType(.int32)
-            let decoderOutput = decoder(currentToken, state: state.decoderState)
-            let pred = decoderOutput.0.asType(frame.dtype)
-            let proposedState: NemoLSTMState = (
-                hidden: decoderOutput.1.hidden?.asType(frame.dtype),
-                cell: decoderOutput.1.cell?.asType(frame.dtype)
-            )
-            let jointOutput = joint(frame, pred)
-            let token = jointOutput.argMax(axis: -1).item(Int.self)
+            let prediction: (predProjected: MLXArray, proposedState: NemoLSTMState)
+            if let cached = state.cachedPrediction {
+                prediction = cached
+            } else {
+                let currentToken: MLXArray? = state.lastToken == blankTokenID
+                    ? nil
+                    : MLXArray(Int32(state.lastToken)).reshaped([1, 1]).asType(.int32)
+                let decoderOutput = decoder(currentToken, state: state.decoderState)
+                prediction = (
+                    joint.pred(decoderOutput.0.asType(frame.dtype)),
+                    (
+                        hidden: decoderOutput.1.hidden?.asType(frame.dtype),
+                        cell: decoderOutput.1.cell?.asType(frame.dtype)
+                    )
+                )
+                state.cachedPrediction = prediction
+            }
+            if time < specStart || time >= specStart + spec.count {
+                let end = min(time + nemoRNNTSyncFrames, chunkLen)
+                var picks: [MLXArray] = []
+                picks.reserveCapacity(end - time)
+                for t in time..<end {
+                    let f = t == time ? frame : prompted[0..., t..<(t + 1), 0...]
+                    picks.append(joint.combine(joint.enc(f), prediction.predProjected).argMax(axis: -1).reshaped([1]))
+                }
+                spec = MLX.concatenated(picks, axis: 0).asType(.int32).asArray(Int32.self).map { Int($0) }
+                specStart = time
+            }
+            let token = spec[time - specStart]
             let step = NemoDecodingLogic.rnntStep(
                 predictedToken: token,
                 blankToken: blankTokenID,
@@ -71,7 +124,9 @@ extension NemotronASRModel {
             )
             if step.emittedToken {
                 state.lastToken = token
-                state.decoderState = proposedState
+                state.decoderState = prediction.proposedState
+                state.cachedPrediction = nil
+                spec = []
                 if !NemotronASRTokenizer.isSpecialToken(token, vocabulary: vocabulary) {
                     state.results.append(
                         NemoAlignedToken(
@@ -110,6 +165,9 @@ public final class NemotronASRStreamSession {
     private let encState: NemotronASRStreamEncoderState
     private let rnntState: NemotronASRStreamRNNTState
     private var emittedText = ""
+    // Alignment of `rnntState.results`, rebuilt only when a step adds a token.
+    private var aligned = NemoAlignment.sentencesToResult([])
+    private var cachedSegments: [[String: Any]]?
     private var done = false
 
     init(model: NemotronASRModel, language: String?, chunkFrames: Int?) {
@@ -135,9 +193,10 @@ public final class NemotronASRStreamSession {
     /// as `text`. Matches the offline path's `STTOutput.segments` so `--format srt`
     /// / `vtt` / `json` keep their timestamps when streaming.
     public var segments: [[String: Any]] {
-        NemoAlignment.sentencesToResult(
-            NemoAlignment.tokensToSentences(rnntState.results)
-        ).segments
+        if let cachedSegments { return cachedSegments }
+        let built = aligned.segments
+        cachedSegments = built
+        return built
     }
     /// Token ids decoded so far.
     public var tokens: [Int] { rnntState.results.map { $0.id } }
@@ -240,13 +299,18 @@ public final class NemotronASRStreamSession {
         for c in encState.convCache where c != nil { live.append(c!) }
         if !live.isEmpty { MLX.asyncEval(live) }
 
-        let fullText = NemoAlignment.sentencesToResult(
-            NemoAlignment.tokensToSentences(rnntState.results)
-        ).text
-        let deltaText = fullText.hasPrefix(emittedText)
-            ? String(fullText.dropFirst(emittedText.count))
-            : fullText
-        emittedText = fullText
+        // Rebuilding the alignment walks every token so far; with no new token it
+        // would be unchanged and the text delta empty.
+        var deltaText = ""
+        if rnntState.results.count > firstNew {
+            aligned = NemoAlignment.sentencesToResult(NemoAlignment.tokensToSentences(rnntState.results))
+            cachedSegments = nil
+            let fullText = aligned.text
+            deltaText = fullText.hasPrefix(emittedText)
+                ? String(fullText.dropFirst(emittedText.count))
+                : fullText
+            emittedText = fullText
+        }
         let deltaIds = rnntState.results[firstNew...].map { $0.id }
 
         if final {
