@@ -98,6 +98,21 @@ struct VoxtralRealtimeStreamingFrontEndTests {
         #expect(Self.maxAbsDifference(offline, streamed) <= Self.melTolerance)
     }
 
+    /// A symmetric Hann window divides by N-1 and ends at zero. The reference
+    /// front end uses the periodic one, so the last sample must not be zero.
+    @Test func periodicHannWindowMatchesItsDefinition() {
+        let size = 400
+        let window = VoxtralRealtimeAudio.periodicHannWindow(size: size).asArray(Float.self)
+        let reference = (0..<size).map { i -> Float in
+            let phase = 2 * Float.pi * Float(i) / Float(size)
+            return 0.5 * (1 - cos(phase))
+        }
+
+        #expect(window.count == size)
+        #expect(zip(window, reference).map { abs($0 - $1) }.max() ?? 0 <= 1e-6)
+        #expect(window[size - 1] > 0)
+    }
+
     @Test func melStreamEmitsOnlyCompletedWindows() {
         let filters = VoxtralRealtimeAudio.computeMelFilters().asType(.float32)
         var mel = VoxtralRealtimeMelStream(leftPadSamples: 1280, melFilters: filters)
