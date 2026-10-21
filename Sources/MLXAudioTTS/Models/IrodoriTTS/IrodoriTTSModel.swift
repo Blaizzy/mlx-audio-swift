@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import HuggingFace
 @preconcurrency import MLX
@@ -529,66 +530,71 @@ func irodoriFindSilencePoint(_ latent: MLXArray, windowSize: Int = 20, stdThresh
 /// strip the unused `post_processor`/`decoder` (we add BOS manually, encode-only,
 /// matching the Python's `add_special_tokens=False`). Best-effort; no-op on failure.
 func irodoriSanitizeTokenizerFiles(in dir: URL) {
-    func loadJSON(_ name: String) -> (url: URL, obj: [String: Any])? {
+    for name in ["tokenizer.json", "tokenizer_config.json"] {
         let url = dir.appendingPathComponent(name)
         guard let data = try? Data(contentsOf: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        return (url, obj)
+              let sanitized = try? irodoriSanitizedTokenizerData(data, name: name)
+        else { continue }
+        try? sanitized.write(to: url, options: .atomic)
     }
-    func write(_ url: URL, _ obj: [String: Any]) {
-        if let data = try? JSONSerialization.data(withJSONObject: obj, options: []) {
-            try? data.write(to: url)
-        }
-    }
+}
 
-    if let (url, loadedTokenizer) = loadJSON("tokenizer.json") {
-        var tok = loadedTokenizer
-        tok["post_processor"] = NSNull()
-        tok["decoder"] = NSNull()
-        write(url, tok)
+private func irodoriSanitizedTokenizerData(_ data: Data, name: String) throws -> Data {
+    guard var json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw IrodoriTTSError.tokenizer("Expected a JSON object in \(name)")
     }
-    if let (url, loadedConfig) = loadJSON("tokenizer_config.json") {
-        var cfg = loadedConfig
+    if name == "tokenizer.json" {
+        json["post_processor"] = NSNull()
+        json["decoder"] = NSNull()
+    } else {
         // Force swift-transformers to instantiate UnigramTokenizer (not BPE).
-        cfg["tokenizer_class"] = "XLMRobertaTokenizer"
-        if let mml = cfg["model_max_length"] as? NSNumber, mml.doubleValue > 1_000_000 {
-            cfg["model_max_length"] = 4096
+        json["tokenizer_class"] = "XLMRobertaTokenizer"
+        if let mml = json["model_max_length"] as? NSNumber, mml.doubleValue > 1_000_000 {
+            json["model_max_length"] = 4096
         }
-        write(url, cfg)
     }
+    return try JSONSerialization.data(withJSONObject: json)
 }
 
 /// Copy a bundled tokenizer (`tokenizer.json` + `tokenizer_config.json`) into the
 /// user cache and apply `irodoriSanitizeTokenizerFiles` to the copy, leaving the
 /// downloaded files (often symlinks into a shared HF blob store) untouched.
-/// The copy is refreshed whenever the source is newer.
-func irodoriSanitizedTokenizerCopy(of source: URL) throws -> URL {
+/// Each content version is immutable and published only after both files are
+/// sanitized, so concurrent callers (including other processes) cannot see a
+/// partially prepared tokenizer or modify one another's copy.
+func irodoriSanitizedTokenizerCopy(of source: URL, cacheDirectory: URL? = nil) throws -> URL {
     let fm = FileManager.default
-    // Stable per-source directory name (FNV-1a; String.hashValue is seeded per process).
-    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
-    for byte in source.standardizedFileURL.path.utf8 {
-        hash = (hash ^ UInt64(byte)) &* 0x0000_0100_0000_01b3
+    let names = ["tokenizer.json", "tokenizer_config.json"]
+    let files = try names.map { name in
+        (name: name, data: try Data(contentsOf: source.appendingPathComponent(name)))
     }
-    let caches = try fm.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-    let dest = caches.appendingPathComponent("mlx-audio/irodori-tokenizer/\(String(hash, radix: 16))")
-    try fm.createDirectory(at: dest, withIntermediateDirectories: true)
+    var hash = SHA256()
+    for file in files {
+        hash.update(data: Data(SHA256.hash(data: file.data)))
+    }
+    let key = hash.finalize().map { String(format: "%02x", $0) }.joined()
+    let caches = try cacheDirectory ?? fm.url(
+        for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+    let root = caches.appendingPathComponent("mlx-audio/irodori-tokenizer")
+    // Version the sanitization scheme as well as the source contents.
+    let dest = root.appendingPathComponent("v2-\(key)")
+    if fm.fileExists(atPath: dest.path) { return dest }
 
-    func modified(_ url: URL) -> Date? {
-        (try? url.resolvingSymlinksInPath().resourceValues(forKeys: [.contentModificationDateKey]))?
-            .contentModificationDate
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    let staging = root.appendingPathComponent(".\(UUID().uuidString)")
+    try fm.createDirectory(at: staging, withIntermediateDirectories: false)
+    defer { try? fm.removeItem(at: staging) }
+    for file in files {
+        let data = try irodoriSanitizedTokenizerData(file.data, name: file.name)
+        try data.write(to: staging.appendingPathComponent(file.name), options: .atomic)
     }
-    var refreshed = false
-    for name in ["tokenizer.json", "tokenizer_config.json"] {
-        let src = source.appendingPathComponent(name)
-        let dst = dest.appendingPathComponent(name)
-        guard fm.fileExists(atPath: src.path) else { continue }
-        if let s = modified(src), let d = modified(dst), d >= s { continue }
-        try? fm.removeItem(at: dst)
-        try fm.copyItem(at: src.resolvingSymlinksInPath(), to: dst)
-        refreshed = true
+    do {
+        // A rename within the same directory publishes both files atomically.
+        try fm.moveItem(at: staging, to: dest)
+    } catch {
+        // Another caller may have published this exact content while we prepared it.
+        guard fm.fileExists(atPath: dest.path) else { throw error }
     }
-    if refreshed { irodoriSanitizeTokenizerFiles(in: dest) }
     return dest
 }
 

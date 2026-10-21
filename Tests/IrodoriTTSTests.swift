@@ -6,8 +6,8 @@ import Testing
 @testable import MLXAudioTTS
 
 // Goldens come from the Python mlx-audio implementation (irodori_tts) run on the same
-// tiny configurations. Parameters are filled by a shape-only deterministic rule
-// (`irodoriTestFill`) so both sides agree without a key mapping.
+// tiny configurations. Parameters are filled by shape-only deterministic rules
+// so both sides agree without a key mapping.
 
 /// scale·(0.05·sin(0.37·i + 0.13·(n mod 97)) + 0.02·cos(0.11·i)) over the flattened parameter.
 private func irodoriTestFill(_ module: Module, scale: Float = 1) {
@@ -114,21 +114,115 @@ struct IrodoriTTSV4Tests {
 
     @Test func modernBertMatchesPython() throws {
         let config = try irodoriTestDecode(IrodoriModernBertConfig.self, tinyModernBertJSON)
-        let encoder = try IrodoriModernBertEncoder(config: config)
-        // Large enough weights that attention is not near-uniform, so RoPE thetas matter.
-        irodoriTestFill(encoder, scale: 16)
-        // 7 real tokens + 1 pad: exercises the key mask and the sliding window (local_attention 4).
-        let ids = MLXArray([1, 5, 9, 13, 17, 21, 25, 3] as [Int32]).reshaped(1, 8)
-        let mask = MLXArray([true, true, true, true, true, true, true, false]).reshaped(1, 8)
-        let out = encoder(ids, mask: mask)
+        func output(on device: Device) throws -> MLXArray {
+            try Device.withDefaultDevice(device) {
+                let encoder = try IrodoriModernBertEncoder(config: config)
+                // Python: [((i * 37 + n % 97) % 127 - 63) / 128 for i in range(n)].
+                // Exact binary fractions avoid GPU-dependent sin/cos rounding in the weights.
+                let filled = encoder.parameters().flattened().map { key, p -> (String, MLXArray) in
+                    let values = (0 ..< p.size).map {
+                        Float(($0 * 37 + p.size % 97) % 127 - 63) / 128
+                    }
+                    return (key, MLXArray(values).reshaped(p.shape))
+                }
+                encoder.update(parameters: ModuleParameters.unflattened(filled))
+                // 7 real tokens + 1 pad: exercises the key mask and the sliding window.
+                let ids = MLXArray([1, 5, 9, 13, 17, 21, 25, 3] as [Int32]).reshaped(1, 8)
+                let mask = MLXArray([true, true, true, true, true, true, true, false]).reshaped(1, 8)
+                let out = encoder(ids, mask: mask)
+                eval(out)
+                return out
+            }
+        }
+        // Check the Python CPU reference tightly, then allow GPU matmul rounding
+        // (including TF32 on M5) without weakening the architecture parity check.
+        let out = try output(on: .cpu)
         #expect(out.shape == [1, 8, 16])
         expectClose(out[0, 0 ..< 7, 0 ..< 4], [
-            -1.663344, 0.259008, -0.123047, -0.211456, 0.967362, -0.157313, -0.356682,
-            0.341810, 1.050628, 0.290418, -0.253410, 0.388281, -1.839053, 0.670116,
-            -0.217902, -0.156326, -1.768652, 0.216591, -0.113051, -0.255352, -1.608138,
-            0.274052, -0.950824, 0.202779, 1.140644, 0.342895, -0.237972, 0.375593,
-        ], atol: 1e-3)
-        #expect(abs(out[0, 0 ..< 7].sum().item(Float.self) - -6.32924) < 1e-2)
+            -0.113666, 0.006570, -0.191245, 0.020891, -0.104138, -0.021803, -0.303784,
+            -0.187375, -0.428746, 0.088533, -0.216628, -0.953275, -0.222690, -0.020359,
+            -0.103560, -0.199524, -0.094686, -0.033718, -0.360255, -0.215894, -0.490636,
+            0.069345, -0.066360, 1.472535, -0.218640, -0.096001, 0.110103, -0.240162,
+        ])
+        #expect(abs(out[0, 0 ..< 7].sum().item(Float.self) - 0.300031) < 1e-3)
+        let gpuOut = try output(on: .gpu)
+        #expect(MLX.abs(gpuOut - out).max().item(Float.self) < 3e-3)
+    }
+
+    @Test func bundledTokenizerCachePublishesCompleteCopiesConcurrently() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let cache = root.appendingPathComponent("cache")
+        try fm.createDirectory(at: source, withIntermediateDirectories: true)
+        let tokenizer = Data("""
+            {"model":{"type":"Unigram"},"post_processor":{"type":"TemplateProcessing"},
+             "decoder":{"type":"Sequence"}}
+            """.utf8)
+        let config = Data("""
+            {"tokenizer_class":"PreTrainedTokenizerFast","model_max_length":99999999}
+            """.utf8)
+        try tokenizer.write(to: source.appendingPathComponent("tokenizer.json"))
+        try config.write(to: source.appendingPathComponent("tokenizer_config.json"))
+
+        let copies = try await withThrowingTaskGroup(of: URL.self) { group in
+            for _ in 0 ..< 16 {
+                group.addTask {
+                    let copy = try irodoriSanitizedTokenizerCopy(of: source, cacheDirectory: cache)
+                    let tok = try JSONSerialization.jsonObject(
+                        with: Data(contentsOf: copy.appendingPathComponent("tokenizer.json"))) as! [String: Any]
+                    let cfg = try JSONSerialization.jsonObject(
+                        with: Data(contentsOf: copy.appendingPathComponent("tokenizer_config.json"))) as! [String: Any]
+                    #expect(tok["post_processor"] is NSNull)
+                    #expect(tok["decoder"] is NSNull)
+                    #expect(cfg["tokenizer_class"] as? String == "XLMRobertaTokenizer")
+                    #expect(cfg["model_max_length"] as? Int == 4096)
+                    return copy
+                }
+            }
+            var copies = [URL]()
+            for try await copy in group { copies.append(copy) }
+            return copies
+        }
+        #expect(copies.count == 16)
+        #expect(Set(copies).count == 1)
+        #expect(try Data(contentsOf: source.appendingPathComponent("tokenizer.json")) == tokenizer)
+        #expect(try Data(contentsOf: source.appendingPathComponent("tokenizer_config.json")) == config)
+        let cacheRoot = try #require(copies.first).deletingLastPathComponent()
+        #expect(try fm.contentsOfDirectory(atPath: cacheRoot.path).count == 1)
+    }
+
+    @Test func bundledTokenizerCacheTracksContentsAndRejectsInvalidJSON() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let cache = root.appendingPathComponent("cache")
+        try fm.createDirectory(at: source, withIntermediateDirectories: true)
+        let tokenizerURL = source.appendingPathComponent("tokenizer.json")
+        let configURL = source.appendingPathComponent("tokenizer_config.json")
+        try Data("{}".utf8).write(to: tokenizerURL)
+        try Data("{\"revision\":1}".utf8).write(to: configURL)
+        let originalDate = try configURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        let first = try irodoriSanitizedTokenizerCopy(of: source, cacheDirectory: cache)
+
+        try Data("{\"revision\":2}".utf8).write(to: configURL)
+        try fm.setAttributes([.modificationDate: try #require(originalDate)], ofItemAtPath: configURL.path)
+        let second = try irodoriSanitizedTokenizerCopy(of: source, cacheDirectory: cache)
+        #expect(first != second)
+        for (copy, revision) in [(first, 1), (second, 2)] {
+            let cfg = try JSONSerialization.jsonObject(
+                with: Data(contentsOf: copy.appendingPathComponent("tokenizer_config.json"))) as! [String: Any]
+            #expect(cfg["revision"] as? Int == revision)
+        }
+
+        try Data("invalid JSON".utf8).write(to: tokenizerURL)
+        #expect(throws: (any Error).self) {
+            try irodoriSanitizedTokenizerCopy(of: source, cacheDirectory: cache)
+        }
+        // Failed sanitization must leave neither a published cache nor a staging directory.
+        #expect(try fm.contentsOfDirectory(atPath: first.deletingLastPathComponent().path).count == 2)
     }
 
     @Test func meanFlowSamplerMatchesPython() throws {
