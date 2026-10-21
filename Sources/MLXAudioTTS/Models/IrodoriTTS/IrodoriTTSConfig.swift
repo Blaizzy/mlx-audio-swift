@@ -4,6 +4,11 @@ import Foundation
 /// over continuous Semantic-DACVAE latents (48 kHz).
 /// Mirrors `mlx_audio/tts/models/irodori_tts/config.py`.
 public struct IrodoriDiTConfig: Codable {
+    // Flow parameterization: "rf_velocity" (standard RF, 40-step default) or
+    // "meanflow" (MeanFlow distillation target, 4-step default). MeanFlow
+    // checkpoints add a delta_cond_module conditioned on the interval length (t - r).
+    public var flowParameterization: String = "rf_velocity"
+
     // Audio latent dimensions (v2/v3: 32-dim Semantic-DACVAE, v1: 128-dim DACVAE)
     public var latentDim: Int = 32
     public var latentPatchSize: Int = 1
@@ -23,6 +28,15 @@ public struct IrodoriDiTConfig: Codable {
     public var textDim: Int = 512
     public var textLayers: Int = 10
     public var textHeads: Int = 8
+
+    // Pretrained text encoder (v4): a shared ModernBERT backbone feeds separate
+    // text/caption projectors instead of the two scratch-trained encoders.
+    public var textEncoderType: String = "scratch"
+    public var textEncoderRevision: String? = nil
+    public var textEncoderConfig: IrodoriModernBertConfig? = nil
+    public var pretrainedProjectorType: String = "linear"
+    public var pretrainedProjectorHiddenRatio: Float = 2.0
+    public var pretrainedProjectorDropout: Float = 0.0
 
     // Speaker (reference latent) encoder
     public var speakerDim: Int = 768
@@ -63,6 +77,13 @@ public struct IrodoriDiTConfig: Codable {
 
     // MARK: - Resolved properties (mirror config.py)
 
+    public var usePretrainedTextEncoder: Bool {
+        textEncoderType.trimmingCharacters(in: .whitespaces).lowercased() == "pretrained"
+    }
+    public var useMeanflow: Bool {
+        flowParameterization.trimmingCharacters(in: .whitespaces).lowercased() == "meanflow"
+    }
+
     public var useSpeakerConditionResolved: Bool {
         useSpeakerCondition ?? !useCaptionCondition
     }
@@ -79,6 +100,7 @@ public struct IrodoriDiTConfig: Codable {
     public var speakerMlpRatioResolved: Float { speakerMlpRatio ?? mlpRatio }
 
     enum CodingKeys: String, CodingKey {
+        case flowParameterization = "flow_parameterization"
         case latentDim = "latent_dim"
         case latentPatchSize = "latent_patch_size"
         case modelDim = "model_dim"
@@ -93,6 +115,12 @@ public struct IrodoriDiTConfig: Codable {
         case textDim = "text_dim"
         case textLayers = "text_layers"
         case textHeads = "text_heads"
+        case textEncoderType = "text_encoder_type"
+        case textEncoderRevision = "text_encoder_revision"
+        case textEncoderConfig = "text_encoder_config"
+        case pretrainedProjectorType = "pretrained_projector_type"
+        case pretrainedProjectorHiddenRatio = "pretrained_projector_hidden_ratio"
+        case pretrainedProjectorDropout = "pretrained_projector_dropout"
         case speakerDim = "speaker_dim"
         case speakerLayers = "speaker_layers"
         case speakerHeads = "speaker_heads"
@@ -124,6 +152,7 @@ public struct IrodoriDiTConfig: Codable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        flowParameterization = try c.decodeIfPresent(String.self, forKey: .flowParameterization) ?? "rf_velocity"
         latentDim = try c.decodeIfPresent(Int.self, forKey: .latentDim) ?? 32
         latentPatchSize = try c.decodeIfPresent(Int.self, forKey: .latentPatchSize) ?? 1
         modelDim = try c.decodeIfPresent(Int.self, forKey: .modelDim) ?? 1280
@@ -138,6 +167,12 @@ public struct IrodoriDiTConfig: Codable {
         textDim = try c.decodeIfPresent(Int.self, forKey: .textDim) ?? 512
         textLayers = try c.decodeIfPresent(Int.self, forKey: .textLayers) ?? 10
         textHeads = try c.decodeIfPresent(Int.self, forKey: .textHeads) ?? 8
+        textEncoderType = try c.decodeIfPresent(String.self, forKey: .textEncoderType) ?? "scratch"
+        textEncoderRevision = try c.decodeIfPresent(String.self, forKey: .textEncoderRevision)
+        textEncoderConfig = try c.decodeIfPresent(IrodoriModernBertConfig.self, forKey: .textEncoderConfig)
+        pretrainedProjectorType = try c.decodeIfPresent(String.self, forKey: .pretrainedProjectorType) ?? "linear"
+        pretrainedProjectorHiddenRatio = try c.decodeIfPresent(Float.self, forKey: .pretrainedProjectorHiddenRatio) ?? 2.0
+        pretrainedProjectorDropout = try c.decodeIfPresent(Float.self, forKey: .pretrainedProjectorDropout) ?? 0.0
         speakerDim = try c.decodeIfPresent(Int.self, forKey: .speakerDim) ?? 768
         speakerLayers = try c.decodeIfPresent(Int.self, forKey: .speakerLayers) ?? 8
         speakerHeads = try c.decodeIfPresent(Int.self, forKey: .speakerHeads) ?? 12
@@ -251,6 +286,10 @@ public struct IrodoriTTSConfig: Codable {
     public var maxTextLength: Int = 256
     public var maxCaptionLength: Int = 512
     public var maxSpeakerLatentLength: Int = 6_400
+    /// Cap on total reference audio duration. v4 checkpoints set 120 s (trained with up
+    /// to 120 s of reference). When absent (v1–v3) only `maxSpeakerLatentLength` applies,
+    /// as before; upstream Python would default to 30 s there.
+    public var refMaxSeconds: Float? = nil
     /// DACVAE hop_length = 2*8*10*12 = 1920 (48 kHz)
     public var audioDownsampleFactor: Int = 1920
     public var dacvaeRepo: String = "Aratako/Semantic-DACVAE-Japanese-32dim"
@@ -266,6 +305,7 @@ public struct IrodoriTTSConfig: Codable {
         case maxTextLength = "max_text_length"
         case maxCaptionLength = "max_caption_length"
         case maxSpeakerLatentLength = "max_speaker_latent_length"
+        case refMaxSeconds = "ref_max_seconds"
         case audioDownsampleFactor = "audio_downsample_factor"
         case dacvaeRepo = "dacvae_repo"
         case modelPath = "model_path"
@@ -280,10 +320,123 @@ public struct IrodoriTTSConfig: Codable {
         maxTextLength = try c.decodeIfPresent(Int.self, forKey: .maxTextLength) ?? 256
         maxCaptionLength = try c.decodeIfPresent(Int.self, forKey: .maxCaptionLength) ?? 512
         maxSpeakerLatentLength = try c.decodeIfPresent(Int.self, forKey: .maxSpeakerLatentLength) ?? 6_400
+        refMaxSeconds = try c.decodeIfPresent(Float.self, forKey: .refMaxSeconds)
         audioDownsampleFactor = try c.decodeIfPresent(Int.self, forKey: .audioDownsampleFactor) ?? 1920
         dacvaeRepo = try c.decodeIfPresent(String.self, forKey: .dacvaeRepo) ?? "Aratako/Semantic-DACVAE-Japanese-32dim"
         modelPath = try c.decodeIfPresent(String.self, forKey: .modelPath)
         dit = try c.decodeIfPresent(IrodoriDiTConfig.self, forKey: .dit) ?? IrodoriDiTConfig()
         sampler = try c.decodeIfPresent(IrodoriSamplerConfig.self, forKey: .sampler) ?? IrodoriSamplerConfig()
+    }
+}
+
+/// Configuration of the pretrained ModernBERT text encoder embedded in v4
+/// checkpoints (`dit.text_encoder_config`, a HuggingFace `ModernBertConfig`).
+/// Mirrors `mlx_audio/tts/models/irodori_tts/modernbert.py` `ModernBertConfig`.
+public struct IrodoriModernBertConfig: Codable {
+    public var modelType: String = "modernbert"
+    public var vocabSize: Int = 102_400
+    public var hiddenSize: Int = 768
+    public var intermediateSize: Int = 3072
+    public var numHiddenLayers: Int = 25
+    public var numAttentionHeads: Int = 12
+    public var hiddenActivation: String = "gelu"
+    public var normEps: Float = 1e-5
+    public var normBias: Bool = false
+    public var attentionBias: Bool = false
+    public var mlpBias: Bool = false
+    public var globalAttnEveryNLayers: Int = 3
+    public var localAttention: Int = 128
+    public var globalRopeTheta: Float = 160_000
+    public var localRopeTheta: Float = 10_000
+    public var maxPositionEmbeddings: Int = 8192
+    public var padTokenId: Int = 3
+    public var bosTokenId: Int = 1
+    public var eosTokenId: Int = 2
+
+    public init() {}
+
+    public var headDim: Int { hiddenSize / numAttentionHeads }
+
+    public func isGlobalLayer(_ layerIdx: Int) -> Bool {
+        globalAttnEveryNLayers == 0 || layerIdx % globalAttnEveryNLayers == 0
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case modelType = "model_type"
+        case vocabSize = "vocab_size"
+        case hiddenSize = "hidden_size"
+        case intermediateSize = "intermediate_size"
+        case numHiddenLayers = "num_hidden_layers"
+        case numAttentionHeads = "num_attention_heads"
+        case hiddenActivation = "hidden_activation"
+        case normEps = "norm_eps"
+        case normBias = "norm_bias"
+        case attentionBias = "attention_bias"
+        case mlpBias = "mlp_bias"
+        case globalAttnEveryNLayers = "global_attn_every_n_layers"
+        case localAttention = "local_attention"
+        case globalRopeTheta = "global_rope_theta"
+        case localRopeTheta = "local_rope_theta"
+        case ropeParameters = "rope_parameters"
+        case maxPositionEmbeddings = "max_position_embeddings"
+        case padTokenId = "pad_token_id"
+        case bosTokenId = "bos_token_id"
+        case eosTokenId = "eos_token_id"
+    }
+
+    private struct RopeParameters: Codable {
+        let ropeTheta: Float?
+        enum CodingKeys: String, CodingKey { case ropeTheta = "rope_theta" }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        modelType = try c.decodeIfPresent(String.self, forKey: .modelType) ?? "modernbert"
+        vocabSize = try c.decodeIfPresent(Int.self, forKey: .vocabSize) ?? 102_400
+        hiddenSize = try c.decodeIfPresent(Int.self, forKey: .hiddenSize) ?? 768
+        intermediateSize = try c.decodeIfPresent(Int.self, forKey: .intermediateSize) ?? 3072
+        numHiddenLayers = try c.decodeIfPresent(Int.self, forKey: .numHiddenLayers) ?? 25
+        numAttentionHeads = try c.decodeIfPresent(Int.self, forKey: .numAttentionHeads) ?? 12
+        hiddenActivation = try c.decodeIfPresent(String.self, forKey: .hiddenActivation) ?? "gelu"
+        normEps = try c.decodeIfPresent(Float.self, forKey: .normEps) ?? 1e-5
+        normBias = try c.decodeIfPresent(Bool.self, forKey: .normBias) ?? false
+        attentionBias = try c.decodeIfPresent(Bool.self, forKey: .attentionBias) ?? false
+        mlpBias = try c.decodeIfPresent(Bool.self, forKey: .mlpBias) ?? false
+        globalAttnEveryNLayers = try c.decodeIfPresent(Int.self, forKey: .globalAttnEveryNLayers) ?? 3
+        localAttention = try c.decodeIfPresent(Int.self, forKey: .localAttention) ?? 128
+        maxPositionEmbeddings = try c.decodeIfPresent(Int.self, forKey: .maxPositionEmbeddings) ?? 8192
+        padTokenId = try c.decodeIfPresent(Int.self, forKey: .padTokenId) ?? 3
+        bosTokenId = try c.decodeIfPresent(Int.self, forKey: .bosTokenId) ?? 1
+        eosTokenId = try c.decodeIfPresent(Int.self, forKey: .eosTokenId) ?? 2
+        // transformers >= 5 nests the per-layer-type RoPE settings; earlier
+        // releases exposed flat global_/local_rope_theta keys.
+        let rope = try? c.decodeIfPresent([String: RopeParameters].self, forKey: .ropeParameters)
+        globalRopeTheta = try c.decodeIfPresent(Float.self, forKey: .globalRopeTheta)
+            ?? rope?["full_attention"]?.ropeTheta ?? 160_000
+        localRopeTheta = try c.decodeIfPresent(Float.self, forKey: .localRopeTheta)
+            ?? rope?["sliding_attention"]?.ropeTheta ?? 10_000
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(modelType, forKey: .modelType)
+        try c.encode(vocabSize, forKey: .vocabSize)
+        try c.encode(hiddenSize, forKey: .hiddenSize)
+        try c.encode(intermediateSize, forKey: .intermediateSize)
+        try c.encode(numHiddenLayers, forKey: .numHiddenLayers)
+        try c.encode(numAttentionHeads, forKey: .numAttentionHeads)
+        try c.encode(hiddenActivation, forKey: .hiddenActivation)
+        try c.encode(normEps, forKey: .normEps)
+        try c.encode(normBias, forKey: .normBias)
+        try c.encode(attentionBias, forKey: .attentionBias)
+        try c.encode(mlpBias, forKey: .mlpBias)
+        try c.encode(globalAttnEveryNLayers, forKey: .globalAttnEveryNLayers)
+        try c.encode(localAttention, forKey: .localAttention)
+        try c.encode(globalRopeTheta, forKey: .globalRopeTheta)
+        try c.encode(localRopeTheta, forKey: .localRopeTheta)
+        try c.encode(maxPositionEmbeddings, forKey: .maxPositionEmbeddings)
+        try c.encode(padTokenId, forKey: .padTokenId)
+        try c.encode(bosTokenId, forKey: .bosTokenId)
+        try c.encode(eosTokenId, forKey: .eosTokenId)
     }
 }
