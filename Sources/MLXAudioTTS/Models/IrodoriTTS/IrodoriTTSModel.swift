@@ -555,9 +555,9 @@ private func irodoriSanitizedTokenizerData(_ data: Data, name: String) throws ->
     return try JSONSerialization.data(withJSONObject: json)
 }
 
-/// Copy a bundled tokenizer (`tokenizer.json` + `tokenizer_config.json`) into the
-/// user cache and apply `irodoriSanitizeTokenizerFiles` to the copy, leaving the
-/// downloaded files (often symlinks into a shared HF blob store) untouched.
+/// Write sanitized copies of a bundled tokenizer's JSON files into the user
+/// cache, leaving the downloaded files (often symlinks into a shared HF blob
+/// store) untouched.
 /// Each content version is immutable and published only after both files are
 /// sanitized, so concurrent callers (including other processes) cannot see a
 /// partially prepared tokenizer or modify one another's copy.
@@ -574,13 +574,13 @@ func irodoriSanitizedTokenizerCopy(of source: URL, cacheDirectory: URL? = nil) t
     let key = hash.finalize().map { String(format: "%02x", $0) }.joined()
     let caches = try cacheDirectory ?? fm.url(
         for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-    let root = caches.appendingPathComponent("mlx-audio/irodori-tokenizer")
+    let root = caches.appendingPathComponent("mlx-audio/irodori-tokenizer", isDirectory: true)
     // Version the sanitization scheme as well as the source contents.
-    let dest = root.appendingPathComponent("v2-\(key)")
+    let dest = root.appendingPathComponent("v2-\(key)", isDirectory: true)
     if fm.fileExists(atPath: dest.path) { return dest }
 
     try fm.createDirectory(at: root, withIntermediateDirectories: true)
-    let staging = root.appendingPathComponent(".\(UUID().uuidString)")
+    let staging = root.appendingPathComponent(".\(UUID().uuidString)", isDirectory: true)
     try fm.createDirectory(at: staging, withIntermediateDirectories: false)
     defer { try? fm.removeItem(at: staging) }
     for file in files {
