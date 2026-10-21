@@ -56,19 +56,19 @@ public enum STT {
         case "glmasr", "glm":
             return try await GLMASRModel.fromPretrained(modelRepo, cache: cache)
         case "voxtral", "voxtral_realtime":
-            return try await VoxtralRealtimeModel.fromPretrained(modelRepo)
+            return try await VoxtralRealtimeModel.fromPretrained(modelRepo, cache: cache)
         case "cohere_asr", "cohere":
-            return try await CohereTranscribeModel.fromPretrained(modelRepo)
+            return try await CohereTranscribeModel.fromPretrained(modelRepo, cache: cache)
         case "parakeet":
             return try await ParakeetModel.fromPretrained(modelRepo, cache: cache)
         case "canary":
-            return try await CanaryModel.fromPretrained(modelRepo)
+            return try await CanaryModel.fromPretrained(modelRepo, cache: cache)
         case "wav2vec", "wav2vec2", "mms":
-            return try await Wav2Vec2CTCModel.fromPretrained(modelRepo)
+            return try await Wav2Vec2CTCModel.fromPretrained(modelRepo, cache: cache)
         case "lasr", "lasr_ctc":
-            return try await LasrCTCModel.fromPretrained(modelRepo)
+            return try await LasrCTCModel.fromPretrained(modelRepo, cache: cache)
         case "moonshine":
-            return try await MoonshineModel.fromPretrained(modelRepo)
+            return try await MoonshineModel.fromPretrained(modelRepo, cache: cache)
         case "nemotron", "nemotron_asr":
             return try await NemotronASRModel.fromPretrained(modelRepo, cache: cache)
         case "fireredasr2", "firered", "fire_red":
