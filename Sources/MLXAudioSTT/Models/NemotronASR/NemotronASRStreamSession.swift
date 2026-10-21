@@ -38,6 +38,8 @@ final class NemotronASRStreamRNNTState {
     // which change only on emission. Blank frames reuse it, along with the
     // proposed LSTM state and the joint's pred projection. Cleared on emission
     // (keying on lastToken alone would reuse a stale output after a repeated token).
+    // Not evaluated here: the host sync that reads the next frames' tokens evaluates
+    // it, and an eval of its own would add a sync per emission.
     var cachedPrediction: (predProjected: MLXArray, proposedState: NemoLSTMState)?
 
     init(blankToken: Int) { lastToken = blankToken }

@@ -185,6 +185,7 @@ extension NemotronASRModel {
                 onChunk(applyPrompt(h, oneHot: c.oneHot))
             } else {
                 let oneHot = promptOneHot(batch: h.shape[0], time: t, dtype: h.dtype, promptIndex: promptIndex)
+                eval(oneHot)  // cached: later chunks read the evaluated array
                 state.promptOneHot = (oneHot, t, h.dtype, promptIndex)
                 onChunk(applyPrompt(h, oneHot: oneHot))
             }
