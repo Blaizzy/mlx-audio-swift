@@ -568,7 +568,13 @@ private func makeTinyQwenTokenizerDirectory() throws -> URL {
         { "id": 2, "content": "<eos>", "special": true },
         { "id": 3, "content": "<unk>", "special": true },
         { "id": 4, "content": "<|im_start|>", "special": true },
-        { "id": 5, "content": "<|im_end|>", "special": true }
+        { "id": 5, "content": "<|im_end|>", "special": true },
+        { "id": 6, "content": "assistant", "special": false },
+        { "id": 7, "content": "user", "special": false },
+        { "id": 8, "content": "one", "special": false },
+        { "id": 9, "content": "two", "special": false },
+        { "id": 10, "content": "three", "special": false },
+        { "id": 18, "content": "\\n", "special": false }
       ],
       "model": {
         "type": "BPE",
@@ -590,7 +596,8 @@ private func makeTinyQwenTokenizerDirectory() throws -> URL {
           "voice": 14,
           "prompt": 15,
           "sample": 16,
-          "english": 17
+          "english": 17,
+          "\\n": 18
         },
         "merges": [],
         "continuing_subword_prefix": "",
@@ -918,6 +925,79 @@ private final class CountingFishAE: EchoTTSAudioCodec, @unchecked Sendable {
 
 @Suite("Qwen3TTS")
 struct Qwen3TTSTests {
+
+    @Test(arguments: ["custom_voice", "voice_design"])
+    func generationPrefillsAllTextBeforeAudio(modelType: String) async throws {
+        let fixture = try await makeTinyQwen3TTSModel(
+            ttsModelType: modelType,
+            includeSpeechEncoder: false,
+            speakerIDEntries: #""ryan": 100"#,
+            dialectEntries: #""ryan": false"#
+        )
+        defer { cleanupTemporaryArtifactDirectory(fixture.tokenizerDirectory) }
+        let model = fixture.model
+        let tokenizer = try #require(model.tokenizer)
+        // Project the reference token table in a batch, as the production path
+        // does, to avoid Metal GEMM/GEMV rounding differences for single tokens.
+        let textEmbeddings = model.talker.textProjection(model.talker.getTextEmbeddings()(
+            MLXArray(0 ..< 64).reshaped(1, -1)))
+        let speaker: String? = modelType == "custom_voice" ? "ryan" : nil
+        let longTextIDs = Array(repeating: [8, 9, 10], count: 20).flatMap { $0 }
+        let cases: [(text: String, ids: [Int], language: String, instruct: String?)] = [
+            ("one", [8], "auto", nil),
+            (Array(repeating: "one two three", count: 20).joined(separator: " "),
+             longTextIDs, "English", "one two")
+        ]
+
+        for testCase in cases {
+            // Keep the fixture faithful to Qwen's three-token role and five-token suffix.
+            let chatText = "<|im_start|>assistant\n\(testCase.text)<|im_end|>\n<|im_start|>assistant\n"
+            try #require(tokenizer.encode(text: chatText) == [4, 6, 18] + testCase.ids + [5, 18, 4, 6, 18])
+
+            let (prefill, trailingText, textPad) = model.prepareGenerationInputs(
+                text: testCase.text,
+                language: testCase.language,
+                instruct: testCase.instruct,
+                speaker: speaker
+            )
+
+            // Describe the reference layout as text/codec token pairs, independently
+            // of the production slicing, concatenation, and broadcasting operations.
+            var tokenPairs: [(text: Int, codec: Int?)] = []
+            if testCase.instruct != nil {
+                tokenPairs += [4, 7, 18, 8, 9, 5, 18].map { ($0, nil) }
+            }
+            tokenPairs += [4, 6, 18].map { ($0, nil) }
+            var codecPrefix = testCase.language == "auto"
+                ? [3052, 3053, 3054]
+                : [3051, 3053, 3057, 3054]
+            if speaker != nil {
+                codecPrefix.append(100)
+            }
+            tokenPairs += codecPrefix.map { (21, $0) } // tts_pad + codec prefix
+            tokenPairs.append((22, 3055)) // tts_bos + codec_pad
+            tokenPairs += (testCase.ids + [23]).map { ($0, 3055) } // text/EOS + codec_pad
+            tokenPairs.append((21, 3056)) // tts_pad + codec_bos
+
+            func textEmbedding(_ token: Int) -> MLXArray {
+                textEmbeddings[0..., token ..< (token + 1), 0...]
+            }
+            let expectedFrames = tokenPairs.map { pair in
+                let text = textEmbedding(pair.text)
+                guard let codec = pair.codec else { return text }
+                return text + model.talker.getInputEmbeddings()(
+                    MLXArray([Int32(codec)]).reshaped(1, 1))
+            }
+            let expectedPrefill = concatenated(expectedFrames, axis: 1)
+            let expectedPad = textEmbedding(21)
+
+            try #require(prefill.shape == [1, tokenPairs.count, 16])
+            #expect(allClose(prefill, expectedPrefill, atol: 1e-5).item(Bool.self))
+            try #require(trailingText.shape == [1, 1, 16])
+            #expect(allClose(trailingText, expectedPad, atol: 1e-5).item(Bool.self))
+            #expect(allClose(textPad, expectedPad, atol: 1e-5).item(Bool.self))
+        }
+    }
 
     @Test func interleavedMropeHandlesTransposedFrequencies() {
         // Run with TEST_RUNNER_MTL_DEBUG_LAYER=1 to catch the scalar-gather regression.
