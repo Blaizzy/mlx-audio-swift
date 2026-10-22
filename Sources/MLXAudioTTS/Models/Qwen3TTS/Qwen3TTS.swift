@@ -881,6 +881,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return embedding
     }
 
+    /// Prefill all text using Qwen's default CustomVoice / VoiceDesign layout.
+    /// Audio output can still be streamed after the text prefill.
     func prepareGenerationInputs(
         text: String,
         language: String,
@@ -962,7 +964,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             codecEmbed = concatenated([codecEmbed, codecEmbedSuffix], axis: 1)
         }
 
-        // Instruct embedding (VoiceDesign only — not CustomVoice)
+        // Instruction embedding
         var instructEmbed: MLXArray?
         if let instruct, !instruct.isEmpty {
             let instructText = "<|im_start|>user\n\(instruct)<|im_end|>\n"
@@ -986,17 +988,16 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
             concatenated([roleEmbed, combinedEmbed], axis: 1)
         }
 
-        // Add first text token (index 3) + last codec embed
-        let firstTextEmbed = textEmbed[0..., 3 ..< 4, 0...] + codecEmbed[0..., (-1)..., 0...]
-        inputEmbeds = concatenated([inputEmbeds, firstTextEmbed], axis: 1)
-
-        // Trailing text (tokens 4 to -5, plus EOS)
-        let trailingTextHidden = concatenated(
-            [textEmbed[0..., 4 ..< (textEmbed.dim(1) - 5), 0...], ttsEosEmbed],
+        // Pair all text and EOS with codec_pad, then start audio with tts_pad + codec_bos.
+        let textAll = concatenated(
+            [textEmbed[0..., 3 ..< (textEmbed.dim(1) - 5), 0...], ttsEosEmbed],
             axis: 1
         )
+        let textWithCodecPad = textAll + codecEmbedSuffix[0..., 0 ..< 1, 0...]
+        let bosStep = ttsPadEmbed + codecEmbedSuffix[0..., 1 ..< 2, 0...]
+        inputEmbeds = concatenated([inputEmbeds, textWithCodecPad, bosStep], axis: 1)
 
-        return (inputEmbeds, trailingTextHidden, ttsPadEmbed)
+        return (inputEmbeds, ttsPadEmbed, ttsPadEmbed)
     }
 
     // MARK: - Token sampling

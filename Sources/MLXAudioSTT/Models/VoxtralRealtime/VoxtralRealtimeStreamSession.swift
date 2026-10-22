@@ -23,13 +23,18 @@ import MLXAudioCore
 //   * `finish()` reproduces the offline tail zero-pad ⇒ final transcript == generate().
 
 /// Persistent incremental-encoder state carried across `step` calls.
+///
+/// Copies share the caches, so feeding one copy leaves the other's `blockBase` and
+/// `consumed` out of sync with them. Keep a single owner.
 struct VoxtralRealtimeStreamEncoderState {
-    var caches: [VoxtralRealtimeEncoderKVCache?]
+    let caches: [VoxtralRealtimeEncoderStreamKVCache]
     var blockBase = 0   // absolute conv-frame index where the current sw-block began
     var consumed = 0    // conv frames already fed to the transformer
 
-    init(layers: Int) {
-        caches = Array(repeating: nil, count: layers)
+    init(layers: Int, slidingWindow: Int) {
+        caches = (0..<layers).map { _ in
+            VoxtralRealtimeEncoderStreamKVCache(capacity: slidingWindow)
+        }
     }
 }
 
@@ -54,10 +59,10 @@ extension VoxtralRealtimeAudioEncoder {
             // Block-relative positions: RoPE is relative, so this matches the absolute
             // positions offline uses within each independent sw-block.
             let relStart = state.consumed - state.blockBase
-            pieces.append(encodeIncremental(block, startPos: relStart, caches: &state.caches))
+            pieces.append(encodeIncremental(block, startPos: relStart, caches: state.caches))
             state.consumed = end
             if state.consumed == blockEnd {
-                state.caches = Array(repeating: nil, count: transformerLayers.count)
+                state.caches.forEach { $0.reset() }
                 state.blockBase = blockEnd
             }
         }
@@ -99,7 +104,8 @@ public final class VoxtralRealtimeStreamSession {
     private var encState: VoxtralRealtimeStreamEncoderState
     private var adapterBuf: MLXArray?
     private var decCache: [VoxtralRealtimeDecoderKVCache?]?
-    private var lastLogits: MLXArray?
+    /// `evalPrediction` for the next position.
+    private var pendingPrediction: MLXArray?
     private var decPos = 0
     private var promptLength = 0
     private var prefilled = false
@@ -119,7 +125,8 @@ public final class VoxtralRealtimeStreamSession {
         self.maxTokens = maxTokens
         self.transcriptionDelayMs = transcriptionDelayMs
         self.encState = VoxtralRealtimeStreamEncoderState(
-            layers: model.encoder.transformerLayers.count
+            layers: model.encoder.transformerLayers.count,
+            slidingWindow: model.config.encoderArgs.slidingWindow
         )
     }
 
@@ -287,7 +294,10 @@ public final class VoxtralRealtimeStreamSession {
         if let carry = convState.conv2Carry { arrays.append(carry) }
         if let adapterBuf { arrays.append(adapterBuf) }
         for cache in encState.caches {
-            if let cache { arrays.append(cache.keys); arrays.append(cache.values) }
+            if let keys = cache.keys, let values = cache.values {
+                arrays.append(keys)
+                arrays.append(values)
+            }
         }
         if !arrays.isEmpty { MLX.eval(arrays) }
     }
@@ -305,11 +315,12 @@ public final class VoxtralRealtimeStreamSession {
 
         let prefixEmbeds = adapter[0..<promptLength, 0...] + promptTextEmbeds
         let prefill = model.decoder(prefixEmbeds, startPos: 0, cache: nil)
-        lastLogits = model.decoder.logits(prefill.0[prefill.0.shape[0] - 1])
+        pendingPrediction = model.evalPrediction(
+            model.decoder.logits(prefill.0[prefill.0.shape[0] - 1]), temperature: temperature
+        )
         decCache = prefill.1
         decPos = promptLength
         prefilled = true
-        MLX.eval(lastLogits!)
     }
 
     private func decode(adapter: MLXArray, upTo emitLimit: Int) -> Delta {
@@ -320,8 +331,8 @@ public final class VoxtralRealtimeStreamSession {
         // Mirrors the offline `generate` loop exactly (append → check → pop trailing
         // EOS) so the streamed token stream is identical at temperature 0.
         while decPos < emitLimit {
-            guard let logits = lastLogits else { break }
-            let token = model.sample(logits: logits, temperature: temperature)
+            guard let prediction = pendingPrediction else { break }
+            let token = model.readToken(prediction, temperature: temperature)
             generated.append(token)
             // Only a trailing EOS is left out of the text, as in `generated`.
             if token != model.config.eosTokenId {
@@ -345,9 +356,10 @@ public final class VoxtralRealtimeStreamSession {
                 cache: decCache
             )
             decCache = next.1
-            lastLogits = model.decoder.logits(next.0[0])
+            pendingPrediction = model.evalPrediction(
+                model.decoder.logits(next.0[0]), temperature: temperature
+            )
             decPos += 1
-            MLX.eval(lastLogits!)
             // Same cadence as the offline `generate` loop.
             if generated.count % 256 == 0 {
                 Memory.clearCache()

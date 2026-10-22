@@ -366,7 +366,10 @@ public final class LasrCTCModel: Module, STTGenerationModel {
         return sanitized
     }
 
-    public static func fromPretrained(_ modelName: String) async throws -> LasrCTCModel {
+    public static func fromPretrained(
+        _ modelName: String,
+        cache: HubCache = .default
+    ) async throws -> LasrCTCModel {
         let expanded = (modelName as NSString).expandingTildeInPath
         if FileManager.default.fileExists(atPath: expanded) {
             return try fromModelDirectory(URL(fileURLWithPath: expanded))
@@ -383,7 +386,8 @@ public final class LasrCTCModel: Module, STTGenerationModel {
             repoID: repoID,
             requiredExtension: "safetensors",
             additionalMatchingPatterns: ["*.json"],
-            hfToken: hfToken
+            hfToken: hfToken,
+            cache: cache
         )
         return try fromModelDirectory(modelDir)
     }

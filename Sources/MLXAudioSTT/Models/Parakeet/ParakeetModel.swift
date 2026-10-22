@@ -54,7 +54,7 @@ public final class ParakeetModel: Module, STTGenerationModel {
     var tdtDecoderImplementation: TDTDecoderImplementation?
     var encoderExecutionImplementation: EncoderExecutionImplementation?
     var tdtTraceEmitter: (@Sendable (TDTTraceStep) -> Void)?
-    private var compiledEncoderFeaturesByShape: [String: @Sendable (MLXArray) -> MLXArray] = [:]
+    private var compiledEncoderFeaturesByShape: [String: (MLXArray) -> MLXArray] = [:]
 
     public var defaultGenerationParameters: STTGenerateParameters {
         STTGenerateParameters(
@@ -317,7 +317,7 @@ public final class ParakeetModel: Module, STTGenerationModel {
         }
     }
 
-    func compiledEncoderFeatures(for features: MLXArray) -> @Sendable (MLXArray) -> MLXArray {
+    func compiledEncoderFeatures(for features: MLXArray) -> (MLXArray) -> MLXArray {
         let key = "\(features.shape)-\(features.dtype)"
         if let compiled = compiledEncoderFeaturesByShape[key] {
             return compiled
@@ -907,7 +907,7 @@ private func makeCompiledTDTStep(
     decoder: ParakeetPredictNetwork?,
     joint: ParakeetJointNetwork?,
     blankTokenId: Int
-) -> @Sendable ([MLXArray]) -> [MLXArray] {
+) -> ([MLXArray]) -> [MLXArray] {
     guard let decoder, let joint else {
         return { arrays in
             [MLXArray([Int32(0), Int32(0)]), arrays[2], arrays[3]]
