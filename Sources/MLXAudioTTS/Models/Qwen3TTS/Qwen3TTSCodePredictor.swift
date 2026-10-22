@@ -6,7 +6,7 @@ import MLXNN
 // MARK: - Code Predictor Attention
 
 private let compiledCodePredictorSwiGLU: @Sendable (MLXArray, MLXArray) -> MLXArray = {
-    compile(shapeless: true) { gate, up in
+    MLX.compile(shapeless: true) { gate, up in
         silu(gate) * up
     }
 }()

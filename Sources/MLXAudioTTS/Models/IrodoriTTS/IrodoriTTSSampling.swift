@@ -99,6 +99,9 @@ private func irodoriTSchedule(numSteps: Int, initScale: Float, mode: String, swa
 
 /// Euler sampler for the Rectified-Flow ODE with CFG.
 /// Returns latent of shape (batch, sequenceLength, latentDim).
+/// `encoded` reuses conditions already encoded for duration prediction instead of
+/// running the text/caption encoders a second time; `initialNoise` replaces the
+/// seeded noise (parity testing).
 func irodoriSampleEulerCFG(
     model: IrodoriDiT,
     textInputIDs: MLXArray,
@@ -110,7 +113,9 @@ func irodoriSampleEulerCFG(
     latentDim: Int,
     sequenceLength: Int,
     rngSeed: Int,
-    params: IrodoriSamplerParams
+    params: IrodoriSamplerParams,
+    encoded: IrodoriEncodedConditions? = nil,
+    initialNoise: MLXArray? = nil
 ) throws -> MLXArray {
     let useSpk = model.cfg.useSpeakerConditionResolved
     let useCap = model.cfg.useCaptionCondition
@@ -128,11 +133,14 @@ func irodoriSampleEulerCFG(
     let batchSize = textInputIDs.shape[0]
     let hasTextCfg = cfgScaleText > 0
     let hasSpeakerCfg = cfgScaleSpeaker > 0 && useSpk
+    // A fully masked caption makes the caption-uncond bundle identical to the
+    // conditional one, so its guidance term is zero: skip it as upstream does.
     let hasCaptionCfg = cfgScaleCaption > 0 && useCap
+        && (captionMask?.any().item(Bool.self) ?? false)
     let hasContextCfg = isDual ? false : (cfgScaleContext > 0)
 
     // ---- encode all conditions ----
-    let enc = model.encodeConditionsFull(
+    let enc = encoded ?? model.encodeConditionsFull(
         textInputIDs: textInputIDs,
         textMask: textMask,
         refLatent: refLatent,
@@ -257,7 +265,7 @@ func irodoriSampleEulerCFG(
     // ---- initial noise ----
     MLXRandom.seed(UInt64(rngSeed))
     let initScale: Float = 0.999
-    var xT = MLXRandom.normal([batchSize, sequenceLength, latentDim])
+    var xT = initialNoise ?? MLXRandom.normal([batchSize, sequenceLength, latentDim])
     if let tf = params.truncationFactor { xT = xT * tf }
 
     let tSchedule = irodoriTSchedule(
@@ -271,7 +279,7 @@ func irodoriSampleEulerCFG(
         let t = tSchedule[i]
         let tNext = tSchedule[i + 1]
         let tArr = MLX.full([batchSize], values: t)
-        let useCfg = (hasTextCfg || hasSpeakerCfg) && (params.cfgMinT <= t && t <= params.cfgMaxT)
+        let useCfg = (hasTextCfg || hasSpeakerCfg || hasCaptionCfg) && (params.cfgMinT <= t && t <= params.cfgMaxT)
 
         var vPred: MLXArray
 
@@ -435,6 +443,66 @@ func irodoriSampleEulerCFG(
         eval(xT)
     }
 
+    return xT
+}
+
+// MARK: - MeanFlow sampler (v4.1 MF)
+
+/// Linear Euler sampler for a MeanFlow-distilled model (default: 4 NFE).
+///
+/// MeanFlow checkpoints bake classifier-free guidance into distillation, so unlike
+/// `irodoriSampleEulerCFG` this runs a single conditional branch per step and
+/// conditions on the interval length `delta_t = t - t_next`.
+/// Returns latent of shape (batch, sequenceLength, latentDim).
+func irodoriSampleEulerMeanFlow(
+    model: IrodoriDiT,
+    encoded enc: IrodoriEncodedConditions,
+    latentDim: Int,
+    sequenceLength: Int,
+    rngSeed: Int,
+    numSteps: Int,
+    initialNoise: MLXArray? = nil,
+    onStep: ((Int, MLXArray) -> Void)? = nil
+) throws -> MLXArray {
+    guard model.cfg.useMeanflow else {
+        throw IrodoriTTSError.generation("irodoriSampleEulerMeanFlow requires a MeanFlow model.")
+    }
+    guard numSteps > 0 else {
+        throw IrodoriTTSError.generation("MeanFlow numSteps must be positive, got \(numSteps).")
+    }
+    let batchSize = enc.textMask.shape[0]
+
+    eval(enc.textState)
+    if let s = enc.speakerState { eval(s) }
+    if let c = enc.captionState { eval(c) }
+
+    let kv = try model.buildKVCache(
+        textState: enc.textState, speakerState: enc.speakerState, captionState: enc.captionState)
+    for kvs in [kv.kvText, kv.kvSpeaker, kv.kvCaption] {
+        for layer in kvs ?? [] { eval(layer.keys, layer.values) }
+    }
+
+    MLXRandom.seed(UInt64(rngSeed))
+    var xT = initialNoise ?? MLXRandom.normal([batchSize, sequenceLength, latentDim])
+
+    // linspace(1, 0, numSteps + 1)
+    let tSchedule = (0 ... numSteps).map { 1.0 - Float($0) / Float(numSteps) }
+    for i in 0 ..< numSteps {
+        let t = tSchedule[i]
+        let tNext = tSchedule[i + 1]
+        let velocity = try model.forwardWithConditions(
+            xT: xT,
+            t: MLX.full([batchSize], values: t),
+            textState: enc.textState, textMask: enc.textMask,
+            speakerState: enc.speakerState, speakerMask: enc.speakerMask,
+            kvText: kv.kvText, kvSpeaker: kv.kvSpeaker,
+            captionState: enc.captionState, captionMask: enc.captionMask,
+            kvCaption: kv.kvCaption,
+            deltaT: MLX.full([batchSize], values: t - tNext))
+        xT = xT + velocity * (tNext - t)
+        eval(xT)
+        onStep?(i, xT)
+    }
     return xT
 }
 

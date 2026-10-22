@@ -31,7 +31,7 @@ private func computeInvFreq(dim: Int, base: Float) -> MLXArray {
 }
 
 private let compiledTalkerSwiGLU: @Sendable (MLXArray, MLXArray) -> MLXArray = {
-    compile(shapeless: true) { gate, up in
+    MLX.compile(shapeless: true) { gate, up in
         silu(gate) * up
     }
 }()
