@@ -43,3 +43,10 @@ model = load("mlx-community/Phonon-2")
 result = model.generate("audio.wav", chunk_duration=30, overlap_duration=2)
 print(result.text)
 ```
+
+## License
+
+Model weights derive from NVIDIA Parakeet TDT 0.6B v3 and are licensed under
+[CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/).
+Fermion Research code is licensed under [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0),
+Copyright 2026 Fermion Research.
