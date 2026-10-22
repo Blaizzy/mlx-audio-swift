@@ -91,11 +91,9 @@ final class MegaASRLoRAState {
         adapted = robust
     }
 
-    func setActive(_ want: Bool) throws {
+    func setActive(_ want: Bool) {
         guard want != active else { return }
-        try model.update(
-            parameters: .unflattened(want ? adapted : originals),
-            verify: [.noUnusedKeys, .shapeMismatch])
+        model.update(parameters: .unflattened(want ? adapted : originals))
         active = want
     }
 }
@@ -123,64 +121,36 @@ public final class MegaASRModel: STTGenerationModel {
         adapters = try MegaASRLoRAState(model: backbone, factors: factors)
     }
 
-    private func validatedAudio(_ audio: MLXArray, parameters: STTGenerateParameters) throws
-        -> MLXArray
-    {
-        guard audio.ndim == 1 || audio.ndim == 2 else {
-            throw STTError.invalidInput("Expected mono or time-major stereo PCM")
-        }
-        let waveform = (audio.ndim == 2 ? audio.mean(axis: -1) : audio).asType(.float32)
-        guard waveform.size > 200,
-            parameters.maxTokens >= 0, parameters.temperature >= 0, parameters.temperature.isFinite,
-            parameters.chunkDuration > 0, parameters.chunkDuration.isFinite,
-            parameters.minChunkDuration > 0, parameters.minChunkDuration.isFinite,
-            parameters.repetitionPenalty > 0, parameters.repetitionPenalty.isFinite,
-            parameters.repetitionContextSize >= 0, parameters.topP > 0, parameters.topP <= 1,
-            parameters.topK >= 0
-        else {
-            throw STTError.invalidInput("Invalid Mega-ASR waveform or generation parameters")
-        }
-        guard parameters.kvBits == nil else {
-            throw STTError.invalidInput("Mega-ASR does not currently support quantized KV caches")
-        }
-        return waveform
+    private func prepareAudio(_ audio: MLXArray) -> MLXArray {
+        precondition(audio.ndim == 1 || audio.ndim == 2, "Expected mono or time-major stereo PCM")
+        return (audio.ndim == 2 ? audio.mean(axis: -1) : audio).asType(.float32)
     }
 
-    private func selectRoute(audio: MLXArray, mode: MegaASRRoutingMode) throws {
+    private func selectRoute(audio: MLXArray, mode: MegaASRRoutingMode) {
         let useLoRA: Bool
         switch mode {
-        case .automatic: useLoRA = try router.route(audio: audio).usesLoRA
+        case .automatic: useLoRA = router.route(audio: audio).usesLoRA
         case .base: useLoRA = false
         case .robust: useLoRA = true
         }
-        try adapters.setActive(useLoRA)
+        adapters.setActive(useLoRA)
     }
 
     public func transcribe(
         audio: MLXArray, generationParameters: STTGenerateParameters? = nil,
         context: String = "", routing: MegaASRRoutingMode = .automatic
-    ) throws -> STTOutput {
+    ) -> STTOutput {
         let p = generationParameters ?? defaultGenerationParameters
-        let audio = try validatedAudio(audio, parameters: p)
+        let audio = prepareAudio(audio)
         inferenceGate.wait()
         defer { inferenceGate.signal() }
-        try selectRoute(audio: audio, mode: routing)
-        return try performTranscription(audio: audio, parameters: p, context: context, emit: nil)
+        selectRoute(audio: audio, mode: routing)
+        return performTranscription(audio: audio, parameters: p, context: context, emit: nil)
     }
 
     public func generate(audio: MLXArray, generationParameters: STTGenerateParameters) -> STTOutput
     {
-        do { return try generateThrowing(audio: audio, generationParameters: generationParameters) } catch
-        {
-            preconditionFailure(
-                "\(error). Use generateThrowing() for throwing input validation.")
-        }
-    }
-
-    public func generateThrowing(
-        audio: MLXArray, generationParameters: STTGenerateParameters
-    ) throws -> STTOutput {
-        try transcribe(audio: audio, generationParameters: generationParameters)
+        transcribe(audio: audio, generationParameters: generationParameters)
     }
 
     private func acquireGateCancellable() throws {
@@ -206,16 +176,17 @@ public final class MegaASRModel: STTGenerationModel {
             let task = Task.detached {
                 let model = modelBox.value
                 do {
-                    let audio = try model.validatedAudio(audioBox.value, parameters: p)
+                    let audio = model.prepareAudio(audioBox.value)
                     try model.acquireGateCancellable()
                     defer { model.inferenceGate.signal() }
                     try Task.checkCancellation()
-                    try model.selectRoute(audio: audio, mode: routing)
-                    let result = try model.performTranscription(
+                    model.selectRoute(audio: audio, mode: routing)
+                    let result = model.performTranscription(
                         audio: audio, parameters: p, context: context
                     ) {
                         continuation.yield(.token($0))
                     }
+                    try Task.checkCancellation()
                     continuation.yield(.result(result))
                     continuation.finish()
                 } catch { continuation.finish(throwing: error) }
@@ -229,9 +200,10 @@ public final class MegaASRModel: STTGenerationModel {
     private func performTranscription(
         audio: MLXArray, parameters p: STTGenerateParameters,
         context: String, emit: ((String) -> Void)?
-    ) throws -> STTOutput {
+    ) -> STTOutput {
+        precondition(p.kvBits == nil, "Mega-ASR does not currently support quantized KV caches")
         guard let tokenizer = backbone.tokenizer else {
-            throw STTError.modelNotInitialized("Mega-ASR tokenizer is not loaded")
+            preconditionFailure("Mega-ASR tokenizer is not loaded")
         }
         let started = Date()
         let language = backbone.normalizeLanguageName(p.language)
@@ -245,11 +217,11 @@ public final class MegaASRModel: STTGenerationModel {
             p.temperature == 0
             ? ArgMaxSampler()
             : TopPSampler(temperature: p.temperature, topP: p.topP, topK: p.topK)
-        for (chunk, offset) in splitAudioIntoChunks(
+        chunks: for (chunk, offset) in splitAudioIntoChunks(
             audio, sampleRate: sampleRate,
             chunkDuration: p.chunkDuration, minChunkDuration: p.minChunkDuration)
         {
-            try Task.checkCancellation()
+            if Task.isCancelled { break }
             let budget = p.maxTokens - generatedCount
             if budget <= 0 { break }
             let (features, mask, audioTokens) = backbone.preprocessAudio(chunk)
@@ -265,7 +237,7 @@ public final class MegaASRModel: STTGenerationModel {
             promptCount += ids.dim(1)
             var consumed = 0
             while ids.dim(1) - consumed > 1 {
-                try Task.checkCancellation()
+                if Task.isCancelled { break chunks }
                 let n = min(2048, ids.dim(1) - consumed - 1)
                 eval(
                     backbone.model(
@@ -280,7 +252,7 @@ public final class MegaASRModel: STTGenerationModel {
             var tokens: [Int] = []
             var previous = ""
             for _ in 0..<budget {
-                try Task.checkCancellation()
+                if Task.isCancelled { break chunks }
                 var scores = logits[0, -1, 0...]
                 if p.repetitionPenalty != 1, !tokens.isEmpty {
                     let recent = MLXArray(

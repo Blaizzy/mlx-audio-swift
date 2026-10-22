@@ -40,23 +40,21 @@ struct MegaASRTests {
             })
     }
 
-    @Test func routerValidatesAudioAndSelectsByClassifierProbability() throws {
+    @Test func routerSelectsByClassifierProbability() throws {
         var weights = tinyRouterWeights()
         weights["classifier.3.bias"] = MLXArray([Float(0), 2])
         let router = try MegaASRAudioQualityRouter.fromWeights(weights, heads: 2)
         let audio = MLXArray.zeros([1600])
-        let logits = try router.logits(audio: audio)
+        let logits = router.logits(audio: audio)
         #expect(MLX.all(logits .== MLXArray([Float(0), 2])).item(Bool.self))
-        let degraded = try router.route(audio: audio)
+        let degraded = router.route(audio: audio)
         #expect(abs(degraded.degradedProbability - 0.8807971) < 1e-6)
         #expect(degraded.usesLoRA)
 
         try router.update(
             parameters: .unflattened(["classifier.fc2.bias": MLXArray([Float(2), 0])]),
             verify: [.noUnusedKeys, .shapeMismatch])
-        #expect(!(try router.route(audio: audio)).usesLoRA)
-        #expect(throws: (any Error).self) { try router.logits(audio: .zeros([0])) }
-        #expect(throws: (any Error).self) { try router.logits(audio: .zeros([50000])) }
+        #expect(!router.route(audio: audio).usesLoRA)
     }
 
     @Test func loraRestoresExactOriginalAfterRepeatedToggles() throws {
@@ -76,11 +74,11 @@ struct MegaASRTests {
         ).reshaped(3, 4).asType(.bfloat16)
         let state = try MegaASRLoRAState(model: model, factors: factors)
         for _ in 0..<20 {
-            try state.setActive(true)
+            state.setActive(true)
             #expect(MLX.all(model.projection.weight .== adapted).item(Bool.self))
-            try state.setActive(true)
+            state.setActive(true)
             #expect(MLX.all(model.projection.weight .== adapted).item(Bool.self))
-            try state.setActive(false)
+            state.setActive(false)
             #expect(MLX.all(model.projection.weight .== original).item(Bool.self))
         }
         #expect(!state.active)
@@ -99,11 +97,11 @@ struct MegaASRTests {
                 "layers.0.projection.lora_A": a, "layers.0.projection.lora_B": b,
                 "model.layers.0.projection.lora_A": a * 0.5, "model.layers.0.projection.lora_B": b,
             ])
-        try state.setActive(true)
+        state.setActive(true)
         let expected = MLXArray([Float(1.5), 3, 0, 0, 4.5, 6, 0, 0, 7.5, 9, 0, 0])
             .reshaped(3, 4).asType(.bfloat16)
         #expect(MLX.all(model.model.layers[0].projection.weight .== expected).item(Bool.self))
-        try state.setActive(false)
+        state.setActive(false)
         #expect(MLX.all(model.model.layers[0].projection.weight .== base).item(Bool.self))
     }
 
@@ -162,22 +160,15 @@ struct MegaASRCheckpointTests {
         #expect(FileManager.default.fileExists(atPath: modelPath))
         let model = try await MegaASRModel.fromModelDirectory(URL(fileURLWithPath: modelPath))
         let sharedModel: any STTGenerationModel = model
-        #expect(throws: (any Error).self) {
-            try sharedModel.generateThrowing(audio: .zeros([100, 2]))
-        }
-        #expect(throws: (any Error).self) {
-            try sharedModel.generateThrowing(
-                audio: .zeros([1600]), generationParameters: .init(kvBits: 4))
-        }
         let cleanAudio = try audio(named: "conversational_a")
         var firstClean: String?
         for (name, degraded) in [
             ("conversational_a", false), ("noisy_audio", true), ("conversational_a", false),
         ] {
             let waveform = try audio(named: name)
-            let route = try model.router.route(audio: waveform)
+            let route = model.router.route(audio: waveform)
             #expect(route.usesLoRA == degraded)
-            let output = try sharedModel.generateThrowing(
+            let output = sharedModel.generate(
                 audio: waveform,
                 generationParameters: .init(maxTokens: 256, topP: 1, language: "English"))
             #expect(!output.text.isEmpty)
@@ -203,7 +194,7 @@ struct MegaASRCheckpointTests {
         try await Task.sleep(for: .milliseconds(20))
         consumer.cancel()
         _ = try? await consumer.value
-        let restored = try model.transcribe(
+        let restored = model.transcribe(
             audio: waveform.value,
             generationParameters: .init(maxTokens: 256, language: "English"), routing: .base)
         #expect(restored.text == firstClean)

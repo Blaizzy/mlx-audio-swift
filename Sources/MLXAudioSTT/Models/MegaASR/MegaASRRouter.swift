@@ -232,27 +232,21 @@ public final class MegaASRAudioQualityRouter: Module {
         return model
     }
 
-    public func logits(audio: MLXArray) throws -> MLXArray {
-        guard audio.ndim == 1 || audio.ndim == 2 else {
-            throw STTError.invalidInput("Expected mono or time-major stereo PCM")
-        }
+    public func logits(audio: MLXArray) -> MLXArray {
+        precondition(audio.ndim == 1 || audio.ndim == 2, "Expected mono or time-major stereo PCM")
         let waveform = (audio.ndim == 2 ? audio.mean(axis: -1) : audio).asType(.float32)
-        guard waveform.size > 200 else {
-            throw STTError.invalidInput("Mega-ASR routing needs at least 201 audio samples")
-        }
+        precondition(waveform.size > 200, "Mega-ASR routing needs at least 201 audio samples")
         let melFrames = 1 + waveform.size / 160
         let frameCount = ((melFrames + 1) / 2 + 1) / 2
-        guard frameCount <= maxFrames else {
-            throw STTError.invalidInput(
-                "Audio exceeds the router context (\(maxFrames) subsampled frames); force a base/robust route or split the recording"
-            )
-        }
+        precondition(
+            frameCount <= maxFrames,
+            "Audio exceeds the router context (\(maxFrames) subsampled frames); force a base/robust route or split the recording")
         let mel = MegaASRFrontend.features(waveform).expandedDimensions(axis: 0)
         return classifier(pooling(transformer(positions(frontend(mel))))).squeezed(axis: 0)
     }
 
-    public func route(audio: MLXArray) throws -> MegaASRRoute {
+    public func route(audio: MLXArray) -> MegaASRRoute {
         MegaASRRoute(
-            degradedProbability: softmax(try logits(audio: audio), axis: -1)[1].item(Float.self))
+            degradedProbability: softmax(logits(audio: audio), axis: -1)[1].item(Float.self))
     }
 }

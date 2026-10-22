@@ -33,7 +33,7 @@ let model = try await MegaASRModel.fromPretrained("mlx-community/Mega-ASR-bf16")
 let audioURL = URL(fileURLWithPath: "audio.wav")
 let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: 16000)
 
-let result = try model.generateThrowing(
+let result = model.generate(
     audio: audio,
     generationParameters: STTGenerateParameters(maxTokens: 512, language: "English")
 )

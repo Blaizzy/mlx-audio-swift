@@ -301,7 +301,7 @@ enum App {
             if options.stream {
                 output = try await runStreaming(model: sttModel, audio: audio, parameters: params)
             } else {
-                output = try sttModel.generateThrowing(audio: audio, generationParameters: params)
+                output = sttModel.generate(audio: audio, generationParameters: params)
             }
 
         case .forcedAligner(let aligner):
