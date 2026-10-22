@@ -123,7 +123,12 @@ struct FunASRNanoCheckpointTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["FUN_ASR_MODEL_DIR"] != nil))
     func localCheckpointTranscription() async throws {
         let directory = URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["FUN_ASR_MODEL_DIR"]))
-        let loaded = try await STT.loadModel(modelRepo: directory.path, modelType: "fun_asr_nano")
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("fun-loader-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let checkpoint = temporary.appendingPathComponent("checkpoint")
+        try FileManager.default.createSymbolicLink(at: checkpoint, withDestinationURL: directory)
+        let loaded = try await STT.loadModel(modelRepo: checkpoint.path)
         let model = try #require(loaded as? FunASRNanoModel)
         let audioURL = try #require(Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media"))
         let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: model.sampleRate)

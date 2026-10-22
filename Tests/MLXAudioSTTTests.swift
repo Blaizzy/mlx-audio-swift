@@ -2628,6 +2628,46 @@ struct Qwen3ASRHelperTests {
     }
 }
 
+struct Qwen3ASRNetworkTests {
+
+    /// `maxTokens` caps each chunk. With a cap far below one chunk's transcript, a whole-file
+    /// budget runs out in the first chunk and drops the rest without a segment (#248).
+    @Test func qwen3ASRMaxTokensCapsEachChunk() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network Qwen3-ASR test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
+        let repo = env["MLXAUDIO_QWEN3_ASR_REPO"] ?? "mlx-community/Qwen3-ASR-0.6B-4bit"
+        let model = try await Qwen3ASRModel.fromPretrained(repo)
+        let audioURL = Bundle.module.url(
+            forResource: "conversational_a", withExtension: "wav", subdirectory: "media"
+        )!
+        let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: model.sampleRate)
+        let chunkDuration: Float = 4.0
+        let maxTokens = 6
+        let chunkCount = splitAudioIntoChunks(
+            audio, sampleRate: model.sampleRate, chunkDuration: chunkDuration
+        ).count
+        #expect(chunkCount >= 2)
+
+        let output = model.generate(
+            audio: audio, maxTokens: maxTokens, language: "en", chunkDuration: chunkDuration
+        )
+        #expect(output.segments?.count == chunkCount)
+        #expect(output.generationTokens > maxTokens)
+
+        var streamedInfo: STTGenerationInfo?
+        for try await event in model.generateStream(
+            audio: audio, maxTokens: maxTokens, language: "en", chunkDuration: chunkDuration
+        ) {
+            if case .info(let info) = event { streamedInfo = info }
+        }
+        #expect((streamedInfo?.generationTokenCount ?? 0) > maxTokens)
+    }
+}
+
 // MARK: - Audio Chunking Tests
 
 struct SplitAudioIntoChunksTests {
@@ -4294,9 +4334,9 @@ struct SenseVoiceTests {
         #expect(sanitized["encoder.encoders.0.self_attn.fsmn_block.weight"]?.shape == [64, 5, 1])
     }
 
-    @Test func fromDirectoryFixtureSmokeTest() throws {
+    @Test func sharedLoaderLoadsSymlinkedLocalCheckpoint() async throws {
         let fixtureDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("sensevoice-fixture-\(UUID().uuidString)")
+            .appendingPathComponent("stt-checkpoint-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: fixtureDir) }
 
@@ -4359,7 +4399,10 @@ struct SenseVoiceTests {
         }
         try MLX.save(arrays: weights, url: fixtureDir.appendingPathComponent("model.safetensors"))
 
-        let model = try SenseVoiceModel.fromDirectory(fixtureDir)
+        let alias = fixtureDir.deletingLastPathComponent().appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: fixtureDir)
+        defer { try? FileManager.default.removeItem(at: alias) }
+        let model = try #require(try await STT.loadModel(modelRepo: alias.path) as? SenseVoiceModel)
         let output = model.generate(
             audio: MLXArray(Array(repeating: Float(0), count: 16_000)),
             generationParameters: STTGenerateParameters(language: "en")
