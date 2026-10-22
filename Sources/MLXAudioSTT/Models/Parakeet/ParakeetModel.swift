@@ -24,6 +24,8 @@ public final class ParakeetModel: Module, STTGenerationModel {
     /// Defaults to `.bfloat16` (measured ~8% wall-clock speedup on batched decode
     /// with ~0.2% word drift). Set to `.float32` via the factory method to fall back.
     public var computeDType: DType = .bfloat16
+    /// Phonon-2 computes the frontend in fp32 after rounding input to the requested compute dtype.
+    var usesPhonon2Frontend = false
 
     enum TDTDecoderImplementation: Sendable {
         case serial
@@ -840,7 +842,16 @@ public final class ParakeetModel: Module, STTGenerationModel {
     }
 
     private func makeMelFeatures(from audio: MLXArray) -> MLXArray {
-        ParakeetAudio.logMelSpectrogram(audio, config: preprocessConfig).squeezed(axis: 0)
+        if usesPhonon2Frontend {
+            var waveform = audio.asType(computeDType)
+            let minimum = 2 * preprocessConfig.hopLength
+            if waveform.size < minimum {
+                waveform = MLX.padded(waveform, widths: [.init((0, minimum - waveform.size))])
+            }
+            return ParakeetAudio.logMelSpectrogram(waveform.asType(.float32), config: preprocessConfig)
+                .squeezed(axis: 0).asType(computeDType)
+        }
+        return ParakeetAudio.logMelSpectrogram(audio, config: preprocessConfig).squeezed(axis: 0)
     }
 
     private func padMelFeatures(_ mel: MLXArray, targetFrameLength: Int) -> MLXArray {
@@ -868,7 +879,7 @@ public final class ParakeetModel: Module, STTGenerationModel {
     }
 
     private func decodeChunk(_ chunkAudio: MLXArray) -> ParakeetAlignedResult {
-        let mel = ParakeetAudio.logMelSpectrogram(chunkAudio, config: preprocessConfig)
+        let mel = makeMelFeatures(from: chunkAudio).expandedDimensions(axis: 0)
         return decode(mel: mel)[0]
     }
 
@@ -954,7 +965,10 @@ public extension ParakeetModel {
         let configData = normalizedConfigData(rawConfigData)
         let rawConfig = try JSONDecoder().decode(ParakeetRawConfig.self, from: configData)
         let quantConfig = try JSONDecoder().decode(ParakeetQuantizationConfig.self, from: configData)
-        let variant = try ParakeetVariantResolver.resolve(rawConfig)
+        let object = try JSONSerialization.jsonObject(with: configData) as? [String: Any]
+        let phonon2 = object?["model_type"] as? String == "phonon2"
+            ? try JSONDecoder().decode(Phonon2Config.self, from: configData) : nil
+        let variant = try (phonon2 != nil ? ParakeetVariant.tdt : ParakeetVariantResolver.resolve(rawConfig))
 
         let model: ParakeetModel
         switch variant {
@@ -1012,6 +1026,9 @@ public extension ParakeetModel {
             )
         }
 
+        let packedLayers = try phonon2.map { try model.configurePhonon2($0) } ?? []
+        model.usesPhonon2Frontend = phonon2 != nil
+
         var weights: [String: MLXArray] = [:]
         let files = try FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
         let safetensors = files.filter { $0.pathExtension == "safetensors" }
@@ -1020,9 +1037,19 @@ public extension ParakeetModel {
             weights.merge(shard) { _, new in new }
         }
 
+        if phonon2 != nil {
+            for (name, value) in weights {
+                if (name.hasSuffix(".base_q") || name.hasSuffix(".residual_q")) && value.dtype != .uint32 {
+                    throw Phonon2Error.invalidPackedWeight("\(name) must remain uint32")
+                }
+                if (name.hasSuffix(".row_lo") || name.hasSuffix(".row_hi")) && value.dtype != .float16 {
+                    throw Phonon2Error.invalidPackedWeight("\(name) must remain float16")
+                }
+            }
+        }
         let sanitized = sanitize(weights: weights, variant: model.variant)
 
-        if let perLayerQuant = quantConfig.perLayerQuantization {
+        if phonon2 == nil, let perLayerQuant = quantConfig.perLayerQuantization {
             quantize(model: model) { path, _ in
                 if sanitized["\(path).scales"] != nil {
                     return perLayerQuant.quantization(layer: path)?.asTuple
@@ -1040,13 +1067,15 @@ public extension ParakeetModel {
         // packed quantized) weights untouched.
         let casted = Dictionary(
             uniqueKeysWithValues: model.parameters().flattened().map { key, value -> (String, MLXArray) in
-                guard value.dtype.isFloatingPoint, value.dtype != computeDType else {
+                guard value.dtype.isFloatingPoint, value.dtype != computeDType,
+                    !(phonon2 != nil && (key.hasSuffix(".row_lo") || key.hasSuffix(".row_hi"))) else {
                     return (key, value)
                 }
                 return (key, value.asType(computeDType))
             }
         )
         try model.update(parameters: ModuleParameters.unflattened(casted), verify: .noUnusedKeys)
+        for layer in packedLayers { layer.materialize() }
 
         model.train(false)
         eval(model)

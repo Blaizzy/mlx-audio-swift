@@ -149,6 +149,8 @@ let package = Package(
                 "Models/MossTranscribeDiarize/README.md",
                 "Models/NemotronASR/README.md",
                 "Models/Parakeet/README.md",
+                "Models/Phonon2/README.md",
+                "Models/Phonon2/LICENSE-CODE-Apache-2.0.txt",
                 "Models/Qwen3ASR/README.md",
                 "Models/SenseVoice/README.md",
                 "Models/VoxtralRealtime/README.md",

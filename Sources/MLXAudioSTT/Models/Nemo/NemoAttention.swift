@@ -8,10 +8,10 @@ class NemoMultiHeadAttention: Module {
     let scale: Float
     let nFeat: Int
 
-    @ModuleInfo(key: "linear_q") var linearQ: Linear
-    @ModuleInfo(key: "linear_k") var linearK: Linear
-    @ModuleInfo(key: "linear_v") var linearV: Linear
-    @ModuleInfo(key: "linear_out") var linearOut: Linear
+    @ModuleInfo(key: "linear_q") var linearQ: UnaryLayer
+    @ModuleInfo(key: "linear_k") var linearK: UnaryLayer
+    @ModuleInfo(key: "linear_v") var linearV: UnaryLayer
+    @ModuleInfo(key: "linear_out") var linearOut: UnaryLayer
 
     init(nHead: Int, nFeat: Int, bias: Bool = true) {
         self.nHead = nHead
@@ -58,7 +58,7 @@ class NemoMultiHeadAttention: Module {
 }
 
 final class NemoRelPositionMultiHeadAttention: NemoMultiHeadAttention {
-    @ModuleInfo(key: "linear_pos") var linearPos: Linear
+    @ModuleInfo(key: "linear_pos") var linearPos: UnaryLayer
 
     @ParameterInfo var posBiasU: MLXArray
     @ParameterInfo var posBiasV: MLXArray
