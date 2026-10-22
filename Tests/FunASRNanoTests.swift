@@ -26,15 +26,13 @@ struct FunASRNanoTests {
         #expect(config.textConfig.hiddenSize == 8)
         #expect(config.audioEncoder.sanmShift == 2)
         #expect(config.audioAdaptor.downsampleRate == 2)
-        #expect(try FunASRNanoModel.promptLanguage("YUE") == "中文")
-        #expect(try FunASRNanoModel.promptLanguage("en") == "英文")
-        #expect(try FunASRNanoModel.promptLanguage("ja") == "日文")
-        #expect(try FunASRNanoModel.promptLanguage("auto") == nil)
-        #expect(throws: (any Error).self) { try FunASRNanoModel.promptLanguage("ko") }
-        #expect(try FunASRNanoModel.resolveHotwords(["", " MLX "], context: nil) == ["MLX"])
-        #expect(try FunASRNanoModel.resolveHotwords([], context: " MLX, Apple ") == ["MLX, Apple"])
-        #expect(throws: (any Error).self) { try FunASRNanoModel.resolveHotwords(["MLX"], context: "Apple") }
-        #expect(try FunASRNanoModel.promptText(language: "en", hotwords: [], itn: false) == "语音转写成英文，不进行文本规整：")
+        #expect(FunASRNanoModel.promptLanguage("YUE") == "中文")
+        #expect(FunASRNanoModel.promptLanguage("en") == "英文")
+        #expect(FunASRNanoModel.promptLanguage("ja") == "日文")
+        #expect(FunASRNanoModel.promptLanguage(" English ") == "英文")
+        #expect(FunASRNanoModel.promptLanguage("Chinese") == "中文")
+        #expect(FunASRNanoModel.promptLanguage("Japanese") == "日文")
+        #expect(FunASRNanoModel.promptLanguage("auto") == nil)
         #expect(FunASRNanoModel.normalizedText("  hello/sil\n world ") == "hello world")
         #expect([1, 8, 9, 17].map(FunASRNanoAudio.fakeTokenLength) == [1, 1, 2, 3])
     }
@@ -57,7 +55,7 @@ struct FunASRNanoTests {
         try model.update(parameters: ModuleParameters.unflattened(weights), verify: .all)
         eval(model)
         let audio = 0.1 * sin(arange(1600, dtype: .float32) * 0.13)
-        let features = try model.extractFeatures(audio).expandedDimensions(axis: 0)
+        let features = model.extractFeatures(audio).expandedDimensions(axis: 0)
         let adapted = model.audioAdaptor(model.audioEncoder(features))
         #expect(adapted.shape == [1, 1, 8])
         #expect(MLX.all(isFinite(adapted)).item(Bool.self))
@@ -87,14 +85,13 @@ struct FunASRNanoTests {
             "Cached/full difference \(maximumError), reference scale \(referenceScale), relative RMS \(relativeRMS)")
     }
 
-    @Test func streamingPropagatesInitializationErrors() async throws {
+    @Test func stereoFeaturesMatchMono() {
         let model = FunASRNanoModel(tinyConfig())
-        do {
-            for try await _ in model.generateStream(audio: .zeros([1600]), generationParameters: .init()) { }
-            Issue.record("Expected an uninitialized model error")
-        } catch let error as STTError {
-            #expect(error.localizedDescription.contains("tokenizer"))
-        }
+        let audio = 0.1 * sin(arange(1600, dtype: .float32) * 0.13)
+        let mono = model.extractFeatures(audio)
+        let stereo = model.extractFeatures(stacked([audio, audio], axis: -1))
+        #expect(stereo.shape == mono.shape)
+        #expect(abs(stereo - mono).max().item(Float.self) < 1e-5)
     }
 
     @Test func sanitizerPreservesPreparedLayouts() {
@@ -110,11 +107,18 @@ struct FunASRNanoTests {
         #expect(sanitized["llm.lm_head.weight"] == nil)
     }
 
-    @Test func invalidInputThrows() throws {
-        let model = FunASRNanoModel(tinyConfig())
-        #expect(throws: (any Error).self) { try model.extractFeatures(.zeros([0])) }
-        #expect(throws: (any Error).self) { try model.extractFeatures(.zeros([1, 1, 400])) }
-        #expect(throws: (any Error).self) { try model.transcribe(audio: .zeros([1600])) }
+    @Test func hotwordsAndITNControlPrompts() {
+        let words = FunASRNanoModel.resolveHotwords(["", " MLX ", " Apple "], context: nil)
+        #expect(words == ["MLX", "Apple"])
+        #expect(FunASRNanoModel.resolveHotwords([], context: " MLX, Apple ") == ["MLX, Apple"])
+        let normalized = FunASRNanoModel.promptText(language: "English", hotwords: words, itn: true)
+        let spoken = FunASRNanoModel.promptText(language: "en", hotwords: words, itn: false)
+        #expect(normalized.contains("热词列表：[MLX, Apple]"))
+        #expect(normalized.hasSuffix("语音转写成英文："))
+        #expect(spoken.contains("热词列表：[MLX, Apple]"))
+        #expect(spoken.hasSuffix("语音转写成英文，不进行文本规整："))
+        #expect(FunASRNanoModel.promptText(language: "en", hotwords: [], itn: false)
+            == "语音转写成英文，不进行文本规整：")
     }
 }
 
@@ -132,14 +136,28 @@ struct FunASRNanoCheckpointTests {
         let model = try #require(loaded as? FunASRNanoModel)
         let audioURL = try #require(Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media"))
         let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: model.sampleRate)
-        let parameters = STTGenerateParameters(maxTokens: 256, topP: 1, language: "en")
-        let output = try model.transcribe(audio: audio, generationParameters: parameters)
+        let parameters = STTGenerateParameters(maxTokens: 256, topP: 1, language: "English")
+        let output = loaded.generate(audio: audio, generationParameters: parameters)
         #expect(!output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         #expect(output.generationTokens > 0)
+        #expect(!model.generate(audio: audio).text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         var streamResult: STTOutput?
-        for try await event in model.transcribeStream(audio: audio, generationParameters: parameters) {
+        for try await event in loaded.generateStream(audio: audio, generationParameters: parameters) {
             if case .result(let result) = event { streamResult = result }
         }
         #expect(streamResult?.text == output.text)
+        let controlled = model.generate(audio: audio, generationParameters: parameters,
+            hotwords: ["intention"], itn: false, prefillStepSize: 128)
+        #expect(!controlled.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        var controlledStream: STTOutput?
+        for try await event in model.generateStream(audio: audio, generationParameters: parameters,
+            hotwords: ["intention"], itn: false, prefillStepSize: 128) {
+            if case .result(let result) = event { controlledStream = result }
+        }
+        #expect(controlledStream?.text == controlled.text)
+        let contextual = model.generate(audio: audio, generationParameters: parameters,
+            context: "intention", itn: false, prefillStepSize: 128)
+        #expect(contextual.text == controlled.text)
+        #expect(!model.generate(audio: audio, itn: false).text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 }

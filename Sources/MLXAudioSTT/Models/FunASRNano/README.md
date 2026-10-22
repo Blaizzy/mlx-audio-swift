@@ -30,14 +30,16 @@ let model = try await FunASRNanoModel.fromPretrained("mlx-community/Fun-ASR-Nano
 let audioURL = URL(fileURLWithPath: "audio.wav")
 let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: 16000)
 
-let result = try model.transcribe(
+let result = model.generate(
     audio: audio,
     generationParameters: STTGenerateParameters(maxTokens: 512, language: "en"),
-    hotwords: ["MLX", "Apple Silicon"]
+    hotwords: ["MLX", "Apple Silicon"],
+    itn: true
 )
 print(result.text)
 ```
 
 Use `language: "zh"` for Chinese or `language: "ja"` for Japanese. Inverse text
-normalization is enabled by default; pass `itn: false` to `transcribe` to request
-spoken-form text.
+normalization is enabled by default; pass `itn: false` to `generate` or
+`generateStream` to request spoken-form text. Hotwords and ITN options are
+available through the Swift API.

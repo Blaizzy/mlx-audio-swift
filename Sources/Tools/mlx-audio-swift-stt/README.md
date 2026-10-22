@@ -57,5 +57,5 @@ swift run mlx-audio-swift-stt \
 - `--gen-kwargs`: Extra generation kwargs JSON
 - `--text`: Required for forced aligner models
 - `--frame-threshold`: Compatibility flag (currently unused)
-- `--prefill-step-size`: Fun-ASR-Nano prefill chunk size (default: 2048); ignored by other models
+- `--prefill-step-size`: Compatibility flag (currently unused)
 - `--help`, `-h`: Show help

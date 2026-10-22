@@ -74,8 +74,6 @@ private struct Options {
     var chunkDuration: Float = 30.0
     var frameThreshold = 25
     var stream = false
-    var hotwords: [String] = []
-    var itn = true
     var prefillStepSize = 2048
     var genKwargsRaw: String? = nil
     var text = ""
@@ -191,10 +189,6 @@ private struct Options {
                 if let v = value as? String { text = v }
             case "verbose":
                 if let v = value as? Bool { verbose = v }
-            case "hotwords":
-                if let v = value as? [String] { hotwords = v }
-            case "itn":
-                if let v = value as? Bool { itn = v }
             case "prefill_step_size":
                 if let v = asInt(value) { prefillStepSize = v }
             case "frame_threshold":
@@ -231,14 +225,14 @@ private struct Options {
               --chunk-duration <float>      Chunk duration seconds. Default: 30.0
               --frame-threshold <int>       Accepted for compatibility (currently unused). Default: 25
               --stream                      Stream token output while generating
-              --prefill-step-size <int>     Fun-ASR-Nano prefill chunk size. Default: 2048
+              --prefill-step-size <int>     Accepted for compatibility (currently unused). Default: 2048
               --gen-kwargs <json>           Additional kwargs JSON.
                                             Recognized keys: max_tokens, language, chunk_duration,
                                             min_chunk_duration, temperature, top_p, top_k,
                                             repetition_penalty (Float, default 1.0 = greedy),
                                             repetition_context_size (Int, default 32),
                                             stream, text, verbose, prefill_step_size,
-                                            frame_threshold; Fun-ASR-Nano also supports hotwords, itn
+                                            frame_threshold
               --text <text>                 Alignment text (required for forced aligner models)
               -h, --help                    Show this help
             """
@@ -282,7 +276,7 @@ enum App {
             if options.frameThreshold != 25 {
                 print("Warning: --frame-threshold is currently ignored by this CLI.")
             }
-            if options.prefillStepSize != 2048, !isFunASRNano(model) {
+            if options.prefillStepSize != 2048 {
                 print("Warning: --prefill-step-size is currently ignored by this CLI.")
             }
         }
@@ -297,24 +291,14 @@ enum App {
                 topP: options.topP ?? params.topP,
                 topK: options.topK ?? params.topK,
                 verbose: options.verbose,
-                language: sttModel is FunASRNanoModel ? options.language : normalizeLanguage(options.language),
+                language: normalizeLanguage(options.language),
                 chunkDuration: options.chunkDuration,
                 minChunkDuration: options.minChunkDuration ?? params.minChunkDuration,
                 repetitionPenalty: options.repetitionPenalty ?? params.repetitionPenalty,
                 repetitionContextSize: options.repetitionContextSize ?? params.repetitionContextSize
             )
 
-            if let funASR = sttModel as? FunASRNanoModel {
-                if options.stream {
-                    output = try await collectStream(funASR.transcribeStream(audio: audio, generationParameters: params,
-                        hotwords: options.hotwords, itn: options.itn,
-                        prefillStepSize: options.prefillStepSize))
-                } else {
-                    output = try funASR.transcribe(audio: audio, generationParameters: params,
-                        hotwords: options.hotwords, itn: options.itn,
-                        prefillStepSize: options.prefillStepSize)
-                }
-            } else if options.stream {
+            if options.stream {
                 output = try await runStreaming(model: sttModel, audio: audio, parameters: params)
             } else {
                 output = sttModel.generate(audio: audio, generationParameters: params)
@@ -385,20 +369,11 @@ enum App {
             }
         }
 
-        return try await collectStream(model.generateStream(audio: audio, generationParameters: parameters))
-    }
-
-    private static func isFunASRNano(_ model: LoadedModel) -> Bool {
-        if case .stt(let model) = model { return model is FunASRNanoModel }
-        return false
-    }
-
-    private static func collectStream(_ stream: AsyncThrowingStream<STTGeneration, Error>) async throws -> STTOutput {
         var finalOutput: STTOutput?
         var streamedText = ""
         var emittedToken = false
 
-        for try await event in stream {
+        for try await event in model.generateStream(audio: audio, generationParameters: parameters) {
             switch event {
             case .token(let token):
                 emittedToken = true

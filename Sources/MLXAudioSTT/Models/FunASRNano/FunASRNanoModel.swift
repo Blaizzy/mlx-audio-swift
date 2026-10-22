@@ -107,48 +107,44 @@ public final class FunASRNanoModel: Module, STTGenerationModel {
         .init(maxTokens: config.defaultMaxTokens, topP: 1, language: nil)
     }
 
-    static func promptLanguage(_ language: String?) throws -> String? {
+    static func promptLanguage(_ language: String?) -> String? {
         guard let language else { return nil }
-        let code = language.lowercased().replacingOccurrences(of: "_", with: "-")
+        let label = language.trimmingCharacters(in: .whitespacesAndNewlines)
+        let code = label.lowercased().replacingOccurrences(of: "_", with: "-")
         switch code {
         case "", "auto": return nil
-        case "zh", "zh-cn", "zh-hans", "zh-tw", "zh-hant", "cmn", "cjy", "gan", "hak", "hsn", "nan", "wuu", "yue": return "中文"
-        case "en", "eng": return "英文"
-        case "ja", "jpn", "jp": return "日文"
-        default:
-            if code.range(of: "^[a-z]{2,3}(?:-[a-z0-9]+)*$", options: .regularExpression) != nil {
-                throw STTError.invalidInput("Unsupported Fun-ASR-Nano language: \(language). Use zh, en, ja or a supported Chinese dialect code.")
-            }
-            return language
+        case "zh", "zh-cn", "zh-hans", "zh-tw", "zh-hant", "cmn", "cjy", "gan", "hak", "hsn", "nan", "wuu", "yue", "chinese": return "中文"
+        case "en", "eng", "english": return "英文"
+        case "ja", "jpn", "jp", "japanese": return "日文"
+        default: return label
         }
     }
 
-    static func resolveHotwords(_ hotwords: [String], context: String?) throws -> [String] {
+    static func resolveHotwords(_ hotwords: [String], context: String?) -> [String] {
         let words = hotwords.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         let context = context?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard words.isEmpty || context.isEmpty else { throw STTError.invalidInput("Pass either hotwords or context, not both.") }
+        precondition(words.isEmpty || context.isEmpty, "Pass either hotwords or context, not both.")
         return words.isEmpty && !context.isEmpty ? [context] : words
     }
 
-    static func promptText(language: String?, hotwords: [String], itn: Bool) throws -> String {
+    static func promptText(language: String?, hotwords: [String], itn: Bool) -> String {
         var text = ""
         if !hotwords.isEmpty {
             text += "请结合上下文信息，更加准确地完成语音转写任务。如果没有相关信息，我们会留空。\n\n\n**上下文信息：**\n\n\n"
             text += "热词列表：[\(hotwords.joined(separator: ", "))]\n"
         }
-        if let label = try promptLanguage(language) { text += "语音转写成\(label)" } else { text += "语音转写" }
+        if let label = promptLanguage(language) { text += "语音转写成\(label)" } else { text += "语音转写" }
         if !itn { text += "，不进行文本规整" }
         return text + "："
     }
 
     /// Model-specific frontend, without implicit resampling or CMVN.
-    public func extractFeatures(_ audio: MLXArray) throws -> MLXArray {
-        guard audio.ndim == 1 || audio.ndim == 2, audio.size > 0 else {
-            throw STTError.invalidInput("Expected nonempty mono or time-major stereo PCM.")
-        }
+    public func extractFeatures(_ audio: MLXArray) -> MLXArray {
+        precondition((audio.ndim == 1 || audio.ndim == 2) && audio.size > 0,
+            "Expected nonempty mono or time-major stereo PCM.")
         let mono = audio.ndim == 2 ? audio.mean(axis: -1) : audio
         let minSamples = config.frontend.fs * config.frontend.frameLength / 1000
-        guard mono.size >= minSamples else { throw STTError.invalidInput("Audio is shorter than one analysis frame.") }
+        precondition(mono.size >= minSamples, "Audio is shorter than one analysis frame.")
         return FunASRNanoAudio.features(mono, config: config.frontend)
     }
 
@@ -158,12 +154,12 @@ public final class FunASRNanoModel: Module, STTGenerationModel {
         return llm.model.embedTokens.asLinear(hidden)
     }
 
-    func prepareInputs(audio: MLXArray, language: String?, hotwords: [String], itn: Bool) throws -> (MLXArray, MLXArray) {
-        guard let tokenizer else { throw STTError.modelNotInitialized("Fun-ASR-Nano tokenizer is not loaded.") }
-        let features = try extractFeatures(audio)
+    func prepareInputs(audio: MLXArray, language: String?, hotwords: [String], itn: Bool) -> (MLXArray, MLXArray) {
+        guard let tokenizer else { preconditionFailure("Fun-ASR-Nano tokenizer is not loaded.") }
+        let features = extractFeatures(audio)
         let projected = audioAdaptor(audioEncoder(features.expandedDimensions(axis: 0)))
         let fakeLength = FunASRNanoAudio.fakeTokenLength(features.dim(0))
-        let prompt = try Self.promptText(language: language, hotwords: hotwords, itn: itn)
+        let prompt = Self.promptText(language: language, hotwords: hotwords, itn: itn)
         let before = tokenizer.encode(text: "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n" + prompt)
         let after = tokenizer.encode(text: "<|im_end|>\n<|im_start|>assistant\n")
         let ids = MLXArray((before + Array(repeating: 0, count: fakeLength) + after).map(Int32.init)).expandedDimensions(axis: 0)
@@ -174,43 +170,37 @@ public final class FunASRNanoModel: Module, STTGenerationModel {
         return (ids, merged)
     }
 
-    /// Throwing model-specific API with language hints, contextual biasing and ITN.
-    public func transcribe(audio: MLXArray, generationParameters: STTGenerateParameters? = nil,
-                           hotwords: [String] = [], context: String? = nil, itn: Bool = true,
-                           prefillStepSize: Int = 2048) throws -> STTOutput {
-        try transcribeImpl(audio: audio, parameters: generationParameters ?? defaultGenerationParameters,
+    /// Generate a transcription with optional hotword biasing and inverse text normalization.
+    public func generate(audio: MLXArray, generationParameters: STTGenerateParameters? = nil,
+                         hotwords: [String] = [], context: String? = nil, itn: Bool = true,
+                         prefillStepSize: Int = 2048) -> STTOutput {
+        generateImpl(audio: audio, parameters: generationParameters ?? defaultGenerationParameters,
             hotwords: hotwords, context: context, itn: itn, prefillStepSize: prefillStepSize, emit: nil)
     }
 
-    private func transcribeImpl(audio: MLXArray, parameters p: STTGenerateParameters, hotwords: [String],
-                                context: String?, itn: Bool, prefillStepSize: Int,
-                                emit: ((String) -> Void)?) throws -> STTOutput {
-        try Task.checkCancellation()
-        guard let tokenizer else { throw STTError.modelNotInitialized("Fun-ASR-Nano tokenizer is not loaded.") }
-        guard p.maxTokens >= 0, p.chunkDuration > 0, p.minChunkDuration > 0, prefillStepSize > 0,
-              p.temperature >= 0, p.repetitionPenalty > 0, p.repetitionContextSize >= 0 else {
-            throw STTError.invalidInput("Invalid generation/chunking parameters.")
-        }
-        guard p.kvBits == nil else { throw STTError.invalidInput("Fun-ASR-Nano KV cache quantization is not supported.") }
-        _ = try Self.promptLanguage(p.language)
-        guard (audio.ndim == 1 || audio.ndim == 2), audio.size > 0 else {
-            throw STTError.invalidInput("Expected nonempty mono or time-major stereo PCM.")
-        }
-        let words = try Self.resolveHotwords(hotwords, context: context)
+    private func generateImpl(audio: MLXArray, parameters p: STTGenerateParameters, hotwords: [String],
+                              context: String?, itn: Bool, prefillStepSize: Int,
+                              emit: ((String) -> Void)?) -> STTOutput {
+        guard let tokenizer else { preconditionFailure("Fun-ASR-Nano tokenizer is not loaded.") }
+        precondition(prefillStepSize > 0, "Prefill step size must be positive.")
+        precondition(p.kvBits == nil, "Fun-ASR-Nano KV cache quantization is not supported.")
+        precondition((audio.ndim == 1 || audio.ndim == 2) && audio.size > 0,
+            "Expected nonempty mono or time-major stereo PCM.")
+        let words = Self.resolveHotwords(hotwords, context: context)
         let chunks = splitAudioIntoChunks(audio, sampleRate: sampleRate, chunkDuration: p.chunkDuration,
             minChunkDuration: p.minChunkDuration)
         let started = Date()
         var texts: [String] = [], segments: [[String: Any]] = [], promptCount = 0, tokenCount = 0
         let sampler: any LogitSampler = p.temperature == 0 ? ArgMaxSampler()
             : TopPSampler(temperature: p.temperature, topP: p.topP, topK: p.topK)
-        for (chunk, offset) in chunks where tokenCount < p.maxTokens {
-            try Task.checkCancellation()
-            let (ids, embeddings) = try prepareInputs(audio: chunk, language: p.language, hotwords: words, itn: itn)
+        chunks: for (chunk, offset) in chunks where tokenCount < p.maxTokens {
+            if Task.isCancelled { break }
+            let (ids, embeddings) = prepareInputs(audio: chunk, language: p.language, hotwords: words, itn: itn)
             let cache: [KVCache] = (0..<config.textConfig.numHiddenLayers).map { _ in KVCacheSimple() }
             promptCount += ids.dim(1)
             var consumed = 0
             while ids.dim(1) - consumed > 1 {
-                try Task.checkCancellation()
+                if Task.isCancelled { break chunks }
                 let n = min(prefillStepSize, ids.dim(1) - consumed - 1)
                 let logits = self(inputEmbeddings: embeddings[0..., consumed..<(consumed + n), 0...], cache: cache)
                 eval(logits)
@@ -221,7 +211,7 @@ public final class FunASRNanoModel: Module, STTGenerationModel {
             var previousText = ""
             let budget = p.maxTokens - tokenCount
             for _ in 0..<budget {
-                try Task.checkCancellation()
+                if Task.isCancelled { break chunks }
                 if p.repetitionPenalty != 1, p.repetitionContextSize > 0, !generated.isEmpty {
                     let recent = MLXArray(Array(Set(generated.suffix(p.repetitionContextSize))).map(Int32.init))
                     let values = logits[recent]
@@ -262,25 +252,25 @@ public final class FunASRNanoModel: Module, STTGenerationModel {
     }
 
     public func generate(audio: MLXArray, generationParameters: STTGenerateParameters) -> STTOutput {
-        do { return try transcribe(audio: audio, generationParameters: generationParameters) }
-        catch { preconditionFailure("\(error). Use transcribe() or generateStream() for throwing input validation.") }
+        generate(audio: audio, generationParameters: generationParameters, hotwords: [])
     }
 
     public func generateStream(audio: MLXArray, generationParameters: STTGenerateParameters) -> AsyncThrowingStream<STTGeneration, Error> {
-        transcribeStream(audio: audio, generationParameters: generationParameters)
+        generateStream(audio: audio, generationParameters: generationParameters, hotwords: [])
     }
 
     /// Streams text tokens from a complete recording. This is not live-input ASR.
-    public func transcribeStream(audio: MLXArray, generationParameters: STTGenerateParameters? = nil,
-                                 hotwords: [String] = [], context: String? = nil, itn: Bool = true,
-                                 prefillStepSize: Int = 2048) -> AsyncThrowingStream<STTGeneration, Error> {
+    public func generateStream(audio: MLXArray, generationParameters: STTGenerateParameters? = nil,
+                               hotwords: [String] = [], context: String? = nil, itn: Bool = true,
+                               prefillStepSize: Int = 2048) -> AsyncThrowingStream<STTGeneration, Error> {
         let parameters = generationParameters ?? defaultGenerationParameters
         let boxedModel = UncheckedSendableBox(self)
         let boxedAudio = UncheckedSendableBox(audio)
         return AsyncThrowingStream { continuation in
             let task = Task.detached {
                 do {
-                    let result = try boxedModel.value.transcribeImpl(audio: boxedAudio.value, parameters: parameters,
+                    try Task.checkCancellation()
+                    let result = boxedModel.value.generateImpl(audio: boxedAudio.value, parameters: parameters,
                         hotwords: hotwords, context: context, itn: itn, prefillStepSize: prefillStepSize) {
                             continuation.yield(.token($0))
                         }
