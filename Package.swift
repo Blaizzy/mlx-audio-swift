@@ -145,6 +145,7 @@ let package = Package(
                 "Models/CohereTranscribe/README.md",
                 "Models/FireRedASR2/README.md",
                 "Models/GLMASR/README.md",
+                "Models/HiggsAudio3/README.md",
                 "Models/GraniteSpeech/README.md",
                 "Models/MossTranscribeDiarize/README.md",
                 "Models/NemotronASR/README.md",
@@ -287,6 +288,7 @@ let package = Package(
                 "MLXAudioG2P",
             ],
             path: "Tests",
+            exclude: ["ReferenceGenerators"],
             resources: [
                 .copy("media")
             ]

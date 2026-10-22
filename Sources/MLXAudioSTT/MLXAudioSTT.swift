@@ -49,6 +49,8 @@ public enum STT {
         }
 
         switch resolved {
+        case "higgs_audio_3":
+            return try await HiggsAudio3Model.fromPretrained(modelRepo, cache: cache)
         case "moss_transcribe_diarize":
             return try await MossTranscribeDiarizeModel.fromPretrained(modelRepo, cache: cache)
         case "qwen3_asr":
@@ -93,6 +95,9 @@ public enum STT {
 
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
+        if lower.contains("higgs-audio-v3-stt") || lower.contains("higgs_audio_3") {
+            return "higgs_audio_3"
+        }
         if lower.contains("moss-transcribe-diarize") || lower.contains("moss_transcribe_diarize") {
             return "moss_transcribe_diarize"
         }
