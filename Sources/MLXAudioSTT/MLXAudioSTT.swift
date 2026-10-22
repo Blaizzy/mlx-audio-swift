@@ -84,7 +84,7 @@ public enum STT {
         case "cohere_asr", "cohere":
             if let directory { return try CohereTranscribeModel.fromDirectory(directory) }
             return try await CohereTranscribeModel.fromPretrained(modelRepo, cache: cache)
-        case "parakeet":
+        case "parakeet", "parakeet_tdt":
             if let directory { return try ParakeetModel.fromDirectory(directory) }
             return try await ParakeetModel.fromPretrained(modelRepo, cache: cache)
         case "canary":
