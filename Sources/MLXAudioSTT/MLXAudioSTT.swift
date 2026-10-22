@@ -77,6 +77,8 @@ public enum STT {
             return try await SenseVoiceModel.fromPretrained(modelRepo, cache: cache)
         case "whisper":
             return try await WhisperModel.fromPretrained(modelRepo, cache: cache)
+        case "granite_speech5_ctc":
+            return try await GraniteSpeech5CTCModel.fromPretrained(modelRepo, cache: cache)
         case "granite_speech":
             return try await GraniteSpeechModel.fromPretrained(modelRepo, cache: cache)
         default:
@@ -138,6 +140,9 @@ public enum STT {
         }
         if lower.contains("whisper") {
             return "whisper"
+        }
+        if lower.contains("turboctc") || lower.contains("granite_speech5_ctc") {
+            return "granite_speech5_ctc"
         }
         if lower.contains("granite") {
             return "granite_speech"

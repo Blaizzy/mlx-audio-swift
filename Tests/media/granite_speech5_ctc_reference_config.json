@@ -1,0 +1,33 @@
+{
+  "model_type": "granite_speech5_ctc",
+  "vocab_size": 16,
+  "encoder_config": {
+    "vocab_size": 16,
+    "hidden_size": 16,
+    "intermediate_size": 32,
+    "num_hidden_layers": 4,
+    "num_attention_heads": 2,
+    "num_key_value_heads": 2,
+    "num_mel_bins": 4,
+    "head_dim": 8,
+    "hidden_act": "silu",
+    "max_position_embeddings": 16,
+    "context_size": 8,
+    "conv_kernel_size": 3,
+    "conv_expansion_factor": 2,
+    "subsample_layers": [
+      0,
+      1
+    ],
+    "attention_bias": true,
+    "attention_dropout": 0.0,
+    "activation_dropout": 0.0,
+    "initializer_range": 0.02,
+    "model_type": "granite_speech5_encoder"
+  },
+  "pad_token_id": 0,
+  "ctc_loss_reduction": "mean",
+  "ctc_zero_infinity": true,
+  "tie_word_embeddings": true,
+  "initializer_range": 0.02
+}
