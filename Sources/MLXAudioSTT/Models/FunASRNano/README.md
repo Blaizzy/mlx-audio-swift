@@ -16,8 +16,7 @@ mlx-audio-swift-stt \
   --audio audio.wav \
   --output-path transcript \
   --format txt \
-  --language en \
-  --context "MLX, Apple Silicon"
+  --language en
 ```
 
 ## Swift Example
