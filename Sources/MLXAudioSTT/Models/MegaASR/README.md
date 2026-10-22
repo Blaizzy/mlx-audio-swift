@@ -16,22 +16,11 @@ mlx-audio-swift-stt \
   --audio audio.wav \
   --output-path transcript \
   --format txt \
-  --language English \
-  --context "Kaldi, Ethiopia"
+  --language English
 ```
 
-Automatic routing accepts recordings up to about 34 seconds. For longer files,
-split the recording or choose `--routing base` or `--routing robust`:
-
-```bash
-mlx-audio-swift-stt \
-  --model mlx-community/Mega-ASR-bf16 \
-  --audio long-recording.wav \
-  --output-path transcript \
-  --format txt \
-  --routing robust \
-  --stream
-```
+The CLI uses automatic routing for recordings up to about 34 seconds. Split
+longer recordings into shorter files. Add `--stream` to stream generated text.
 
 ## Swift Example
 
@@ -51,3 +40,6 @@ let result = try model.transcribe(
 )
 print(result.text)
 ```
+
+Routing is automatic by default. In Swift, pass `routing: .base` or
+`routing: .robust` to `transcribe` or `transcribeStream` to choose a route explicitly.

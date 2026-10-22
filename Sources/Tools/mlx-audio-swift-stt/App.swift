@@ -75,7 +75,6 @@ private struct Options {
     var frameThreshold = 25
     var stream = false
     var context: String? = nil
-    var routing: MegaASRRoutingMode = .automatic
     var prefillStepSize = 2048
     var genKwargsRaw: String? = nil
     var text = ""
@@ -127,11 +126,6 @@ private struct Options {
                 options.frameThreshold = value
             case "--stream":
                 options.stream = true
-            case "--routing":
-                guard let v = it.next(), let mode = MegaASRRoutingMode(rawValue: v) else {
-                    throw CLIError.invalidValue(arg, "Use auto, base or robust")
-                }
-                options.routing = mode
             case "--context":
                 guard let v = it.next() else { throw CLIError.missingValue(arg) }
                 options.context = v
@@ -199,11 +193,6 @@ private struct Options {
                 if let v = value as? String { text = v }
             case "verbose":
                 if let v = value as? Bool { verbose = v }
-            case "routing":
-                guard let v = value as? String, let mode = MegaASRRoutingMode(rawValue: v) else {
-                    throw AppError.invalidGenKwargs("routing must be auto, base or robust")
-                }
-                routing = mode
             case "context":
                 if let v = value as? String { context = v }
             case "prefill_step_size":
@@ -242,8 +231,7 @@ private struct Options {
               --chunk-duration <float>      Chunk duration seconds. Default: 30.0
               --frame-threshold <int>       Accepted for compatibility (currently unused). Default: 25
               --stream                      Stream token output while generating
-              --context <text>              Contextual biasing for Mega-ASR
-              --routing <auto|base|robust>  Mega-ASR route override. Default: auto
+              --context <text>              Contextual biasing text, when supported
               --prefill-step-size <int>     Accepted for compatibility (currently unused). Default: 2048
               --gen-kwargs <json>           Additional kwargs JSON.
                                             Recognized keys: max_tokens, language, chunk_duration,
@@ -251,7 +239,7 @@ private struct Options {
                                             repetition_penalty (Float, default 1.0 = greedy),
                                             repetition_context_size (Int, default 32),
                                             stream, text, verbose, context, prefill_step_size,
-                                            frame_threshold, routing
+                                            frame_threshold
               --text <text>                 Alignment text (required for forced aligner models)
               -h, --help                    Show this help
             """
@@ -320,15 +308,12 @@ enum App {
                 repetitionContextSize: options.repetitionContextSize ?? params.repetitionContextSize
             )
 
-            if !(sttModel is MegaASRModel), options.routing != .automatic {
-                throw CLIError.invalidValue("--routing", "Route overrides require Mega-ASR")
-            }
             if options.stream {
                 output = try await runStreaming(model: sttModel, audio: audio, parameters: params,
-                    context: options.context ?? "", routing: options.routing)
+                    context: options.context ?? "")
             } else if let mega = sttModel as? MegaASRModel {
                 output = try mega.transcribe(audio: audio, generationParameters: params,
-                    context: options.context ?? "", routing: options.routing)
+                    context: options.context ?? "")
             } else {
                 output = sttModel.generate(audio: audio, generationParameters: params)
             }
@@ -385,8 +370,7 @@ enum App {
         model: any STTGenerationModel,
         audio: MLXArray,
         parameters: STTGenerateParameters,
-        context: String = "",
-        routing: MegaASRRoutingMode = .automatic
+        context: String = ""
     ) async throws -> STTOutput {
         // Voxtral Realtime has a true online streaming session — feed audio as it
         // arrives (480 ms chunks ~ the model's native transcription delay) instead of
@@ -410,7 +394,7 @@ enum App {
         var emittedToken = false
 
         let events = if let mega = model as? MegaASRModel {
-            mega.transcribeStream(audio: audio, generationParameters: parameters, context: context, routing: routing)
+            mega.transcribeStream(audio: audio, generationParameters: parameters, context: context)
         } else {
             model.generateStream(audio: audio, generationParameters: parameters)
         }
