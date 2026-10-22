@@ -288,7 +288,6 @@ let package = Package(
                 "MLXAudioG2P",
             ],
             path: "Tests",
-            exclude: ["ReferenceGenerators"],
             resources: [
                 .copy("media")
             ]
