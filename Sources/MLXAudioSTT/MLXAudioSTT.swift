@@ -114,7 +114,10 @@ public enum STT {
             return try await WhisperModel.fromPretrained(modelRepo, cache: cache)
         case "granite_speech5_ctc":
             return try await GraniteSpeech5CTCModel.fromPretrained(modelRepo, cache: cache)
-        case "granite_speech":
+        case "granite_speech_nar":
+            if let directory { return try await GraniteSpeechNARModel.fromModelDirectory(directory) }
+            return try await GraniteSpeechNARModel.fromPretrained(modelRepo, cache: cache)
+        case "granite_speech", "granite_speech_plus":
             if let directory { return try await GraniteSpeechModel.fromModelDirectory(directory) }
             return try await GraniteSpeechModel.fromPretrained(modelRepo, cache: cache)
         default:
@@ -197,6 +200,7 @@ public enum STT {
         if lower.contains("turboctc") || lower.contains("granite_speech5_ctc") {
             return "granite_speech5_ctc"
         }
+        if lower.contains("granite") && lower.contains("nar") { return "granite_speech_nar" }
         if lower.contains("granite") {
             return "granite_speech"
         }
