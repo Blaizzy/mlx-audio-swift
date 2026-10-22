@@ -3,8 +3,8 @@ import MLX
 import MLXNN
 
 final class ParakeetFeedForward: Module {
-    @ModuleInfo(key: "linear1") var linear1: Linear
-    @ModuleInfo(key: "linear2") var linear2: Linear
+    @ModuleInfo(key: "linear1") var linear1: UnaryLayer
+    @ModuleInfo(key: "linear2") var linear2: UnaryLayer
 
     init(dModel: Int, dFF: Int, useBias: Bool = true) {
         self._linear1.wrappedValue = Linear(dModel, dFF, bias: useBias)
@@ -17,10 +17,10 @@ final class ParakeetFeedForward: Module {
 }
 
 final class ParakeetConvolution: Module {
-    @ModuleInfo(key: "pointwise_conv1") var pointwiseConv1: Conv1d
+    @ModuleInfo(key: "pointwise_conv1") var pointwiseConv1: UnaryLayer
     @ModuleInfo(key: "depthwise_conv") var depthwiseConv: Conv1d
     @ModuleInfo(key: "batch_norm") var batchNorm: BatchNorm
-    @ModuleInfo(key: "pointwise_conv2") var pointwiseConv2: Conv1d
+    @ModuleInfo(key: "pointwise_conv2") var pointwiseConv2: UnaryLayer
 
     init(args: ParakeetConformerConfig) {
         self._pointwiseConv1.wrappedValue = Conv1d(

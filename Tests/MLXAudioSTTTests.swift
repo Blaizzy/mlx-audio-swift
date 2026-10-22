@@ -2628,6 +2628,46 @@ struct Qwen3ASRHelperTests {
     }
 }
 
+struct Qwen3ASRNetworkTests {
+
+    /// `maxTokens` caps each chunk. With a cap far below one chunk's transcript, a whole-file
+    /// budget runs out in the first chunk and drops the rest without a segment (#248).
+    @Test func qwen3ASRMaxTokensCapsEachChunk() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network Qwen3-ASR test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
+        let repo = env["MLXAUDIO_QWEN3_ASR_REPO"] ?? "mlx-community/Qwen3-ASR-0.6B-4bit"
+        let model = try await Qwen3ASRModel.fromPretrained(repo)
+        let audioURL = Bundle.module.url(
+            forResource: "conversational_a", withExtension: "wav", subdirectory: "media"
+        )!
+        let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: model.sampleRate)
+        let chunkDuration: Float = 4.0
+        let maxTokens = 6
+        let chunkCount = splitAudioIntoChunks(
+            audio, sampleRate: model.sampleRate, chunkDuration: chunkDuration
+        ).count
+        #expect(chunkCount >= 2)
+
+        let output = model.generate(
+            audio: audio, maxTokens: maxTokens, language: "en", chunkDuration: chunkDuration
+        )
+        #expect(output.segments?.count == chunkCount)
+        #expect(output.generationTokens > maxTokens)
+
+        var streamedInfo: STTGenerationInfo?
+        for try await event in model.generateStream(
+            audio: audio, maxTokens: maxTokens, language: "en", chunkDuration: chunkDuration
+        ) {
+            if case .info(let info) = event { streamedInfo = info }
+        }
+        #expect((streamedInfo?.generationTokenCount ?? 0) > maxTokens)
+    }
+}
+
 // MARK: - Audio Chunking Tests
 
 struct SplitAudioIntoChunksTests {
@@ -3280,6 +3320,54 @@ struct NemotronASRTests {
         #expect(model.parameters().flattened().contains { key, _ in key.hasPrefix("prompt_kernel.") } == false)
     }
 
+    @Test func incrementalMelFramesMatchFullMelBitForBit() {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        // Stream prefixes on both sides of the split-K threshold (257 frames), up to
+        // 90 s (9001 frames, past the 8192-row tile switch on Max/Ultra GPUs).
+        let config = NemotronASRPreprocessConfig()
+        let basis = NemotronASRAudio.MelBasis(config: config)
+        let hop = config.hopLength
+        let audio = withRandomState(MLXRandom.RandomState(seed: 7)) {
+            MLXRandom.uniform(low: Float(-1), high: Float(1), [90 * 16_000 + 37]).asArray(Float.self)
+        }
+        // With an odd nFft and a length that is a multiple of hop, 1 + length / hop overcounts.
+        let oddConfig = NemotronASRPreprocessConfig(nFft: 511)
+        let oddMel = NemotronASRAudio.logMelSpectrogram(MLXArray(Array(audio[..<(300 * hop)])), config: oddConfig)
+        #expect(NemotronASRAudio.frameCount(sampleCount: 300 * hop, config: oddConfig) == oddMel.shape[1])
+        for length in [16_037, 256 * hop, 257 * hop + 5, 30 * 16_000 + 37, audio.count] {
+            let samples = Array(audio[..<length])
+            let full = NemotronASRAudio.logMelSpectrogram(MLXArray(samples), config: config)
+            let total = full.shape[1]
+            #expect(NemotronASRAudio.frameCount(sampleCount: length, config: config) == total)
+            var ranges = [(0, 2), (0, total), (total - 1, total)]
+            for size in [2, 30, 114, 258] where size <= total {
+                ranges.append((((total - size) / 2) & ~1, ((total - size) / 2 & ~1) + size))
+                ranges.append((total - size, total))
+            }
+            for (first, end) in ranges {
+                let lo = first & ~1
+                let offset = max(0, lo * hop - config.nFft / 2 - 1)
+                let usesWhole = total < NemotronASRAudio.gemmMinRows(config: config)
+                // Trimmed like the session: from the first needed sample, once allowed.
+                let start = usesWhole ? 0 : offset
+                let (mel, melOffset) = NemotronASRAudio.streamMelFrames(
+                    Array(samples[start...]), offset: start, first: lo, end: end,
+                    config: config, basis: basis
+                )
+                let got = mel[0..., (first - melOffset)..<(end - melOffset), 0...]
+                let expected = full[0..., first..<end, 0...]
+                #expect(got.shape == expected.shape)
+                #expect(
+                    MLX.all(got .== expected).item(Bool.self),
+                    "length \(length), frames \(first)..<\(end)"
+                )
+            }
+        }
+    }
+
     @Test func legacyQuantizedPointwiseConvolutionSanitizesAsConv1dWeight() {
         guard mlxRuntimeEnabled else {
             print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
@@ -3434,6 +3522,181 @@ struct NemotronASRTests {
         let fine = sessionText(model, audio, feed: 96)
         let coarse = sessionText(model, audio, feed: 1500)
         #expect(fine == coarse)
+    }
+
+    /// Greedy RNN-T that reruns the decoder and the full joint on every frame (the
+    /// loop before the prediction cache). Returns the non-special token ids, the
+    /// frames left on blank, the most symbols emitted on one frame, and the frame
+    /// of every emission.
+    private func perFrameRecomputeDecode(
+        _ model: NemotronASRModel, _ prompted: MLXArray
+    ) -> (ids: [Int], blankFrames: Int, maxPerFrame: Int, emissionFrames: [Int]) {
+        var ids: [Int] = []
+        var emissionFrames: [Int] = []
+        var blankFrames = 0
+        var maxPerFrame = 0
+        var emittedHere = 0
+        var lastToken = model.blankTokenID
+        var decoderState: NemoLSTMState?
+        var time = 0
+        var newSymbols = 0
+        while time < prompted.shape[1] {
+            let frame = prompted[0..., time..<(time + 1), 0...]
+            let currentToken: MLXArray? = lastToken == model.blankTokenID
+                ? nil
+                : MLXArray(Int32(lastToken)).reshaped([1, 1]).asType(.int32)
+            let out = model.decoder(currentToken, state: decoderState)
+            let token = model.joint(frame, out.0.asType(frame.dtype)).argMax(axis: -1).item(Int.self)
+            let step = NemoDecodingLogic.rnntStep(
+                predictedToken: token, blankToken: model.blankTokenID, time: time,
+                newSymbols: newSymbols, maxSymbols: model.maxSymbols
+            )
+            if step.emittedToken {
+                emittedHere += 1
+                emissionFrames.append(time)
+                lastToken = token
+                decoderState = (hidden: out.1.hidden?.asType(frame.dtype), cell: out.1.cell?.asType(frame.dtype))
+                if !NemotronASRTokenizer.isSpecialToken(token, vocabulary: model.vocabulary) {
+                    ids.append(token)
+                }
+            } else {
+                blankFrames += 1
+            }
+            if step.nextTime != time {
+                maxPerFrame = max(maxPerFrame, emittedHere)
+                emittedHere = 0
+            }
+            time = step.nextTime
+            newSymbols = step.nextNewSymbols
+        }
+        return (ids, blankFrames, maxPerFrame, emissionFrames)
+    }
+
+    /// The random tiny model may predict blank everywhere or nowhere. Shift the
+    /// joint's blank logit bias until the per-frame decode of `prompted` satisfies
+    /// `accept`. Shifts sit midway between the blank margins of neighbouring frames,
+    /// away from argmax ties. Special tokens are dropped from the decoded ids, and
+    /// the random joint may favour one (<unk>, <en-US>) on every frame, so their
+    /// logits are pushed down first.
+    private func calibrateBlankBias(
+        _ model: NemotronASRModel,
+        _ prompted: MLXArray,
+        accept: ((ids: [Int], blankFrames: Int, maxPerFrame: Int, emissionFrames: [Int])) -> Bool
+    ) throws -> Bool {
+        let blank = model.blankTokenID
+        let vocab = model.vocabulary
+        var bias = model.joint.outputProj.bias!.asType(.float32).asArray(Float.self)
+        for id in vocab.indices where NemotronASRTokenizer.isSpecialToken(id, vocabulary: vocab) {
+            bias[id] -= 1000
+        }
+        try model.joint.outputProj.update(
+            parameters: ModuleParameters.unflattened(["bias": MLXArray(bias)]),
+            verify: .noUnusedKeys
+        )
+        let pred = model.decoder(nil, state: nil).0.asType(prompted.dtype)
+        let logits = model.joint(prompted, pred)  // (1, T, 1, J)
+        let classes = logits.shape[3]
+        let values = logits.asType(.float32).asArray(Float.self)
+        var margins: [Float] = []
+        for t in 0..<logits.shape[1] {
+            let row = Array(values[(t * classes)..<((t + 1) * classes)])
+            let bestOther = row.enumerated().filter { $0.offset != blank }.map(\.element).max()!
+            margins.append(row[blank] - bestOther)
+        }
+        margins.sort()
+
+        let candidates = zip(margins, margins.dropFirst()).map { -($0 + $1) / 2 }
+        var tried: [String] = []
+        for shift in candidates.reversed() {
+            var shifted = bias
+            shifted[blank] += shift
+            try model.joint.outputProj.update(
+                parameters: ModuleParameters.unflattened(["bias": MLXArray(shifted)]),
+                verify: .noUnusedKeys
+            )
+            let run = perFrameRecomputeDecode(model, prompted)
+            if accept(run) { return true }
+            tried.append(
+                "shift \(shift): ids \(run.ids.count) blank \(run.blankFrames) "
+                    + "maxPerFrame \(run.maxPerFrame) emissions \(run.emissionFrames.count)"
+            )
+        }
+        print("calibrateBlankBias found no shift:\n" + tried.joined(separator: "\n"))
+        return false
+    }
+
+    /// The stream RNN-T decode reuses the prediction output on blank frames and reads
+    /// several frames per host sync; it must emit the same tokens as recomputing the
+    /// decoder and joint on every frame.
+    @Test func streamRNNTDecodeMatchesPerFrameRecompute() throws {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        // Other suites run concurrently, so seed the tiny model's weights in a local RNG state.
+        let model = try withRandomState(MLXRandom.RandomState(seed: 0)) { try tinyModel() }
+        let values = moduloFloatFixtureValues(count: 1 * 128 * 16, multiplier: 7, modulus: 23, divisor: 23.0)
+        let mel = MLXArray(values).reshaped([1, 128, 16])
+        let prompted = model.applyPrompt(model.encoder(mel, attContextSize: [4, 1]).0, language: "en-US")
+        let frames = prompted.shape[1]
+        // Blank frames, emitted tokens, a frame with 2+ symbols, and an emission on
+        // a frame that is not a multiple of 4 (inside a 4-frame sync batch).
+        try #require(try calibrateBlankBias(model, prompted) { run in
+            !run.ids.isEmpty && run.blankFrames > 0 && run.maxPerFrame >= 2
+                && run.emissionFrames.contains(where: { $0 % 4 != 0 })
+        })
+
+        let reference = perFrameRecomputeDecode(model, prompted)
+        #expect(!reference.ids.isEmpty)
+        #expect(reference.blankFrames > 0)
+        #expect(reference.maxPerFrame >= 2)
+        // The stream decode reads tokens 4 frames per sync; an emission off a
+        // multiple of 4 lands inside a batch, not at its start.
+        #expect(reference.emissionFrames.contains(where: { $0 % 4 != 0 }))
+
+        // Two chunks, so the cache also carries across calls. The first chunk's length
+        // is not a multiple of 4, so it ends in a batch shorter than 4.
+        let state = NemotronASRStreamRNNTState(blankToken: model.blankTokenID)
+        let split = frames / 2 + 1
+        #expect(split % 4 != 0)
+        model.streamRNNTDecode(prompted[0..., 0..<split, 0...], state: state, frameSeconds: 0.08)
+        model.streamRNNTDecode(prompted[0..., split..<frames, 0...], state: state, frameSeconds: 0.08)
+        #expect(state.results.map(\.id) == reference.ids)
+    }
+
+    /// Offline `decode` (full-sequence encoder, chunked-limited mask) and the
+    /// cache-aware stream encoder + stream RNN-T must emit the same tokens at the
+    /// native chunk size.
+    @Test func offlineDecodeMatchesCacheAwareStream() throws {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        // Other suites run concurrently, so seed the tiny model's weights in a local RNG state.
+        let model = try withRandomState(MLXRandom.RandomState(seed: 0)) { try tinyModel() }
+        let values = moduloFloatFixtureValues(count: 1 * 128 * 16, multiplier: 7, modulus: 23, divisor: 23.0)
+        let mel = MLXArray(values).reshaped([1, 128, 16])
+        // Calibrate on the same encoder input `decode` sees.
+        let features = mel.asType(model.computeDType)
+        let prompted = model.applyPrompt(model.encoder(features, attContextSize: [4, 1]).0, language: "en-US")
+        // Only needs blank frames and emitted tokens; the stricter conditions are
+        // covered by streamRNNTDecodeMatchesPerFrameRecompute.
+        try #require(try calibrateBlankBias(model, prompted) { run in
+            !run.ids.isEmpty && run.blankFrames > 0
+        })
+
+        let offline = model.decode(mel: mel, language: "en-US", attContextSize: [4, 1])
+        let offlineIds = offline.sentences.flatMap(\.tokens).map(\.id)
+
+        let state = NemotronASRStreamRNNTState(blankToken: model.blankTokenID)
+        model.cacheAwareStreamEncode(mel, language: "en-US") { chunk in
+            model.streamRNNTDecode(chunk, state: state, frameSeconds: 0.08)
+        }
+        // Same alignment pass as `decode`, so both lists are ordered the same way.
+        let streamIds = NemoAlignment.tokensToSentences(state.results).flatMap(\.tokens).map(\.id)
+
+        #expect(!offlineIds.isEmpty)
+        #expect(streamIds == offlineIds)
     }
 }
 
@@ -4071,9 +4334,9 @@ struct SenseVoiceTests {
         #expect(sanitized["encoder.encoders.0.self_attn.fsmn_block.weight"]?.shape == [64, 5, 1])
     }
 
-    @Test func fromDirectoryFixtureSmokeTest() throws {
+    @Test func sharedLoaderLoadsSymlinkedLocalCheckpoint() async throws {
         let fixtureDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("sensevoice-fixture-\(UUID().uuidString)")
+            .appendingPathComponent("stt-checkpoint-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: fixtureDir) }
 
@@ -4136,7 +4399,10 @@ struct SenseVoiceTests {
         }
         try MLX.save(arrays: weights, url: fixtureDir.appendingPathComponent("model.safetensors"))
 
-        let model = try SenseVoiceModel.fromDirectory(fixtureDir)
+        let alias = fixtureDir.deletingLastPathComponent().appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: fixtureDir)
+        defer { try? FileManager.default.removeItem(at: alias) }
+        let model = try #require(try await STT.loadModel(modelRepo: alias.path) as? SenseVoiceModel)
         let output = model.generate(
             audio: MLXArray(Array(repeating: Float(0), count: 16_000)),
             generationParameters: STTGenerateParameters(language: "en")
@@ -4359,6 +4625,38 @@ struct WhisperTests {
         let hidden = encoder(features)
         // Conv2 has stride 2, so 3000 -> 1500.
         #expect(hidden.shape == [1, config.maxSourcePositions, config.dModel])
+    }
+}
+
+struct WhisperTranslateNetworkTests {
+
+    @Test func whisperTranslateTaskReachesThePrompt() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network Whisper translate test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
+        let repo = env["MLXAUDIO_WHISPER_REPO"] ?? "openai/whisper-tiny"
+        let model = try await WhisperModel.fromPretrained(repo)
+        let audioURL = Bundle.module.url(
+            forResource: "conversational_fr", withExtension: "wav", subdirectory: "media"
+        )!
+        let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: 16000)
+
+        let transcribed = model.generate(
+            audio: audio,
+            generationParameters: STTGenerateParameters(language: "fr")
+        )
+        let translated = model.generate(
+            audio: audio,
+            generationParameters: STTGenerateParameters(language: "fr", task: "translate")
+        )
+
+        // Same prompt length (one task token either way), different decode.
+        #expect(translated.promptTokens == transcribed.promptTokens)
+        #expect(!translated.text.isEmpty)
+        #expect(translated.text != transcribed.text)
     }
 }
 

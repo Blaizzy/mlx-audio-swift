@@ -197,7 +197,7 @@ public final class WhisperModel: Module, STTGenerationModel {
         var caches = (0..<config.decoderLayers).map { _ in WhisperLayerCache() }
         let promptIds = tokenizer.buildPromptTokens(
             language: generationParameters.language,
-            task: "transcribe"
+            task: generationParameters.task
         )
 
         let promptArray = MLXArray(promptIds.map(Int32.init)).expandedDimensions(axis: 0)

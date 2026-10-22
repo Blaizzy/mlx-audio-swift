@@ -105,8 +105,16 @@ struct HiggsAudio3NetworkTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["HIGGS_AUDIO3_MODEL_DIR"] != nil))
     func realCheckpointTranscription() async throws {
         let path = try #require(ProcessInfo.processInfo.environment["HIGGS_AUDIO3_MODEL_DIR"])
-        let model = try await HiggsAudio3Model.fromPretrained(path, loadVAD: false)
-        let shared: any STTGenerationModel = model
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("higgs-loader-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let checkpoint = temporary.appendingPathComponent("checkpoint")
+        try FileManager.default.createSymbolicLink(at: checkpoint, withDestinationURL: URL(fileURLWithPath: path))
+        let shared = try await STT.loadModel(modelRepo: checkpoint.path)
+        let model = try #require(shared as? HiggsAudio3Model)
+        if model.config.vadCut { #expect(model.vadModel != nil) }
+        // Keep the numerical checks on the same fixed chunks used by the reference.
+        model.vadModel = nil
         let url = try #require(Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media"))
         let (_,audio) = try loadAudioArray(from: url, sampleRate: 16000)
         let parameters = STTGenerateParameters(maxTokens: 256, topP: 1, chunkDuration: 4)
