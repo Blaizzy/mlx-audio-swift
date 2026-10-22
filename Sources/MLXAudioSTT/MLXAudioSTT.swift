@@ -63,8 +63,7 @@ public enum STT {
 
         switch resolved {
         case "higgs_audio_3":
-            // Retain the factory's VAD setup when loading a resolved local checkpoint.
-            if let directory { return try await HiggsAudio3Model.fromPretrained(directory.path, cache: cache) }
+            if let directory { return try await HiggsAudio3Model.fromModelDirectory(directory) }
             return try await HiggsAudio3Model.fromPretrained(modelRepo, cache: cache)
         case "phonon2", "phonon_2":
             return try await Phonon2Model.fromPretrained(modelRepo, cache: cache)

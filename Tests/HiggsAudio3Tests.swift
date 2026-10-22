@@ -19,7 +19,6 @@ struct HiggsAudio3Tests {
             vocabSize: 32, hiddenSize: 8, intermediateSize: 16, numHiddenLayers: 1,
             numAttentionHeads: 2, numKeyValueHeads: 1, headDim: 4,
             maxPositionEmbeddings: 128, tieWordEmbeddings: false)
-        config.vadCut = false
         config.chunkSizeSeconds = 0.1
         return config
     }
@@ -57,12 +56,10 @@ struct HiggsAudio3Tests {
         #expect(maximumError < 2e-4)
     }
 
-    @Test func chunkBoundariesPreserveSilenceAndSplitLongRegions() {
+    @Test func fixedDurationChunksCoverAllSamples() {
         #expect(HiggsAudio3Model.chunkRanges(sampleCount: 100, maxSamples: 25) == [0..<25,25..<50,50..<75,75..<100])
-        #expect(HiggsAudio3Model.chunkRanges(sampleCount: 100, maxSamples: 50,
-            speechRanges: [(10,20),(70,80)]) == [0..<20,20..<70,70..<100])
-        #expect(HiggsAudio3Model.chunkRanges(sampleCount: 100, maxSamples: 50,
-            speechRanges: [(10,20),(70,80)], splitVADs: true) == [10..<20,70..<80])
+        #expect(HiggsAudio3Model.chunkRanges(sampleCount: 100, maxSamples: 30) == [0..<30,30..<60,60..<90,90..<100])
+        #expect(HiggsAudio3Model.chunkRanges(sampleCount: 20, maxSamples: 50) == [0..<20])
         #expect(HiggsAudio3Model.chunkRanges(sampleCount: 0, maxSamples: 50).isEmpty)
     }
     @Test func outputParsingHandlesMultilineThinkingAndControlTokens() {
@@ -112,9 +109,6 @@ struct HiggsAudio3NetworkTests {
         try FileManager.default.createSymbolicLink(at: checkpoint, withDestinationURL: URL(fileURLWithPath: path))
         let shared = try await STT.loadModel(modelRepo: checkpoint.path)
         let model = try #require(shared as? HiggsAudio3Model)
-        if model.config.vadCut { #expect(model.vadModel != nil) }
-        // Keep the numerical checks on the same fixed chunks used by the reference.
-        model.vadModel = nil
         let url = try #require(Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media"))
         let (_,audio) = try loadAudioArray(from: url, sampleRate: 16000)
         let parameters = STTGenerateParameters(maxTokens: 256, topP: 1, chunkDuration: 4)

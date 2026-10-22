@@ -3,7 +3,6 @@ import HuggingFace
 import MLX
 import MLXNN
 import MLXAudioCore
-import MLXAudioVAD
 import Tokenizers
 
 /// Native Higgs-Audio v3 transcription. Model instances are single-caller inference objects.
@@ -15,7 +14,6 @@ public final class HiggsAudio3Model: Module, STTGenerationModel {
     @ModuleInfo(key: "model") var textModel: Qwen3ASRTextModel
     @ModuleInfo(key: "lm_head") var lmHead: Linear
     public var tokenizer: (any Tokenizers.Tokenizer)?
-    public var vadModel: SileroVAD?
     public var sampleRate: Int { config.sampleRate }
     public var defaultGenerationParameters: STTGenerateParameters {
         STTGenerateParameters(maxTokens: 1024, topP: 1, chunkDuration: config.chunkSizeSeconds,
@@ -41,28 +39,10 @@ public final class HiggsAudio3Model: Module, STTGenerationModel {
         projector(audioTower(mel)).asType(textModel.embedTokens(MLXArray([Int32(0)])).dtype)
     }
 
-    /// Python's VAD policy retains inter-utterance silence unless splitVADs is enabled.
-    static func chunkRanges(sampleCount: Int, maxSamples: Int,
-        speechRanges: [(Int, Int)] = [], splitVADs: Bool = false) -> [Range<Int>] {
+    static func chunkRanges(sampleCount: Int, maxSamples: Int) -> [Range<Int>] {
         guard sampleCount > 0, maxSamples > 0 else { return [] }
-        let cuts = speechRanges.compactMap { s, e -> (Int, Int)? in
-            let start = max(0, min(s, sampleCount)), end = max(0, min(e, sampleCount))
-            return end > start ? (start, end) : nil
-        }
-        var ranges: [(Int,Int)] = []
-        if cuts.isEmpty { ranges = [(0,sampleCount)] }
-        else if splitVADs { ranges = cuts }
-        else {
-            var previousEnd = 0
-            for (i, cut) in cuts.enumerated() {
-                let end = i == cuts.count - 1 ? sampleCount : cut.1
-                let start = min(previousEnd, cut.0)
-                if end > start { ranges.append((start,end)) }
-                previousEnd = end
-            }
-        }
-        return ranges.flatMap { start, end in
-            stride(from: start, to: end, by: maxSamples).map { $0..<min($0 + maxSamples, end) }
+        return stride(from: 0, to: sampleCount, by: maxSamples).map {
+            $0..<min($0 + maxSamples, sampleCount)
         }
     }
 
@@ -78,14 +58,7 @@ public final class HiggsAudio3Model: Module, STTGenerationModel {
             throw STTError.invalidInput("Audio chunk exceeds the encoder positional context")
         }
         let maxSamples = max(1, Int(seconds * Float(sampleRate)))
-        let speech: [(Int,Int)]
-        if config.vadCut, let vadModel {
-            speech = (try? vadModel.getSpeechTimestamps(audio, sampleRate: sampleRate,
-                threshold: 0.5, minSpeechDurationMs: 250, minSilenceDurationMs: 100,
-                speechPadMs: 30).map { ($0.start, $0.end) }) ?? []
-        } else { speech = [] }
-        let ranges = Self.chunkRanges(sampleCount: audio.size, maxSamples: maxSamples,
-            speechRanges: speech, splitVADs: config.splitVADs)
+        let ranges = Self.chunkRanges(sampleCount: audio.size, maxSamples: maxSamples)
         let longest = max(640, ranges.map(\.count).max() ?? 640)
         var encoded: [MLXArray] = []
         for range in ranges {
@@ -231,8 +204,7 @@ public final class HiggsAudio3Model: Module, STTGenerationModel {
         return result
     }
 
-    public static func fromPretrained(_ modelPath: String, cache: HubCache = .default,
-        loadVAD: Bool = true) async throws -> HiggsAudio3Model {
+    public static func fromPretrained(_ modelPath: String, cache: HubCache = .default) async throws -> HiggsAudio3Model {
         let expanded = (modelPath as NSString).expandingTildeInPath
         let dir: URL
         if FileManager.default.fileExists(atPath: expanded) {
@@ -242,9 +214,7 @@ public final class HiggsAudio3Model: Module, STTGenerationModel {
             dir = try await ModelUtils.resolveOrDownloadModel(repoID: repo, requiredExtension: "safetensors",
                 hfToken: ProcessInfo.processInfo.environment["HF_TOKEN"], cache: cache)
         }
-        let model = try await fromModelDirectory(dir)
-        if loadVAD, model.config.vadCut { model.vadModel = try? await SileroVAD.fromPretrained("mlx-community/silero-vad") }
-        return model
+        return try await fromModelDirectory(dir)
     }
 
     public static func fromModelDirectory(_ directory: URL) async throws -> HiggsAudio3Model {

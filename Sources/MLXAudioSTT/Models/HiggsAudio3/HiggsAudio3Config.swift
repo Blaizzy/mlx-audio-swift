@@ -35,15 +35,13 @@ public struct HiggsAudio3Config: Codable {
     public var audioInTokenIndex: Int = 151672
     public var chunkSizeSeconds: Float = 4
     public var sampleRate: Int = 16000
-    public var vadCut: Bool = true
-    public var splitVADs: Bool = false
     public var perLayerQuantization: BaseConfiguration.PerLayerQuantization?
 
     enum CodingKeys: String, CodingKey {
         case modelType = "model_type", audioEncoderConfig = "audio_encoder_config"
         case textConfig = "text_config", projectorTemporalDownsample = "projector_temporal_downsample"
         case audioInTokenIndex = "audio_in_token_idx", chunkSizeSeconds = "chunk_size_seconds"
-        case sampleRate = "sample_rate", vadCut = "vad_cut", splitVADs = "split_vads"
+        case sampleRate = "sample_rate"
     }
     public init() {}
     public init(from decoder: Decoder) throws {
@@ -56,8 +54,6 @@ public struct HiggsAudio3Config: Codable {
         audioInTokenIndex = try c.decodeIfPresent(Int.self, forKey: .audioInTokenIndex) ?? 151672
         chunkSizeSeconds = try c.decodeIfPresent(Float.self, forKey: .chunkSizeSeconds) ?? 4
         sampleRate = try c.decodeIfPresent(Int.self, forKey: .sampleRate) ?? 16000
-        vadCut = try c.decodeIfPresent(Bool.self, forKey: .vadCut) ?? true
-        splitVADs = try c.decodeIfPresent(Bool.self, forKey: .splitVADs) ?? false
         perLayerQuantization = (try? BaseConfiguration(from: decoder))?.perLayerQuantization
     }
     public func encode(to encoder: Encoder) throws {
@@ -69,7 +65,5 @@ public struct HiggsAudio3Config: Codable {
         try c.encode(audioInTokenIndex, forKey: .audioInTokenIndex)
         try c.encode(chunkSizeSeconds, forKey: .chunkSizeSeconds)
         try c.encode(sampleRate, forKey: .sampleRate)
-        try c.encode(vadCut, forKey: .vadCut)
-        try c.encode(splitVADs, forKey: .splitVADs)
     }
 }

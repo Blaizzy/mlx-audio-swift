@@ -35,4 +35,3 @@ print(result.text)
 In Swift, pass `prompt:` to customize the transcription request. Both `generate`
 and `generateStream` also accept `prefillStepSize:` and `minP:`. Use `onToken:`
 with `generate` or iterate over `generateStream` to receive text as it is generated.
-Pass `loadVAD: false` to `fromPretrained` to use fixed-duration audio chunks.
