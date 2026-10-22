@@ -6,16 +6,28 @@ import Testing
 @testable import MLXAudioSTT
 
 struct FunASRNanoTests {
-    private func fixture() throws -> [String: Any] {
-        let url = try #require(Bundle.module.url(forResource: "fun_asr_nano_reference", withExtension: "json", subdirectory: "media"))
-        return try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    private func tinyConfig() -> FunASRNanoConfig {
+        FunASRNanoConfig(
+            inputSize: 56,
+            frontend: .init(nMels: 8),
+            audioEncoder: .init(outputSize: 8, attentionHeads: 2, linearUnits: 16,
+                numBlocks: 2, tpBlocks: 1, kernelSize: 3),
+            audioAdaptor: .init(downsampleRate: 2, ffnDim: 16, llmDim: 8,
+                encoderDim: 8, numLayers: 1, attentionHeads: 2),
+            textConfig: .init(vocabSize: 32, hiddenSize: 8, intermediateSize: 16,
+                numHiddenLayers: 1, numAttentionHeads: 2, numKeyValueHeads: 1, headDim: 4)
+        )
     }
 
-    private func expected(_ name: String, in fixture: [String: Any]) throws -> MLXArray {
-        let row = try #require(fixture[name] as? [String: Any])
-        let shape = try #require(row["shape"] as? [Int])
-        let values = try #require(row["values"] as? [Double])
-        return MLXArray(values.map(Float.init)).reshaped(shape)
+    /// Fixed FP32 inputs, weights and Python outputs; no model configuration assets.
+    private func fixture() throws -> [String: MLXArray] {
+        let url = try #require(Bundle.module.url(forResource: "fun_asr_nano_reference",
+            withExtension: "safetensors", subdirectory: "media"))
+        return try MLX.loadArrays(url: url)
+    }
+
+    private func expected(_ name: String, in fixture: [String: MLXArray]) throws -> MLXArray {
+        try #require(fixture[name])
     }
 
     private func compare(_ actual: MLXArray, _ expected: MLXArray, stage: String, atol: Float = 5e-4, rtol: Float = 2e-4) {
@@ -49,21 +61,19 @@ struct FunASRNanoTests {
 
     @Test func PythonNumericalReference() throws {
         let fixture = try fixture()
-        let json = try JSONSerialization.data(withJSONObject: #require(fixture["config"]))
-        let config = try JSONDecoder().decode(FunASRNanoConfig.self, from: json)
+        let config = tinyConfig()
         let model = FunASRNanoModel(config)
         var weights: [String: MLXArray] = [:]
-        let expectedShapes = try #require(fixture["weights"] as? [String: [Int]])
-        #expect(Set(model.parameters().flattened().map(\.0)) == Set(expectedShapes.keys))
+        for (key, value) in fixture where key.hasPrefix("weight.") {
+            weights[String(key.dropFirst("weight.".count))] = value
+        }
+        #expect(Set(model.parameters().flattened().map(\.0)) == Set(weights.keys))
         for (key, value) in model.parameters().flattened() {
-            #expect(value.shape == expectedShapes[key])
-            let phase = Float(key.utf8.reduce(0) { $0 + Int($1) } % 31) / 10
-            var weight = sin(arange(value.size, dtype: .float32) * 0.13 + phase).reshaped(value.shape) * 0.05
-            if key.hasSuffix("weight"), key.contains("norm") { weight = weight + 1 }
-            weights[key] = weight
+            let weight = try #require(weights[key])
+            #expect(value.shape == weight.shape)
         }
         try model.update(parameters: ModuleParameters.unflattened(weights), verify: .all)
-        let audio = MLXArray(try #require(fixture["audio"] as? [Double]).map(Float.init))
+        let audio = try #require(fixture["audio"])
         compare(FunASRNanoAudio.fbank(audio, config: config.frontend), try expected("fbank", in: fixture), stage: "fbank")
         let features = try model.extractFeatures(audio).expandedDimensions(axis: 0)
         compare(features, try expected("features", in: fixture), stage: "features")
@@ -80,9 +90,7 @@ struct FunASRNanoTests {
     }
 
     @Test func streamingPropagatesInitializationErrors() async throws {
-        let fixture = try fixture()
-        let json = try JSONSerialization.data(withJSONObject: #require(fixture["config"]))
-        let model = FunASRNanoModel(try JSONDecoder().decode(FunASRNanoConfig.self, from: json))
+        let model = FunASRNanoModel(tinyConfig())
         do {
             for try await _ in model.generateStream(audio: .zeros([1600]), generationParameters: .init()) { }
             Issue.record("Expected an uninitialized model error")
@@ -105,9 +113,7 @@ struct FunASRNanoTests {
     }
 
     @Test func invalidInputThrows() throws {
-        let fixture = try fixture()
-        let json = try JSONSerialization.data(withJSONObject: #require(fixture["config"]))
-        let model = FunASRNanoModel(try JSONDecoder().decode(FunASRNanoConfig.self, from: json))
+        let model = FunASRNanoModel(tinyConfig())
         #expect(throws: (any Error).self) { try model.extractFeatures(.zeros([0])) }
         #expect(throws: (any Error).self) { try model.extractFeatures(.zeros([1, 1, 400])) }
         #expect(throws: (any Error).self) { try model.transcribe(audio: .zeros([1600])) }
