@@ -9,13 +9,17 @@ public final class MisakiTextProcessor: TextProcessor, @unchecked Sendable {
     private nonisolated(unsafe) var resourceDirectory: URL?
 
     private static let g2pRepo = Repo.ID(namespace: "beshkenadze", name: "kitten-tts-g2p")
+    private let cache: HubCache
 
-    public init() {}
+    public init(cache: HubCache = .default) {
+        self.cache = cache
+    }
 
     public func prepare() async throws {
         let dir = try await ModelUtils.resolveOrDownloadModel(
             repoID: Self.g2pRepo,
-            requiredExtension: "safetensors"
+            requiredExtension: "safetensors",
+            cache: cache
         )
         lock.withLock {
             resourceDirectory = dir

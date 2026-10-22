@@ -9,7 +9,8 @@ import MLXAudioG2P
 /// - Other languages: uses IPA lexicon lookup from gruut espeak dictionaries
 /// - Unknown words: passed through as-is
 public final class KokoroMultilingualProcessor: TextProcessor, @unchecked Sendable {
-    private let englishProcessor = MisakiTextProcessor()
+    private let englishProcessor: MisakiTextProcessor
+    private let cache: HubCache
     private let lexiconRepo: String
     private let neuralG2PRepo: String
     private var lexiconCache: [String: [String: String]] = [:]
@@ -61,10 +62,13 @@ public final class KokoroMultilingualProcessor: TextProcessor, @unchecked Sendab
 
     public init(
         lexiconRepo: String = "beshkenadze/kokoro-ipa-lexicons",
-        neuralG2PRepo: String = "beshkenadze/g2p-multilingual-byT5-tiny-mlx"
+        neuralG2PRepo: String = "beshkenadze/g2p-multilingual-byT5-tiny-mlx",
+        cache: HubCache = .default
     ) {
         self.lexiconRepo = lexiconRepo
         self.neuralG2PRepo = neuralG2PRepo
+        self.cache = cache
+        self.englishProcessor = MisakiTextProcessor(cache: cache)
     }
 
     private func getEnglishProcessor() -> MisakiTextProcessor {
@@ -134,7 +138,7 @@ public final class KokoroMultilingualProcessor: TextProcessor, @unchecked Sendab
 
     private func repoDirectory(for repo: String) -> URL {
         let modelSubdir = repo.replacingOccurrences(of: "/", with: "_")
-        return HubCache.default.cacheDirectory
+        return cache.cacheDirectory
             .appendingPathComponent("mlx-audio")
             .appendingPathComponent(modelSubdir)
     }
@@ -173,7 +177,7 @@ public final class KokoroMultilingualProcessor: TextProcessor, @unchecked Sendab
 
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
-        _ = try await HubClient().downloadSnapshot(
+        _ = try await HubClient(cache: cache).downloadSnapshot(
             of: repoID,
             kind: .model,
             to: dir,
@@ -196,7 +200,7 @@ public final class KokoroMultilingualProcessor: TextProcessor, @unchecked Sendab
 
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
-        _ = try await HubClient().downloadSnapshot(
+        _ = try await HubClient(cache: cache).downloadSnapshot(
             of: repoID,
             kind: .model,
             to: dir,
