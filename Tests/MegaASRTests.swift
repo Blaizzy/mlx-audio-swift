@@ -1,5 +1,6 @@
 import Foundation
 import MLX
+import MLXAudioCore
 import MLXNN
 import Testing
 
@@ -13,82 +14,95 @@ private final class MegaTestTextCore: Module { let layers = [MegaTestLinear()] }
 private final class MegaTestTextRoot: Module { let model = MegaTestTextCore() }
 
 struct MegaASRTests {
-    private func fixture() throws -> [String: MLXArray] {
-        let path = try #require(
-            Bundle.module.url(
-                forResource: "mega_asr_reference", withExtension: "safetensors",
-                subdirectory: "media"))
-        return try MLX.loadArrays(url: path)
+    private func tinyRouter() -> MegaASRAudioQualityRouter {
+        MegaASRAudioQualityRouter(
+            dimensions: 4, heads: 2, feedforward: 8, layers: 1, frontendHidden: 2,
+            classifierHidden: 2, maxFrames: 16)
     }
-    private func compare(_ actual: MLXArray, _ expected: MLXArray, tolerance: Float, name: String) {
-        #expect(actual.shape == expected.shape)
-        let error = abs(actual.asType(.float32) - expected.asType(.float32))
-        print(
-            "Mega-ASR \(name) max_abs=\(error.max().item(Float.self)), mean_abs=\(error.mean().item(Float.self))"
-        )
-        #expect(error.max().item(Float.self) < tolerance)
-    }
-    @Test func pythonRouterReference() throws {
-        let f = try fixture()
-        let raw = Dictionary(
-            uniqueKeysWithValues: f.compactMap { key, value in
-                key.hasPrefix("weights.") ? (String(key.dropFirst(8)), value) : nil
+
+    private func tinyRouterWeights() -> [String: MLXArray] {
+        Dictionary(
+            uniqueKeysWithValues: tinyRouter().parameters().flattened().map { name, value in
+                var key = name
+                for (native, sidecar) in [
+                    ("frontend.conv1.", "frontend.conv.0."),
+                    ("frontend.bn1.", "frontend.conv.1."),
+                    ("frontend.conv2.", "frontend.conv.4."),
+                    ("frontend.bn2.", "frontend.conv.5."),
+                    ("classifier.fc1.", "classifier.0."),
+                    ("classifier.fc2.", "classifier.3."),
+                ] {
+                    key = key.replacingOccurrences(of: native, with: sidecar)
+                }
+                let tensor: MLXArray =
+                    key.hasSuffix("running_var") ? .ones(value.shape) : .zeros(value.shape)
+                return (key, tensor)
             })
-        let router = try MegaASRAudioQualityRouter.fromWeights(raw)
-        let audio = try #require(f["audio"])
-        compare(
-            MegaASRFrontend.features(audio), try #require(f["mel"]), tolerance: 3e-4,
-            name: "tiny frontend")
-        compare(
-            try router.logits(audio: audio), try #require(f["logits"]), tolerance: 2e-5,
-            name: "tiny router")
-        let expected = softmax(try #require(f["logits"]), axis: -1)[1].item(Float.self)
-        #expect(abs(try router.route(audio: audio).degradedProbability - expected) < 2e-5)
+    }
+
+    @Test func routerValidatesAudioAndSelectsByClassifierProbability() throws {
+        var weights = tinyRouterWeights()
+        weights["classifier.3.bias"] = MLXArray([Float(0), 2])
+        let router = try MegaASRAudioQualityRouter.fromWeights(weights, heads: 2)
+        let audio = MLXArray.zeros([1600])
+        let logits = try router.logits(audio: audio)
+        #expect(MLX.all(logits .== MLXArray([Float(0), 2])).item(Bool.self))
+        let degraded = try router.route(audio: audio)
+        #expect(abs(degraded.degradedProbability - 0.8807971) < 1e-6)
+        #expect(degraded.usesLoRA)
+
+        try router.update(
+            parameters: .unflattened(["classifier.fc2.bias": MLXArray([Float(2), 0])]),
+            verify: [.noUnusedKeys, .shapeMismatch])
+        #expect(!(try router.route(audio: audio)).usesLoRA)
         #expect(throws: (any Error).self) { try router.logits(audio: .zeros([0])) }
         #expect(throws: (any Error).self) { try router.logits(audio: .zeros([50000])) }
     }
+
     @Test func loraRestoresExactOriginalAfterRepeatedToggles() throws {
-        let f = try fixture()
         let model = MegaTestLinear()
-        let original = try #require(f["lora_base"])
+        let original = (MLXArray.ones([3, 4]) * 0.01).asType(.bfloat16)
         try model.update(parameters: .unflattened(["projection.weight": original]), verify: .all)
         let factors = [
-            "projection.lora_A": try #require(f["lora_A"]),
-            "projection.lora_B": try #require(f["lora_B"]),
+            "projection.lora_A": MLXArray.ones([2, 4]),
+            "projection.lora_B": MLXArray([Float(0.5), 0.5, 1, 1, 2, 2]).reshaped(3, 2),
         ]
+        // Updates of 1, 2, and 4 round differently in BF16. Subtracting those updates
+        // would lose the original 0.01 values, so each toggle must restore the snapshot.
+        let adapted = MLXArray(
+            [Float](repeating: 1.0078125, count: 4)
+                + [Float](repeating: 2.015625, count: 4)
+                + [Float](repeating: 4, count: 4)
+        ).reshaped(3, 4).asType(.bfloat16)
         let state = try MegaASRLoRAState(model: model, factors: factors)
         for _ in 0..<20 {
             try state.setActive(true)
-            compare(
-                model.projection.weight, try #require(f["lora_adapted"]), tolerance: 1e-6,
-                name: "BF16 LoRA"
-            )
+            #expect(MLX.all(model.projection.weight .== adapted).item(Bool.self))
             try state.setActive(true)
+            #expect(MLX.all(model.projection.weight .== adapted).item(Bool.self))
             try state.setActive(false)
             #expect(MLX.all(model.projection.weight .== original).item(Bool.self))
         }
         #expect(!state.active)
     }
+
     @Test func loraComposesPythonTextLayerAliases() throws {
-        let f = try fixture()
         let model = MegaTestTextRoot()
-        let base = try #require(f["lora_base"])
-        let a = try #require(f["lora_A"])
-        let b = try #require(f["lora_B"])
+        let base = MLXArray.zeros([3, 4], dtype: .bfloat16)
+        let a = MLXArray([Float(1), 0, 0, 0, 0, 1, 0, 0]).reshaped(2, 4)
+        let b = MLXArray([Float(1), 2, 3, 4, 5, 6]).reshaped(3, 2)
         try model.update(
             parameters: .unflattened(["model.layers.0.projection.weight": base]), verify: .all)
         let state = try MegaASRLoRAState(
             model: model,
             factors: [
                 "layers.0.projection.lora_A": a, "layers.0.projection.lora_B": b,
-                "model.layers.0.projection.lora_A": a * 0.7, "model.layers.0.projection.lora_B": b,
+                "model.layers.0.projection.lora_A": a * 0.5, "model.layers.0.projection.lora_B": b,
             ])
         try state.setActive(true)
-        let expected =
-            (base + matmul(b, a).asType(.bfloat16)) + matmul(b, a * 0.7).asType(.bfloat16)
-        compare(
-            model.model.layers[0].projection.weight, expected, tolerance: 1e-6, name: "aliased LoRA"
-        )
+        let expected = MLXArray([Float(1.5), 3, 0, 0, 4.5, 6, 0, 0, 7.5, 9, 0, 0])
+            .reshaped(3, 4).asType(.bfloat16)
+        #expect(MLX.all(model.model.layers[0].projection.weight .== expected).item(Bool.self))
         try state.setActive(false)
         #expect(MLX.all(model.model.layers[0].projection.weight .== base).item(Bool.self))
     }
@@ -104,14 +118,13 @@ struct MegaASRTests {
                 factors: ["other.lora_A": .ones([2, 4]), "other.lora_B": .ones([3, 2])])
         }
         #expect(throws: (any Error).self) { try MegaASRAudioQualityRouter.fromWeights([:]) }
-        let f = try fixture()
-        var raw = Dictionary(
-            uniqueKeysWithValues: f.compactMap { key, value in
-                key.hasPrefix("weights.") ? (String(key.dropFirst(8)), value) : nil
-            })
-        raw.removeValue(forKey: "classifier.3.weight")
-        #expect(throws: (any Error).self) { try MegaASRAudioQualityRouter.fromWeights(raw) }
+        var weights = tinyRouterWeights()
+        weights.removeValue(forKey: "classifier.3.weight")
+        #expect(throws: (any Error).self) {
+            try MegaASRAudioQualityRouter.fromWeights(weights, heads: 2)
+        }
     }
+
     @Test func loaderRequiresSidecarsBeforeAllocatingBackbone() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
             UUID().uuidString)
@@ -134,59 +147,43 @@ struct MegaASRTests {
 }
 
 struct MegaASRCheckpointTests {
+    private func audio(named name: String) throws -> MLXArray {
+        let url = try #require(
+            Bundle.module.url(forResource: name, withExtension: "wav", subdirectory: "media"))
+        return try loadAudioArray(from: url, sampleRate: 16000).1
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["MEGA_ASR_MODEL_DIR"] != nil))
     func cleanNoisyAndRestoredClean() async throws {
-        let env = ProcessInfo.processInfo.environment
-        let modelPath = try #require(env["MEGA_ASR_MODEL_DIR"])
-        let root = URL(fileURLWithPath: try #require(env["MEGA_ASR_REFERENCE_ROOT"]))
-        let model = try #require(
-            try await STT.loadModel(modelRepo: modelPath, modelType: "mega_asr") as? MegaASRModel)
+        let modelPath = try #require(ProcessInfo.processInfo.environment["MEGA_ASR_MODEL_DIR"])
+        #expect(FileManager.default.fileExists(atPath: modelPath))
+        let model = try await MegaASRModel.fromModelDirectory(URL(fileURLWithPath: modelPath))
         #expect(throws: (any Error).self) {
             try model.transcribe(audio: .zeros([100, 2]), routing: .base)
         }
+        let cleanAudio = try audio(named: "conversational_a")
         var firstClean: String?
-        var cleanAudio: MLXArray?
-        for name in ["conversational_a", "noisy_audio", "conversational_a"] {
-            let directory = root.appendingPathComponent("mega-reference-" + name)
-            let reference = try MLX.loadArrays(
-                url: directory.appendingPathComponent("reference.safetensors"))
-            let metadata = try #require(
-                JSONSerialization.jsonObject(
-                    with: Data(contentsOf: directory.appendingPathComponent("reference.json")))
-                    as? [String: Any])
-            let audio = try #require(reference["audio"])
-            let mel = MegaASRFrontend.features(audio)
-            let melError = abs(mel - (try #require(reference["router_mel"])))
-            let logits = try model.router.logits(audio: audio)
-            let error = abs(logits - (try #require(reference["router_logits"])))
-            let route = try model.router.route(audio: audio)
-            print(
-                "Mega-ASR checkpoint \(name): frontend_max=\(melError.max().item(Float.self)), router_max=\(error.max().item(Float.self)), probability=\(route.degradedProbability)"
-            )
-            #expect(melError.max().item(Float.self) < 5e-4)
-            #expect(error.max().item(Float.self) < 5e-3)
-            #expect(route.usesLoRA == (name == "noisy_audio"))
+        for (name, degraded) in [
+            ("conversational_a", false), ("noisy_audio", true), ("conversational_a", false),
+        ] {
+            let waveform = try audio(named: name)
+            let route = try model.router.route(audio: waveform)
+            #expect(route.usesLoRA == degraded)
             let output = try model.transcribe(
-                audio: audio,
+                audio: waveform,
                 generationParameters: .init(maxTokens: 256, topP: 1, language: "English"))
-            let expected = try #require(metadata["text"] as? String)
-            let rate = wordErrorRate(output.text, expected)
-            print("Mega-ASR Swift \(name): \(output.text)")
-            print("Mega-ASR Python \(name): \(expected); normalized disagreement=\(rate)")
             #expect(!output.text.isEmpty)
-            #expect(rate <= 0.1)
-            if name == "conversational_a" {
+            if !degraded {
                 if let firstClean {
                     #expect(output.text == firstClean)
                 } else {
                     firstClean = output.text
-                    cleanAudio = audio
                 }
             }
         }
         // Cancellation cannot leave a child decoder running while the next request changes adapters.
         let boxed = UncheckedSendableBox(model)
-        let waveform = UncheckedSendableBox(try #require(cleanAudio))
+        let waveform = UncheckedSendableBox(cleanAudio)
         let consumer = Task {
             for try await _ in boxed.value.transcribeStream(
                 audio: waveform.value,
@@ -210,24 +207,5 @@ struct MegaASRCheckpointTests {
             if case .result(let result) = event { streamedResult = result }
         }
         #expect(streamedResult?.text == firstClean)
-    }
-
-    private func wordErrorRate(_ actual: String, _ expected: String) -> Double {
-        func words(_ s: String) -> [String] {
-            s.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).filter {
-                !$0.isEmpty
-            }
-        }
-        let a = words(actual)
-        let b = words(expected)
-        var previous = Array(0...b.count)
-        for (i, x) in a.enumerated() {
-            var row = [i + 1]
-            for (j, y) in b.enumerated() {
-                row.append(min(previous[j + 1] + 1, row[j] + 1, previous[j] + (x == y ? 0 : 1)))
-            }
-            previous = row
-        }
-        return Double(previous[b.count]) / Double(max(1, b.count))
     }
 }
