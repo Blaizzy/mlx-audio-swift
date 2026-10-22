@@ -132,8 +132,11 @@ struct MegaASRTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         try Data(#"{"model_type":"mega_asr"}"#.utf8).write(
             to: directory.appendingPathComponent("config.json"))
-        await #expect(throws: (any Error).self) {
-            try await MegaASRModel.fromModelDirectory(directory)
+        do {
+            _ = try await STT.loadModel(modelRepo: directory.path)
+            Issue.record("Expected missing Mega-ASR sidecars")
+        } catch STTError.modelNotInitialized(let message) {
+            #expect(message.contains("Missing Mega-ASR sidecar"))
         }
         let config = try JSONDecoder().decode(
             MegaASRConfig.self,

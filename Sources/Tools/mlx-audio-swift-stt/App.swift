@@ -214,7 +214,7 @@ private struct Options {
               Generate STT transcriptions from audio using repo-id selected models.
 
             Options:
-              --model <repo>                Model repo id.
+              --model <repo|path>           Hub repository ID or local checkpoint directory.
                                             Default: mlx-community/Qwen3-ASR-0.6B-4bit
               --audio <path>                Input audio file (required if not passed as trailing arg)
               --output-path <path>          Output path stem (required). Extension is appended from --format.
@@ -438,13 +438,6 @@ enum App {
 
     private static func loadModel(repo: String) async throws -> LoadedModel {
         let lower = repo.lowercased()
-        let local = URL(fileURLWithPath: (repo as NSString).expandingTildeInPath)
-        if let data = try? Data(contentsOf: local.appendingPathComponent("config.json")),
-           let config = try JSONSerialization.jsonObject(with: data) as? [String:Any],
-           config["model_type"] as? String == "mega_asr" {
-            return .stt(try await MegaASRModel.fromModelDirectory(local))
-        }
-
         if lower.contains("forcedalign") || lower.contains("forced-align") {
             return .forcedAligner(try await Qwen3ForcedAlignerModel.fromPretrained(repo))
         }

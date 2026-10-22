@@ -45,7 +45,7 @@ swift run mlx-audio-swift-stt \
 
 ## Options
 
-- `--model`: Model repo id
+- `--model`: Hub repository ID or local checkpoint directory
 - `--audio`: Input audio path (required)
 - `--output-path`: Output path stem (required)
 - `--format`: `txt | srt | vtt | json`

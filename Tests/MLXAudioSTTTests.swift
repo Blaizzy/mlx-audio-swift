@@ -4294,9 +4294,9 @@ struct SenseVoiceTests {
         #expect(sanitized["encoder.encoders.0.self_attn.fsmn_block.weight"]?.shape == [64, 5, 1])
     }
 
-    @Test func fromDirectoryFixtureSmokeTest() throws {
+    @Test func sharedLoaderLoadsSymlinkedLocalCheckpoint() async throws {
         let fixtureDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("sensevoice-fixture-\(UUID().uuidString)")
+            .appendingPathComponent("stt-checkpoint-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: fixtureDir) }
 
@@ -4359,7 +4359,10 @@ struct SenseVoiceTests {
         }
         try MLX.save(arrays: weights, url: fixtureDir.appendingPathComponent("model.safetensors"))
 
-        let model = try SenseVoiceModel.fromDirectory(fixtureDir)
+        let alias = fixtureDir.deletingLastPathComponent().appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: fixtureDir)
+        defer { try? FileManager.default.removeItem(at: alias) }
+        let model = try #require(try await STT.loadModel(modelRepo: alias.path) as? SenseVoiceModel)
         let output = model.generate(
             audio: MLXArray(Array(repeating: Float(0), count: 16_000)),
             generationParameters: STTGenerateParameters(language: "en")
