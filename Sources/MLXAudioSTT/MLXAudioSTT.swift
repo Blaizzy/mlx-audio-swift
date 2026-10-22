@@ -51,6 +51,8 @@ public enum STT {
         switch resolved {
         case "moss_transcribe_diarize":
             return try await MossTranscribeDiarizeModel.fromPretrained(modelRepo, cache: cache)
+        case "mega_asr":
+            return try await MegaASRModel.fromPretrained(modelRepo, cache: cache)
         case "qwen3_asr":
             return try await Qwen3ASRModel.fromPretrained(modelRepo, cache: cache)
         case "glmasr", "glm":
@@ -98,6 +100,9 @@ public enum STT {
         }
         if lower.contains("forcedalign") || lower.contains("forced-align") {
             return nil
+        }
+        if lower.contains("mega-asr") || lower.contains("mega_asr") {
+            return "mega_asr"
         }
         if lower.contains("qwen3-asr") || lower.contains("qwen3_asr") {
             return "qwen3_asr"
