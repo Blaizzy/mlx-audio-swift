@@ -120,6 +120,14 @@ public enum ModelUtils {
                         print("Cached config.json is invalid, clearing cache...")
                         Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
                     }
+                } else if let manifest {
+                    // Some repos ship no config.json (#242). The manifest lists every file
+                    // of the snapshot, so it alone decides whether the cache is complete.
+                    hasUsableModel = true
+                    if try missingFiles(in: manifest, matching: matchingPatterns, modelDir: modelDir).isEmpty {
+                        print("Using cached model at: \(modelDir.path)")
+                        return modelDir
+                    }
                 }
             } else {
                 print("Cached model appears incomplete, clearing cache...")
