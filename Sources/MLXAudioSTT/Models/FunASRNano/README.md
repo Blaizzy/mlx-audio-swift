@@ -39,22 +39,6 @@ let result = try model.transcribe(
 print(result.text)
 ```
 
-## Python Example
-
-Using the Python `mlx-audio` library:
-
-```python
-from mlx_audio.stt import load
-
-model = load("mlx-community/Fun-ASR-Nano-2512")
-result = model.generate(
-    "audio.wav",
-    language="en",
-    hotwords=["MLX", "Apple Silicon"],
-)
-print(result.text)
-```
-
-Use `language="zh"` for Chinese or `language="ja"` for Japanese. Inverse text
-normalization is enabled by default; pass `itn=False` in Python or `itn: false`
-in Swift to request spoken-form text.
+Use `language: "zh"` for Chinese or `language: "ja"` for Japanese. Inverse text
+normalization is enabled by default; pass `itn: false` to `transcribe` to request
+spoken-form text.
