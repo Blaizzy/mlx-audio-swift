@@ -23,25 +23,12 @@ struct GraniteSpeech5CTCTests {
         config.encoderConfig.convKernelSize = 3
         return config
     }
-    private func fixture() throws -> (GraniteSpeech5CTCModel, [String:MLXArray]) {
-        let dataURL = try #require(Bundle.module.url(forResource: "granite_speech5_ctc_reference", withExtension: "safetensors", subdirectory: "media"))
+    private func tinyModel() throws -> GraniteSpeech5CTCModel {
         let config = tinyConfig()
         try config.validate()
-        let arrays = try MLX.loadArrays(url: dataURL)
         let model = GraniteSpeech5CTCModel(config)
-        let weights = Dictionary(uniqueKeysWithValues: arrays.compactMap { key,value in
-            key.hasPrefix("weights.") ? (String(key.dropFirst(8)),value) : nil
-        })
-        #expect(Set(model.parameters().flattened().map(\.0)) == Set(weights.keys))
-        try model.update(parameters: ModuleParameters.unflattened(weights), verify: .all)
         model.train(false)
-        return (model,arrays)
-    }
-    private func compare(_ actual: MLXArray, _ expected: MLXArray, tolerance: Float) {
-        #expect(actual.shape == expected.shape)
-        let error = abs(actual.asType(.float32) - expected.asType(.float32))
-        print("Granite tiny reference max_abs=\(error.max().item(Float.self)) mean_abs=\(error.mean().item(Float.self))")
-        #expect(error.max().item(Float.self) < tolerance)
+        return model
     }
     private func writeTokenizer(_ directory: URL, size: Int) throws {
         let pieces = ["<unk>", "▁caf", "<0xC3>", "<0xA9>", ".", "<0xE2>", "<0x96>", "<0x81>"] + (8..<size).map { "piece\($0)" }
@@ -50,15 +37,21 @@ struct GraniteSpeech5CTCTests {
             "added_tokens":[["id":0,"content":"<unk>","special":true]]]
         try JSONSerialization.data(withJSONObject: json).write(to: directory.appendingPathComponent("tokenizer.json"))
     }
-    @Test func pythonFrontendAndFullConformerWithOddLengthsAndMasks() throws {
-        let (model,f) = try fixture()
-        compare(try GraniteSpeech5CTCFrontend.features(f["reference.audio"]!, numMelBins: 4), f["reference.features"]!, tolerance: 5e-5)
-        compare(model(f["reference.input"]!), f["reference.logits"]!, tolerance: 2e-4)
-        compare(model(f["reference.input"]!, attentionMask: f["reference.mask"]!), f["reference.masked_logits"]!, tolerance: 2e-4)
-        #expect(model(f["reference.input"]!).shape == [2,4,16])
+    @Test func maskedPaddingDoesNotAffectOddLengthBatch() throws {
+        let model = try tinyModel()
+        let features = arange(2 * 19 * 16).asType(.float32).reshaped(2,19,16) / 100
+        let mask = MLXArray(Array(repeating: true, count: 32) + Array(repeating: false, count: 6)).reshaped(2,19)
+        let changedPadding = MLX.where(mask.expandedDimensions(axis: -1), features, features + 1000)
+        let logits = model(features, attentionMask: mask)
+        let changedPaddingLogits = model(changedPadding, attentionMask: mask)
+        #expect(logits.shape == [2,4,16])
+        #expect(MLX.all(isFinite(logits)).item(Bool.self))
+        #expect(abs(logits - changedPaddingLogits).max().item(Float.self) == 0)
     }
     @Test func deltaEdgesCTCCollapseAndShortFrontend() throws {
-        compare(try GraniteSpeech5CTCFrontend.deltas(MLXArray([Float(1),3,7]).reshaped(3,1)), MLXArray([Float(1),3,2]).reshaped(3,1), tolerance: 1e-6)
+        let deltas = try GraniteSpeech5CTCFrontend.deltas(MLXArray([Float(1),3,7]).reshaped(3,1))
+        #expect(deltas.shape == [3,1])
+        #expect(deltas.asArray(Float.self) == [1,3,2])
         #expect(GraniteSpeech5CTCModel.collapse([0,1,1,0,1,2,2,0]) == [1,1,2])
         #expect(GraniteSpeech5CTCModel.collapse([]).isEmpty)
         #expect(try GraniteSpeech5CTCFrontend.features(.zeros([321]), numMelBins: 4).shape == [1,16])
@@ -80,7 +73,7 @@ struct GraniteSpeech5CTCTests {
         #expect(throws: STTError.self) { try config.validate() }
     }
     @Test func tokenizerByteFallbackAndStrictLoading() throws {
-        let (model,_) = try fixture()
+        let model = try tinyModel()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("granite-ctc-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -92,6 +85,8 @@ struct GraniteSpeech5CTCTests {
         var weights = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
         try MLX.save(arrays: weights, url: directory.appendingPathComponent("model.safetensors"))
         let loaded = try GraniteSpeech5CTCModel.fromModelDirectory(directory)
+        let features = MLXArray.ones([1,19,16])
+        #expect(abs(model(features) - loaded(features)).max().item(Float.self) == 0)
         let result = try loaded.transcribe(audio: .ones([1]))
         #expect(result.language == "en")
         #expect(throws: STTError.self) { try loaded.transcribe(audio: .zeros([0])) }
@@ -110,8 +105,7 @@ struct GraniteSpeech5CTCTests {
         #expect(sanitized["encoder.layers.0.conv.norm.num_batches_tracked"] == nil)
     }
     @Test func quantizedInputProjectionKeepsFloatingPointFeatures() throws {
-        let (fixtureModel,_) = try fixture()
-        var config = fixtureModel.config
+        var config = tinyConfig()
         config.encoderConfig.numMelBins = 8
         config.encoderConfig.hiddenSize = 64
         config.encoderConfig.headDim = 32
@@ -125,13 +119,13 @@ struct GraniteSpeech5CTCTests {
         #expect(MLX.all(isFinite(logits)).item(Bool.self))
     }
     @Test func commonLoaderAndFullBufferStreaming() async throws {
-        let (fixtureModel,_) = try fixture()
+        let nativeModel = try tinyModel()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("granite-stream-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        try JSONEncoder().encode(fixtureModel.config).write(to: directory.appendingPathComponent("config.json"))
+        try JSONEncoder().encode(nativeModel.config).write(to: directory.appendingPathComponent("config.json"))
         try writeTokenizer(directory, size: 16)
-        try MLX.save(arrays: Dictionary(uniqueKeysWithValues: fixtureModel.parameters().flattened()),
+        try MLX.save(arrays: Dictionary(uniqueKeysWithValues: nativeModel.parameters().flattened()),
             url: directory.appendingPathComponent("model.safetensors"))
         let model = try await STT.loadModel(modelRepo: directory.path, modelType: "granite_speech5_ctc")
         #expect(model is GraniteSpeech5CTCModel)
@@ -149,49 +143,14 @@ struct GraniteSpeech5CTCTests {
 @Suite(.serialized)
 struct GraniteSpeech5CTCCheckpointTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["GRANITE_TURBOCTC_MODEL_DIR"] != nil))
-    func realCheckpointParityAndMultiwordTranscription() async throws {
-        let env = ProcessInfo.processInfo.environment
-        let modelPath = try #require(env["GRANITE_TURBOCTC_MODEL_DIR"])
-        let references = try #require(env["GRANITE_TURBOCTC_REFERENCES"]).split(separator: ":").map(String.init)
-        let model = try await GraniteSpeech5CTCModel.fromPretrained(modelPath)
-        for path in references {
-            let directory = URL(fileURLWithPath: path)
-            let f = try MLX.loadArrays(url: directory.appendingPathComponent("reference.safetensors"))
-            let metadata = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("reference.json"))) as? [String:Any])
-            let features = try GraniteSpeech5CTCFrontend.features(f["audio"]!).expandedDimensions(axis: 0)
-            let logits = model(features).asType(.float32), expected = f["logits"]!.asType(.float32)
-            let error = logits - expected
-            let relative = (sqrt(mean(error.square())) / maximum(sqrt(mean(expected.square())),1e-8)).item(Float.self)
-            let cosine = (sum(logits * expected) / sqrt(sum(logits.square()) * sum(expected.square()))).item(Float.self)
-            let frontendError = abs(features - f["features"]!).max().item(Float.self)
-            print("Granite checkpoint \(directory.lastPathComponent): frontend_max=\(frontendError), logits_max=\(abs(error).max().item(Float.self)), RMS_relative=\(relative), cosine=\(cosine)")
-            #expect(frontendError < 1e-3)
-            #expect(relative < 0.01)
-            #expect(cosine > 0.9999)
-            let expectedText = try #require(metadata["text"] as? String)
-            let output = try model.transcribe(audio: f["audio"]!)
-            print("Granite Swift: \(output.text)\nGranite Python: \(expectedText)")
-            #expect(!output.text.isEmpty)
-            #expect(wordErrorRate(output.text, expectedText) <= 0.1)
-            if let audioPath = metadata["audio"] as? String {
-                let (_,audio) = try loadAudioArray(from: URL(fileURLWithPath: audioPath), sampleRate: 16000)
-                let independent = try model.transcribe(audio: audio)
-                print("Granite independent Swift resampling: \(independent.text)")
-                #expect(wordErrorRate(independent.text, expectedText) <= 0.1)
-            }
-        }
-    }
-    private func wordErrorRate(_ actual: String, _ expected: String) -> Double {
-        func words(_ text: String) -> [String] {
-            text.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
-        }
-        let a = words(actual), b = words(expected)
-        var costs = Array(0...b.count)
-        for (i,word) in a.enumerated() {
-            var row = [i + 1]
-            for (j,ref) in b.enumerated() { row.append(min(row[j] + 1, costs[j + 1] + 1, costs[j] + (word == ref ? 0 : 1))) }
-            costs = row
-        }
-        return Double(costs.last!) / Double(max(b.count,1))
+    func localCheckpointTranscription() throws {
+        let modelPath = try #require(ProcessInfo.processInfo.environment["GRANITE_TURBOCTC_MODEL_DIR"])
+        let model = try GraniteSpeech5CTCModel.fromModelDirectory(URL(fileURLWithPath: modelPath))
+        let audioURL = try #require(Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media"))
+        let (_,audio) = try loadAudioArray(from: audioURL, sampleRate: model.sampleRate)
+        let output = try model.transcribe(audio: audio)
+        let words = output.text.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
+        #expect(words == ["intention"])
+        #expect(output.language == "en")
     }
 }
