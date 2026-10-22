@@ -28,27 +28,21 @@ public final class GraniteSpeech5CTCModel: Module, STTGenerationModel {
         }
         return result
     }
-    public func transcribe(audio: MLXArray) throws -> STTOutput {
-        guard let tokenizer else { throw STTError.modelNotInitialized("Granite TurboCTC tokenizer is not loaded") }
-        guard audio.ndim == 1, audio.size > 0 else { throw STTError.invalidInput("Expected nonempty mono 16 kHz PCM") }
-        if Task.isCancelled { throw CancellationError() }
+    public func generate(audio: MLXArray, generationParameters: STTGenerateParameters) -> STTOutput {
+        guard let tokenizer else { preconditionFailure("Granite TurboCTC tokenizer is not loaded") }
+        precondition(audio.ndim == 1 && audio.size > 0, "Expected nonempty mono 16 kHz PCM")
         let start = Date()
         // Each strided block floors time/2; pad tiny clips so final time is nonzero.
         let minimum = max(320, 320 * (1 << config.encoderConfig.subsampleLayers.count))
         let waveform = audio.size < minimum ? padded(audio, widths: [.init((0,minimum - audio.size))]) : audio
-        let features = try GraniteSpeech5CTCFrontend.features(waveform, numMelBins: config.encoderConfig.numMelBins)
+        let features = GraniteSpeech5CTCFrontend.features(waveform, numMelBins: config.encoderConfig.numMelBins)
         let logits = self(features.expandedDimensions(axis: 0))
         let predictions = argMax(logits[0], axis: -1).asType(.int32)
         eval(predictions)
-        if Task.isCancelled { throw CancellationError() }
         let tokens = Self.collapse(predictions.asArray(Int32.self).map(Int.init), blankId: config.padTokenId)
         let text = tokenizer.decode(tokens), elapsed = Date().timeIntervalSince(start)
         return STTOutput(text: text, language: "en", generationTokens: tokens.count,
             totalTokens: tokens.count, generationTps: Double(tokens.count) / max(elapsed,0.001), totalTime: elapsed)
-    }
-    public func generate(audio: MLXArray, generationParameters: STTGenerateParameters) -> STTOutput {
-        do { return try transcribe(audio: audio) }
-        catch { preconditionFailure("\(error). Use transcribe() or generateStream() for throwing input validation.") }
     }
     /// Full-buffer CTC result streaming, not incremental audio inference.
     public func generateStream(audio: MLXArray, generationParameters: STTGenerateParameters)
@@ -57,7 +51,9 @@ public final class GraniteSpeech5CTCModel: Module, STTGenerationModel {
         return AsyncThrowingStream { continuation in
             let task = Task.detached {
                 do {
-                    let result = try model.value.transcribe(audio: input.value)
+                    try Task.checkCancellation()
+                    let result = model.value.generate(audio: input.value, generationParameters: generationParameters)
+                    try Task.checkCancellation()
                     if !result.text.isEmpty { continuation.yield(.token(result.text)) }
                     continuation.yield(.result(result)); continuation.finish()
                 } catch { continuation.finish(throwing: error) }

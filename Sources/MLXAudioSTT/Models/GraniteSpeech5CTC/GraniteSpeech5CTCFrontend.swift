@@ -4,10 +4,10 @@ import MLXAudioCore
 
 public enum GraniteSpeech5CTCFrontend {
     /// Replicate-padded time deltas, matching the reference's torchaudio recipe.
-    public static func deltas(_ features: MLXArray, windowLength: Int = 3) throws -> MLXArray {
-        guard features.ndim == 2, features.dim(0) > 0, windowLength >= 3, windowLength % 2 == 1 else {
-            throw STTError.invalidInput("Deltas require nonempty [time,features] and an odd window of at least 3")
-        }
+    public static func deltas(_ features: MLXArray, windowLength: Int = 3) -> MLXArray {
+        precondition(
+            features.ndim == 2 && features.dim(0) > 0 && windowLength >= 3 && windowLength % 2 == 1,
+            "Deltas require nonempty [time,features] and an odd window of at least 3")
         let half = (windowLength - 1) / 2, t = features.dim(0), d = features.dim(1)
         let data = concatenated([broadcast(features[0..<1], to: [half,d]), features,
             broadcast(features[(t - 1)..<t], to: [half,d])], axis: 0)
@@ -38,10 +38,10 @@ public enum GraniteSpeech5CTCFrontend {
     }
 
     /// Mono 16 kHz waveform to pair-stacked log-mel and delta features [time,4*mels].
-    public static func features(_ waveform: MLXArray, numMelBins: Int = 80) throws -> MLXArray {
-        guard waveform.ndim == 1, waveform.size >= 320, numMelBins > 0 else {
-            throw STTError.invalidInput("Granite frontend requires mono audio containing at least 320 samples")
-        }
+    public static func features(_ waveform: MLXArray, numMelBins: Int = 80) -> MLXArray {
+        precondition(
+            waveform.ndim == 1 && waveform.size >= 320 && numMelBins > 0,
+            "Granite frontend requires mono audio containing at least 320 samples")
         var audio = waveform.asType(.float32)
         let melFrames = audio.size / 160, frames = 2 * ((melFrames + 1) / 2)
         let required = (frames - 1) * 160 + 1
@@ -51,7 +51,7 @@ public enum GraniteSpeech5CTCFrontend {
         let mel = matmul(abs(spectrum).square(), filters(numMelBins))
         var logmel = log10(maximum(mel, MLXArray(Float(1e-10))))
         logmel = maximum(logmel, logmel.max() - 8) / 4 + 1
-        return concatenated([logmel, try deltas(logmel)], axis: -1).reshaped(-1,4 * numMelBins)
+        return concatenated([logmel, deltas(logmel)], axis: -1).reshaped(-1,4 * numMelBins)
     }
 }
 

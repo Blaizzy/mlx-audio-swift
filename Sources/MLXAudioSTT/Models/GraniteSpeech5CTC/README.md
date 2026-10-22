@@ -30,6 +30,6 @@ let model = try await GraniteSpeech5CTCModel.fromPretrained(
 let audioURL = URL(fileURLWithPath: "audio.wav")
 let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: 16000)
 
-let result = try model.transcribe(audio: audio)
+let result = model.generate(audio: audio)
 print(result.text)
 ```

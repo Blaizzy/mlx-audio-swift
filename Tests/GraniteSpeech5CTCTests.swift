@@ -48,15 +48,13 @@ struct GraniteSpeech5CTCTests {
         #expect(MLX.all(isFinite(logits)).item(Bool.self))
         #expect(abs(logits - changedPaddingLogits).max().item(Float.self) == 0)
     }
-    @Test func deltaEdgesCTCCollapseAndShortFrontend() throws {
-        let deltas = try GraniteSpeech5CTCFrontend.deltas(MLXArray([Float(1),3,7]).reshaped(3,1))
+    @Test func deltaEdgesCTCCollapseAndShortFrontend() {
+        let deltas = GraniteSpeech5CTCFrontend.deltas(MLXArray([Float(1),3,7]).reshaped(3,1))
         #expect(deltas.shape == [3,1])
         #expect(deltas.asArray(Float.self) == [1,3,2])
         #expect(GraniteSpeech5CTCModel.collapse([0,1,1,0,1,2,2,0]) == [1,1,2])
         #expect(GraniteSpeech5CTCModel.collapse([]).isEmpty)
-        #expect(try GraniteSpeech5CTCFrontend.features(.zeros([321]), numMelBins: 4).shape == [1,16])
-        #expect(throws: STTError.self) { try GraniteSpeech5CTCFrontend.features(.zeros([0])) }
-        #expect(throws: STTError.self) { try GraniteSpeech5CTCFrontend.deltas(.ones([3,1]), windowLength: 2) }
+        #expect(GraniteSpeech5CTCFrontend.features(.zeros([321]), numMelBins: 4).shape == [1,16])
     }
     @Test func configDefaultsAndInvalidArchitecture() throws {
         let implicitEncoder = try JSONDecoder().decode(GraniteSpeech5CTCConfig.self, from: Data(#"{"vocab_size":16}"#.utf8))
@@ -87,9 +85,8 @@ struct GraniteSpeech5CTCTests {
         let loaded = try GraniteSpeech5CTCModel.fromModelDirectory(directory)
         let features = MLXArray.ones([1,19,16])
         #expect(abs(model(features) - loaded(features)).max().item(Float.self) == 0)
-        let result = try loaded.transcribe(audio: .ones([1]))
+        let result = loaded.generate(audio: .ones([1]))
         #expect(result.language == "en")
-        #expect(throws: STTError.self) { try loaded.transcribe(audio: .zeros([0])) }
         weights.removeValue(forKey: "encoder.input_linear.weight")
         try MLX.save(arrays: weights, url: directory.appendingPathComponent("model.safetensors"))
         #expect(throws: (any Error).self) { try GraniteSpeech5CTCModel.fromModelDirectory(directory) }
@@ -129,14 +126,23 @@ struct GraniteSpeech5CTCTests {
             url: directory.appendingPathComponent("model.safetensors"))
         let model = try await STT.loadModel(modelRepo: directory.path, modelType: "granite_speech5_ctc")
         #expect(model is GraniteSpeech5CTCModel)
+        let audio = MLXArray.ones([1280])
+        let expected = model.generate(audio: audio)
         var finalCount = 0
-        for try await event in model.generateStream(audio: .ones([1280])) {
-            if case .result = event { finalCount += 1 }
+        var streamedText = ""
+        for try await event in model.generateStream(audio: audio) {
+            switch event {
+            case .token(let text): streamedText += text
+            case .info: break
+            case .result(let result):
+                finalCount += 1
+                #expect(result.text == expected.text)
+                #expect(result.language == expected.language)
+                #expect(result.generationTokens == expected.generationTokens)
+            }
         }
         #expect(finalCount == 1)
-        await #expect(throws: STTError.self) {
-            for try await _ in model.generateStream(audio: .zeros([0])) {}
-        }
+        #expect(streamedText == expected.text)
     }
 }
 
@@ -148,7 +154,7 @@ struct GraniteSpeech5CTCCheckpointTests {
         let model = try GraniteSpeech5CTCModel.fromModelDirectory(URL(fileURLWithPath: modelPath))
         let audioURL = try #require(Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media"))
         let (_,audio) = try loadAudioArray(from: audioURL, sampleRate: model.sampleRate)
-        let output = try model.transcribe(audio: audio)
+        let output = model.generate(audio: audio)
         let words = output.text.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
         #expect(words == ["intention"])
         #expect(output.language == "en")
