@@ -12,6 +12,59 @@ struct Phonon2Tests {
         Bundle.module.resourceURL!.appendingPathComponent("media/phonon2")
     }
 
+    private var tinyConfig: [String: Any] {
+        let projections: [(String, [Int])] = [
+            ("feed_forward1.linear1", [256, 128]), ("feed_forward1.linear2", [128, 256]),
+            ("feed_forward2.linear1", [256, 128]), ("feed_forward2.linear2", [128, 256]),
+            ("self_attn.linear_q", [128, 128]), ("self_attn.linear_k", [128, 128]),
+            ("self_attn.linear_v", [128, 128]), ("self_attn.linear_out", [128, 128]),
+            ("self_attn.linear_pos", [128, 128]),
+            ("conv.pointwise_conv1", [256, 128]), ("conv.pointwise_conv2", [128, 128]),
+        ]
+        return [
+            "model_type": "phonon2",
+            "preprocessor": [
+                "sample_rate": 16000, "normalize": "per_feature", "window_size": 0.025,
+                "window_stride": 0.01, "window": "hann", "features": 8, "n_fft": 512, "dither": 0,
+            ],
+            "encoder": [
+                "feat_in": 8, "n_layers": 1, "d_model": 128, "n_heads": 4,
+                "ff_expansion_factor": 2, "subsampling_factor": 2, "self_attention_model": "rel_pos",
+                "subsampling": "dw_striding", "conv_kernel_size": 3, "subsampling_conv_channels": 4,
+                "pos_emb_max_len": 128, "use_bias": false,
+            ],
+            "decoder": [
+                "blank_as_pad": true, "vocab_size": 8,
+                "prednet": ["pred_hidden": 16, "pred_rnn_layers": 1],
+            ],
+            "joint": [
+                "num_classes": 8, "vocabulary": (0..<8).map { "▁word\($0)" }, "num_extra_outputs": 3,
+                "jointnet": [
+                    "joint_hidden": 16, "activation": "relu", "encoder_hidden": 128, "pred_hidden": 16,
+                ],
+            ],
+            "decoding": ["model_type": "tdt", "durations": [0, 1, 2], "greedy": ["max_symbols": 4]],
+            "phonon2_modules": projections.map { ["name": "encoder.layers.0.\($0.0)", "shape": $0.1] },
+        ]
+    }
+
+    private func checkpointDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: tinyConfig)
+            .write(to: directory.appendingPathComponent("config.json"))
+        try FileManager.default.copyItem(
+            at: fixtures.appendingPathComponent("model.safetensors"),
+            to: directory.appendingPathComponent("model.safetensors"))
+        return directory
+    }
+
+    private func tinyModel(computeDType: DType = .bfloat16) throws -> Phonon2Model {
+        let directory = try checkpointDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        return try Phonon2Model.fromDirectory(directory, computeDType: computeDType)
+    }
+
     private func compare(_ actual: MLXArray, _ expected: MLXArray, tolerance: Float) {
         #expect(actual.shape == expected.shape)
         let difference = (actual.asType(.float32) - expected.asType(.float32)).abs()
@@ -35,7 +88,7 @@ struct Phonon2Tests {
     }
 
     @Test func completeEncoderAndFrontendMatchPython() throws {
-        let model = try Phonon2Model.fromDirectory(fixtures, computeDType: .float32)
+        let model = try tinyModel(computeDType: .float32)
         let reference = try MLX.loadArrays(url: fixtures.appendingPathComponent("expected/reference.safetensors"))
         let waveform = reference["waveform"]!
         let features = model.backbone.makeBatchFeatures([waveform])
@@ -54,7 +107,7 @@ struct Phonon2Tests {
     }
 
     @Test func bf16LoadPreservesLearnedPalettes() throws {
-        let model = try Phonon2Model.fromDirectory(fixtures)
+        let model = try tinyModel()
         let parameters = Dictionary(uniqueKeysWithValues: model.backbone.parameters().flattened())
         #expect(parameters["encoder.layers.0.feed_forward1.linear1.row_lo"]?.dtype == .float16)
         #expect(parameters["encoder.pre_encode.conv0.weight"]?.dtype == .bfloat16)
@@ -63,11 +116,11 @@ struct Phonon2Tests {
     }
 
     @Test func configurationRejectsMissingDuplicateOrMismatchedProjections() throws {
-        let data = try Data(contentsOf: fixtures.appendingPathComponent("config.json"))
+        let original = tinyConfig
+        let data = try JSONSerialization.data(withJSONObject: original)
         let config = try JSONDecoder().decode(Phonon2Config.self, from: data)
         #expect(config.modules.count == 11)
         #expect(config.parakeet.decoding.durations == [0, 1, 2])
-        let original = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         for change in 0..<4 {
             var invalid = original
             var rows = try #require(original["phonon2_modules"] as? [[String: Any]])
@@ -89,7 +142,8 @@ struct Phonon2Tests {
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporary) }
-        try FileManager.default.copyItem(at: fixtures.appendingPathComponent("config.json"), to: temporary.appendingPathComponent("config.json"))
+        try JSONSerialization.data(withJSONObject: tinyConfig)
+            .write(to: temporary.appendingPathComponent("config.json"))
         let original = try MLX.loadArrays(url: fixtures.appendingPathComponent("model.safetensors"))
         for key in ["encoder.layers.0.feed_forward1.linear1.base_q", "encoder.layers.0.feed_forward1.linear1.row_lo"] {
             var invalid = original
@@ -104,7 +158,9 @@ struct Phonon2Tests {
     }
 
     @Test func commonLoaderDispatchesPhonon2() async throws {
-        let model = try await STT.loadModel(modelRepo: fixtures.path, modelType: "phonon2")
+        let directory = try checkpointDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = try await STT.loadModel(modelRepo: directory.path, modelType: "phonon2")
         #expect(model is Phonon2Model)
     }
 
