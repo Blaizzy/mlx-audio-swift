@@ -71,6 +71,7 @@ private struct Options {
     var verbose = false
     var maxTokens = 2048
     var language: String? = nil
+    var task = "transcribe"
     var chunkDuration: Float = 30.0
     var frameThreshold = 25
     var stream = false
@@ -115,6 +116,12 @@ private struct Options {
             case "--language":
                 guard let v = it.next() else { throw CLIError.missingValue(arg) }
                 options.language = v
+            case "--task":
+                guard let v = it.next() else { throw CLIError.missingValue(arg) }
+                guard ["transcribe", "translate"].contains(v.lowercased()) else {
+                    throw CLIError.invalidValue(arg, v)
+                }
+                options.task = v.lowercased()
             case "--chunk-duration":
                 guard let v = it.next() else { throw CLIError.missingValue(arg) }
                 guard let value = Float(v) else { throw CLIError.invalidValue(arg, v) }
@@ -222,6 +229,7 @@ private struct Options {
               --verbose                     Verbose logging
               --max-tokens <int>            Max generated tokens. Default: 2048
               --language <code|name>        Optional language hint. Omit to allow model autodetect when supported
+              --task <transcribe|translate> Translate into English instead (Whisper only). Default: transcribe
               --chunk-duration <float>      Chunk duration seconds. Default: 30.0
               --frame-threshold <int>       Accepted for compatibility (currently unused). Default: 25
               --stream                      Stream token output while generating
@@ -295,7 +303,8 @@ enum App {
                 chunkDuration: options.chunkDuration,
                 minChunkDuration: options.minChunkDuration ?? params.minChunkDuration,
                 repetitionPenalty: options.repetitionPenalty ?? params.repetitionPenalty,
-                repetitionContextSize: options.repetitionContextSize ?? params.repetitionContextSize
+                repetitionContextSize: options.repetitionContextSize ?? params.repetitionContextSize,
+                task: options.task
             )
 
             if options.stream {

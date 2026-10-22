@@ -62,6 +62,8 @@ public enum STT {
         }
 
         switch resolved {
+        case "phonon2", "phonon_2":
+            return try await Phonon2Model.fromPretrained(modelRepo, cache: cache)
         case "moss_transcribe_diarize":
             if let directory { return try await MossTranscribeDiarizeModel.fromModelDirectory(directory) }
             return try await MossTranscribeDiarizeModel.fromPretrained(modelRepo, cache: cache)
@@ -110,6 +112,8 @@ public enum STT {
         case "whisper":
             if let directory { return try await WhisperModel.fromDirectory(directory, cache: cache) }
             return try await WhisperModel.fromPretrained(modelRepo, cache: cache)
+        case "granite_speech5_ctc":
+            return try await GraniteSpeech5CTCModel.fromPretrained(modelRepo, cache: cache)
         case "granite_speech":
             if let directory { return try await GraniteSpeechModel.fromModelDirectory(directory) }
             return try await GraniteSpeechModel.fromPretrained(modelRepo, cache: cache)
@@ -135,6 +139,9 @@ public enum STT {
 
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
+        if lower.contains("phonon-2") || lower.contains("phonon2") || lower.contains("phonon_2") {
+            return "phonon2"
+        }
         if lower.contains("moss-transcribe-diarize") || lower.contains("moss_transcribe_diarize") {
             return "moss_transcribe_diarize"
         }
@@ -186,6 +193,9 @@ public enum STT {
         }
         if lower.contains("whisper") {
             return "whisper"
+        }
+        if lower.contains("turboctc") || lower.contains("granite_speech5_ctc") {
+            return "granite_speech5_ctc"
         }
         if lower.contains("granite") {
             return "granite_speech"
