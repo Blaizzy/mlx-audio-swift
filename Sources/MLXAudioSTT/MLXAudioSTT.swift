@@ -103,6 +103,9 @@ public enum STT {
         case "fireredasr2", "firered", "fire_red":
             if let directory { return try FireRedASR2Model.fromDirectory(directory) }
             return try await FireRedASR2Model.fromPretrained(modelRepo, cache: cache)
+        case "fun_asr_nano":
+            if let directory { return try await FunASRNanoModel.fromModelDirectory(directory) }
+            return try await FunASRNanoModel.fromPretrained(modelRepo, cache: cache)
         case "sensevoice":
             if let directory { return try SenseVoiceModel.fromDirectory(directory) }
             return try await SenseVoiceModel.fromPretrained(modelRepo, cache: cache)
@@ -181,6 +184,9 @@ public enum STT {
         }
         if lower.contains("firered") || lower.contains("fire-red") {
             return "fireredasr2"
+        }
+        if lower.contains("fun-asr-nano") || lower.contains("fun_asr_nano") {
+            return "fun_asr_nano"
         }
         if lower.contains("sensevoice") {
             return "sensevoice"
