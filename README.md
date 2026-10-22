@@ -138,6 +138,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 
 | Model | Model README | HuggingFace Repo |
 |-------|--------------|------------------|
+| Mega-ASR | [Mega-ASR README](Sources/MLXAudioSTT/Models/MegaASR/README.md) | [mlx-community/Mega-ASR-bf16](https://huggingface.co/mlx-community/Mega-ASR-bf16) |
 | Qwen3-ASR | [Qwen3-ASR README](Sources/MLXAudioSTT/Models/Qwen3ASR/README.md) | [mlx-community/Qwen3-ASR-1.7B-bf16](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-bf16) |
 | Qwen3-ForcedAligner | [Qwen3-ASR README](Sources/MLXAudioSTT/Models/Qwen3ASR/README.md) | [mlx-community/Qwen3-ForcedAligner-0.6B-bf16](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-bf16) |
 | MOSS-Transcribe-Diarize | [MOSS-Transcribe-Diarize README](Sources/MLXAudioSTT/Models/MossTranscribeDiarize/README.md) | [OpenMOSS-Team/MOSS-Transcribe-Diarize](https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize) |
