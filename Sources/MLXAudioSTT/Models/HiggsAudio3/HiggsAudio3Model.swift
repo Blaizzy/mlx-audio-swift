@@ -115,11 +115,19 @@ public final class HiggsAudio3Model: Module, STTGenerationModel {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Throwing entry point for applications needing explicit load/input errors.
-    public func transcribe(audio: MLXArray, generationParameters: STTGenerateParameters? = nil,
+    /// Generate a transcription with an optional prompt, sampling controls and token callback.
+    public func generate(audio: MLXArray, generationParameters: STTGenerateParameters? = nil,
         prompt: String = HiggsAudio3Model.defaultPrompt, prefillStepSize: Int = 2048,
-        minP: Float = 0, onToken: ((String) -> Void)? = nil) throws -> STTOutput {
-        let p = generationParameters ?? defaultGenerationParameters
+        minP: Float = 0, onToken: ((String) -> Void)? = nil) -> STTOutput {
+        do {
+            return try generateImpl(audio: audio, parameters: generationParameters ?? defaultGenerationParameters,
+                prompt: prompt, prefillStepSize: prefillStepSize, minP: minP, onToken: onToken)
+        } catch { preconditionFailure("\(error)") }
+    }
+
+    private func generateImpl(audio: MLXArray, parameters p: STTGenerateParameters,
+        prompt: String, prefillStepSize: Int, minP: Float,
+        onToken: ((String) -> Void)?) throws -> STTOutput {
         guard p.maxTokens >= 0, prefillStepSize > 0 else { throw STTError.invalidInput("Invalid token/prefill limits") }
         guard p.temperature >= 0, p.temperature.isFinite, p.repetitionPenalty > 0,
               p.repetitionPenalty.isFinite else { throw STTError.invalidInput("Invalid sampling parameters") }
@@ -150,7 +158,7 @@ public final class HiggsAudio3Model: Module, STTGenerationModel {
             : TopPSampler(temperature: p.temperature, topP: p.topP, topK: p.topK, minP: minP)
         var tokens: [Int] = []
         for _ in 0..<p.maxTokens {
-            if Task.isCancelled { throw CancellationError() }
+            if Task.isCancelled { break }
             var scores = logits[0,-1,0...]
             if p.repetitionPenalty != 1, !tokens.isEmpty {
                 let ids = MLXArray(Array(Set(tokens.suffix(max(1,p.repetitionContextSize)))).map(Int32.init))
@@ -175,18 +183,29 @@ public final class HiggsAudio3Model: Module, STTGenerationModel {
     }
 
     public func generate(audio: MLXArray, generationParameters: STTGenerateParameters) -> STTOutput {
-        // The common protocol cannot throw. Use transcribe() or generateStream() for error details.
-        (try? transcribe(audio: audio, generationParameters: generationParameters)) ?? STTOutput(text: "")
+        generate(audio: audio, generationParameters: generationParameters, prompt: Self.defaultPrompt)
     }
 
     public func generateStream(audio: MLXArray, generationParameters: STTGenerateParameters)
         -> AsyncThrowingStream<STTGeneration, Error> {
+        generateStream(audio: audio, generationParameters: generationParameters, prompt: Self.defaultPrompt)
+    }
+
+    /// Stream generated text from a complete recording using optional model-specific controls.
+    public func generateStream(audio: MLXArray, generationParameters: STTGenerateParameters? = nil,
+        prompt: String = HiggsAudio3Model.defaultPrompt, prefillStepSize: Int = 2048,
+        minP: Float = 0) -> AsyncThrowingStream<STTGeneration, Error> {
+        let parameters = generationParameters ?? defaultGenerationParameters
         let modelBox = UncheckedSendableBox(self), audioBox = UncheckedSendableBox(audio)
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let result = try modelBox.value.transcribe(audio: audioBox.value,
-                        generationParameters: generationParameters) { continuation.yield(.token($0)) }
+                    try Task.checkCancellation()
+                    let result = try modelBox.value.generateImpl(audio: audioBox.value, parameters: parameters,
+                        prompt: prompt, prefillStepSize: prefillStepSize, minP: minP) {
+                            continuation.yield(.token($0))
+                        }
+                    try Task.checkCancellation()
                     continuation.yield(.result(result))
                     continuation.finish()
                 } catch { continuation.finish(throwing: error) }

@@ -28,6 +28,11 @@ let model = try await HiggsAudio3Model.fromPretrained("bosonai/higgs-audio-v3-st
 let audioURL = URL(fileURLWithPath: "audio.wav")
 let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: 16000)
 
-let result = try model.transcribe(audio: audio)
+let result = model.generate(audio: audio)
 print(result.text)
 ```
+
+In Swift, pass `prompt:` to customize the transcription request. Both `generate`
+and `generateStream` also accept `prefillStepSize:` and `minP:`. Use `onToken:`
+with `generate` or iterate over `generateStream` to receive text as it is generated.
+Pass `loadVAD: false` to `fromPretrained` to use fixed-duration audio chunks.

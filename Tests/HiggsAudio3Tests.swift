@@ -91,9 +91,11 @@ struct HiggsAudio3Tests {
         let mel = HiggsAudio3Frontend.features(MLXArray([Float(0.1)]), numMelBins: 4)
         #expect(model.audioFeatures(mel).dim(1) > 0)
     }
-    @Test func missingTokenizerReturnsActionableError() throws {
+    @Test func streamingPropagatesInitializationErrors() async throws {
         let model = try tinyModel()
-        #expect(throws: STTError.self) { try model.transcribe(audio: MLXArray.ones([1600])) }
+        await #expect(throws: STTError.self) {
+            for try await _ in model.generateStream(audio: MLXArray.ones([1600])) {}
+        }
     }
 }
 
@@ -104,18 +106,45 @@ struct HiggsAudio3NetworkTests {
     func realCheckpointTranscription() async throws {
         let path = try #require(ProcessInfo.processInfo.environment["HIGGS_AUDIO3_MODEL_DIR"])
         let model = try await HiggsAudio3Model.fromPretrained(path, loadVAD: false)
+        let shared: any STTGenerationModel = model
         let url = try #require(Bundle.module.url(forResource: "intention", withExtension: "wav", subdirectory: "media"))
         let (_,audio) = try loadAudioArray(from: url, sampleRate: 16000)
-        let result = try model.transcribe(audio: audio,
-            generationParameters: STTGenerateParameters(maxTokens: 256, topP: 1, chunkDuration: 4))
+        let parameters = STTGenerateParameters(maxTokens: 256, topP: 1, chunkDuration: 4)
+        let result = shared.generate(audio: audio, generationParameters: parameters)
         print("HIGGS_REAL_TRANSCRIPT: \(result.text)")
         print("HIGGS_REAL_METRICS: prompt=\(result.promptTokens) generated=\(result.generationTokens) time=\(result.totalTime) peakGB=\(result.peakMemoryUsage)")
         #expect(!result.text.isEmpty)
         #expect(result.generationTokens > 0)
+        #expect(model.generate(audio: audio).text == result.text)
+        var streamed: STTOutput?
+        for try await event in shared.generateStream(audio: audio, generationParameters: parameters) {
+            if case .result(let output) = event { streamed = output }
+        }
+        #expect(streamed?.text == result.text)
+        let prompt = "Transcribe the speech in lowercase without punctuation."
+        let inputs = try model.inputEmbeddings(audio: audio, prompt: prompt)
+        let tokenizer = try #require(model.tokenizer)
+        #expect(tokenizer.decode(tokens: inputs.ids, skipSpecialTokens: false).contains(prompt))
+        var callbackText = ""
+        let controlled = model.generate(audio: audio, generationParameters: parameters,
+            prompt: prompt, prefillStepSize: 8, minP: 0.1) { callbackText += $0 }
+        #expect(!controlled.text.isEmpty)
+        #expect(HiggsAudio3Model.parseOutput(callbackText) == controlled.text)
+        var controlledStream: STTOutput?
+        var streamText = ""
+        for try await event in model.generateStream(audio: audio, generationParameters: parameters,
+            prompt: prompt, prefillStepSize: 8, minP: 0.1) {
+            switch event {
+            case .token(let text): streamText += text
+            case .result(let output): controlledStream = output
+            case .info: break
+            }
+        }
+        #expect(controlledStream?.text == controlled.text)
+        #expect(HiggsAudio3Model.parseOutput(streamText) == controlled.text)
         let conversationURL = try #require(Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media"))
         let (_,conversation) = try loadAudioArray(from: conversationURL, sampleRate: 16000)
-        let multiword = try model.transcribe(audio: conversation,
-            generationParameters: STTGenerateParameters(maxTokens: 256, topP: 1, chunkDuration: 4))
+        let multiword = shared.generate(audio: conversation, generationParameters: parameters)
         print("HIGGS_CONVERSATION_TRANSCRIPT: \(multiword.text)")
         print("HIGGS_CONVERSATION_METRICS: prompt=\(multiword.promptTokens) generated=\(multiword.generationTokens) time=\(multiword.totalTime)")
         #expect(multiword.text.split(separator: " ").count > 3)
