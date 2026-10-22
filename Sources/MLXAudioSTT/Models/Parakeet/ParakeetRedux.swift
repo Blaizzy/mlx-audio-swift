@@ -2,7 +2,7 @@ import Foundation
 import MLX
 import MLXNN
 
-/// Metadata for the MLX 2-bit artifacts prepared by Python mlx-audio.
+/// Metadata and load-time adaptation for published ternary and prepared MLX Redux weights.
 struct ParakeetReduxConfig: Decodable {
     struct Encoder: Decodable {
         let hiddenSize: Int
@@ -36,12 +36,14 @@ struct ParakeetReduxConfig: Decodable {
     let ternaryGroupSize: Int
     let ternaryModules: [String]
 
+    var weightFormat: String { reduxWeightFormat ?? "thrush-ternary-v2" }
+
     static func decode(_ data: Data) throws -> Self {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let config = try decoder.decode(Self.self, from: data)
-        guard config.reduxWeightFormat == "mlx-2bit" else {
-            throw STTError.invalidInput("Parakeet Redux requires a Python-prepared mlx-2bit checkpoint")
+        guard ["mlx-2bit", "thrush-ternary-v2"].contains(config.weightFormat) else {
+            throw STTError.invalidInput("Unsupported Parakeet Redux weight format: \(config.weightFormat)")
         }
         return config
     }
@@ -100,8 +102,7 @@ struct ParakeetReduxConfig: Decodable {
         return try JSONDecoder().decode(ParakeetRawConfig.self, from: JSONSerialization.data(withJSONObject: object))
     }
 
-    /// Replaces only the encoder projections declared by the prepared checkpoint.
-    func configure(_ model: ParakeetModel, weights: [String: MLXArray]) throws {
+    private var projectionShapes: [String: [Int]] {
         let d = encoderConfig.hiddenSize, ff = encoderConfig.intermediateSize
         let shapes = [
             "feed_forward1.linear1": [ff, d], "feed_forward1.linear2": [d, ff],
@@ -110,16 +111,17 @@ struct ParakeetReduxConfig: Decodable {
             "self_attn.linear_v": [d, d], "self_attn.linear_out": [d, d], "self_attn.linear_pos": [d, d],
             "conv.pointwise_conv1": [2 * d, d], "conv.pointwise_conv2": [d, d],
         ]
-        var expected: [String: [Int]] = [:]
+        var result: [String: [Int]] = [:]
         for i in 0..<encoderConfig.numHiddenLayers {
-            for (suffix, shape) in shapes { expected["encoder.layers.\(i).\(suffix)"] = shape }
+            for (suffix, shape) in shapes { result["encoder.layers.\(i).\(suffix)"] = shape }
         }
-        let names = ternaryModules.map { name in
-            [("q_proj", "linear_q"), ("k_proj", "linear_k"), ("v_proj", "linear_v"),
-             ("o_proj", "linear_out"), ("relative_k_proj", "linear_pos")].reduce(name) {
-                $0.replacingOccurrences(of: "." + $1.0, with: "." + $1.1)
-            }
-        }
+        return result
+    }
+
+    /// Replaces only the encoder projections declared by the checkpoint.
+    func configure(_ model: ParakeetModel, weights: [String: MLXArray]) throws {
+        let expected = projectionShapes
+        let names = ternaryModules.map(Self.mapWeightName)
         guard Set(names) == Set(expected.keys), names.count == expected.count else {
             throw STTError.invalidInput("Redux ternary_modules must cover every encoder projection exactly once")
         }
@@ -138,5 +140,128 @@ struct ParakeetReduxConfig: Decodable {
                 groupSize: ternaryGroupSize, bits: 2)))
         }
         try model.update(modules: ModuleChildren.unflattened(replacements), verify: .noUnusedKeys)
+    }
+
+    func validateManifest(in directory: URL) throws {
+        guard weightFormat == "thrush-ternary-v2" else { return }
+        struct Manifest: Decodable {
+            struct Quant: Decodable { let mode: String; let groupSize: Int }
+            struct Packing: Decodable { let base: Int; let elementsPerByte: Int; let codeOffset: Int }
+            struct Entry: Decodable {
+                let name: String
+                let inFeatures: Int
+                let outFeatures: Int
+                let groupSize: Int
+                let hasBias: Bool
+                let asConv1D: Bool
+            }
+            let format: String
+            let names: String
+            let quant: Quant
+            let packing: Packing
+            let quantizedModules: [Entry]
+        }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let manifest = try decoder.decode(Manifest.self,
+            from: Data(contentsOf: directory.appendingPathComponent("ternary.json")))
+        guard manifest.format == weightFormat, manifest.names == "hf",
+            manifest.quant.mode == "ternary", manifest.quant.groupSize == 128,
+            manifest.packing.base == 3, manifest.packing.elementsPerByte == 5, manifest.packing.codeOffset == 1,
+            manifest.quantizedModules.count == ternaryModules.count,
+            Set(manifest.quantizedModules.map(\.name)) == Set(ternaryModules)
+        else { throw STTError.invalidInput("Unsupported Redux ternary manifest") }
+        let shapes = projectionShapes
+        for entry in manifest.quantizedModules {
+            guard let shape = shapes[Self.mapWeightName(entry.name)],
+                shape == [entry.outFeatures, entry.inFeatures], entry.groupSize == 128, !entry.hasBias,
+                entry.asConv1D == entry.name.contains(".conv.pointwise_conv")
+            else { throw STTError.invalidInput("Redux manifest shape/type mismatch: \(entry.name)") }
+        }
+    }
+
+    /// Losslessly expands base-3 bytes into the 2-bit words used by MLX's affine kernels.
+    static func repackTernary(_ weight: MLXArray, inputDimensions: Int) throws -> MLXArray {
+        guard weight.dtype == .uint8, weight.ndim == 2, inputDimensions > 0, inputDimensions % 16 == 0,
+            weight.dim(1) == (inputDimensions + 4) / 5,
+            !MLX.any(weight .> 242).item(Bool.self)
+        else { throw STTError.invalidInput("Expected valid uint8 Redux ternary rows of ceil(in_features / 5) bytes") }
+        let powers = MLXArray([UInt32(1), 3, 9, 27, 81])
+        let digits = remainder(floorDivide(weight.asType(.uint32).expandedDimensions(axis: 2), powers), 3)
+            .reshaped(weight.dim(0), -1)[0..., 0..<inputDimensions]
+        let shifts = MLXArray((0..<16).map { UInt32(2 * $0) })
+        let packed = (digits.reshaped(weight.dim(0), -1, 16) << shifts).sum(axis: -1).asType(.uint32)
+        // Release each projection's expanded digits before adapting the next matrix.
+        eval(packed)
+        return packed
+    }
+
+    static func mapWeightName(_ name: String) -> String {
+        let mappings = [
+            ("encoder.subsampling.layers.", "encoder.pre_encode.conv."),
+            ("encoder.subsampling.linear", "encoder.pre_encode.out"),
+            (".conv.norm.", ".conv.batch_norm."),
+            (".self_attn.q_proj", ".self_attn.linear_q"),
+            (".self_attn.k_proj", ".self_attn.linear_k"),
+            (".self_attn.v_proj", ".self_attn.linear_v"),
+            (".self_attn.o_proj", ".self_attn.linear_out"),
+            (".self_attn.relative_k_proj", ".self_attn.linear_pos"),
+            (".self_attn.bias_u", ".self_attn.pos_bias_u"),
+            (".self_attn.bias_v", ".self_attn.pos_bias_v"),
+            ("decoder.embedding.", "decoder.prediction.embed."),
+            ("decoder.decoder_projector.", "joint.pred."),
+            ("encoder_projector.", "joint.enc."),
+            ("joint.head.", "joint.joint_net.2."),
+        ]
+        var mapped = mappings.reduce(name) { $0.replacingOccurrences(of: $1.0, with: $1.1) }
+        for (source, target) in [("ih", "Wx"), ("hh", "Wh")] {
+            mapped = mapped.replacingOccurrences(of: "^decoder\\.lstm\\.weight_" + source + "_l(\\d+)$",
+                with: "decoder.prediction.dec_rnn.lstm.$1." + target, options: .regularExpression)
+        }
+        return mapped
+    }
+
+    /// Adapts published weights in memory; prepared MLX tensors pass through unchanged.
+    func sanitize(_ weights: [String: MLXArray]) throws -> [String: MLXArray] {
+        guard weightFormat == "thrush-ternary-v2" else { return weights }
+        let ignored = Set(["proj", "ctx", "out"].flatMap { layer in
+            ["weight", "bias"].map { "vad_head.\(layer).\($0)" }
+        } + (0..<encoderConfig.numHiddenLayers).map { "encoder.layers.\($0).conv.norm.num_batches_tracked" })
+        let shapes = projectionShapes
+        let names = Set(ternaryModules)
+        var result: [String: MLXArray] = [:]
+        for (name, original) in weights {
+            if ignored.contains(name) || name.range(of: "^decoder\\.lstm\\.bias_(ih|hh)_l\\d+$", options: .regularExpression) != nil { continue }
+            var target = Self.mapWeightName(name)
+            var value = original
+            if name.hasSuffix(".qweight") {
+                let module = String(name.dropLast(".qweight".count))
+                guard names.contains(module), let shape = shapes[Self.mapWeightName(module)], value.ndim == 2,
+                    value.dim(0) == shape[0] else { throw STTError.invalidInput("Unexpected Redux ternary weight: \(name)") }
+                value = try Self.repackTernary(value, inputDimensions: shape[1])
+                target = Self.mapWeightName(module) + ".weight"
+            } else if name.hasSuffix(".scales") {
+                let module = String(name.dropLast(".scales".count))
+                guard names.contains(module), value.dtype.isFloatingPoint,
+                    MLX.all(isFinite(value)).item(Bool.self), MLX.all(value .>= 0).item(Bool.self)
+                else { throw STTError.invalidInput("Invalid Redux ternary scales: \(name)") }
+                guard result[Self.mapWeightName(module) + ".biases"] == nil else {
+                    throw STTError.invalidInput("Duplicate Redux affine biases: \(name)")
+                }
+                result[Self.mapWeightName(module) + ".biases"] = -value
+            } else if name.hasSuffix(".weight") {
+                if value.ndim == 3 { value = value.transposed(0, 2, 1) }
+                if value.ndim == 4 { value = value.transposed(0, 2, 3, 1) }
+            }
+            guard result[target] == nil else { throw STTError.invalidInput("Duplicate Redux weight: \(target)") }
+            result[target] = value
+        }
+        for i in 0..<numDecoderLayers {
+            guard let input = weights["decoder.lstm.bias_ih_l\(i)"], let hidden = weights["decoder.lstm.bias_hh_l\(i)"] else {
+                throw STTError.invalidInput("Missing Redux LSTM biases for layer \(i)")
+            }
+            result["decoder.prediction.dec_rnn.lstm.\(i).bias"] = input + hidden
+        }
+        return result
     }
 }

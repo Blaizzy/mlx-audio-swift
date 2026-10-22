@@ -82,6 +82,134 @@ struct ParakeetReduxTests {
         }
     }
 
+    private func publishedCheckpoint() throws -> URL {
+        let directory = try checkpoint()
+        do {
+            let file = directory.appendingPathComponent("model.safetensors")
+            let weights = try MLX.loadArrays(url: file)
+            eval(Array(weights.values))
+            var source: [String: MLXArray] = [:]
+            let quantized = Set(projections.map { "encoder.layers.0." + $0.1 })
+            for (name, original) in weights {
+                if name.hasSuffix(".biases") { continue }
+                var value = original
+                var target = name
+                if name.hasSuffix(".weight"), quantized.contains(String(name.dropLast(7))) {
+                    let module = String(name.dropLast(7))
+                    let projection = try #require(projections.first { module == "encoder.layers.0." + $0.1 })
+                    let words = value.asArray(UInt32.self)
+                    let rows = projection.2[0], columns = projection.2[1], rowBytes = (columns + 4) / 5
+                    var bytes = [UInt8](repeating: 0, count: rows * rowBytes)
+                    let powers = [1, 3, 9, 27, 81]
+                    for row in 0..<rows {
+                        for column in 0..<columns {
+                            let code = (words[row * (columns / 16) + column / 16] >> (2 * (column % 16))) & 3
+                            bytes[row * rowBytes + column / 5] += UInt8(Int(code) * powers[column % 5])
+                        }
+                    }
+                    source["encoder.layers.0." + projection.0 + ".qweight"] = MLXArray(bytes).reshaped(rows, rowBytes)
+                    continue
+                }
+                if name == "decoder.prediction.dec_rnn.lstm.0.bias" {
+                    source["decoder.lstm.bias_ih_l0"] = value * 0.5
+                    source["decoder.lstm.bias_hh_l0"] = value * 0.5
+                    continue
+                }
+                let mappings = [
+                    ("encoder.pre_encode.conv0", "encoder.subsampling.layers.0"),
+                    ("encoder.pre_encode.out", "encoder.subsampling.linear"),
+                    (".conv.batch_norm.", ".conv.norm."),
+                    (".self_attn.linear_q", ".self_attn.q_proj"), (".self_attn.linear_k", ".self_attn.k_proj"),
+                    (".self_attn.linear_v", ".self_attn.v_proj"), (".self_attn.linear_out", ".self_attn.o_proj"),
+                    (".self_attn.linear_pos", ".self_attn.relative_k_proj"),
+                    (".self_attn.posBiasU", ".self_attn.bias_u"), (".self_attn.posBiasV", ".self_attn.bias_v"),
+                    ("decoder.prediction.embed.", "decoder.embedding."),
+                    ("decoder.prediction.dec_rnn.lstm.0.Wx", "decoder.lstm.weight_ih_l0"),
+                    ("decoder.prediction.dec_rnn.lstm.0.Wh", "decoder.lstm.weight_hh_l0"),
+                    ("joint.pred.", "decoder.decoder_projector."), ("joint.enc.", "encoder_projector."),
+                    ("joint.joint_net.", "joint.head."),
+                ]
+                for (old, new) in mappings { target = target.replacingOccurrences(of: old, with: new) }
+                if target.hasSuffix(".weight") {
+                    if value.ndim == 3 { value = value.transposed(0, 2, 1) }
+                    if value.ndim == 4 { value = value.transposed(0, 3, 1, 2) }
+                }
+                source[target] = value
+            }
+            source["encoder.layers.0.conv.norm.num_batches_tracked"] = MLXArray(Int64(0))
+            for layer in ["proj", "ctx", "out"] {
+                for parameter in ["weight", "bias"] { source["vad_head.\(layer).\(parameter)"] = MLXArray.zeros([1]) }
+            }
+            var config = tinyConfig
+            config.removeValue(forKey: "redux_weight_format")
+            try JSONSerialization.data(withJSONObject: config).write(to: directory.appendingPathComponent("config.json"))
+            let manifest: [String: Any] = ["format": "thrush-ternary-v2", "names": "hf",
+                "quant": ["mode": "ternary", "group_size": 128],
+                "packing": ["base": 3, "elements_per_byte": 5, "code_offset": 1],
+                "quantized_modules": projections.map {
+                    ["name": "encoder.layers.0." + $0.0, "out_features": $0.2[0], "in_features": $0.2[1],
+                     "group_size": 128, "has_bias": false, "as_conv1d": $0.0.hasPrefix("conv.")]
+                }]
+            try JSONSerialization.data(withJSONObject: manifest).write(to: directory.appendingPathComponent("ternary.json"))
+            try MLX.save(arrays: source, url: file)
+            return directory
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
+    }
+
+    @Test func ternaryRepackingPreservesCodesAcrossByteAndWordBoundaries() throws {
+        let rows = 3, columns = 128, rowBytes = (columns + 4) / 5
+        let powers = [1, 3, 9, 27, 81]
+        var bytes = [UInt8](repeating: 0, count: rows * rowBytes)
+        var expected = [UInt32](repeating: 0, count: rows * columns / 16)
+        for row in 0..<rows {
+            for column in 0..<rowBytes * 5 {
+                let code = (row + column) % 3
+                bytes[row * rowBytes + column / 5] += UInt8(code * powers[column % 5])
+                if column < columns { expected[row * (columns / 16) + column / 16] |= UInt32(code) << (2 * (column % 16)) }
+            }
+        }
+        let packed = try ParakeetReduxConfig.repackTernary(MLXArray(bytes).reshaped(rows, rowBytes), inputDimensions: columns)
+        #expect(packed.dtype == .uint32)
+        #expect(packed.asArray(UInt32.self) == expected)
+        bytes[0] = 243
+        #expect(throws: STTError.self) {
+            try ParakeetReduxConfig.repackTernary(MLXArray(bytes).reshaped(rows, rowBytes), inputDimensions: columns)
+        }
+    }
+
+    @Test func publishedWeightsMatchPreparedWeightsExactly() async throws {
+        let source = try publishedCheckpoint(), prepared = try checkpoint()
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: prepared)
+        }
+        let model = try #require(try await STT.loadModel(modelRepo: source.path) as? ParakeetModel)
+        let expected = try ParakeetModel.fromDirectory(prepared)
+        let actualWeights = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
+        let expectedWeights = Dictionary(uniqueKeysWithValues: expected.parameters().flattened())
+        #expect(Set(actualWeights.keys) == Set(expectedWeights.keys))
+        for (name, actual) in actualWeights {
+            let reference = try #require(expectedWeights[name])
+            #expect(actual.shape == reference.shape)
+            #expect(actual.dtype == reference.dtype)
+            #expect(MLX.all(actual .== reference).item(Bool.self), "\(name)")
+        }
+        #expect(model.generate(audio: MLXArray.ones([1600])).text.isEmpty)
+    }
+
+    @Test func rejectsUnsupportedManifestPacking() throws {
+        let directory = try publishedCheckpoint()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("ternary.json")
+        var manifest = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        manifest["packing"] = ["base": 2, "elements_per_byte": 5, "code_offset": 1]
+        try JSONSerialization.data(withJSONObject: manifest).write(to: file)
+        #expect(throws: STTError.self) { try ParakeetModel.fromDirectory(directory) }
+    }
+
     @Test func preparedWeightsLoadThroughSharedModelType() async throws {
         let directory = try checkpoint()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -148,11 +276,11 @@ struct ParakeetReduxTests {
         #expect(trace.values.allSatisfy { $0 == 0 })
     }
 
-    @Test func rejectsUnpreparedWeightsAndInvalidVocabulary() throws {
+    @Test func rejectsUnknownFormatsAndInvalidVocabulary() throws {
         let directory = try checkpoint()
         defer { try? FileManager.default.removeItem(at: directory) }
         var invalid = tinyConfig
-        invalid.removeValue(forKey: "redux_weight_format")
+        invalid["redux_weight_format"] = "unknown"
         #expect(throws: STTError.self) { try ParakeetReduxConfig.decode(JSONSerialization.data(withJSONObject: invalid)) }
         let tokenizer: [String: Any] = ["model": ["vocab": ["hello": 0, "world": 2]], "added_tokens": [["content": "<blank>", "id": 3]]]
         try JSONSerialization.data(withJSONObject: tokenizer).write(to: directory.appendingPathComponent("tokenizer.json"))

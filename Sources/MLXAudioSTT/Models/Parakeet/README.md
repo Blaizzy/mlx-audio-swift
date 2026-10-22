@@ -15,9 +15,7 @@ derivative of NVIDIA's Parakeet TDT 0.6B v3.
 - [mlx-community/parakeet-rnnt-0.6b](https://huggingface.co/mlx-community/parakeet-rnnt-0.6b)
 - [mlx-community/parakeet-rnnt-1.1b](https://huggingface.co/mlx-community/parakeet-rnnt-1.1b)
 - [mlx-community/parakeet-tdt_ctc-110m](https://huggingface.co/mlx-community/parakeet-tdt_ctc-110m)
-
-- Parakeet Redux: [moondream/parakeet-redux](https://huggingface.co/moondream/parakeet-redux),
-  using an MLX 2-bit checkpoint prepared by Python `mlx-audio`.
+- [moondream/parakeet-redux](https://huggingface.co/moondream/parakeet-redux)
 
 ## CLI Example
 
@@ -29,11 +27,11 @@ mlx-audio-swift-stt \
   --format txt
 ```
 
-For a local Parakeet Redux checkpoint:
+For Parakeet Redux:
 
 ```bash
 mlx-audio-swift-stt \
-  --model ./parakeet-redux-mlx \
+  --model moondream/parakeet-redux \
   --audio audio.wav \
   --output-path transcript \
   --format txt
@@ -52,14 +50,14 @@ let output = model.generate(audio: audio)
 print(output.text)
 ```
 
-For a local Parakeet Redux checkpoint:
+For Parakeet Redux:
 
 ```swift
 import Foundation
 import MLXAudioCore
 import MLXAudioSTT
 
-let model = try ParakeetModel.fromDirectory(URL(fileURLWithPath: "parakeet-redux-mlx"))
+let model = try await ParakeetModel.fromPretrained("moondream/parakeet-redux")
 let (_, audio) = try loadAudioArray(from: URL(fileURLWithPath: "audio.wav"), sampleRate: 16000)
 print(model.generate(audio: audio).text)
 ```

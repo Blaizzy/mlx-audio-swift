@@ -982,6 +982,7 @@ public extension ParakeetModel {
         let redux = object?["ternary_modules"] != nil ? try ParakeetReduxConfig.decode(configData) : nil
         let rawConfig = try redux?.modelConfig(tokenizerAt: modelDir.appendingPathComponent("tokenizer.json"))
             ?? JSONDecoder().decode(ParakeetRawConfig.self, from: configData)
+        try redux?.validateManifest(in: modelDir)
         let quantConfig = try JSONDecoder().decode(ParakeetQuantizationConfig.self, from: configData)
         let phonon2 = object?["model_type"] as? String == "phonon2"
             ? try JSONDecoder().decode(Phonon2Config.self, from: configData) : nil
@@ -1065,7 +1066,8 @@ public extension ParakeetModel {
                 }
             }
         }
-        let sanitized = sanitize(weights: weights, variant: model.variant)
+        let adapted = try redux?.sanitize(weights) ?? weights
+        let sanitized = sanitize(weights: adapted, variant: model.variant)
 
         if let redux { try redux.configure(model, weights: sanitized) }
         if phonon2 == nil, redux == nil, let perLayerQuant = quantConfig.perLayerQuantization {
