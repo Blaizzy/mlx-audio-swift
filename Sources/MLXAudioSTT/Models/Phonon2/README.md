@@ -32,18 +32,6 @@ let result = model.generate(audio: audio)
 print(result.text)
 ```
 
-## Python Example
-
-Using the Python `mlx-audio` library:
-
-```python
-from mlx_audio.stt import load
-
-model = load("mlx-community/Phonon-2")
-result = model.generate("audio.wav", chunk_duration=30, overlap_duration=2)
-print(result.text)
-```
-
 ## License
 
 Model weights derive from NVIDIA Parakeet TDT 0.6B v3 and are licensed under
