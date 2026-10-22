@@ -57,6 +57,5 @@ swift run mlx-audio-swift-stt \
 - `--gen-kwargs`: Extra generation kwargs JSON
 - `--text`: Required for forced aligner models
 - `--frame-threshold`: Compatibility flag (currently unused)
-- `--context`: Compatibility flag (currently unused)
 - `--prefill-step-size`: Compatibility flag (currently unused)
 - `--help`, `-h`: Show help
