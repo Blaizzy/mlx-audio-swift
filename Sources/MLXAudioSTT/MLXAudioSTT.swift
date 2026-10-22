@@ -63,8 +63,7 @@ public enum STT {
 
         switch resolved {
         case "higgs_audio_3":
-            if let directory { return try await HiggsAudio3Model.fromModelDirectory(directory) }
-            return try await HiggsAudio3Model.fromPretrained(modelRepo, cache: cache)
+            return try await HiggsAudio3Model.fromPretrained(directory?.path ?? modelRepo, cache: cache)
         case "phonon2", "phonon_2":
             return try await Phonon2Model.fromPretrained(modelRepo, cache: cache)
         case "moss_transcribe_diarize":
