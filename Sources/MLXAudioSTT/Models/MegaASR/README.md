@@ -51,15 +51,3 @@ let result = try model.transcribe(
 )
 print(result.text)
 ```
-
-## Python Example
-
-Using the Python `mlx-audio` library:
-
-```python
-from mlx_audio.stt import load
-
-model = load("mlx-community/Mega-ASR-bf16")
-result = model.generate("audio.wav", language="English")
-print(result.text)
-```
