@@ -12,6 +12,16 @@ import MLXNN
 
 typealias IrodoriKVCache = (keys: MLXArray, values: MLXArray)
 
+/// Output of `IrodoriDiT.encodeConditionsFull`, shared by duration prediction and sampling.
+typealias IrodoriEncodedConditions = (
+    textState: MLXArray,
+    textMask: MLXArray,
+    speakerState: MLXArray?,
+    speakerMask: MLXArray?,
+    captionState: MLXArray?,
+    captionMask: MLXArray?
+)
+
 // MARK: - Helpers
 
 /// Convert boolean mask (B, Sq, Sk) to additive float mask (B, 1, Sq, Sk).
@@ -284,6 +294,65 @@ final class IrodoriTextEncoder: Module {
             }
             return x
         }
+    }
+}
+
+/// Thin wrapper around the pretrained encoder shared by the text and caption
+/// projectors (v4: ModernBERT-ja-310m). Keeps the checkpoint's
+/// `pretrained_text_backbone.backbone.*` key layout.
+final class IrodoriPretrainedTextBackbone: Module {
+    let hiddenSize: Int
+
+    @ModuleInfo(key: "backbone") var backbone: IrodoriModernBertEncoder
+
+    init(config: IrodoriModernBertConfig) throws {
+        // v4-Large's T5Gemma2 encoder is not ported.
+        guard config.modelType.trimmingCharacters(in: .whitespaces).lowercased() != "t5gemma2" else {
+            throw IrodoriTTSError.generation("Irodori-TTS v4-Large (T5Gemma2 text encoder) is not supported")
+        }
+        self.hiddenSize = config.hiddenSize
+        self._backbone = ModuleInfo(wrappedValue: try IrodoriModernBertEncoder(config: config))
+    }
+
+    func callAsFunction(_ inputIDs: MLXArray, mask: MLXArray?) -> MLXArray {
+        let state = backbone(inputIDs, mask: mask)
+        guard let mask else { return state }
+        return state * mask.expandedDimensions(axis: -1).asType(state.dtype)
+    }
+}
+
+/// Projects the shared pretrained backbone output into a condition space (v4).
+/// `linear` is a plain projection; `residual_mlp` adds a SiLU residual branch on top.
+final class IrodoriPretrainedConditionProjector: Module {
+    let isResidualMLP: Bool
+
+    @ModuleInfo(key: "projector") var projector: Linear
+    @ModuleInfo(key: "residual_norm") var residualNorm: EchoRMSNorm?
+    @ModuleInfo(key: "residual_up") var residualUp: Linear?
+    @ModuleInfo(key: "residual_down") var residualDown: Linear?
+
+    init(backboneDim: Int, outputDim: Int, projectorType: String, hiddenRatio: Float, normEps: Float) throws {
+        let type = projectorType.trimmingCharacters(in: .whitespaces).lowercased()
+        guard type == "linear" || type == "residual_mlp" else {
+            throw IrodoriTTSError.generation(
+                "pretrained projector type must be 'linear' or 'residual_mlp', got \(projectorType)")
+        }
+        self.isResidualMLP = type == "residual_mlp"
+        self._projector = ModuleInfo(wrappedValue: Linear(backboneDim, outputDim, bias: true))
+        let hiddenDim = max(1, Int((Float(outputDim) * hiddenRatio).rounded()))
+        self._residualNorm = ModuleInfo(wrappedValue: isResidualMLP ? EchoRMSNorm(dimensions: backboneDim, eps: normEps) : nil)
+        self._residualUp = ModuleInfo(wrappedValue: isResidualMLP ? Linear(backboneDim, hiddenDim, bias: true) : nil)
+        self._residualDown = ModuleInfo(wrappedValue: isResidualMLP ? Linear(hiddenDim, outputDim, bias: true) : nil)
+    }
+
+    /// `state` is the (masked) backbone output, shared between the text and caption projectors.
+    func callAsFunction(_ state: MLXArray, mask: MLXArray?) -> MLXArray {
+        var projected = projector(state)
+        if let residualNorm, let residualUp, let residualDown {
+            projected = projected + residualDown(silu(residualUp(residualNorm(state))))
+        }
+        guard let mask else { return projected }
+        return projected * mask.expandedDimensions(axis: -1).asType(projected.dtype)
     }
 }
 
@@ -658,14 +727,20 @@ public final class IrodoriDiT: Module {
     let cfg: IrodoriDiTConfig
     let headDim: Int
 
-    @ModuleInfo(key: "text_encoder") var textEncoder: IrodoriTextEncoder
+    /// v4 only: the ModernBERT backbone shared by the text and caption projectors.
+    @ModuleInfo(key: "pretrained_text_backbone") var pretrainedTextBackbone: IrodoriPretrainedTextBackbone?
+    /// `IrodoriTextEncoder` (v1–v3) or `IrodoriPretrainedConditionProjector` (v4).
+    @ModuleInfo(key: "text_encoder") var textEncoder: Module
     @ModuleInfo(key: "text_norm") var textNorm: EchoRMSNorm
     @ModuleInfo(key: "speaker_encoder") var speakerEncoder: IrodoriReferenceLatentEncoder?
     @ModuleInfo(key: "speaker_norm") var speakerNorm: EchoRMSNorm?
-    @ModuleInfo(key: "caption_encoder") var captionEncoder: IrodoriTextEncoder?
+    /// Same split as `textEncoder`.
+    @ModuleInfo(key: "caption_encoder") var captionEncoder: Module?
     @ModuleInfo(key: "caption_norm") var captionNorm: EchoRMSNorm?
     @ModuleInfo(key: "duration_predictor") var durationPredictor: IrodoriDurationPredictor?
     @ModuleInfo(key: "cond_module") var condModule: EchoSequential
+    /// MeanFlow only: interval-length (delta_t = t - r) conditioning, added to cond_module's output.
+    @ModuleInfo(key: "delta_cond_module") var deltaCondModule: EchoSequential?
     @ModuleInfo(key: "in_proj") var inProj: Linear
     @ModuleInfo(key: "blocks") var blocks: [IrodoriDiffusionBlock]
     @ModuleInfo(key: "out_norm") var outNorm: EchoRMSNorm
@@ -675,14 +750,39 @@ public final class IrodoriDiT: Module {
         self.cfg = cfg
         self.headDim = cfg.modelDim / cfg.numHeads
 
-        self._textEncoder = ModuleInfo(wrappedValue: IrodoriTextEncoder(
-            vocabSize: cfg.textVocabSize,
-            dim: cfg.textDim,
-            heads: cfg.textHeads,
-            numLayers: cfg.textLayers,
-            mlpRatio: cfg.textMlpRatioResolved,
-            normEps: cfg.normEps
-        ))
+        let flow = cfg.flowParameterization.trimmingCharacters(in: .whitespaces).lowercased()
+        guard flow == "rf_velocity" || flow == "meanflow" else {
+            throw IrodoriTTSError.generation(
+                "flow_parameterization must be 'rf_velocity' or 'meanflow', got \(cfg.flowParameterization)")
+        }
+
+        var backboneDim: Int?
+        if cfg.usePretrainedTextEncoder {
+            guard let encoderConfig = cfg.textEncoderConfig else {
+                throw IrodoriTTSError.generation(
+                    "text_encoder_type='pretrained' requires text_encoder_config in the model config")
+            }
+            let backbone = try IrodoriPretrainedTextBackbone(config: encoderConfig)
+            backboneDim = backbone.hiddenSize
+            self._pretrainedTextBackbone = ModuleInfo(wrappedValue: backbone)
+            self._textEncoder = ModuleInfo(wrappedValue: try IrodoriPretrainedConditionProjector(
+                backboneDim: backbone.hiddenSize,
+                outputDim: cfg.textDim,
+                projectorType: cfg.pretrainedProjectorType,
+                hiddenRatio: cfg.pretrainedProjectorHiddenRatio,
+                normEps: cfg.normEps
+            ))
+        } else {
+            self._pretrainedTextBackbone = ModuleInfo(wrappedValue: nil)
+            self._textEncoder = ModuleInfo(wrappedValue: IrodoriTextEncoder(
+                vocabSize: cfg.textVocabSize,
+                dim: cfg.textDim,
+                heads: cfg.textHeads,
+                numLayers: cfg.textLayers,
+                mlpRatio: cfg.textMlpRatioResolved,
+                normEps: cfg.normEps
+            ))
+        }
         self._textNorm = ModuleInfo(wrappedValue: EchoRMSNorm(dimensions: cfg.textDim, eps: cfg.normEps))
 
         var speakerCtxDim: Int?
@@ -705,14 +805,29 @@ public final class IrodoriDiT: Module {
         }
 
         if cfg.useCaptionCondition {
-            self._captionEncoder = ModuleInfo(wrappedValue: IrodoriTextEncoder(
-                vocabSize: cfg.captionVocabSizeResolved,
-                dim: cfg.captionDimResolved,
-                heads: cfg.captionHeadsResolved,
-                numLayers: cfg.captionLayersResolved,
-                mlpRatio: cfg.captionMlpRatioResolved,
-                normEps: cfg.normEps
-            ))
+            if let backboneDim {
+                guard cfg.captionTokenizerRepoResolved == cfg.textTokenizerRepo else {
+                    throw IrodoriTTSError.generation(
+                        "A shared pretrained text/caption encoder requires identical tokenizer repositories: "
+                            + "text=\(cfg.textTokenizerRepo), caption=\(cfg.captionTokenizerRepoResolved)")
+                }
+                self._captionEncoder = ModuleInfo(wrappedValue: try IrodoriPretrainedConditionProjector(
+                    backboneDim: backboneDim,
+                    outputDim: cfg.captionDimResolved,
+                    projectorType: cfg.pretrainedProjectorType,
+                    hiddenRatio: cfg.pretrainedProjectorHiddenRatio,
+                    normEps: cfg.normEps
+                ))
+            } else {
+                self._captionEncoder = ModuleInfo(wrappedValue: IrodoriTextEncoder(
+                    vocabSize: cfg.captionVocabSizeResolved,
+                    dim: cfg.captionDimResolved,
+                    heads: cfg.captionHeadsResolved,
+                    numLayers: cfg.captionLayersResolved,
+                    mlpRatio: cfg.captionMlpRatioResolved,
+                    normEps: cfg.normEps
+                ))
+            }
             self._captionNorm = ModuleInfo(wrappedValue: EchoRMSNorm(dimensions: cfg.captionDimResolved, eps: cfg.normEps))
             captionCtxDim = cfg.captionDimResolved
         } else {
@@ -743,6 +858,13 @@ public final class IrodoriDiT: Module {
             SiLU(),
             Linear(cfg.modelDim, cfg.modelDim * 3, bias: false),
         ]))
+        self._deltaCondModule = ModuleInfo(wrappedValue: cfg.useMeanflow ? EchoSequential([
+            Linear(cfg.timestepEmbedDim, cfg.modelDim, bias: false),
+            SiLU(),
+            Linear(cfg.modelDim, cfg.modelDim, bias: false),
+            SiLU(),
+            Linear(cfg.modelDim, cfg.modelDim * 3, bias: false),
+        ]) : nil)
 
         self._inProj = ModuleInfo(wrappedValue: Linear(cfg.patchedLatentDim, cfg.modelDim, bias: true))
         let mlpHidden = Int(Float(cfg.modelDim) * cfg.mlpRatio)
@@ -764,6 +886,14 @@ public final class IrodoriDiT: Module {
 
     // MARK: Condition encoding (cached across sampling steps)
 
+    /// v4: one backbone pass per input, then the text or caption projector.
+    private func encodeWithProjector(_ projector: Module, _ inputIDs: MLXArray, mask: MLXArray?) -> MLXArray {
+        if let pretrainedTextBackbone, let projector = projector as? IrodoriPretrainedConditionProjector {
+            return projector(pretrainedTextBackbone(inputIDs, mask: mask), mask: mask)
+        }
+        return (projector as! IrodoriTextEncoder)(inputIDs, mask: mask)
+    }
+
     /// Encode all conditions including both speaker and caption states.
     /// Returns (textState, textMask, speakerState, speakerMask, captionState, captionMask).
     func encodeConditionsFull(
@@ -773,15 +903,8 @@ public final class IrodoriDiT: Module {
         refMask: MLXArray?,
         captionInputIDs: MLXArray?,
         captionMask: MLXArray?
-    ) -> (
-        textState: MLXArray,
-        textMask: MLXArray,
-        speakerState: MLXArray?,
-        speakerMask: MLXArray?,
-        captionState: MLXArray?,
-        captionMask: MLXArray?
-    ) {
-        let textState = textNorm(textEncoder(textInputIDs, mask: textMask))
+    ) -> IrodoriEncodedConditions {
+        let textState = textNorm(encodeWithProjector(textEncoder, textInputIDs, mask: textMask))
 
         var speakerState: MLXArray?
         var speakerMaskOut: MLXArray?
@@ -808,7 +931,7 @@ public final class IrodoriDiT: Module {
         var captionMaskOut: MLXArray?
         if cfg.useCaptionCondition, let captionEncoder, let captionNorm {
             if let captionInputIDs, let captionMask {
-                captionState = captionNorm(captionEncoder(captionInputIDs, mask: captionMask))
+                captionState = captionNorm(encodeWithProjector(captionEncoder, captionInputIDs, mask: captionMask))
                 captionMaskOut = captionMask
             }
         }
@@ -883,6 +1006,8 @@ public final class IrodoriDiT: Module {
     /// For caption-only models: speakerState/Mask carry the caption context
     /// (backward-compat; internally routed to the caption branch).
     /// For dual models (v3 VoiceDesign): speakerState=speaker, captionState=caption.
+    /// `deltaT` (interval length t - r) is required for MeanFlow checkpoints and
+    /// rejected for standard RF-velocity checkpoints.
     func forwardWithConditions(
         xT: MLXArray,
         t: MLXArray,
@@ -895,10 +1020,21 @@ public final class IrodoriDiT: Module {
         startPos: Int = 0,
         captionState: MLXArray? = nil,
         captionMask: MLXArray? = nil,
-        kvCaption: [IrodoriKVCache]? = nil
+        kvCaption: [IrodoriKVCache]? = nil,
+        deltaT: MLXArray? = nil
     ) throws -> MLXArray {
         let tEmbed = echoTtsTimestepEmbedding(t, embedSize: cfg.timestepEmbedDim).asType(xT.dtype)
-        let condEmbed = condModule(tEmbed).expandedDimensions(axis: 1) // (B, 1, 3*modelDim)
+        var condEmbed = condModule(tEmbed)
+        if let deltaCondModule {
+            guard let deltaT else {
+                throw IrodoriTTSError.generation("deltaT is required for a MeanFlow forward pass.")
+            }
+            let deltaEmbed = echoTtsTimestepEmbedding(deltaT, embedSize: cfg.timestepEmbedDim).asType(xT.dtype)
+            condEmbed = condEmbed + deltaCondModule(deltaEmbed)
+        } else if deltaT != nil {
+            throw IrodoriTTSError.generation("deltaT was provided to an RF velocity model.")
+        }
+        condEmbed = condEmbed.expandedDimensions(axis: 1) // (B, 1, 3*modelDim)
 
         var x = inProj(xT)
         let freqs = echoTtsPrecomputeFreqsCis(dim: headDim, end: startPos + x.shape[1])

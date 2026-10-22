@@ -66,12 +66,15 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
 
         var generated: [Int] = []
         let decodeStart = Date()
+        var prediction = evalPrediction(context.logits, temperature: generationParameters.temperature)
 
         for pos in context.promptLength..<context.nAudioTotal {
-            let token = sample(logits: context.logits, temperature: generationParameters.temperature)
+            let token = readToken(prediction, temperature: generationParameters.temperature)
             generated.append(token)
 
-            if token == config.eosTokenId || generated.count > generationParameters.maxTokens {
+            // After the last position nothing reads the next prediction.
+            if token == config.eosTokenId || generated.count > generationParameters.maxTokens
+                || pos + 1 == context.nAudioTotal {
                 break
             }
 
@@ -89,9 +92,9 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
                 cache: context.cache
             )
             context.cache = next.1
-            context.logits = decoder.logits(next.0[0])
-
-            eval(context.logits)
+            prediction = evalPrediction(
+                decoder.logits(next.0[0]), temperature: generationParameters.temperature
+            )
             if generated.count % 256 == 0 {
                 Memory.clearCache()
             }
@@ -212,29 +215,29 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
             )
 
             var generated: [Int] = []
-            var previousText = ""
+            // Appends each token's bytes, so a delta costs O(1) instead of re-decoding
+            // the whole transcript.
+            var transcript = VoxtralRealtimeTranscriptText()
             let decodeStart = Date()
+            var prediction = self.evalPrediction(
+                context.logits, temperature: generationParameters.temperature
+            )
 
             for pos in context.promptLength..<context.nAudioTotal {
-                let token = sample(logits: context.logits, temperature: generationParameters.temperature)
+                let token = readToken(prediction, temperature: generationParameters.temperature)
                 generated.append(token)
 
-                let filtered = generated.filter { $0 != config.eosTokenId }
-                let textSoFar = tokenizer?.decode(tokenIds: filtered) ?? ""
-                if textSoFar != previousText {
-                    let delta: String
-                    if textSoFar.hasPrefix(previousText) {
-                        delta = String(textSoFar.dropFirst(previousText.count))
-                    } else {
-                        delta = textSoFar
-                    }
+                if token != config.eosTokenId {
+                    let mark = transcript.mark
+                    transcript.append(streamingTokenBytes(token))
+                    let delta = transcript.delta(since: mark)
                     if !delta.isEmpty {
                         continuation.yield(.token(delta))
                     }
-                    previousText = textSoFar
                 }
 
-                if token == config.eosTokenId || generated.count > generationParameters.maxTokens {
+                if token == config.eosTokenId || generated.count > generationParameters.maxTokens
+                    || pos + 1 == context.nAudioTotal {
                     break
                 }
 
@@ -252,9 +255,9 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
                     cache: context.cache
                 )
                 context.cache = next.1
-                context.logits = decoder.logits(next.0[0])
-
-                eval(context.logits)
+                prediction = evalPrediction(
+                    decoder.logits(next.0[0]), temperature: generationParameters.temperature
+                )
                 if generated.count % 256 == 0 {
                     Memory.clearCache()
                 }
@@ -467,6 +470,26 @@ extension VoxtralRealtimeModel {
         tokenizer?.tokenBytes(for: tokenId) ?? []
     }
 
+    /// Evaluates what `readToken` needs. At temperature 0 that is the argmax, so each
+    /// token syncs once and the full-vocab logits are not kept.
+    func evalPrediction(_ logits: MLXArray, temperature: Float) -> MLXArray {
+        let prediction: MLXArray
+        if temperature == 0 {
+            prediction = logits.argMax(axis: -1)
+        } else {
+            prediction = logits
+        }
+        eval(prediction)
+        return prediction
+    }
+
+    /// Above temperature 0 this samples, so RNG draws happen in the same order as before.
+    func readToken(_ prediction: MLXArray, temperature: Float) -> Int {
+        temperature == 0
+            ? prediction.item(Int.self)
+            : sample(logits: prediction, temperature: temperature)
+    }
+
     func sample(logits: MLXArray, temperature: Float) -> Int {
         let logits1D: MLXArray
         if logits.ndim > 1 {
@@ -536,7 +559,10 @@ public extension VoxtralRealtimeModel {
         return model
     }
 
-    static func fromPretrained(_ modelPath: String) async throws -> VoxtralRealtimeModel {
+    static func fromPretrained(
+        _ modelPath: String,
+        cache: HubCache = .default
+    ) async throws -> VoxtralRealtimeModel {
         let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
             ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
 
@@ -551,7 +577,8 @@ public extension VoxtralRealtimeModel {
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
             requiredExtension: "safetensors",
-            hfToken: hfToken
+            hfToken: hfToken,
+            cache: cache
         )
 
         return try fromDirectory(modelDir)

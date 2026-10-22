@@ -547,7 +547,8 @@ public final class Wav2Vec2CTCModel: Module, STTGenerationModel {
 
     public static func fromPretrained(
         _ modelName: String,
-        language: String? = nil
+        language: String? = nil,
+        cache: HubCache = .default
     ) async throws -> Wav2Vec2CTCModel {
         let expanded = (modelName as NSString).expandingTildeInPath
         if FileManager.default.fileExists(atPath: expanded) {
@@ -565,7 +566,8 @@ public final class Wav2Vec2CTCModel: Module, STTGenerationModel {
             repoID: repoID,
             requiredExtension: "safetensors",
             additionalMatchingPatterns: ["*.json"],
-            hfToken: hfToken
+            hfToken: hfToken,
+            cache: cache
         )
         return try fromModelDirectory(modelDir, language: language)
     }

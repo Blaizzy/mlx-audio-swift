@@ -458,7 +458,10 @@ public final class MoonshineModel: Module, STTGenerationModel {
         return sanitized
     }
 
-    public static func fromPretrained(_ modelName: String) async throws -> MoonshineModel {
+    public static func fromPretrained(
+        _ modelName: String,
+        cache: HubCache = .default
+    ) async throws -> MoonshineModel {
         let expanded = (modelName as NSString).expandingTildeInPath
         if FileManager.default.fileExists(atPath: expanded) {
             return try await fromModelDirectory(URL(fileURLWithPath: expanded))
@@ -475,7 +478,8 @@ public final class MoonshineModel: Module, STTGenerationModel {
             repoID: repoID,
             requiredExtension: "safetensors",
             additionalMatchingPatterns: ["*.json", "tokenizer.*"],
-            hfToken: hfToken
+            hfToken: hfToken,
+            cache: cache
         )
         return try await fromModelDirectory(modelDir)
     }

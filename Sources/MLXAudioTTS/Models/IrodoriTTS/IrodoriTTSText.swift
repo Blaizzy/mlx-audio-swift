@@ -78,6 +78,103 @@ func irodoriNormalizeText(_ input: String) -> String {
     return text
 }
 
+// MARK: - Upstream text normalisation (v4)
+// Exact port of the current mlx_audio text.py `normalize_text`, which mirrors
+// Irodori-TTS/irodori_tts/text_normalization.py step for step (keeps 。/、, folds
+// "..", NFKC, depth-aware outer-bracket stripping). v1–v3 keep `irodoriNormalizeText`
+// above so their output does not change.
+
+private let irodoriUpstreamSimpleReplacements: [(String, String)] = [
+    ("\t", ""),
+    ("[n]", ""),
+    ("\\[n\\]", ""),
+    ("\u{3000}", ""),  // ideographic space
+    ("？", "?"),
+    ("！", "!"),
+    ("♥", "♡"),
+    ("●", "○"),
+    ("◯", "○"),
+    ("〇", "○"),
+]
+
+private let irodoriUpstreamRegexReplacements: [(NSRegularExpression, String)] = [
+    ("[;▼♀♂《》≪≫①②③④⑤⑥]", ""),
+    ("[\u{02d7}\u{2010}-\u{2015}\u{2043}\u{2212}\u{23af}\u{23e4}\u{2500}\u{2501}\u{2e3a}\u{2e3b}]", ""),
+    ("[\u{ff5e}\u{301C}]", "ー"),
+    ("…{3,}", "……"),
+].map { (try! NSRegularExpression(pattern: $0.0), $0.1) }
+
+private let irodoriBracketPairs: [Unicode.Scalar: Unicode.Scalar] = [
+    "「": "」", "『": "』", "（": "）", "【": "】", "(": ")",
+]
+
+/// Remove bracket pairs that enclose the whole string, repeatedly. Depth tracking
+/// matters: in 「前半」と「後半」 the leading 「 closes before the end, so nothing is stripped.
+/// Works on Unicode scalars, like Python's code-point string indexing.
+func irodoriStripOuterBrackets(_ input: String) -> String {
+    var text = Array(input.unicodeScalars)
+    while text.count >= 2, let close = irodoriBracketPairs[text[0]], close == text[text.count - 1] {
+        let open = text[0]
+        var depth = 0
+        var enclosesAll = true
+        for (i, c) in text.enumerated() {
+            if c == open { depth += 1 } else if c == close { depth -= 1 }
+            if depth == 0 && i < text.count - 1 {
+                enclosesAll = false
+                break
+            }
+        }
+        guard enclosesAll && depth == 0 else { break }
+        text = Array(text[1 ..< text.count - 1])
+    }
+    var view = String.UnicodeScalarView()
+    view.append(contentsOf: text)
+    return String(view)
+}
+
+/// Normalise Japanese text for v4 TTS input (callers strip the result, as upstream does).
+func irodoriNormalizeTextUpstream(_ input: String) -> String {
+    var text = input
+    for (old, new) in irodoriUpstreamSimpleReplacements {
+        text = text.replacingOccurrences(of: old, with: new, options: .literal)
+    }
+    for (regex, replacement) in irodoriUpstreamRegexReplacements {
+        let range = NSRange(text.startIndex..., in: text)
+        text = regex.stringByReplacingMatches(in: text, range: range, withTemplate: replacement)
+    }
+    text = irodoriStripOuterBrackets(text)
+    // NFKC as NFKD + NFC: Foundation's one-step NFKC leaves halfwidth voiced kana
+    // (ｷﾞ) decomposed, while Python's unicodedata composes them (ギ).
+    text = text.decomposedStringWithCompatibilityMapping.precomposedStringWithCanonicalMapping
+    text = text.replacingOccurrences(of: "...", with: "…", options: .literal)
+    text = text.replacingOccurrences(of: "..", with: "…", options: .literal)
+    return text
+}
+
+/// Python's `str.isspace()` set (Foundation's whitespace set lacks U+001C–U+001F).
+private let irodoriPythonWhitespace: Set<Unicode.Scalar> = {
+    var set = Set<Unicode.Scalar>()
+    for v: UInt32 in [0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x85, 0xA0, 0x1680,
+                      0x2028, 0x2029, 0x202F, 0x205F, 0x3000] {
+        set.insert(Unicode.Scalar(v)!)
+    }
+    for v: UInt32 in 0x2000 ... 0x200A { set.insert(Unicode.Scalar(v)!) }
+    return set
+}()
+
+extension String {
+    /// Python `str.strip()` with no arguments.
+    func irodoriPythonStripped() -> String {
+        let scalars = Array(unicodeScalars)
+        guard let first = scalars.firstIndex(where: { !irodoriPythonWhitespace.contains($0) }),
+              let last = scalars.lastIndex(where: { !irodoriPythonWhitespace.contains($0) })
+        else { return "" }
+        var view = String.UnicodeScalarView()
+        view.append(contentsOf: scalars[first ... last])
+        return String(view)
+    }
+}
+
 // MARK: - Tokenisation
 
 /// Tokenise a single string with an HF tokenizer, mirroring Irodori's
