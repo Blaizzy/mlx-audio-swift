@@ -62,6 +62,8 @@ public enum STT {
         }
 
         switch resolved {
+        case "phonon2", "phonon_2":
+            return try await Phonon2Model.fromPretrained(modelRepo, cache: cache)
         case "moss_transcribe_diarize":
             if let directory { return try await MossTranscribeDiarizeModel.fromModelDirectory(directory) }
             return try await MossTranscribeDiarizeModel.fromPretrained(modelRepo, cache: cache)
@@ -132,6 +134,9 @@ public enum STT {
 
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
+        if lower.contains("phonon-2") || lower.contains("phonon2") || lower.contains("phonon_2") {
+            return "phonon2"
+        }
         if lower.contains("moss-transcribe-diarize") || lower.contains("moss_transcribe_diarize") {
             return "moss_transcribe_diarize"
         }
