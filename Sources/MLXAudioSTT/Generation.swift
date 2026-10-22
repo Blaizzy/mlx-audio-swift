@@ -17,6 +17,8 @@ public struct STTGenerateParameters: Sendable {
     public let kvGroupSize: Int
     /// Cache offset that must be exceeded before the KV cache is quantized.
     public let quantizedKVStart: Int
+    /// "transcribe" or "translate" (into English). Only Whisper reads it today.
+    public let task: String
 
     public init(
         maxTokens: Int = 8192,
@@ -31,7 +33,8 @@ public struct STTGenerateParameters: Sendable {
         repetitionContextSize: Int = 32,
         kvBits: Int? = nil,
         kvGroupSize: Int = 64,
-        quantizedKVStart: Int = 0
+        quantizedKVStart: Int = 0,
+        task: String = "transcribe"
     ) {
         self.maxTokens = maxTokens
         self.temperature = temperature
@@ -46,6 +49,7 @@ public struct STTGenerateParameters: Sendable {
         self.kvBits = kvBits
         self.kvGroupSize = kvGroupSize
         self.quantizedKVStart = quantizedKVStart
+        self.task = task
     }
 }
 

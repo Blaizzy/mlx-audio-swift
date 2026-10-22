@@ -4628,6 +4628,38 @@ struct WhisperTests {
     }
 }
 
+struct WhisperTranslateNetworkTests {
+
+    @Test func whisperTranslateTaskReachesThePrompt() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+            print("Skipping network Whisper translate test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+            return
+        }
+
+        let repo = env["MLXAUDIO_WHISPER_REPO"] ?? "openai/whisper-tiny"
+        let model = try await WhisperModel.fromPretrained(repo)
+        let audioURL = Bundle.module.url(
+            forResource: "conversational_fr", withExtension: "wav", subdirectory: "media"
+        )!
+        let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: 16000)
+
+        let transcribed = model.generate(
+            audio: audio,
+            generationParameters: STTGenerateParameters(language: "fr")
+        )
+        let translated = model.generate(
+            audio: audio,
+            generationParameters: STTGenerateParameters(language: "fr", task: "translate")
+        )
+
+        // Same prompt length (one task token either way), different decode.
+        #expect(translated.promptTokens == transcribed.promptTokens)
+        #expect(!translated.text.isEmpty)
+        #expect(translated.text != transcribed.text)
+    }
+}
+
 @Suite("Whisper Network Tests", .serialized)
 struct WhisperNetworkTests {
 
