@@ -33,15 +33,3 @@ let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: 16000)
 let result = try model.transcribe(audio: audio)
 print(result.text)
 ```
-
-## Python Example
-
-Using the Python `mlx-audio` library:
-
-```python
-from mlx_audio.stt import load
-
-model = load("ibm-granite/granite-speech-5.0-470m-turboctc")
-result = model.generate("audio.wav")
-print(result.text)
-```
