@@ -161,8 +161,13 @@ struct MegaASRCheckpointTests {
         let modelPath = try #require(ProcessInfo.processInfo.environment["MEGA_ASR_MODEL_DIR"])
         #expect(FileManager.default.fileExists(atPath: modelPath))
         let model = try await MegaASRModel.fromModelDirectory(URL(fileURLWithPath: modelPath))
+        let sharedModel: any STTGenerationModel = model
         #expect(throws: (any Error).self) {
-            try model.transcribe(audio: .zeros([100, 2]), routing: .base)
+            try sharedModel.generateThrowing(audio: .zeros([100, 2]))
+        }
+        #expect(throws: (any Error).self) {
+            try sharedModel.generateThrowing(
+                audio: .zeros([1600]), generationParameters: .init(kvBits: 4))
         }
         let cleanAudio = try audio(named: "conversational_a")
         var firstClean: String?
@@ -172,7 +177,7 @@ struct MegaASRCheckpointTests {
             let waveform = try audio(named: name)
             let route = try model.router.route(audio: waveform)
             #expect(route.usesLoRA == degraded)
-            let output = try model.transcribe(
+            let output = try sharedModel.generateThrowing(
                 audio: waveform,
                 generationParameters: .init(maxTokens: 256, topP: 1, language: "English"))
             #expect(!output.text.isEmpty)

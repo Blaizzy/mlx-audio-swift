@@ -57,6 +57,13 @@ public protocol STTGenerationModel: AnyObject {
         generationParameters: STTGenerateParameters
     ) -> STTOutput
 
+    /// Generates a transcription, propagating errors supported by the model.
+    /// The default implementation delegates to the nonthrowing `generate` method.
+    func generateThrowing(
+        audio: MLXArray,
+        generationParameters: STTGenerateParameters
+    ) throws -> STTOutput
+
     func generateStream(
         audio: MLXArray,
         generationParameters: STTGenerateParameters
@@ -69,6 +76,21 @@ public extension STTGenerationModel {
         generationParameters: STTGenerateParameters? = nil
     ) -> STTOutput {
         generate(audio: audio, generationParameters: generationParameters ?? defaultGenerationParameters)
+    }
+
+    func generateThrowing(
+        audio: MLXArray,
+        generationParameters: STTGenerateParameters
+    ) throws -> STTOutput {
+        generate(audio: audio, generationParameters: generationParameters)
+    }
+
+    func generateThrowing(
+        audio: MLXArray,
+        generationParameters: STTGenerateParameters? = nil
+    ) throws -> STTOutput {
+        try generateThrowing(
+            audio: audio, generationParameters: generationParameters ?? defaultGenerationParameters)
     }
 
     func generateStream(

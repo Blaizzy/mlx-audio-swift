@@ -33,13 +33,13 @@ let model = try await MegaASRModel.fromPretrained("mlx-community/Mega-ASR-bf16")
 let audioURL = URL(fileURLWithPath: "audio.wav")
 let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: 16000)
 
-let result = try model.transcribe(
+let result = try model.generateThrowing(
     audio: audio,
-    generationParameters: STTGenerateParameters(maxTokens: 512, language: "English"),
-    context: "Kaldi, Ethiopia"
+    generationParameters: STTGenerateParameters(maxTokens: 512, language: "English")
 )
 print(result.text)
 ```
 
-Routing is automatic by default. In Swift, pass `routing: .base` or
-`routing: .robust` to `transcribe` or `transcribeStream` to choose a route explicitly.
+Routing is automatic by default. Use `transcribe` or `transcribeStream` to supply
+context hints with `context:`, or choose a route with `routing: .base` or
+`routing: .robust`.

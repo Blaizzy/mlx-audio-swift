@@ -170,11 +170,17 @@ public final class MegaASRModel: STTGenerationModel {
 
     public func generate(audio: MLXArray, generationParameters: STTGenerateParameters) -> STTOutput
     {
-        do { return try transcribe(audio: audio, generationParameters: generationParameters) } catch
+        do { return try generateThrowing(audio: audio, generationParameters: generationParameters) } catch
         {
             preconditionFailure(
-                "\(error). Use MegaASRModel.transcribe() for throwing input validation.")
+                "\(error). Use generateThrowing() for throwing input validation.")
         }
+    }
+
+    public func generateThrowing(
+        audio: MLXArray, generationParameters: STTGenerateParameters
+    ) throws -> STTOutput {
+        try transcribe(audio: audio, generationParameters: generationParameters)
     }
 
     private func acquireGateCancellable() throws {

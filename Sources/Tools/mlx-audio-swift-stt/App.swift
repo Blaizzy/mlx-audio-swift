@@ -300,10 +300,8 @@ enum App {
 
             if options.stream {
                 output = try await runStreaming(model: sttModel, audio: audio, parameters: params)
-            } else if let mega = sttModel as? MegaASRModel {
-                output = try mega.transcribe(audio: audio, generationParameters: params)
             } else {
-                output = sttModel.generate(audio: audio, generationParameters: params)
+                output = try sttModel.generateThrowing(audio: audio, generationParameters: params)
             }
 
         case .forcedAligner(let aligner):
