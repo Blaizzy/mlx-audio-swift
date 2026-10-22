@@ -73,6 +73,8 @@ public enum STT {
             return try await NemotronASRModel.fromPretrained(modelRepo, cache: cache)
         case "fireredasr2", "firered", "fire_red":
             return try await FireRedASR2Model.fromPretrained(modelRepo, cache: cache)
+        case "fun_asr_nano":
+            return try await FunASRNanoModel.fromPretrained(modelRepo, cache: cache)
         case "sensevoice":
             return try await SenseVoiceModel.fromPretrained(modelRepo, cache: cache)
         case "whisper":
@@ -132,6 +134,9 @@ public enum STT {
         }
         if lower.contains("firered") || lower.contains("fire-red") {
             return "fireredasr2"
+        }
+        if lower.contains("fun-asr-nano") || lower.contains("fun_asr_nano") {
+            return "fun_asr_nano"
         }
         if lower.contains("sensevoice") {
             return "sensevoice"

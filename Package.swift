@@ -144,6 +144,7 @@ let package = Package(
             exclude: [
                 "Models/CohereTranscribe/README.md",
                 "Models/FireRedASR2/README.md",
+                "Models/FunASRNano/README.md",
                 "Models/GLMASR/README.md",
                 "Models/GraniteSpeech/README.md",
                 "Models/MossTranscribeDiarize/README.md",
