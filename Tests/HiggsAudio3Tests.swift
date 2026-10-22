@@ -7,10 +7,26 @@ import MLXAudioCore
 
 @Suite(.serialized)
 struct HiggsAudio3Tests {
+    private func tinyConfig() -> HiggsAudio3Config {
+        var config = HiggsAudio3Config()
+        config.audioEncoderConfig.numMelBins = 4
+        config.audioEncoderConfig.encoderLayers = 1
+        config.audioEncoderConfig.encoderAttentionHeads = 2
+        config.audioEncoderConfig.encoderFfnDim = 16
+        config.audioEncoderConfig.dModel = 8
+        config.audioEncoderConfig.maxSourcePositions = 32
+        config.textConfig = Qwen3TextConfig(
+            vocabSize: 32, hiddenSize: 8, intermediateSize: 16, numHiddenLayers: 1,
+            numAttentionHeads: 2, numKeyValueHeads: 1, headDim: 4,
+            maxPositionEmbeddings: 128, tieWordEmbeddings: false)
+        config.vadCut = false
+        config.chunkSizeSeconds = 0.1
+        return config
+    }
+
     private func fixture() throws -> (HiggsAudio3Model, [String:MLXArray]) {
-        let configURL = try #require(Bundle.module.url(forResource: "higgs_audio3_reference_config", withExtension: "json", subdirectory: "media"))
         let weightsURL = try #require(Bundle.module.url(forResource: "higgs_audio3_reference", withExtension: "safetensors", subdirectory: "media"))
-        let config = try JSONDecoder().decode(HiggsAudio3Config.self, from: Data(contentsOf: configURL))
+        let config = tinyConfig()
         let arrays = try MLX.loadArrays(url: weightsURL)
         let model = HiggsAudio3Model(config)
         let weights = Dictionary(uniqueKeysWithValues: arrays.compactMap { key,value in
