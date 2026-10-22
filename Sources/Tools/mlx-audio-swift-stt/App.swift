@@ -74,7 +74,6 @@ private struct Options {
     var chunkDuration: Float = 30.0
     var frameThreshold = 25
     var stream = false
-    var context: String? = nil
     var prefillStepSize = 2048
     var genKwargsRaw: String? = nil
     var text = ""
@@ -126,9 +125,6 @@ private struct Options {
                 options.frameThreshold = value
             case "--stream":
                 options.stream = true
-            case "--context":
-                guard let v = it.next() else { throw CLIError.missingValue(arg) }
-                options.context = v
             case "--prefill-step-size":
                 guard let v = it.next() else { throw CLIError.missingValue(arg) }
                 guard let value = Int(v) else { throw CLIError.invalidValue(arg, v) }
@@ -193,8 +189,6 @@ private struct Options {
                 if let v = value as? String { text = v }
             case "verbose":
                 if let v = value as? Bool { verbose = v }
-            case "context":
-                if let v = value as? String { context = v }
             case "prefill_step_size":
                 if let v = asInt(value) { prefillStepSize = v }
             case "frame_threshold":
@@ -220,7 +214,7 @@ private struct Options {
               Generate STT transcriptions from audio using repo-id selected models.
 
             Options:
-              --model <repo>                Model repo id.
+              --model <repo|path>           Hub repository ID or local checkpoint directory.
                                             Default: mlx-community/Qwen3-ASR-0.6B-4bit
               --audio <path>                Input audio file (required if not passed as trailing arg)
               --output-path <path>          Output path stem (required). Extension is appended from --format.
@@ -231,14 +225,13 @@ private struct Options {
               --chunk-duration <float>      Chunk duration seconds. Default: 30.0
               --frame-threshold <int>       Accepted for compatibility (currently unused). Default: 25
               --stream                      Stream token output while generating
-              --context <text>              Accepted for compatibility (currently unused)
               --prefill-step-size <int>     Accepted for compatibility (currently unused). Default: 2048
               --gen-kwargs <json>           Additional kwargs JSON.
                                             Recognized keys: max_tokens, language, chunk_duration,
                                             min_chunk_duration, temperature, top_p, top_k,
                                             repetition_penalty (Float, default 1.0 = greedy),
                                             repetition_context_size (Int, default 32),
-                                            stream, text, verbose, context, prefill_step_size,
+                                            stream, text, verbose, prefill_step_size,
                                             frame_threshold
               --text <text>                 Alignment text (required for forced aligner models)
               -h, --help                    Show this help
@@ -285,9 +278,6 @@ enum App {
             }
             if options.prefillStepSize != 2048 {
                 print("Warning: --prefill-step-size is currently ignored by this CLI.")
-            }
-            if options.context?.isEmpty == false {
-                print("Warning: --context is currently ignored by this CLI.")
             }
         }
 
@@ -446,7 +436,6 @@ enum App {
 
     private static func loadModel(repo: String) async throws -> LoadedModel {
         let lower = repo.lowercased()
-
         if lower.contains("forcedalign") || lower.contains("forced-align") {
             return .forcedAligner(try await Qwen3ForcedAlignerModel.fromPretrained(repo))
         }
