@@ -7,10 +7,25 @@ import MLXAudioCore
 
 @Suite(.serialized)
 struct GraniteSpeech5CTCTests {
+    private func tinyConfig() -> GraniteSpeech5CTCConfig {
+        var config = GraniteSpeech5CTCConfig()
+        config.vocabSize = 16
+        config.encoderConfig.vocabSize = 16
+        config.encoderConfig.hiddenSize = 16
+        config.encoderConfig.intermediateSize = 32
+        config.encoderConfig.numHiddenLayers = 4
+        config.encoderConfig.numAttentionHeads = 2
+        config.encoderConfig.numKeyValueHeads = 2
+        config.encoderConfig.numMelBins = 4
+        config.encoderConfig.headDim = 8
+        config.encoderConfig.maxPositionEmbeddings = 16
+        config.encoderConfig.contextSize = 8
+        config.encoderConfig.convKernelSize = 3
+        return config
+    }
     private func fixture() throws -> (GraniteSpeech5CTCModel, [String:MLXArray]) {
-        let configURL = try #require(Bundle.module.url(forResource: "granite_speech5_ctc_reference_config", withExtension: "json", subdirectory: "media"))
         let dataURL = try #require(Bundle.module.url(forResource: "granite_speech5_ctc_reference", withExtension: "safetensors", subdirectory: "media"))
-        let config = try JSONDecoder().decode(GraniteSpeech5CTCConfig.self, from: Data(contentsOf: configURL))
+        let config = tinyConfig()
         try config.validate()
         let arrays = try MLX.loadArrays(url: dataURL)
         let model = GraniteSpeech5CTCModel(config)
