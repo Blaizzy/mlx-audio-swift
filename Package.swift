@@ -91,7 +91,7 @@ let package = Package(
                 .product(name: "Transformers", package: "swift-transformers"),
             ],
             path: "Sources/MLXAudioCodecs",
-            exclude: ["MiMoAudioTokenizer/README.md"]
+            exclude: ["MiMoAudioTokenizer/README.md", "NemotronVoiceChat/README.md"]
         ),
 
         // MARK: - MLXAudioTTS
@@ -147,7 +147,9 @@ let package = Package(
                 "Models/FireRedASR2/README.md",
                 "Models/FunASRNano/README.md",
                 "Models/GLMASR/README.md",
+                "Models/HiggsAudio3/README.md",
                 "Models/GraniteSpeech/README.md",
+                "Models/GraniteSpeechNAR/README.md",
                 "Models/GraniteSpeech5CTC/README.md",
                 "Models/MegaASR/README.md",
                 "Models/MossTranscribeDiarize/README.md",

@@ -21,6 +21,7 @@ public struct GraniteSpeechEncoderConfig: Codable {
     public var dropout: Float
     public var convKernelSize: Int
     public var convExpansionFactor: Int
+    public var catHiddenLayers: [Int]
 
     enum CodingKeys: String, CodingKey {
         case inputDim = "input_dim"
@@ -35,6 +36,7 @@ public struct GraniteSpeechEncoderConfig: Codable {
         case dropout
         case convKernelSize = "conv_kernel_size"
         case convExpansionFactor = "conv_expansion_factor"
+        case catHiddenLayers = "cat_hidden_layers"
     }
 
     public init(from decoder: Decoder) throws {
@@ -51,6 +53,7 @@ public struct GraniteSpeechEncoderConfig: Codable {
         dropout = try c.decodeIfPresent(Float.self, forKey: .dropout) ?? 0.1
         convKernelSize = try c.decodeIfPresent(Int.self, forKey: .convKernelSize) ?? 15
         convExpansionFactor = try c.decodeIfPresent(Int.self, forKey: .convExpansionFactor) ?? 2
+        catHiddenLayers = try c.decodeIfPresent([Int].self, forKey: .catHiddenLayers) ?? []
     }
 }
 
@@ -90,9 +93,55 @@ public struct GraniteSpeechProjectorConfig: Codable {
     }
 }
 
+/// Rotary position settings used by the Granite 4.1 Plus and 5.0 decoders.
+public struct GraniteSpeechRoPEConfig: Codable {
+    public var ropeType: String
+    public var factor: Float
+    public var originalMaxPositionEmbeddings: Int
+    public var ropeTheta: Float?
+    public var betaFast: Float
+    public var betaSlow: Float
+    public var mscale: Float
+    public var mscaleAllDim: Float
+
+    enum CodingKeys: String, CodingKey {
+        case ropeType = "rope_type", type, factor
+        case originalMaxPositionEmbeddings = "original_max_position_embeddings"
+        case ropeTheta = "rope_theta"
+        case betaFast = "beta_fast", betaSlow = "beta_slow"
+        case mscale, mscaleAllDim = "mscale_all_dim"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ropeType = try c.decodeIfPresent(String.self, forKey: .ropeType)
+            ?? c.decodeIfPresent(String.self, forKey: .type) ?? "default"
+        factor = try c.decodeIfPresent(Float.self, forKey: .factor) ?? 1
+        originalMaxPositionEmbeddings = try c.decodeIfPresent(Int.self, forKey: .originalMaxPositionEmbeddings) ?? 4096
+        ropeTheta = try c.decodeIfPresent(Float.self, forKey: .ropeTheta)
+        betaFast = try c.decodeIfPresent(Float.self, forKey: .betaFast) ?? 32
+        betaSlow = try c.decodeIfPresent(Float.self, forKey: .betaSlow) ?? 1
+        mscale = try c.decodeIfPresent(Float.self, forKey: .mscale) ?? 1
+        mscaleAllDim = try c.decodeIfPresent(Float.self, forKey: .mscaleAllDim) ?? 0
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(ropeType, forKey: .ropeType)
+        try c.encode(factor, forKey: .factor)
+        try c.encode(originalMaxPositionEmbeddings, forKey: .originalMaxPositionEmbeddings)
+        try c.encodeIfPresent(ropeTheta, forKey: .ropeTheta)
+        try c.encode(betaFast, forKey: .betaFast)
+        try c.encode(betaSlow, forKey: .betaSlow)
+        try c.encode(mscale, forKey: .mscale)
+        try c.encode(mscaleAllDim, forKey: .mscaleAllDim)
+    }
+}
+
 // MARK: - Text Config (Granite LLM)
 
 public struct GraniteSpeechTextConfig: Codable {
+    private enum RoPEKeys: String, CodingKey { case parameters = "rope_parameters" }
     public var modelType: String
     public var vocabSize: Int
     public var hiddenSize: Int
@@ -104,6 +153,7 @@ public struct GraniteSpeechTextConfig: Codable {
     public var maxPositionEmbeddings: Int
     public var rmsNormEps: Float
     public var ropeTheta: Float
+    public var ropeScaling: GraniteSpeechRoPEConfig?
     public var attentionBias: Bool
     public var mlpBias: Bool
     public var attentionMultiplier: Float
@@ -124,6 +174,7 @@ public struct GraniteSpeechTextConfig: Codable {
         case maxPositionEmbeddings = "max_position_embeddings"
         case rmsNormEps = "rms_norm_eps"
         case ropeTheta = "rope_theta"
+        case ropeScaling = "rope_scaling"
         case attentionBias = "attention_bias"
         case mlpBias = "mlp_bias"
         case attentionMultiplier = "attention_multiplier"
@@ -145,7 +196,14 @@ public struct GraniteSpeechTextConfig: Codable {
         hiddenAct = try c.decodeIfPresent(String.self, forKey: .hiddenAct) ?? "silu"
         maxPositionEmbeddings = try c.decodeIfPresent(Int.self, forKey: .maxPositionEmbeddings) ?? 4096
         rmsNormEps = try c.decodeIfPresent(Float.self, forKey: .rmsNormEps) ?? 1e-5
-        ropeTheta = try c.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? 10000.0
+        let extra = try decoder.container(keyedBy: RoPEKeys.self)
+        ropeScaling = try extra.decodeIfPresent(GraniteSpeechRoPEConfig.self, forKey: .parameters)
+            ?? c.decodeIfPresent(GraniteSpeechRoPEConfig.self, forKey: .ropeScaling)
+        if ropeScaling == nil {
+            let flat = try GraniteSpeechRoPEConfig(from: decoder)
+            if flat.ropeType != "default" { ropeScaling = flat }
+        }
+        ropeTheta = try c.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? ropeScaling?.ropeTheta ?? 10000.0
         attentionBias = try c.decodeIfPresent(Bool.self, forKey: .attentionBias) ?? false
         mlpBias = try c.decodeIfPresent(Bool.self, forKey: .mlpBias) ?? false
         attentionMultiplier = try c.decodeIfPresent(Float.self, forKey: .attentionMultiplier) ?? 0.0078125
