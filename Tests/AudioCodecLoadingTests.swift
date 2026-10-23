@@ -14,6 +14,9 @@ struct AudioCodecLoadingTests {
         }
         #expect(try AudioCodecs.resolveFamily(config: ["vq_strides": [8, 4, 2]], source: "snapshot") == .snac)
         #expect(try AudioCodecs.resolveFamily(config: ["encoder_rates": [2], "n_codebooks": 1], source: "snapshot") == .descript)
+        #expect(try AudioCodecs.resolveFamily(
+            config: ["encoder_rates": [2], "n_codebooks": 9, "semantic_codebook_size": 4096],
+            source: "snapshot") == .fishS1DAC)
         #expect(AudioCodecs.inferredFamily("kyutai/an-unrelated-model") == nil)
     }
 
@@ -66,6 +69,29 @@ struct AudioCodecLoadingTests {
         #expect(loaded.sampleRate == 16_000)
         #expect(actual.shape == [1, 9, 1])
         #expect(abs(expected - actual).max().item(Float.self) < 1e-5)
+    }
+
+    @Test func channelsFirstCodecAdapterReconstructsSNACWithoutTransposingSamples() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let config: [String: Any] = [
+            "sampling_rate": 24_000, "encoder_dim": 4, "encoder_rates": [2], "latent_dim": 8,
+            "decoder_dim": 8, "decoder_rates": [2], "attn_window_size": NSNull(),
+            "codebook_size": 8, "codebook_dim": 2, "vq_strides": [1], "noise": false, "depthwise": false,
+        ]
+        try JSONSerialization.data(withJSONObject: config).write(to: directory.appendingPathComponent("config.json"))
+        let native = SNAC(samplingRate: 24_000, encoderDim: 4, encoderRates: [2], latentDim: 8,
+                          decoderDim: 8, decoderRates: [2], attnWindowSize: nil, codebookSize: 8,
+                          codebookDim: 2, vqStrides: [1], noise: false, depthwise: false)
+        try save(arrays: Dictionary(uniqueKeysWithValues: native.parameters().flattened()),
+                 url: directory.appendingPathComponent("model.safetensors"))
+        let common = try await AudioCodecs.loadModel(modelRepo: directory.path)
+        let input = MLXArray((0..<9).map { Float($0) / 100 }, [1, 9, 1])
+        let expected = native.reconstruct(input.transposed(0, 2, 1)).transposed(0, 2, 1)[0..., 0..<9, 0...]
+        let actual = try common.reconstruct(input)
+        #expect(actual.shape == [1, 9, 1])
+        #expect(abs(actual - expected).max().item(Float.self) < 1e-5)
     }
 
     @Test func missingLocalPathFailsWithoutHubResolution() async {
