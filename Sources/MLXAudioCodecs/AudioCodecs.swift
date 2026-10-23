@@ -61,6 +61,7 @@ public struct AnyAudioCodec {
 public enum AudioCodecs {
     enum Family: String {
         case dacvae, encodec, snac, mimi, descript, fishS1DAC = "fish_s1_dac"
+        case nemotronVoiceChat = "nemotron_voicechat_codec"
     }
 
     /// Load a local directory or Hugging Face repository using its codec metadata.
@@ -93,6 +94,9 @@ public enum AudioCodecs {
         let configURL = try await HubClient(cache: cache).downloadFile(at: "config.json", from: repoID)
         let config = try readConfig(configURL)
         let family = try resolveFamily(config: config, source: modelRepo)
+        if family == .nemotronVoiceChat {
+            return wrap(try await NemotronVoiceChatCodec.fromPretrained(modelRepo, cache: cache))
+        }
         let directory = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
             requiredExtension: ".safetensors",
@@ -124,16 +128,23 @@ public enum AudioCodecs {
            !declared.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let normalized = declared.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if let family = Family(rawValue: normalized) { return family }
+            if normalized == "nemotron_voicechat" { return .nemotronVoiceChat }
             if normalized == "dac" { return .descript }
             if normalized == "fish-s1-dac" { return .fishS1DAC }
             throw AudioCodecError.unsupportedModel(declared)
         }
         // Older codec configs predate model_type. Prefer distinguishing config
         // fields to repository names, which may be arbitrary for local models.
+        if config["codec_config"] is [String: Any]
+            || ((config["model"] as? [String: Any])?["speech_generation"] is [String: Any])
+            || ((config["base_channels"] != nil || config["base_hidden_size"] != nil)
+                && (config["downsample_rates"] != nil || config["rates"] != nil)) {
+            return .nemotronVoiceChat
+        }
         if config["vq_strides"] != nil { return .snac }
         if config["target_bandwidths"] != nil { return .encodec }
         if config["encoder_rates"] != nil {
-            if config["downsample_factor"] is [Any] { return .fishS1DAC }
+            if config["downsample_factor"] is [Any] || config["semantic_codebook_size"] != nil { return .fishS1DAC }
             if config["mean"] != nil || config["std"] != nil { return .dacvae }
             if config["n_codebooks"] != nil { return .descript }
         }
@@ -143,6 +154,7 @@ public enum AudioCodecs {
 
     static func inferredFamily(_ source: String) -> Family? {
         let name = source.lowercased()
+        if name.contains("nemotron") && name.contains("voicechat") { return .nemotronVoiceChat }
         if name.contains("dacvae") { return .dacvae }
         if name.contains("encodec") { return .encodec }
         if name.contains("snac") { return .snac }
@@ -182,6 +194,8 @@ public enum AudioCodecs {
         case .fishS1DAC:
             let model = try FishS1DAC.fromModelDirectory(directory)
             return AnyAudioCodec(sampleRate: model.sampleRate) { model.reconstruct($0) }
+        case .nemotronVoiceChat:
+            return wrap(try NemotronVoiceChatCodec.fromModelDirectory(directory))
         }
     }
 
@@ -189,5 +203,9 @@ public enum AudioCodecs {
         AnyAudioCodec(sampleRate: Int(model.sampleRate.rounded()), audioChannels: model.cfg.channels) {
             model.reconstruct($0.transposed(0, 2, 1)).transposed(0, 2, 1)
         }
+    }
+
+    private static func wrap(_ model: NemotronVoiceChatCodec) -> AnyAudioCodec {
+        AnyAudioCodec(sampleRate: model.sampleRate) { model.reconstruct($0) }
     }
 }

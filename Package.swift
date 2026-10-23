@@ -90,7 +90,8 @@ let package = Package(
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "Transformers", package: "swift-transformers"),
             ],
-            path: "Sources/MLXAudioCodecs"
+            path: "Sources/MLXAudioCodecs",
+            exclude: ["NemotronVoiceChat/README.md"]
         ),
 
         // MARK: - MLXAudioTTS

@@ -32,6 +32,7 @@ xcodebuild -scheme MLXAudio-Package -destination 'platform=macOS' \
 - `mimi`
 - Descript DAC
 - Fish S1 DAC
+- Nemotron VoiceChat Codec (`mlx-community/NemotronLabs-VoiceChat-11B-4bit`)
 
 Vocoder and encode-only tokenizer operations are available through their Swift
 APIs. Use `AudioCodecs.loadModel(modelRepo:)` for the same roundtrip loading in
