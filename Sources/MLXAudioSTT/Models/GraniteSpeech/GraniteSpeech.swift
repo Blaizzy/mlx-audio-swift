@@ -10,17 +10,6 @@ import MLXNN
 import HuggingFace
 import Tokenizers
 
-// MARK: - Language Codes
-
-private let languageCodes: [String: String] = [
-    "en": "English",
-    "fr": "French",
-    "de": "German",
-    "es": "Spanish",
-    "pt": "Portuguese",
-    "ja": "Japanese",
-]
-
 // MARK: - BatchNorm1d (Inference-only)
 
 class GraniteSpeechBatchNorm1d: Module {
@@ -29,17 +18,22 @@ class GraniteSpeechBatchNorm1d: Module {
     @ParameterInfo(key: "running_mean") var runningMean: MLXArray
     @ParameterInfo(key: "running_var") var runningVar: MLXArray
     let eps: Float
+    let nonAutoregressive: Bool
 
-    init(numFeatures: Int, eps: Float = 1e-5) {
+    init(numFeatures: Int, eps: Float = 1e-5, nonAutoregressive: Bool = false) {
         self.weight = MLXArray.ones([numFeatures])
         self.bias = MLXArray.zeros([numFeatures])
         self._runningMean.wrappedValue = MLXArray.zeros([numFeatures])
         self._runningVar.wrappedValue = MLXArray.ones([numFeatures])
         self.eps = eps
+        self.nonAutoregressive = nonAutoregressive
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        (x - runningMean) / MLX.sqrt(runningVar + eps) * weight + bias
+        if nonAutoregressive {
+            return (x - runningMean) * MLX.rsqrt(runningVar + eps) * weight + bias
+        }
+        return (x - runningMean) / MLX.sqrt(runningVar + eps) * weight + bias
     }
 }
 
@@ -50,7 +44,10 @@ class GraniteSpeechConformerFeedForward: Module {
     @ModuleInfo(key: "up_proj") var upProj: Linear
     @ModuleInfo(key: "down_proj") var downProj: Linear
 
-    init(_ config: GraniteSpeechEncoderConfig) {
+    let nonAutoregressive: Bool
+
+    init(_ config: GraniteSpeechEncoderConfig, nonAutoregressive: Bool = false) {
+        self.nonAutoregressive = nonAutoregressive
         let ffDim = config.hiddenDim * config.feedforwardMult
         self._preNorm.wrappedValue = LayerNorm(dimensions: config.hiddenDim)
         self._upProj.wrappedValue = Linear(config.hiddenDim, ffDim)
@@ -58,7 +55,8 @@ class GraniteSpeechConformerFeedForward: Module {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        downProj(silu(upProj(preNorm(x))))
+        let out = downProj(silu(upProj(preNorm(x))))
+        return nonAutoregressive ? out.asType(x.dtype) : out
     }
 }
 
@@ -77,7 +75,10 @@ class GraniteSpeechConformerAttention: Module {
     @ModuleInfo(key: "to_out") var toOut: Linear
     @ModuleInfo(key: "rel_pos_emb") var relPosEmb: Embedding
 
-    init(_ config: GraniteSpeechEncoderConfig) {
+    let nonAutoregressive: Bool
+
+    init(_ config: GraniteSpeechEncoderConfig, nonAutoregressive: Bool = false) {
+        self.nonAutoregressive = nonAutoregressive
         let innerDim = config.dimHead * config.numHeads
         self.maxPosEmb = config.maxPosEmb
         self.contextSize = config.contextSize
@@ -95,6 +96,7 @@ class GraniteSpeechConformerAttention: Module {
     }
 
     func callAsFunction(_ x: MLXArray, attentionDists: MLXArray) -> MLXArray {
+        let dtype = x.dtype
         var x = preNorm(x)
         let B = x.dim(0)
         let N = x.dim(1)
@@ -123,39 +125,34 @@ class GraniteSpeechConformerAttention: Module {
 
         let relEmb = relPosEmb(attentionDists)
 
-        let qExpanded = q.expandedDimensions(axis: 4)
-        let relEmbExpanded = relEmb.expandedDimensions(axes: [0, 1, 2])
-        var posAttn = (qExpanded * relEmbExpanded).sum(axis: -1) * scale
-
-        if remainder > 0 {
-            let C = contextSize
-            let rowIndices = MLXArray(Int32(0)..<Int32(C)).reshaped(C, 1)
-            let colIndices = MLXArray(Int32(0)..<Int32(C)).reshaped(1, C)
-            let rowValid = rowIndices .< Int32(remainder)
-            let colValid = colIndices .< Int32(remainder)
-            let mask = .!(rowValid .&& colValid)
-            let maskValue = MLXArray(Float(-1e9))
-
-            let lastBlock = posAttn[0..., (-1)..., 0..., 0..., 0...]
-            let maskedLast = MLX.where(
-                mask.expandedDimensions(axes: [0, 1, 2]),
-                maskValue,
-                lastBlock
-            )
-            posAttn = MLX.concatenated(
-                [posAttn[0..., ..<(-1), 0..., 0..., 0...], maskedLast],
-                axis: 1
-            )
+        var posAttn: MLXArray
+        if nonAutoregressive {
+            posAttn = einsum("bmhcd,crd->bmhcr", q, relEmb) * scale
+        } else {
+            posAttn = (q.expandedDimensions(axis: 4) * relEmb.expandedDimensions(axes: [0, 1, 2])).sum(axis: -1) * scale
+            // Autoregressive Granite masks partial blocks; NAR attends to their zero padding.
+            if remainder > 0 {
+                let positions = arange(contextSize).asType(.int32)
+                let valid = positions .< remainder
+                let mask = .!(valid.expandedDimensions(axis: 1) .&& valid.expandedDimensions(axis: 0))
+                let last = posAttn[0..., (-1)..., 0..., 0..., 0...]
+                let masked = MLX.where(mask.expandedDimensions(axes: [0, 1, 2]),
+                    MLXArray(Float(-1e9)).asType(posAttn.dtype), last)
+                posAttn = concatenated([posAttn[0..., ..<(-1), 0..., 0..., 0...], masked], axis: 1)
+            }
         }
 
         var attnWeights = (q.matmul(k.transposed(0, 1, 2, 4, 3))) * scale + posAttn
-        attnWeights = softmax(attnWeights, axis: -1)
+        attnWeights = nonAutoregressive
+            ? softmax(attnWeights.asType(.float32), axis: -1).asType(q.dtype)
+            : softmax(attnWeights, axis: -1)
 
         var out = attnWeights.matmul(v)
         out = out.transposed(0, 1, 3, 2, 4)
         out = out.reshaped(B, -1, numHeads * dimHead)
         out = out[0..., ..<N, 0...]
-        return toOut(out)
+        let result = toOut(out)
+        return nonAutoregressive ? result.asType(dtype) : result
     }
 }
 
@@ -192,18 +189,22 @@ class GraniteSpeechConformerConvModule: Module {
     @ModuleInfo(key: "batch_norm") var batchNorm: GraniteSpeechBatchNorm1d
     @ModuleInfo(key: "down_conv") var downConv: Conv1d
 
-    init(_ config: GraniteSpeechEncoderConfig) {
+    let nonAutoregressive: Bool
+
+    init(_ config: GraniteSpeechEncoderConfig, nonAutoregressive: Bool = false) {
+        self.nonAutoregressive = nonAutoregressive
         let innerDim = config.hiddenDim * config.convExpansionFactor
         self.norm = LayerNorm(dimensions: config.hiddenDim)
         self._upConv.wrappedValue = Conv1d(inputChannels: config.hiddenDim, outputChannels: innerDim * 2, kernelSize: 1)
         self._depthConv.wrappedValue = GraniteSpeechDepthWiseConv1d(
             chanIn: innerDim, chanOut: innerDim, kernelSize: config.convKernelSize
         )
-        self._batchNorm.wrappedValue = GraniteSpeechBatchNorm1d(numFeatures: innerDim)
+        self._batchNorm.wrappedValue = GraniteSpeechBatchNorm1d(numFeatures: innerDim, nonAutoregressive: nonAutoregressive)
         self._downConv.wrappedValue = Conv1d(inputChannels: innerDim, outputChannels: config.hiddenDim, kernelSize: 1)
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
+        let dtype = x.dtype
         var x = norm(x)
         x = upConv(x)
         let parts = MLX.split(x, parts: 2, axis: -1)
@@ -211,7 +212,7 @@ class GraniteSpeechConformerConvModule: Module {
         x = depthConv(x)
         x = silu(batchNorm(x))
         x = downConv(x)
-        return x
+        return nonAutoregressive ? x.asType(dtype) : x
     }
 }
 
@@ -224,21 +225,25 @@ class GraniteSpeechConformerBlock: Module {
     let ff2: GraniteSpeechConformerFeedForward
     @ModuleInfo(key: "post_norm") var postNorm: LayerNorm
 
-    init(_ config: GraniteSpeechEncoderConfig) {
-        self.ff1 = GraniteSpeechConformerFeedForward(config)
-        self.attn = GraniteSpeechConformerAttention(config)
-        self.conv = GraniteSpeechConformerConvModule(config)
-        self.ff2 = GraniteSpeechConformerFeedForward(config)
+    let nonAutoregressive: Bool
+
+    init(_ config: GraniteSpeechEncoderConfig, nonAutoregressive: Bool = false) {
+        self.nonAutoregressive = nonAutoregressive
+        self.ff1 = GraniteSpeechConformerFeedForward(config, nonAutoregressive: nonAutoregressive)
+        self.attn = GraniteSpeechConformerAttention(config, nonAutoregressive: nonAutoregressive)
+        self.conv = GraniteSpeechConformerConvModule(config, nonAutoregressive: nonAutoregressive)
+        self.ff2 = GraniteSpeechConformerFeedForward(config, nonAutoregressive: nonAutoregressive)
         self._postNorm.wrappedValue = LayerNorm(dimensions: config.hiddenDim)
     }
 
     func callAsFunction(_ x: MLXArray, attentionDists: MLXArray) -> MLXArray {
+        let dtype = x.dtype
         var x = 0.5 * ff1(x) + x
         x = attn(x, attentionDists: attentionDists) + x
         x = conv(x) + x
         x = 0.5 * ff2(x) + x
         x = postNorm(x)
-        return x
+        return nonAutoregressive ? x.asType(dtype) : x
     }
 }
 
@@ -270,14 +275,17 @@ class GraniteSpeechCTCEncoder: Module {
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         var x = inputLinear(x)
+        let catLayers = Set(config.catHiddenLayers)
+        var exported: [MLXArray] = catLayers.contains(0) ? [x] : []
         for (idx, layer) in layers.enumerated() {
             x = layer(x, attentionDists: _attentionDists)
             if idx + 1 == numLayers / 2 {
                 let xMid = out(x)
                 x = x + outMid(softmax(xMid, axis: -1))
             }
+            if catLayers.contains(idx + 1) { exported.append(x) }
         }
-        return x
+        return exported.isEmpty ? x : concatenated(exported + [x], axis: -1)
     }
 }
 
@@ -505,7 +513,7 @@ class GraniteSpeechLMAttention: Module {
     @ModuleInfo(key: "v_proj") var wv: Linear
     @ModuleInfo(key: "o_proj") var wo: Linear
 
-    let rope: RoPE
+    let rope: GraniteSpeechRotaryEmbedding
 
     init(_ config: GraniteSpeechTextConfig) {
         let dim = config.hiddenSize
@@ -519,7 +527,7 @@ class GraniteSpeechLMAttention: Module {
         self._wv.wrappedValue = Linear(dim, numKVHeads * headDim, bias: config.attentionBias)
         self._wo.wrappedValue = Linear(numHeads * headDim, dim, bias: config.attentionBias)
 
-        self.rope = RoPE(dimensions: headDim, traditional: false, base: config.ropeTheta)
+        self.rope = GraniteSpeechRotaryEmbedding(dimensions: headDim, config: config)
     }
 
     func callAsFunction(
@@ -571,21 +579,25 @@ class GraniteSpeechLMBlock: Module {
     @ModuleInfo(key: "input_layernorm") var inputLayerNorm: RMSNorm
     @ModuleInfo(key: "post_attention_layernorm") var postAttentionLayerNorm: RMSNorm
     let residualMultiplier: Float
+    let preserveDType: Bool
 
-    init(_ config: GraniteSpeechTextConfig) {
+    init(_ config: GraniteSpeechTextConfig, preserveDType: Bool = false) {
         self._attention.wrappedValue = GraniteSpeechLMAttention(config)
         self.mlp = GraniteSpeechLMMLP(config)
         self._inputLayerNorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
         self._postAttentionLayerNorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
         self.residualMultiplier = config.residualMultiplier
+        self.preserveDType = preserveDType
     }
 
     func callAsFunction(
         _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
     ) -> MLXArray {
         var r = attention(inputLayerNorm(x), mask: mask, cache: cache)
+        if preserveDType { r = r.asType(x.dtype) }
         let h = x + r * residualMultiplier
         r = mlp(postAttentionLayerNorm(h))
+        if preserveDType { r = r.asType(h.dtype) }
         return h + r * residualMultiplier
     }
 }
@@ -596,18 +608,19 @@ class GraniteSpeechLMModelInner: Module {
     let norm: RMSNorm
     let embeddingMultiplier: Float
 
-    init(_ config: GraniteSpeechTextConfig) {
+    init(_ config: GraniteSpeechTextConfig, preserveDType: Bool = false) {
         precondition(config.vocabSize > 0)
         self._embedTokens.wrappedValue = Embedding(
             embeddingCount: config.vocabSize, dimensions: config.hiddenSize
         )
-        self.layers = (0..<config.numHiddenLayers).map { _ in GraniteSpeechLMBlock(config) }
+        self.layers = (0..<config.numHiddenLayers).map { _ in GraniteSpeechLMBlock(config, preserveDType: preserveDType) }
         self.norm = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
         self.embeddingMultiplier = config.embeddingMultiplier
     }
 
     func callAsFunction(
-        _ inputs: MLXArray? = nil, cache: [KVCache]? = nil, inputEmbeddings: MLXArray? = nil
+        _ inputs: MLXArray? = nil, cache: [KVCache]? = nil, inputEmbeddings: MLXArray? = nil,
+        bidirectional: Bool = false
     ) -> MLXArray {
         var h: MLXArray
         if let inputEmbeddings {
@@ -620,7 +633,8 @@ class GraniteSpeechLMModelInner: Module {
 
         h = h * embeddingMultiplier
 
-        let mask = createAttentionMask(h: h, cache: cache?.first)
+        let mask: MLXFast.ScaledDotProductAttentionMaskMode = bidirectional
+            ? .none : createAttentionMask(h: h, cache: cache?.first)
 
         for (i, layer) in layers.enumerated() {
             h = layer(h, mask: mask, cache: cache?[i])
@@ -642,9 +656,9 @@ class GraniteSpeechLanguageModel: Module, KVCacheDimensionProvider {
         (0..<config.numHiddenLayers).map { _ in config.numKeyValueHeads }
     }
 
-    init(_ config: GraniteSpeechTextConfig) {
+    init(_ config: GraniteSpeechTextConfig, preserveDType: Bool = false) {
         self.config = config
-        self._model.wrappedValue = GraniteSpeechLMModelInner(config)
+        self._model.wrappedValue = GraniteSpeechLMModelInner(config, preserveDType: preserveDType)
         self.logitsScaling = config.logitsScaling
 
         if !config.tieWordEmbeddings {
@@ -653,9 +667,11 @@ class GraniteSpeechLanguageModel: Module, KVCacheDimensionProvider {
     }
 
     func callAsFunction(
-        inputs: MLXArray? = nil, cache: [KVCache]? = nil, inputEmbeddings: MLXArray? = nil
+        inputs: MLXArray? = nil, cache: [KVCache]? = nil, inputEmbeddings: MLXArray? = nil,
+        bidirectional: Bool = false, logitsStart: Int? = nil
     ) -> MLXArray {
-        var out = model(inputs, cache: cache, inputEmbeddings: inputEmbeddings)
+        var out = model(inputs, cache: cache, inputEmbeddings: inputEmbeddings, bidirectional: bidirectional)
+        if let logitsStart { out = out[0..., logitsStart..., 0...] }
 
         if let lmHead {
             out = lmHead(out)
@@ -737,7 +753,9 @@ public class GraniteSpeechModel: Module {
     // MARK: - Audio Processing
 
     func getAudioFeatures(_ inputFeatures: MLXArray) -> MLXArray {
-        let encoderOutput = encoder(inputFeatures)
+        let dtype = encoder.inputLinear.weight.dtype
+        let features = isPlus && dtype.isFloatingPoint ? inputFeatures.asType(dtype) : inputFeatures
+        let encoderOutput = encoder(features)
         return projector(encoderOutput)
     }
 
@@ -788,26 +806,23 @@ public class GraniteSpeechModel: Module {
 
     // MARK: - Prompt Building
 
-    func buildPrompt(numAudioTokens: Int, userPrompt: String?) -> MLXArray {
+    func buildPrompt(numAudioTokens: Int, userPrompt: String?, systemPrompt: String? = nil) -> MLXArray {
         guard let tokenizer else { fatalError("Tokenizer not loaded") }
-
-        let prompt = userPrompt ?? "can you transcribe the speech into a written format?"
-        let audioPlaceholder = String(repeating: "<|audio|>", count: numAudioTokens)
-        let content = "\(audioPlaceholder)\(prompt)"
-
+        let messages = promptMessages(numAudioTokens: numAudioTokens,
+            instruction: userPrompt ?? GraniteSpeechTask.transcription.instruction, systemPrompt: systemPrompt)
         let promptIds: [Int]
-        let messages: [Tokenizers.Message] = [["role": "user", "content": content]]
         if let tokenIds = try? tokenizer.applyChatTemplate(messages: messages) {
             promptIds = tokenIds
         } else {
-            let promptStr = "USER: \(content)\nASSISTANT:"
-            promptIds = tokenizer.encode(text: promptStr)
+            let content = messages.last?["content"] as? String ?? ""
+            promptIds = tokenizer.encode(text: "USER: \(content)\nASSISTANT:")
         }
-
         return MLXArray(promptIds.map { Int32($0) })
     }
 
     func buildInputEmbeds(_ inputIds: MLXArray, audioFeatures: MLXArray) -> MLXArray {
+        let audioFeatures = audioFeatures.asType(languageModel.embedTokens.weight.dtype.isFloatingPoint
+            ? languageModel.embedTokens.weight.dtype : audioFeatures.dtype)
         let isAudio = inputIds .== Int32(audioTokenId)
         let llmIds = MLX.where(isAudio, MLXArray(Int32(0)), inputIds)
 
@@ -853,15 +868,17 @@ public class GraniteSpeechModel: Module {
         temperature: Float = 0.0,
         prompt: String? = nil,
         language: String? = nil,
-        verbose: Bool = false
+        verbose: Bool = false,
+        task: GraniteSpeechTask = .transcription,
+        sourceLanguage: String? = nil,
+        hotwords: [String] = [],
+        punctuate: Bool = false,
+        systemPrompt: String? = nil
     ) -> STTOutput {
         guard let tokenizer else { fatalError("Tokenizer not loaded") }
 
-        var userPrompt = prompt
-        if userPrompt == nil, let language {
-            let langName = languageCodes[language.lowercased()] ?? language
-            userPrompt = "Translate the speech to \(langName)."
-        }
+        let userPrompt = resolvePrompt(prompt: prompt, language: language, task: task,
+            sourceLanguage: sourceLanguage, hotwords: hotwords, punctuate: punctuate)
 
         let startTime = Date()
 
@@ -871,7 +888,7 @@ public class GraniteSpeechModel: Module {
         let audioFeatures = getAudioFeatures(inputFeatures)
         eval(audioFeatures)
 
-        let promptIds = buildPrompt(numAudioTokens: numAudioTokens, userPrompt: userPrompt)
+        let promptIds = buildPrompt(numAudioTokens: numAudioTokens, userPrompt: userPrompt, systemPrompt: systemPrompt)
         let inputsEmbeds = buildInputEmbeds(promptIds, audioFeatures: audioFeatures)
         eval(inputsEmbeds)
 
@@ -915,6 +932,7 @@ public class GraniteSpeechModel: Module {
 
         return STTOutput(
             text: text.trimmingCharacters(in: .whitespacesAndNewlines),
+            segments: Self.parseSegments(text, task: task),
             promptTokens: promptTokenCount,
             generationTokens: generatedTokens.count,
             totalTokens: promptTokenCount + generatedTokens.count,
@@ -930,7 +948,12 @@ public class GraniteSpeechModel: Module {
         maxTokens: Int = 4096,
         temperature: Float = 0.0,
         prompt: String? = nil,
-        language: String? = nil
+        language: String? = nil,
+        task: GraniteSpeechTask = .transcription,
+        sourceLanguage: String? = nil,
+        hotwords: [String] = [],
+        punctuate: Bool = false,
+        systemPrompt: String? = nil
     ) -> AsyncThrowingStream<STTGeneration, Error> {
         AsyncThrowingStream { continuation in
             do {
@@ -938,11 +961,8 @@ public class GraniteSpeechModel: Module {
                     throw STTError.modelNotInitialized("Tokenizer not loaded")
                 }
 
-                var userPrompt = prompt
-                if userPrompt == nil, let language {
-                    let langName = languageCodes[language.lowercased()] ?? language
-                    userPrompt = "Translate the speech to \(langName)."
-                }
+                let userPrompt = self.resolvePrompt(prompt: prompt, language: language, task: task,
+                    sourceLanguage: sourceLanguage, hotwords: hotwords, punctuate: punctuate)
 
                 let startTime = Date()
 
@@ -950,7 +970,7 @@ public class GraniteSpeechModel: Module {
                 let audioFeatures = self.getAudioFeatures(inputFeatures)
                 eval(audioFeatures)
 
-                let promptIds = self.buildPrompt(numAudioTokens: numAudioTokens, userPrompt: userPrompt)
+                let promptIds = self.buildPrompt(numAudioTokens: numAudioTokens, userPrompt: userPrompt, systemPrompt: systemPrompt)
                 let inputsEmbeds = self.buildInputEmbeds(promptIds, audioFeatures: audioFeatures)
                 eval(inputsEmbeds)
 
@@ -1009,6 +1029,7 @@ public class GraniteSpeechModel: Module {
                 let text = ctx.decode(generatedTokens)
                 continuation.yield(.result(STTOutput(
                     text: text.trimmingCharacters(in: .whitespacesAndNewlines),
+                    segments: Self.parseSegments(text, task: task),
                     promptTokens: promptTokenCount,
                     generationTokens: generatedTokens.count,
                     totalTokens: promptTokenCount + generatedTokens.count,
@@ -1034,22 +1055,23 @@ public class GraniteSpeechModel: Module {
     // MARK: - Weight Sanitization
 
     public static func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
-        let alreadyConverted = weights.keys.contains { $0.contains("scales") }
-
         var sanitized: [String: MLXArray] = [:]
         for (k, v) in weights {
-            if k.contains("num_batches_tracked") { continue }
+            if k.contains("num_batches_tracked") || k == "weight" || k == "bias" { continue }
 
             var value = v
-            if !alreadyConverted
-                && ["up_conv", "down_conv", "depth_conv"].contains(where: { k.contains($0) })
+            if ["up_conv", "down_conv", "depth_conv"].contains(where: { k.contains($0) })
                 && k.contains("weight")
                 && v.ndim == 3
             {
-                value = v.transposed(0, 2, 1)
+                let depthwise = k.contains("depth_conv")
+                if (depthwise && v.dim(1) == 1) || (!depthwise && v.dim(2) == 1) {
+                    value = v.transposed(0, 2, 1)
+                }
             }
 
-            sanitized[k] = value
+            let key = k.replacingOccurrences(of: "language_model.model.model.", with: "language_model.model.")
+            sanitized[key] = value
         }
         return sanitized
     }
@@ -1070,6 +1092,7 @@ public class GraniteSpeechModel: Module {
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
             requiredExtension: ".safetensors",
+            additionalMatchingPatterns: ["*.jinja"],
             cache: cache
         )
 
@@ -1083,12 +1106,12 @@ public class GraniteSpeechModel: Module {
 
         let model = GraniteSpeechModel(config)
 
-        model.tokenizer = try await AutoTokenizer.from(modelFolder: modelDir)
+        model.tokenizer = try await loadGraniteSpeechTokenizer(from: modelDir)
 
         var weights: [String: MLXArray] = [:]
         let fileManager = FileManager.default
         let files = try fileManager.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
-        let safetensorFiles = files.filter { $0.pathExtension == "safetensors" }
+        let safetensorFiles = files.filter { $0.pathExtension == "safetensors" && $0.lastPathComponent != "out_llm.safetensors" }
 
         for file in safetensorFiles {
             let fileWeights = try MLX.loadArrays(url: file)
@@ -1127,7 +1150,7 @@ extension GraniteSpeechModel: STTGenerationModel {
             topP: 1.0,
             topK: 0,
             verbose: false,
-            language: "English"
+            language: nil
         )
     }
 

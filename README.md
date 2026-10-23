@@ -153,7 +153,8 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | FireRedASR2 | [FireRedASR2 README](Sources/MLXAudioSTT/Models/FireRedASR2/README.md) | Converted FireRedASR2-compatible MLX checkpoints |
 | SenseVoice | [SenseVoice README](Sources/MLXAudioSTT/Models/SenseVoice/README.md) | Converted SenseVoice-compatible MLX checkpoints |
 | Fun-ASR-Nano | [Fun-ASR-Nano README](Sources/MLXAudioSTT/Models/FunASRNano/README.md) | [mlx-community/Fun-ASR-Nano-2512](https://huggingface.co/mlx-community/Fun-ASR-Nano-2512) |
-| Granite Speech | [Granite Speech README](Sources/MLXAudioSTT/Models/GraniteSpeech/README.md) | Converted Granite Speech-compatible MLX checkpoints |
+| Granite Speech | [Granite Speech README](Sources/MLXAudioSTT/Models/GraniteSpeech/README.md) | `ibm-granite/granite-speech-5.0-2b`, `ibm-granite/granite-speech-4.1-2b`, `ibm-granite/granite-speech-4.1-2b-plus` |
+| Granite Speech NAR | [Granite Speech NAR README](Sources/MLXAudioSTT/Models/GraniteSpeechNAR/README.md) | `ibm-granite/granite-speech-4.1-2b-nar` |
 | Granite Speech 5.0 TurboCTC | [TurboCTC README](Sources/MLXAudioSTT/Models/GraniteSpeech5CTC/README.md) | `ibm-granite/granite-speech-5.0-470m-turboctc` |
 | Whisper | [Whisper README](Sources/MLXAudioSTT/Models/Whisper/README.md) | [openai/whisper-large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo), [mlx-community/whisper-large-v3-turbo](https://huggingface.co/mlx-community/whisper-large-v3-turbo), and every other [openai/whisper-\*](https://huggingface.co/openai) / [mlx-community/whisper-\*](https://huggingface.co/mlx-community) size and `.en` variant |
 | Canary | — | [Mediform/canary-1b-v2-mlx-q8](https://huggingface.co/Mediform/canary-1b-v2-mlx-q8), Canary-compatible MLX/NeMo checkpoints |
