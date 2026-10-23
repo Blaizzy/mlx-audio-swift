@@ -382,11 +382,17 @@ public class T3Model: Module {
         // Prepare conditioning
         let condEmb = prepareConditioning(&t3Cond) // (1, condLen, dim)
 
-        // Text embeddings + position
+        // Text token embeddings.
+        //
+        // Position embeddings are added AFTER the CFG batch duplication below, not
+        // before. The Python reference (t3.py prepare_input_embeds) zeroes only the
+        // token embeddings for the CFG-uncond row (text_emb[1].zero_()) and then adds
+        // text_pos_emb to BOTH rows. Adding position embeddings first and then zeroing
+        // the whole row (as this used to) fed the uncond stream a block of pure zeros
+        // with no positional signal at all, which distorted the CFG-combined logits
+        // (cond + cfgWeight * (cond - uncond)) enough to suppress the stop-speech
+        // token — the model never emitted EOS and repeated/doubled the generated line.
         var textEmbResult = textEmb(tokens)
-        if hp.inputPosEmb == "learned" {
-            textEmbResult = textEmbResult + textPosEmb(tokens)
-        }
 
         // For CFG: duplicate batch — [conditional, unconditional]
         var condEmbForInput = condEmb
@@ -394,6 +400,10 @@ public class T3Model: Module {
             let uncondText = MLX.zeros(like: textEmbResult)
             textEmbResult = MLX.concatenated([textEmbResult[0 ..< 1], uncondText], axis: 0)
             condEmbForInput = MLX.broadcast(condEmb, to: [textEmbResult.dim(0), condEmb.dim(1), condEmb.dim(2)])
+        }
+
+        if hp.inputPosEmb == "learned" {
+            textEmbResult = textEmbResult + textPosEmb(tokens) // (T, dim) broadcasts over the CFG batch dim
         }
 
         // BOS token embedding with position 0
