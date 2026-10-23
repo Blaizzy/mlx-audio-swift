@@ -61,6 +61,7 @@ public struct AnyAudioCodec {
 public enum AudioCodecs {
     enum Family: String {
         case dacvae, encodec, snac, mimi, descript, fishS1DAC = "fish_s1_dac"
+        case mimoAudioTokenizer = "mimo_audio_tokenizer"
         case nemotronVoiceChat = "nemotron_voicechat_codec"
     }
 
@@ -94,6 +95,9 @@ public enum AudioCodecs {
         let configURL = try await HubClient(cache: cache).downloadFile(at: "config.json", from: repoID)
         let config = try readConfig(configURL)
         let family = try resolveFamily(config: config, source: modelRepo)
+        if family == .mimoAudioTokenizer {
+            return wrap(try await MiMoAudioTokenizer.fromPretrained(modelRepo, cache: cache))
+        }
         if family == .nemotronVoiceChat {
             return wrap(try await NemotronVoiceChatCodec.fromPretrained(modelRepo, cache: cache))
         }
@@ -135,6 +139,9 @@ public enum AudioCodecs {
         }
         // Older codec configs predate model_type. Prefer distinguishing config
         // fields to repository names, which may be arbitrary for local models.
+        if config["encoder_attention_heads"] != nil && config["vocoder_attention_heads"] != nil {
+            return .mimoAudioTokenizer
+        }
         if config["codec_config"] is [String: Any]
             || ((config["model"] as? [String: Any])?["speech_generation"] is [String: Any])
             || ((config["base_channels"] != nil || config["base_hidden_size"] != nil)
@@ -154,6 +161,7 @@ public enum AudioCodecs {
 
     static func inferredFamily(_ source: String) -> Family? {
         let name = source.lowercased()
+        if name.contains("mimo-audio-tokenizer") || name.contains("mimo_audio_tokenizer") { return .mimoAudioTokenizer }
         if name.contains("nemotron") && name.contains("voicechat") { return .nemotronVoiceChat }
         if name.contains("dacvae") { return .dacvae }
         if name.contains("encodec") { return .encodec }
@@ -194,6 +202,8 @@ public enum AudioCodecs {
         case .fishS1DAC:
             let model = try FishS1DAC.fromModelDirectory(directory)
             return AnyAudioCodec(sampleRate: model.sampleRate) { model.reconstruct($0) }
+        case .mimoAudioTokenizer:
+            return wrap(try MiMoAudioTokenizer.fromModelDirectory(directory))
         case .nemotronVoiceChat:
             return wrap(try NemotronVoiceChatCodec.fromModelDirectory(directory))
         }
@@ -202,6 +212,17 @@ public enum AudioCodecs {
     private static func wrap(_ model: Mimi) -> AnyAudioCodec {
         AnyAudioCodec(sampleRate: Int(model.sampleRate.rounded()), audioChannels: model.cfg.channels) {
             model.reconstruct($0.transposed(0, 2, 1)).transposed(0, 2, 1)
+        }
+    }
+
+    private static func wrap(_ model: MiMoAudioTokenizer) -> AnyAudioCodec {
+        AnyAudioCodec(sampleRate: model.sampleRate) { waveform in
+            var outputs: [MLXArray] = []
+            for batch in 0..<waveform.dim(0) {
+                let codes = try model.encode(waveform[batch], sampleRate: model.sampleRate)
+                outputs.append(try model.decode(codes, length: waveform.dim(1)))
+            }
+            return stacked(outputs, axis: 0).expandedDimensions(axis: -1)
         }
     }
 

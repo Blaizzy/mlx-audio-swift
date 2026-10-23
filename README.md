@@ -13,7 +13,7 @@ A modular Swift SDK for audio processing with MLX on Apple Silicon
 MLXAudio follows a modular design allowing you to import only what you need:
 
 - **MLXAudioCore**: Base types, protocols, and utilities
-- **MLXAudioCodecs**: Audio codec implementations (SNAC, Encodec, Vocos, Mimi, DACVAE, Descript DAC, Fish S1 DAC, S3TokenizerV2, MOSS Audio Tokenizer, Higgs Audio Tokenizer, Step-Audio-2 token-to-wav, Nemotron VoiceChat Codec)
+- **MLXAudioCodecs**: Audio codec implementations (SNAC, Encodec, Vocos, Mimi, DACVAE, Descript DAC, Fish S1 DAC, S3TokenizerV2, MOSS Audio Tokenizer, Higgs Audio Tokenizer, Step-Audio-2 token-to-wav, MiMo Audio Tokenizer, Nemotron VoiceChat Codec)
 - **MLXAudioTTS**: Text-to-Speech models (Breeze TTS 2, Qwen3-TTS, OmniVoice, Fish Audio S2 Pro, IndexTTS, Soprano, VyvoTTS, Orpheus, MOSS-TTS, Marvis TTS, Pocket TTS, Irodori TTS, Dia)
 - **MLXAudioSTT**: Speech-to-Text models (Qwen3-ASR, Qwen3-ForcedAligner, Voxtral Realtime, Cohere Transcribe, Parakeet, Parakeet Redux, Phonon-2, Nemotron ASR, GLMASR, FireRedASR2, SenseVoice, Fun-ASR-Nano, Granite Speech, Whisper, Canary, Moonshine, Wav2Vec2, MMS)
 - **MLXAudioVAD**: Voice Activity Detection & Speaker Diarization (Sortformer, SmartTurn, FSMN VAD, Silero VAD)
@@ -174,6 +174,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | Descript DAC | Descript DAC-compatible audio codec | Descript DAC-compatible checkpoints |
 | Fish S1 DAC | Fish Speech S1 audio codec | Fish S1 DAC-compatible checkpoints |
 | S3TokenizerV2 | S3 acoustic tokenizer exposed in `MLXAudioCodecs` | [mlx-community/S3TokenizerV2](https://huggingface.co/mlx-community/S3TokenizerV2) |
+| MiMo Audio Tokenizer | Offline 24 kHz encoder/decoder with 20 RVQ codebooks | [XiaomiMiMo/MiMo-Audio-Tokenizer](https://huggingface.co/XiaomiMiMo/MiMo-Audio-Tokenizer) |
 | Nemotron VoiceChat Codec | 22.05 kHz codec with offline encoding and incremental decoding | [mlx-community/NemotronLabs-VoiceChat-11B-4bit](https://huggingface.co/mlx-community/NemotronLabs-VoiceChat-11B-4bit) |
 | MOSS Audio Tokenizer | MOSS audio tokenizer runtime shared with MOSS TTS models | [mlx-community/MOSS-Audio-Tokenizer-Nano](https://huggingface.co/mlx-community/MOSS-Audio-Tokenizer-Nano) |
 | Higgs Audio Tokenizer | Higgs acoustic tokenizer decode and acoustic encode support | [bosonai/higgs-audio-v3-tts-4b](https://huggingface.co/bosonai/higgs-audio-v3-tts-4b) bundled tokenizer weights |

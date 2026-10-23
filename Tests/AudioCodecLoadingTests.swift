@@ -17,6 +17,16 @@ struct AudioCodecLoadingTests {
         #expect(try AudioCodecs.resolveFamily(
             config: ["encoder_rates": [2], "n_codebooks": 9, "semantic_codebook_size": 4096],
             source: "snapshot") == .fishS1DAC)
+        #expect(try AudioCodecs.resolveFamily(
+            config: ["model_type": "mimo_audio_tokenizer"], source: "nemotron-voicechat") == .mimoAudioTokenizer)
+        #expect(try AudioCodecs.resolveFamily(
+            config: ["model_type": "nemotron_voicechat"], source: "mimo-audio-tokenizer") == .nemotronVoiceChat)
+        #expect(try AudioCodecs.resolveFamily(
+            config: ["encoder_attention_heads": 4, "vocoder_attention_heads": 4], source: "snapshot") == .mimoAudioTokenizer)
+        #expect(try AudioCodecs.resolveFamily(
+            config: ["codec_config": ["base_channels": 4]], source: "snapshot") == .nemotronVoiceChat)
+        #expect(AudioCodecs.inferredFamily("XiaomiMiMo/MiMo-Audio-Tokenizer") == .mimoAudioTokenizer)
+        #expect(AudioCodecs.inferredFamily("mlx-community/NemotronLabs-VoiceChat-11B-4bit") == .nemotronVoiceChat)
         #expect(AudioCodecs.inferredFamily("kyutai/an-unrelated-model") == nil)
     }
 
