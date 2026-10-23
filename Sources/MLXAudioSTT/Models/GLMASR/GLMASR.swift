@@ -139,19 +139,14 @@ class GLMASRAttention: Module {
         keys = keys.reshaped(B, L, config.numKeyValueHeads, headDim).transposed(0, 2, 1, 3)
         values = values.reshaped(B, L, config.numKeyValueHeads, headDim).transposed(0, 2, 1, 3)
 
-        if let cache = cache {
-            queries = rope(queries, offset: cache.offset)
-            keys = rope(keys, offset: cache.offset)
-            (keys, values) = cache.update(keys: keys, values: values)
-        } else {
-            queries = rope(queries)
-            keys = rope(keys)
-        }
+        queries = rope(queries, offset: cache?.offset ?? 0)
+        keys = rope(keys, offset: cache?.offset ?? 0)
 
-        let output = MLXFast.scaledDotProductAttention(
+        let output = attentionWithCacheUpdate(
             queries: queries,
             keys: keys,
             values: values,
+            cache: cache,
             scale: scale,
             mask: mask
         ).transposed(0, 2, 1, 3).reshaped(B, L, -1)

@@ -28,7 +28,7 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
     @ModuleInfo(key: "encoder") var encoder: VoxtralRealtimeAudioEncoder
     @ModuleInfo(key: "decoder") var decoder: VoxtralRealtimeDecoder
 
-    private var tokenizer: VoxtralRealtimeTokenizer?
+    private var tokenizer: TekkenTokenizer?
     private var adaScaleDelay: Int = -1
 
     public var defaultGenerationParameters: STTGenerateParameters {
@@ -517,7 +517,7 @@ public extension VoxtralRealtimeModel {
         let quantConfig = try JSONDecoder().decode(VoxtralQuantizationConfig.self, from: configData)
 
         let model = VoxtralRealtimeModel(config)
-        model.tokenizer = try VoxtralRealtimeTokenizer.fromModelDirectory(modelDir)
+        model.tokenizer = try TekkenTokenizer.fromModelDirectory(modelDir)
         guard model.tokenizer != nil else {
             throw NSError(
                 domain: "VoxtralRealtimeModel",

@@ -3756,7 +3756,7 @@ struct VoxtralRealtimeSTTTests {
             encoding: .utf8
         )
 
-        let tokenizer = try VoxtralRealtimeTokenizer.fromModelDirectory(fixtureDir)
+        let tokenizer = try TekkenTokenizer.fromModelDirectory(fixtureDir)
         let text = tokenizer.decode(tokenIds: [1, 1000, 1001, 2, 32])
         #expect(text == "hello")
     }
