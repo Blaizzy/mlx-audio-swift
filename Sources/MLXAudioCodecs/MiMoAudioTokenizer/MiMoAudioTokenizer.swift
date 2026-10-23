@@ -13,16 +13,16 @@ public final class MiMoAudioTokenizer: Module {
     public static let defaultRepository = "XiaomiMiMo/MiMo-Audio-Tokenizer"
     public let config: MiMoAudioTokenizerConfig
     @ModuleInfo var encoder: MiMoTokenizerEncoder
-    @ModuleInfo var decoder: MiMoTokenizerDecoder
+    @ModuleInfo var decoder: MiMoTokenizerDecoder?
 
     public var sampleRate: Int { config.samplingRate }
     public var numQuantizers: Int { config.numQuantizers }
 
-    public init(config: MiMoAudioTokenizerConfig = MiMoAudioTokenizerConfig()) throws {
+    public init(config: MiMoAudioTokenizerConfig = MiMoAudioTokenizerConfig(), loadDecoder: Bool = true) throws {
         try config.validate()
         self.config = config
         _encoder.wrappedValue = MiMoTokenizerEncoder(config)
-        _decoder.wrappedValue = MiMoTokenizerDecoder(config)
+        _decoder.wrappedValue = loadDecoder ? MiMoTokenizerDecoder(config) : nil
     }
 
     /// Encode a waveform, averaging time-major channels to mono and resampling when needed.
@@ -97,6 +97,9 @@ public final class MiMoAudioTokenizer: Module {
     /// `length`, when given, trims padding using a sample count at the codec rate.
     public func decode(_ codes: MLXArray, segmentSize: Int = 1500,
                        length: Int? = nil) throws -> MLXArray {
+        guard let decoder else {
+            throw MiMoAudioTokenizerError.invalidInput("This MiMo tokenizer was loaded without a decoder")
+        }
         guard codes.ndim == 2, (1...numQuantizers).contains(codes.dim(0)), codes.dtype.isInteger else {
             throw MiMoAudioTokenizerError.invalidInput("Expected integer codes with shape (codebooks, frames)")
         }
@@ -126,19 +129,23 @@ public final class MiMoAudioTokenizer: Module {
     /// Adapt original Xiaomi tensor names/layouts; prepared MLX tensors pass through.
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         if config.weightsFormat == "mlx" { return weights }
+        let preparedEncoder = weights["conv1.weight"] != nil
         var result: [String: MLXArray] = [:]
         for (sourceKey, sourceValue) in weights {
-            var key = sourceKey, value = sourceValue
+            var key = preparedEncoder ? "encoder." + sourceKey : sourceKey
+            var value = sourceValue
+            if key.contains("position_embedding.") { continue }
             let fields = key.split(separator: ".").map(String.init)
             if fields.count == 7 && fields.prefix(4) == ["encoder", "quantizer", "vq", "layers"]
-                && fields[5] == "_codebook" {
+                && ["_codebook", "codebook"].contains(fields[5]) {
                 if ["cluster_size", "embed_avg", "inited"].contains(fields[6]) { continue }
                 if fields[6] == "embed" { key = "encoder.quantizer.codebooks.\(fields[4]).weight" }
-            } else if key.hasSuffix("weight") && value.ndim == 3 {
+            } else if !preparedEncoder && key.hasSuffix("weight") && value.ndim == 3 {
                 value = key.contains(".dconv") ? value.transposed(1, 2, 0) : value.transposed(0, 2, 1)
             }
             key = key.replacingOccurrences(of: "encoder.down_sample_layer.0.",
                                            with: "encoder.down_sample_layer.layers.0.")
+            key = key.replacingOccurrences(of: "encoder.down_sample.", with: "encoder.down_sample_layer.layers.0.")
             result[key] = value
         }
         return result
@@ -165,7 +172,7 @@ public final class MiMoAudioTokenizer: Module {
         return try fromModelDirectory(directory, dtype: dtype)
     }
 
-    public static func fromModelDirectory(_ directory: URL, dtype: DType? = .bfloat16) throws -> MiMoAudioTokenizer {
+    public static func fromModelDirectory(_ directory: URL, dtype: DType? = .bfloat16, loadDecoder: Bool = true) throws -> MiMoAudioTokenizer {
         if let dtype, ![DType.float32, .float16, .bfloat16].contains(dtype) {
             throw MiMoAudioTokenizerError.invalidConfiguration("inference dtype must be floating point")
         }
@@ -183,8 +190,9 @@ public final class MiMoAudioTokenizer: Module {
                 source[name] = tensor
             }
         }
-        let model = try MiMoAudioTokenizer(config: config)
+        let model = try MiMoAudioTokenizer(config: config, loadDecoder: loadDecoder)
         var weights = model.sanitize(weights: source)
+        if !loadDecoder { weights = weights.filter { $0.key.hasPrefix("encoder.") } }
         for (key, value) in weights {
             // Match the reference's cast-then-restore sequence, including BF16
             // rounding of RVQ tables before their FP32 lookup/accumulation.
@@ -192,6 +200,14 @@ public final class MiMoAudioTokenizer: Module {
             weights[key] = key.contains(".quantizer.") ? cast.asType(.float32) : cast
         }
         try model.update(parameters: ModuleParameters.unflattened(weights), verify: .all)
+        if let frequencies = source["position_embedding.inv_freq"] {
+            guard frequencies.shape == [config.dModel / config.encoderAttentionHeads / 2] else {
+                throw MiMoAudioTokenizerError.invalidConfiguration("invalid encoder rotary-frequency shape")
+            }
+            for layer in model.encoder.layers {
+                layer.attention._inverseFrequencies = MiMoRotaryFrequencies(value: frequencies)
+            }
+        }
         model.train(false)
         eval(model.parameters())
         return model
