@@ -156,6 +156,7 @@ let package = Package(
                 "Models/NemotronASR/README.md",
                 "Models/Parakeet/README.md",
                 "Models/Phonon2/README.md",
+                "Models/Qwen2Audio/README.md",
                 "Models/Qwen3ASR/README.md",
                 "Models/SenseVoice/README.md",
                 "Models/VoxtralRealtime/README.md",
