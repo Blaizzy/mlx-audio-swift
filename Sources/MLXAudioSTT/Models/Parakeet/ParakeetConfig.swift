@@ -13,6 +13,7 @@ public struct ParakeetPreprocessConfig: Codable, Sendable {
     public let padValue: Float
     public let preemph: Float
     public let logZeroGuardValue: Float
+    public let normalizeValidFrames: Bool
 
     enum CodingKeys: String, CodingKey {
         case sampleRate = "sample_rate"
@@ -27,6 +28,7 @@ public struct ParakeetPreprocessConfig: Codable, Sendable {
         case padValue = "pad_value"
         case preemph
         case logZeroGuardValue = "log_zero_guard_value"
+        case normalizeValidFrames = "normalize_valid_frames"
     }
 
     public init(
@@ -41,7 +43,8 @@ public struct ParakeetPreprocessConfig: Codable, Sendable {
         padTo: Int = 0,
         padValue: Float = 0,
         preemph: Float = 0.97,
-        logZeroGuardValue: Float = pow(2, -24)
+        logZeroGuardValue: Float = pow(2, -24),
+        normalizeValidFrames: Bool = false
     ) {
         self.sampleRate = sampleRate
         self.normalize = normalize
@@ -55,6 +58,7 @@ public struct ParakeetPreprocessConfig: Codable, Sendable {
         self.padValue = padValue
         self.preemph = preemph
         self.logZeroGuardValue = logZeroGuardValue
+        self.normalizeValidFrames = normalizeValidFrames
     }
 
     public init(from decoder: Decoder) throws {
@@ -71,6 +75,7 @@ public struct ParakeetPreprocessConfig: Codable, Sendable {
         padValue = try container.decodeIfPresent(Float.self, forKey: .padValue) ?? 0
         preemph = try container.decodeIfPresent(Float.self, forKey: .preemph) ?? 0.97
         logZeroGuardValue = try container.decodeIfPresent(Float.self, forKey: .logZeroGuardValue) ?? pow(2, -24)
+        normalizeValidFrames = try container.decodeIfPresent(Bool.self, forKey: .normalizeValidFrames) ?? false
     }
 
     public var winLength: Int {
@@ -98,6 +103,7 @@ public struct ParakeetConformerConfig: Codable, Sendable {
     public let useBias: Bool
     public let xscaling: Bool
     public let subsamplingConvChunkingFactor: Int
+    public let maskPadding: Bool
 
     enum CodingKeys: String, CodingKey {
         case featIn = "feat_in"
@@ -115,6 +121,7 @@ public struct ParakeetConformerConfig: Codable, Sendable {
         case useBias = "use_bias"
         case xscaling
         case subsamplingConvChunkingFactor = "subsampling_conv_chunking_factor"
+        case maskPadding = "mask_padding"
     }
 
     public init(
@@ -132,7 +139,8 @@ public struct ParakeetConformerConfig: Codable, Sendable {
         causalDownsampling: Bool = false,
         useBias: Bool = true,
         xscaling: Bool = false,
-        subsamplingConvChunkingFactor: Int = 1
+        subsamplingConvChunkingFactor: Int = 1,
+        maskPadding: Bool = false
     ) {
         self.featIn = featIn
         self.nLayers = nLayers
@@ -149,6 +157,7 @@ public struct ParakeetConformerConfig: Codable, Sendable {
         self.useBias = useBias
         self.xscaling = xscaling
         self.subsamplingConvChunkingFactor = subsamplingConvChunkingFactor
+        self.maskPadding = maskPadding
     }
 
     public init(from decoder: Decoder) throws {
@@ -168,6 +177,7 @@ public struct ParakeetConformerConfig: Codable, Sendable {
         useBias = try container.decodeIfPresent(Bool.self, forKey: .useBias) ?? true
         xscaling = try container.decodeIfPresent(Bool.self, forKey: .xscaling) ?? false
         subsamplingConvChunkingFactor = try container.decodeIfPresent(Int.self, forKey: .subsamplingConvChunkingFactor) ?? 1
+        maskPadding = try container.decodeIfPresent(Bool.self, forKey: .maskPadding) ?? false
     }
 }
 
