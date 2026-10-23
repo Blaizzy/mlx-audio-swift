@@ -123,16 +123,18 @@ class Qwen2TransformerBlock: Module {
 }
 
 public class Qwen2ModelInner: Module {
-    @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
+    @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding?
 
     fileprivate let layers: [Qwen2TransformerBlock]
     let norm: RMSNorm
 
-    public init(_ args: Qwen2Configuration) {
+    public init(_ args: Qwen2Configuration, includeEmbedding: Bool = true) {
         precondition(args.vocabularySize > 0)
 
-        _embedTokens.wrappedValue = Embedding(
-            embeddingCount: args.vocabularySize, dimensions: args.hiddenSize)
+        if includeEmbedding {
+            _embedTokens.wrappedValue = Embedding(
+                embeddingCount: args.vocabularySize, dimensions: args.hiddenSize)
+        }
 
         self.layers = (0 ..< args.hiddenLayers)
             .map { _ in
@@ -142,12 +144,29 @@ public class Qwen2ModelInner: Module {
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
-        callAsFunction(inputEmbeddings: embedTokens(inputs), cache: cache)
+        callAsFunction(inputEmbeddings: embed(inputs), cache: cache)
+    }
+
+    /// Look up tokens when this stack includes an embedding table.
+    public func embed(_ tokens: MLXArray) -> MLXArray {
+        guard let embedTokens else {
+            preconditionFailure("This Qwen2 stack accepts embeddings only")
+        }
+        return embedTokens(tokens)
     }
 
     public func callAsFunction(inputEmbeddings: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
+        callAsFunction(
+            inputEmbeddings: inputEmbeddings, cache: cache,
+            mask: createAttentionMask(h: inputEmbeddings, cache: cache?.first))
+    }
+
+    /// Run an embedded prompt with an explicit attention mask, including full attention.
+    public func callAsFunction(
+        inputEmbeddings: MLXArray, cache: [KVCache]? = nil,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode
+    ) -> MLXArray {
         var h = inputEmbeddings
-        let mask = createAttentionMask(h: h, cache: cache?.first)
 
         for (i, layer) in layers.enumerated() {
             h = layer(h, mask: mask, cache: cache?[i])
@@ -183,7 +202,7 @@ public class Qwen2Model: Module, LLMModel, KVCacheDimensionProvider {
 
     /// Look up text embeddings before merging modality-specific features.
     public func embedTokens(_ tokens: MLXArray) -> MLXArray {
-        model.embedTokens(tokens)
+        model.embed(tokens)
     }
 
     /// Decode an embedded prompt using the same layers and cache as text input.
@@ -196,7 +215,7 @@ public class Qwen2Model: Module, LLMModel, KVCacheDimensionProvider {
         if let lmHead {
             out = lmHead(out)
         } else {
-            out = model.embedTokens.asLinear(out)
+            out = model.embedTokens!.asLinear(out)
         }
         return out
     }

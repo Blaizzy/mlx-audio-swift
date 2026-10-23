@@ -10,12 +10,15 @@ private func mimoNorm(_ config: MiMoAudioTokenizerConfig, _ dimensions: Int) -> 
         : LayerNorm(dimensions: dimensions, eps: 1e-5)
 }
 
+struct MiMoRotaryFrequencies { let value: MLXArray }
+
 final class MiMoTokenizerAttention: Module, UnaryLayer {
     let heads: Int
     let headDim: Int
     let theta: Float
     let causal: Bool
     let window: [Int]
+    var _inverseFrequencies: MiMoRotaryFrequencies?
     @ModuleInfo(key: "q_proj") var qProj: Linear
     @ModuleInfo(key: "k_proj") var kProj: Linear
     @ModuleInfo(key: "v_proj") var vProj: Linear
@@ -37,7 +40,7 @@ final class MiMoTokenizerAttention: Module, UnaryLayer {
         // The reference casts the frequency buffer to activation dtype before
         // forming its FP32 phases; ordinary RoPE would lose this BF16 rounding.
         let exponent = -MLXArray(stride(from: 0, to: headDim, by: 2).map(Float.init)) / Float(headDim)
-        let frequencies = pow(MLXArray(theta), exponent).asType(x.dtype).asType(.float32)
+        let frequencies = (_inverseFrequencies?.value ?? pow(MLXArray(theta), exponent)).asType(x.dtype).asType(.float32)
         let positions = MLXArray((0..<x.dim(2)).map(Float.init)).expandedDimensions(axis: -1)
         let angles = positions * frequencies
         let cosine = cos(angles).asType(x.dtype)

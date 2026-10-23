@@ -152,6 +152,7 @@ let package = Package(
                 "Models/GraniteSpeechNAR/README.md",
                 "Models/GraniteSpeech5CTC/README.md",
                 "Models/MegaASR/README.md",
+                "Models/MiMoASR/README.md",
                 "Models/MossTranscribeDiarize/README.md",
                 "Models/NemotronASR/README.md",
                 "Models/Parakeet/README.md",
