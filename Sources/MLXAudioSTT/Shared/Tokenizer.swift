@@ -2,7 +2,7 @@ import Foundation
 import Hub
 import Tokenizers
 
-func loadQwen2AudioTokenizer(from directory: URL) async throws -> Tokenizer {
+func loadSTTTokenizer(from directory: URL) async throws -> Tokenizer {
     let configuration = LanguageModelConfigurationFromHub(modelFolder: directory)
     guard let config = try await configuration.tokenizerConfig else {
         throw TokenizerError.missingConfig

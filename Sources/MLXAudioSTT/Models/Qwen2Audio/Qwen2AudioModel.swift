@@ -316,7 +316,7 @@ public final class Qwen2AudioModel: Module, STTGenerationModel {
             }
         }
         try model.update(parameters: ModuleParameters.unflattened(weights), verify: .all)
-        model.tokenizer = try await loadQwen2AudioTokenizer(from: directory)
+        model.tokenizer = try await loadSTTTokenizer(from: directory)
         model.audioTower.preparePositions()
         model.train(false)
         eval(model)

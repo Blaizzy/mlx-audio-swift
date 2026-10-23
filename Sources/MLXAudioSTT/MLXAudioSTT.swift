@@ -81,6 +81,9 @@ public enum STT {
         case "glmasr", "glm":
             if let directory { return try await GLMASRModel.fromModelDirectory(directory) }
             return try await GLMASRModel.fromPretrained(modelRepo, cache: cache)
+        case "vibevoice", "vibevoice_asr":
+            if let directory { return try await VibeVoiceASRModel.fromModelDirectory(directory) }
+            return try await VibeVoiceASRModel.fromPretrained(modelRepo, cache: cache)
         case "voxtral":
             if let directory { return try await VoxtralModel.fromModelDirectory(directory) }
             return try await VoxtralModel.fromPretrained(modelRepo, cache: cache)
@@ -172,6 +175,7 @@ public enum STT {
         if lower.contains("glmasr") || lower.contains("glm-asr") {
             return "glmasr"
         }
+        if lower.contains("vibevoice") { return "vibevoice" }
         if lower.contains("voxtral") {
             return lower.contains("realtime") ? "voxtral_realtime" : "voxtral"
         }

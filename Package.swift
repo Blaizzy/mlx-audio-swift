@@ -159,6 +159,7 @@ let package = Package(
                 "Models/Qwen2Audio/README.md",
                 "Models/Qwen3ASR/README.md",
                 "Models/SenseVoice/README.md",
+                "Models/VibeVoiceASR/README.md",
                 "Models/Voxtral/README.md",
                 "Models/VoxtralRealtime/README.md",
                 "Models/Whisper/README.md",
