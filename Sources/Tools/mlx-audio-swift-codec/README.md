@@ -10,7 +10,7 @@ and channel count.
 
 ```bash
 xcodebuild -scheme MLXAudio-Package -destination 'platform=macOS' \
-  -derivedDataPath .build/codec build CODE_SIGNING_ALLOWED=NO
+  -derivedDataPath .build/codec build CODE_SIGNING_ALLOWED=NO MTL_FAST_MATH=NO
 
 ./.build/codec/Build/Products/Debug/mlx-audio-swift-codec --audio /path/to/input.wav
 ```
