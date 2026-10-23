@@ -72,6 +72,20 @@ public enum STT {
         case "mega_asr":
             if let directory { return try await MegaASRModel.fromModelDirectory(directory) }
             return try await MegaASRModel.fromPretrained(modelRepo, cache: cache)
+        case "mimo", "mimo_audio", "mimo_v2_asr", "mimo_v2.5_asr":
+            if let directory { return try await MiMoASRModel.fromModelDirectory(directory, cache: cache) }
+            return try await MiMoASRModel.fromPretrained(modelRepo, cache: cache)
+        case "qwen2":
+            // MiMo checkpoints retain their backbone's model type; speech fields identify the ASR architecture.
+            let resolvedDirectory: URL
+            if let directory { resolvedDirectory = directory }
+            else {
+                guard let repo = Repo.ID(rawValue: modelRepo) else { throw STTModelError.invalidRepositoryID(modelRepo) }
+                resolvedDirectory = try await ModelUtils.resolveOrDownloadModel(repoID: repo, requiredExtension: ".safetensors", cache: cache)
+            }
+            let config = try JSONSerialization.jsonObject(with: Data(contentsOf: resolvedDirectory.appendingPathComponent("config.json"))) as? [String: Any]
+            guard config?["audio_channels"] != nil, config?["speech_vocab_size"] != nil else { throw STTModelError.unsupportedModelType(resolved) }
+            return try await MiMoASRModel.fromModelDirectory(resolvedDirectory, cache: cache)
         case "qwen2_audio":
             if let directory { return try await Qwen2AudioModel.fromModelDirectory(directory) }
             return try await Qwen2AudioModel.fromPretrained(modelRepo, cache: cache)
@@ -179,6 +193,7 @@ public enum STT {
             return "glmasr"
         }
         if lower.contains("ming-3.0-asr") || lower.contains("ming_v3_asr") { return "ming_v3_asr" }
+        if lower.contains("mimo") { return "mimo_v2_asr" }
         if lower.contains("vibevoice") { return "vibevoice" }
         if lower.contains("voxtral") {
             return lower.contains("realtime") ? "voxtral_realtime" : "voxtral"
