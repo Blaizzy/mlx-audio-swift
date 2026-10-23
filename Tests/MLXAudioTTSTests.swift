@@ -2414,6 +2414,20 @@ struct KokoroMultilingualProcessorTests {
         #expect(KokoroMultilingualProcessor.languageForVoice("xf_unknown") == nil)
     }
 
+    /// Lexicons come from the cache the processor was given, not HubCache.default.
+    @Test func lexiconIsReadFromTheGivenCache() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let lexiconDir = root.appendingPathComponent("mlx-audio/beshkenadze_kokoro-ipa-lexicons")
+        try FileManager.default.createDirectory(at: lexiconDir, withIntermediateDirectories: true)
+        try "zorblat\tz o ɹ b l a t\n".write(
+            to: lexiconDir.appendingPathComponent("es_lexicon.tsv"), atomically: true, encoding: .utf8)
+
+        let processor = KokoroMultilingualProcessor(cache: HubCache(cacheDirectory: root))
+        try await processor.prepare(for: "es")
+        #expect(try processor.process(text: "zorblat", language: "es") == "zoɹblat")
+    }
+
     @Test func processEnglishDelegatesToMisaki() async throws {
         guard metalAvailable else { return }
         let env = ProcessInfo.processInfo.environment

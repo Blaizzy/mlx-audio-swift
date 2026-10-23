@@ -25,6 +25,14 @@ public enum TTS {
         case repository(String, cache: HubCache)
         case localDirectory(URL, repoHint: String)
 
+        /// Where text processors keep their own downloads.
+        var cache: HubCache {
+            switch self {
+            case .repository(_, let cache): cache
+            case .localDirectory: .default
+            }
+        }
+
         var fallbackName: String {
             switch self {
             case .repository(let modelRepo, _):
@@ -196,7 +204,7 @@ public enum TTS {
                 local: { modelDir, _ in try await ChatterboxModel.fromModelDirectory(modelDir, hfToken: nil) }
             )
         case "kitten_tts", "kitten":
-            let processor = textProcessor ?? MisakiTextProcessor()
+            let processor = textProcessor ?? MisakiTextProcessor(cache: source.cache)
             return try await load(
                 source,
                 modelType: resolvedType,
@@ -204,7 +212,7 @@ public enum TTS {
                 local: { modelDir, _ in try await KittenTTSModel.fromModelDirectory(modelDir, textProcessor: processor) }
             )
         case "kokoro", "kokoro_tts":
-            let processor = textProcessor ?? KokoroMultilingualProcessor()
+            let processor = textProcessor ?? KokoroMultilingualProcessor(cache: source.cache)
             return try await load(
                 source,
                 modelType: resolvedType,
