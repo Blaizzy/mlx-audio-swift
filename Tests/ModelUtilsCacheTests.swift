@@ -46,7 +46,10 @@ private struct ModelCacheFixture {
     let session: URLSession
     let state = OSAllocatedUnfairLock(initialState: NetworkState())
 
-    init(extraFiles: [String: Data] = [:], cachedFiles: [String]? = nil, cold: Bool = false) throws {
+    init(
+        baseFiles: [String: Data] = ModelCacheFixture.baseFiles, extraFiles: [String: Data] = [:],
+        cachedFiles: [String]? = nil, cold: Bool = false
+    ) throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         cache = HubCache(cacheDirectory: root)
         modelDir = root.appendingPathComponent("mlx-audio/mlx-audio-tests_cache-fixture")
@@ -55,10 +58,10 @@ private struct ModelCacheFixture {
         configuration.protocolClasses = [ModelCacheProtocol.self]
         session = URLSession(configuration: configuration)
 
-        let files = Self.baseFiles.merging(extraFiles) { _, extra in extra }
+        let files = baseFiles.merging(extraFiles) { _, extra in extra }
         if !cold {
             let snapshot = try cache.snapshotPath(repo: repoID, kind: .model, commitHash: Self.commit)
-            for name in cachedFiles ?? Array(Self.baseFiles.keys) {
+            for name in cachedFiles ?? Array(baseFiles.keys) {
                 for directory in [modelDir, snapshot] {
                     let url = directory.appendingPathComponent(name)
                     try FileManager.default.createDirectory(
@@ -227,6 +230,19 @@ struct ModelUtilsCacheTests {
         fixture.state.withLock { $0.offline = true }
 
         await #expect(throws: ModelUtilsError.self) { try await fixture.resolve(["*.mvn"]) }
+    }
+
+    @Test func snapshotWithoutConfigWorksOfflineAfterOneDownload() async throws {
+        let fixture = try ModelCacheFixture(baseFiles: ["model.safetensors": Data([1])], cold: true)
+        defer { fixture.cleanUp() }
+        _ = try await fixture.resolve()
+        let count = fixture.requestCount
+        #expect(count > 0)
+
+        fixture.state.withLock { $0.offline = true }
+        let resolved = try await fixture.resolve()
+        #expect(resolved.path == fixture.modelDir.path)
+        #expect(fixture.requestCount == count)
     }
 
     @Test func unsafeListedPathIsRejected() async throws {
