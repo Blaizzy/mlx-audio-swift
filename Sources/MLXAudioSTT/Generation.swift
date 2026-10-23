@@ -54,6 +54,9 @@ public struct STTGenerateParameters: Sendable {
 }
 
 public protocol STTGenerationModel: AnyObject {
+    /// Input waveform sample rate expected by the model.
+    var sampleRate: Int { get }
+
     var defaultGenerationParameters: STTGenerateParameters { get }
 
     func generate(
@@ -68,6 +71,8 @@ public protocol STTGenerationModel: AnyObject {
 }
 
 public extension STTGenerationModel {
+    var sampleRate: Int { 16000 }
+
     func generate(
         audio: MLXArray,
         generationParameters: STTGenerateParameters? = nil

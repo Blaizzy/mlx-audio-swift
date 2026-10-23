@@ -56,11 +56,19 @@ private struct Segment {
     let text: String
     let start: Double
     let end: Double
+    let metadata: [String: Any]
 }
 
 private enum LoadedModel {
     case stt(any STTGenerationModel)
     case forcedAligner(Qwen3ForcedAlignerModel)
+
+    var sampleRate: Int {
+        switch self {
+        case .stt(let model): return model.sampleRate
+        case .forcedAligner: return 16000
+        }
+    }
 }
 
 private struct Options {
@@ -269,7 +277,7 @@ enum App {
 
         let model = try await loadModel(repo: options.model)
         let (inputSampleRate, inputAudio) = try loadAudioArray(from: inputURL)
-        let audio = try prepareAudioForSTT(inputAudio, inputSampleRate: inputSampleRate, targetSampleRate: 16000)
+        let audio = try prepareAudioForSTT(inputAudio, inputSampleRate: inputSampleRate, targetSampleRate: model.sampleRate)
 
         let startTime = CFAbsoluteTimeGetCurrent()
 
@@ -278,8 +286,8 @@ enum App {
             print("Audio path: \(inputURL.path)")
             print("Output path: \(options.outputPath!).\(options.format.rawValue)")
             print("Format: \(options.format.rawValue)")
-            if inputSampleRate != 16000 {
-                print("Resampled audio: \(inputSampleRate) Hz -> 16000 Hz")
+            if inputSampleRate != model.sampleRate {
+                print("Resampled audio: \(inputSampleRate) Hz -> \(model.sampleRate) Hz")
             }
             if options.frameThreshold != 25 {
                 print("Warning: --frame-threshold is currently ignored by this CLI.")
@@ -499,12 +507,12 @@ enum App {
             let jsonObject: [String: Any] = [
                 "text": output.text,
                 "segments": (segments ?? []).map {
-                    [
+                    $0.metadata.merging([
                         "text": $0.text,
                         "start": $0.start,
                         "end": $0.end,
                         "duration": $0.end - $0.start,
-                    ]
+                    ]) { _, normalized in normalized }
                 },
                 "language": output.language as Any,
                 "prompt_tokens": output.promptTokens,
@@ -532,7 +540,8 @@ enum App {
             else {
                 continue
             }
-            segments.append(Segment(text: text, start: start, end: end))
+            let metadata = item.filter { JSONSerialization.isValidJSONObject([$0.key: $0.value]) }
+            segments.append(Segment(text: text, start: start, end: end, metadata: metadata))
         }
 
         return segments.isEmpty ? nil : segments
