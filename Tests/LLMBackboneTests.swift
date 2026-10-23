@@ -99,6 +99,20 @@ struct LLMBackboneTests {
                 < Self.parityTolerance)
     }
 
+    @Test func qwen2EmbeddedPromptsMatchTokenInputAndCachedDecoding() throws {
+        let model = try makeQwen2(tied: false)
+        let tokens = MLXArray([Int32(1), 2, 3, 4, 5]).reshaped(1, 5)
+        let embeddings = model.embedTokens(tokens)
+        let expected = model(tokens, cache: nil)
+        let actual = model(inputEmbeddings: embeddings)
+        #expect(abs(actual - expected).max().item(Float.self) < Self.parityTolerance)
+        let cache = try model.newCache(parameters: nil)
+        eval(model(inputEmbeddings: embeddings[0..., ..<4], cache: cache), cache)
+        let continuation = model(tokens[0..., 4...], cache: cache)
+        #expect(abs(continuation - expected[0..., 4...]).max().item(Float.self) < Self.parityTolerance)
+        #expect(cache.allSatisfy { $0.offset == 5 })
+    }
+
     @Test func marvisCachedDecodingMatchesFullForward() {
         let config = CSMLlamaConfiguration(
             hiddenSize: 8, hiddenLayers: 2, intermediateSize: 16, attentionHeads: 2,

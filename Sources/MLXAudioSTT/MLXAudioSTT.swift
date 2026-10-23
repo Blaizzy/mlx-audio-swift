@@ -72,6 +72,9 @@ public enum STT {
         case "mega_asr":
             if let directory { return try await MegaASRModel.fromModelDirectory(directory) }
             return try await MegaASRModel.fromPretrained(modelRepo, cache: cache)
+        case "qwen2_audio":
+            if let directory { return try await Qwen2AudioModel.fromModelDirectory(directory) }
+            return try await Qwen2AudioModel.fromPretrained(modelRepo, cache: cache)
         case "qwen3_asr":
             if let directory { return try await Qwen3ASRModel.fromModelDirectory(directory) }
             return try await Qwen3ASRModel.fromPretrained(modelRepo, cache: cache)
@@ -159,6 +162,7 @@ public enum STT {
         if lower.contains("mega-asr") || lower.contains("mega_asr") {
             return "mega_asr"
         }
+        if lower.contains("qwen2-audio") || lower.contains("qwen2_audio") { return "qwen2_audio" }
         if lower.contains("qwen3-asr") || lower.contains("qwen3_asr") {
             return "qwen3_asr"
         }
