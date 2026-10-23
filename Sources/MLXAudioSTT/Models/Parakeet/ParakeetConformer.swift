@@ -51,10 +51,11 @@ final class ParakeetConvolution: Module {
         )
     }
 
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
+    func callAsFunction(_ x: MLXArray, valid: MLXArray? = nil) -> MLXArray {
         let pw = pointwiseConv1(x)
         let split = pw.split(parts: 2, axis: 2)
-        let gated = split[0] * sigmoid(split[1])
+        var gated = split[0] * sigmoid(split[1])
+        if let valid { gated = MLX.where(valid.expandedDimensions(axis: 2), gated, MLXArray(Float(0))) }
         let dw = depthwiseConv(gated)
         return pointwiseConv2(silu(batchNorm(dw)))
     }
@@ -67,6 +68,7 @@ final class ParakeetDwStridingSubsampling: Module {
     let kernelSize: Int = 3
     let padding: Int = 1
     let convChannels: Int
+    let maskPadding: Bool
 
     @ModuleInfo(key: "conv0") var conv0: Conv2d
     @ModuleInfo(key: "depthwise_layers") var depthwiseLayers: [Conv2d]
@@ -74,6 +76,7 @@ final class ParakeetDwStridingSubsampling: Module {
     @ModuleInfo(key: "out") var out: Linear
 
     init(args: ParakeetConformerConfig) {
+        self.maskPadding = args.maskPadding
         self.subsamplingFactor = args.subsamplingFactor
         self.samplingNum = Int(log2(Double(args.subsamplingFactor)))
         self.convChannels = args.subsamplingConvChannels
@@ -132,11 +135,22 @@ final class ParakeetDwStridingSubsampling: Module {
         for _ in 0..<samplingNum {
             outLengths = floor((outLengths + Float(2 * padding - kernelSize)) / Float(stride)) + 1
         }
-        let intLengths = outLengths.asType(.int32)
+        var intLengths = outLengths.asType(.int32)
 
         var y = x.expandedDimensions(axis: 3)  // [B, T, F, 1]
-        y = relu(conv0(y))
-        if !depthwiseLayers.isEmpty {
+        if maskPadding {
+            intLengths = lengths.asType(.int32)
+            func maskStridedOutput(_ output: MLXArray) -> MLXArray {
+                intLengths = floor((intLengths.asType(.float32) + 1) / 2).asType(.int32)
+                let valid = MLXArray(0..<output.dim(1)).expandedDimensions(axis: 0) .< intLengths.expandedDimensions(axis: 1)
+                return MLX.where(valid.expandedDimensions(axes: [2, 3]), output, MLXArray(Float(0)))
+            }
+            y = relu(maskStridedOutput(conv0(y)))
+            for i in depthwiseLayers.indices {
+                y = relu(pointwiseLayers[i](maskStridedOutput(depthwiseLayers[i](y))))
+            }
+        } else {
+            y = relu(conv0(y))
             for i in depthwiseLayers.indices {
                 y = relu(pointwiseLayers[i](depthwiseLayers[i](y)))
             }
@@ -203,7 +217,7 @@ final class ParakeetConformerBlock: Module {
         self._normOut.wrappedValue = LayerNorm(dimensions: args.dModel)
     }
 
-    func callAsFunction(_ x: MLXArray, posEmb: MLXArray? = nil, mask: MLXArray? = nil) -> MLXArray {
+    func callAsFunction(_ x: MLXArray, posEmb: MLXArray? = nil, mask: MLXArray? = nil, valid: MLXArray? = nil) -> MLXArray {
         var y = x + MLXArray(Float(0.5)).asType(x.dtype) * feedForward1(normFeedForward1(x))
 
         let xNorm = normSelfAtt(y)
@@ -219,7 +233,7 @@ final class ParakeetConformerBlock: Module {
             y = y + mha(xNorm, xNorm, xNorm, mask: mask)
         }
 
-        y = y + conv(normConv(y))
+        y = y + conv(normConv(y), valid: valid)
         y = y + MLXArray(Float(0.5)).asType(y.dtype) * feedForward2(normFeedForward2(y))
         return normOut(y)
     }
@@ -258,7 +272,7 @@ final class ParakeetConformer: Module {
     }
 
     func callAsFunction(_ x: MLXArray, lengths: MLXArray? = nil) -> (MLXArray, MLXArray) {
-        let inLengths = lengths ?? MLXArray(Array(repeating: Int32(x.shape[1]), count: x.shape[0]))
+        let inLengths = lengths ?? MLXArray(Array(repeating: Int32(x.shape[1] - (args.maskPadding ? 1 : 0)), count: x.shape[0]))
 
         let encoded: (MLXArray, MLXArray)
         if let preEncodeDw {
@@ -278,8 +292,16 @@ final class ParakeetConformer: Module {
             pos = encoded.1
         }
 
+        var valid: MLXArray? = nil
+        var mask: MLXArray? = nil
+        if args.maskPadding {
+            let frameValidity = MLXArray(0..<h.dim(1)).expandedDimensions(axis: 0) .< outLengths.expandedDimensions(axis: 1)
+            valid = frameValidity
+            mask = MLX.where(frameValidity.expandedDimensions(axes: [1, 2]),
+                MLXArray(Float(0)).asType(h.dtype), MLXArray(-Float.infinity).asType(h.dtype))
+        }
         for layer in layers {
-            h = layer(h, posEmb: pos)
+            h = layer(h, posEmb: pos, mask: mask, valid: valid)
         }
         return (h, outLengths)
     }

@@ -8,7 +8,10 @@ enum ParakeetAudio {
         config: ParakeetPreprocessConfig
     ) -> MLXArray {
         let originalDType = audio.dtype
-        var x = audio
+        let validFrames = audio.size / config.hopLength
+        precondition(!config.normalizeValidFrames || validFrames >= 2,
+            "Parakeet Redux requires at least two audio frames")
+        var x = config.normalizeValidFrames ? audio.asType(.float32) : audio
 
         if config.padTo > 0 && x.shape[0] < config.padTo {
             let padLength = config.padTo - x.shape[0]
@@ -31,7 +34,8 @@ enum ParakeetAudio {
             padMode: .constant
         )
 
-        let power = MLX.abs(stftOutput).square().asType(originalDType)
+        let powerDType: DType = config.normalizeValidFrames ? .float32 : originalDType
+        let power = MLX.abs(stftOutput).square().asType(powerDType)
         let filters = melFilters(
             sampleRate: config.sampleRate,
             nFft: config.nFft,
@@ -43,12 +47,13 @@ enum ParakeetAudio {
         var mel = MLX.matmul(power, filters.asType(power.dtype))
         mel = MLX.log(mel + MLXArray(config.logZeroGuardValue, dtype: mel.dtype))
 
-        let normalized: MLXArray
+        var normalized: MLXArray
+        let validMel = config.normalizeValidFrames ? mel[0..<validFrames] : mel
         if config.normalize == "per_feature" {
-            let mean = MLX.mean(mel, axis: 0, keepDims: true)
-            let denominator = max(mel.dim(0) - 1, 1)
+            let mean = MLX.mean(validMel, axis: 0, keepDims: true)
+            let denominator = max(validMel.dim(0) - 1, 1)
             let variance = MLX.sum(
-                (mel - mean).square(), axis: 0, keepDims: true
+                (validMel - mean).square(), axis: 0, keepDims: true
             ) / Float(denominator)
             let std = MLX.sqrt(variance)
             normalized = (mel - mean) / (std + MLXArray(1e-5, dtype: mel.dtype))
@@ -58,6 +63,10 @@ enum ParakeetAudio {
             normalized = (mel - mean) / (std + MLXArray(1e-5, dtype: mel.dtype))
         }
 
+        if config.normalizeValidFrames {
+            let valid = (MLXArray(0..<mel.dim(0)) .< validFrames).expandedDimensions(axis: 1)
+            normalized = MLX.where(valid, normalized, MLXArray(Float(0)))
+        }
         return normalized.expandedDimensions(axis: 0).asType(originalDType)
     }
 
