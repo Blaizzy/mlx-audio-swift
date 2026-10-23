@@ -81,7 +81,10 @@ public enum STT {
         case "glmasr", "glm":
             if let directory { return try await GLMASRModel.fromModelDirectory(directory) }
             return try await GLMASRModel.fromPretrained(modelRepo, cache: cache)
-        case "voxtral", "voxtral_realtime":
+        case "voxtral":
+            if let directory { return try await VoxtralModel.fromModelDirectory(directory) }
+            return try await VoxtralModel.fromPretrained(modelRepo, cache: cache)
+        case "voxtral_realtime":
             if let directory { return try VoxtralRealtimeModel.fromDirectory(directory) }
             return try await VoxtralRealtimeModel.fromPretrained(modelRepo, cache: cache)
         case "cohere_asr", "cohere":
@@ -145,7 +148,7 @@ public enum STT {
         return trimmed.lowercased()
     }
 
-    private static func inferModelType(from modelRepo: String) -> String? {
+    static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
         if lower.contains("higgs-audio-v3-stt") || lower.contains("higgs_audio_3") {
             return "higgs_audio_3"
@@ -170,7 +173,7 @@ public enum STT {
             return "glmasr"
         }
         if lower.contains("voxtral") {
-            return "voxtral_realtime"
+            return lower.contains("realtime") ? "voxtral_realtime" : "voxtral"
         }
         if lower.contains("cohere") {
             return "cohere_asr"
