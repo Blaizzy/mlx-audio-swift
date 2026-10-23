@@ -6,7 +6,6 @@ import MLXAudioCore
 
 enum AppError: Error, LocalizedError, CustomStringConvertible {
     case inputFileNotFound(String)
-    case unsupportedModelRepo(String)
     case failedToCreateAudioBuffer
     case failedToAccessAudioBufferData
 
@@ -16,32 +15,11 @@ enum AppError: Error, LocalizedError, CustomStringConvertible {
         switch self {
         case .inputFileNotFound(let path):
             "Input audio file not found: \(path)"
-        case .unsupportedModelRepo(let repo):
-            """
-            Unsupported codec repo: \(repo)
-            Expected repo id containing one of: dacvae, encodec, snac, mimi, descript, fish_s1_dac.
-            """
         case .failedToCreateAudioBuffer:
             "Failed to create audio buffer"
         case .failedToAccessAudioBufferData:
             "Failed to access audio buffer data"
         }
-    }
-}
-
-private struct AnyAudioCodecModel {
-    let codecSampleRate: Double?
-    private let reconstructImpl: (MLXArray) -> MLXArray
-
-    init<M: AudioCodecModel>(_ model: M) {
-        codecSampleRate = model.codecSampleRate
-        reconstructImpl = { waveform in
-            model.reconstruct(waveform)
-        }
-    }
-
-    func reconstruct(_ waveform: MLXArray) -> MLXArray {
-        reconstructImpl(waveform)
     }
 }
 
@@ -73,54 +51,53 @@ enum App {
         }
 
         print("Loading codec model (\(modelRepo))")
-        let model = try await loadCodecModel(from: modelRepo)
+        let model = try await AudioCodecs.loadModel(modelRepo: modelRepo)
 
         print("Loading audio (\(inputURL.path))")
-        let (inputSampleRate, audio) = try loadAudioArray(from: inputURL)
-        if let codecSampleRate = model.codecSampleRate {
-            let roundedCodecRate = Int(codecSampleRate.rounded())
-            if inputSampleRate != roundedCodecRate {
-                print("Warning: input sample rate \(inputSampleRate) != model sample rate \(roundedCodecRate). No resampling is applied.")
-            }
-        }
-        let waveform = audio.expandedDimensions(axis: 0).expandedDimensions(axis: -1)  // (B, T, 1)
+        let waveform = try loadWaveform(from: inputURL, sampleRate: model.sampleRate, channels: model.audioChannels)
 
-        print("Running reconstruct (encodeAudio -> decodeAudio)")
-        let reconstructed = model.reconstruct(waveform).squeezed().asArray(Float.self)
+        print("Running codec reconstruction")
+        let reconstructed = try model.reconstruct(waveform)
 
         let outputURL = makeOutputURL(outputPath: outputPath, inputURL: inputURL)
-        try writeWavFile(samples: reconstructed, sampleRate: Double(inputSampleRate), outputURL: outputURL)
+        try writeWavFile(waveform: reconstructed, sampleRate: Double(model.sampleRate), outputURL: outputURL)
         print("Wrote reconstructed WAV to \(outputURL.path)")
     }
 
-    private static func loadCodecModel(from modelRepo: String) async throws -> AnyAudioCodecModel {
-        let repo = modelRepo.lowercased()
-
-        if repo.contains("dacvae") {
-            return AnyAudioCodecModel(try await DACVAE.fromPretrained(modelRepo))
+    private static func loadWaveform(from url: URL, sampleRate: Int, channels: Int) throws -> MLXArray {
+        let file = try AVAudioFile(forReading: url)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)) else {
+            throw AppError.failedToCreateAudioBuffer
         }
-        if repo.contains("encodec") {
-            return AnyAudioCodecModel(try await Encodec.fromPretrained(modelRepo))
+        try file.read(into: buffer)
+        guard let data = buffer.floatChannelData else { throw AppError.failedToAccessAudioBufferData }
+        let frames = Int(buffer.frameLength)
+        let inputChannels = Int(buffer.format.channelCount)
+        guard frames > 0, inputChannels > 0 else {
+            throw AudioCodecError.invalidWaveform("Input audio must contain samples and channels")
         }
-        if repo.contains("snac") {
-            return AnyAudioCodecModel(try await SNAC.fromPretrained(modelRepo))
+        var signals = (0..<inputChannels).map { Array(UnsafeBufferPointer(start: data[$0], count: frames)) }
+        if channels == 1 && inputChannels > 1 {
+            var mono = [Float](repeating: 0, count: frames)
+            for signal in signals {
+                for frame in 0..<frames { mono[frame] += signal[frame] / Float(inputChannels) }
+            }
+            signals = [mono]
+        } else if inputChannels == 1 && channels > 1 {
+            signals = Array(repeating: signals[0], count: channels)
+        } else if inputChannels != channels {
+            throw AudioCodecError.invalidWaveform("Codec requires \(channels) channels, input has \(inputChannels)")
         }
-        if repo.contains("mimi") || repo.contains("moshiko") || modelRepo.hasPrefix("kyutai/") {
-            return AnyAudioCodecModel(
-                try await Mimi.fromPretrained(
-                    repoId: modelRepo,
-                    progressHandler: { _ in }
-                )
-            )
+        let inputRate = Int(buffer.format.sampleRate.rounded())
+        if inputRate != sampleRate {
+            signals = try signals.map { try resampleAudio($0, from: inputRate, to: sampleRate) }
         }
-        if repo.contains("descript") {
-            return AnyAudioCodecModel(try await DescriptDAC.fromPretrained(modelRepo))
+        let outputFrames = signals[0].count
+        var interleaved = [Float](repeating: 0, count: outputFrames * channels)
+        for channel in 0..<channels {
+            for frame in 0..<outputFrames { interleaved[frame * channels + channel] = signals[channel][frame] }
         }
-        if repo.contains("fish_s1_dac") || repo.contains("fish-s1-dac") {
-            return AnyAudioCodecModel(try await FishS1DAC.fromPretrained(modelRepo))
-        }
-
-        throw AppError.unsupportedModelRepo(modelRepo)
+        return MLXArray(interleaved, [1, outputFrames, channels])
     }
 
     private static func makeOutputURL(outputPath: String?, inputURL: URL) -> URL {
@@ -138,29 +115,26 @@ enum App {
     }
 
     private static func resolveURL(path: String) -> URL {
-        if path.hasPrefix("/") {
-            return URL(fileURLWithPath: path)
-        }
-        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent(path)
+        URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
     }
 
-    private static func writeWavFile(samples: [Float], sampleRate: Double, outputURL: URL) throws {
-        let frameCount = AVAudioFrameCount(samples.count)
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+    private static func writeWavFile(waveform: MLXArray, sampleRate: Double, outputURL: URL) throws {
+        let frames = waveform.dim(1)
+        let channels = waveform.dim(2)
+        let samples = waveform.asType(.float32).asArray(Float.self)
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: AVAudioChannelCount(channels)),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)) else {
             throw AppError.failedToCreateAudioBuffer
         }
-        buffer.frameLength = frameCount
-        guard let channelData = buffer.floatChannelData else {
-            throw AppError.failedToAccessAudioBufferData
-        }
-        for i in 0..<samples.count {
-            channelData[0][i] = samples[i]
+        buffer.frameLength = AVAudioFrameCount(frames)
+        guard let data = buffer.floatChannelData else { throw AppError.failedToAccessAudioBufferData }
+        for channel in 0..<channels {
+            for frame in 0..<frames { data[channel][frame] = samples[frame * channels + channel] }
         }
         let audioFile = try AVAudioFile(forWriting: outputURL, settings: format.settings)
         try audioFile.write(from: buffer)
     }
+
 }
 
 enum CLIError: Error, CustomStringConvertible {
@@ -227,14 +201,14 @@ struct CLI {
         print(
             """
             Usage:
-              \(executable) --audio <path> [--model <hf-repo>] [--output <path>]
+              \(executable) --audio <path> [--model <repo-or-path>] [--output <path>]
 
             Description:
-              Loads a codec model, runs protocol-based reconstruct() on input audio, and writes reconstructed WAV output.
+              Loads a codec, resamples input audio to its sample rate, and writes reconstructed WAV output.
 
             Options:
               -i, --audio <path>         Input audio file path (required if not passed as trailing arg)
-                  --model <repo>         HF model repo id. Supported patterns: dacvae, encodec, snac, mimi.
+                  --model <repo-or-path> Codec repository ID or local checkpoint directory.
                                          Default: mlx-community/dacvae-watermarked
               -o, --output <path>        Output WAV path. Default: <input_stem>.reconstructed.wav
               -h, --help                 Show this help
