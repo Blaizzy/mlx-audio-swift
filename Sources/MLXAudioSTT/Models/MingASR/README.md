@@ -58,4 +58,4 @@ let result = ming.generate(
 print(result.text)
 ```
 
-Ming model weights are released under the [MIT License](https://huggingface.co/inclusionAI/Ming-3.0-asr-tiny/blob/main/LICENSE), copyright 2026 inclusionAI. The BailingMoE V3 source carries the [Apache 2.0 license](https://huggingface.co/inclusionAI/Ming-3.0-asr-tiny/blob/main/modeling_ming_v3_asr.py). The delta recurrence is adapted from [mlx-lm](https://github.com/ml-explore/mlx-lm) under the [MIT License](https://github.com/ml-explore/mlx-lm/blob/main/LICENSE).
+Ming model weights are released under the [MIT License](https://huggingface.co/inclusionAI/Ming-3.0-asr-tiny/blob/main/LICENSE), copyright 2026 inclusionAI. The BailingMoE V3 source carries the [Apache 2.0 license](https://huggingface.co/inclusionAI/Ming-3.0-asr-tiny/blob/main/modeling_ming_v3_asr.py). The expert layers and delta recurrence are adapted from [mlx-lm](https://github.com/ml-explore/mlx-lm) under the [MIT License](https://github.com/ml-explore/mlx-lm/blob/main/LICENSE).
