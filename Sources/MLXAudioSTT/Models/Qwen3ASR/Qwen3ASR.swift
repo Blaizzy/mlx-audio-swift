@@ -37,7 +37,7 @@ extension Qwen3ASRModel: STTGenerationModel {
             topK: 0,
             verbose: false,
             language: nil,
-            chunkDuration: 1200.0,
+            chunkDuration: 60.0,
             minChunkDuration: 1.0
         )
     }
@@ -1358,7 +1358,7 @@ public class Qwen3ASRModel: Module {
         temperature: Float = 0.0,
         context: String = "",
         language: String? = nil,
-        chunkDuration: Float = 1200.0,
+        chunkDuration: Float = 60.0,
         minChunkDuration: Float = 1.0,
         repetitionPenalty: Float = 1.0,
         repetitionContextSize: Int = 32
@@ -1438,7 +1438,7 @@ public class Qwen3ASRModel: Module {
         temperature: Float = 0.0,
         context: String = "",
         language: String? = nil,
-        chunkDuration: Float = 1200.0,
+        chunkDuration: Float = 60.0,
         minChunkDuration: Float = 1.0,
         repetitionPenalty: Float = 1.0,
         repetitionContextSize: Int = 32
