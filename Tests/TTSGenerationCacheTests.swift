@@ -4,7 +4,9 @@ import MLXAudioCore
 @testable import MLXAudioTTS
 import Testing
 
-@Suite("Reusable TTS cache", .serialized, .timeLimit(.minutes(1)))
+// Real cache tensors share MLX's evaluation lock with the other GPU suites.
+// Cold Metal compilation on CI can hold that lock for more than a minute.
+@Suite("Reusable TTS cache", .serialized, .timeLimit(.minutes(5)))
 struct TTSGenerationCacheTests {
     private final class Owner: Sendable {}
     private enum Failure: Error { case expected }
