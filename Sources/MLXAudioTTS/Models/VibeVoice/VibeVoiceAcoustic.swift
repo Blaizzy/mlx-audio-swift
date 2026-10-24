@@ -35,10 +35,15 @@ final class VibeVoiceSynthesisConv: Module {
         if !depthwise { return conv(x) }
         let kernel = conv.weight.dim(1)
         let count = (x.dim(1) - kernel) / stride + 1
-        var y = x[0..., .stride(from: 0, to: count * stride, by: stride), 0...] * conv.weight[0..., 0, 0]
+        // Grouped convolution accumulates products in Float32, then casts before bias.
+        // Preserve the original input tensors in the streaming cache.
+        let outputDType = x.dtype == conv.weight.dtype ? x.dtype : .float32
+        let full = x.asType(.float32), weight = conv.weight.asType(.float32)
+        var y = full[0..., .stride(from: 0, to: count * stride, by: stride), 0...] * weight[0..., 0, 0]
         for k in 1..<kernel {
-            y = y + x[0..., .stride(from: k, to: k + count * stride, by: stride), 0...] * conv.weight[0..., k, 0]
+            y = y + full[0..., .stride(from: k, to: k + count * stride, by: stride), 0...] * weight[0..., k, 0]
         }
+        y = y.asType(outputDType)
         if let bias = conv.bias { y = y + bias }
         return y
     }

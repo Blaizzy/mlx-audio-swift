@@ -24,6 +24,20 @@ struct VibeVoiceSynthesisTests {
         #expect(abs(whole - streaming).max().item(Float.self) < 1e-4)
         #expect(cache.state.values.allSatisfy { $0.dim(1) <= 6 })
     }
+    @Test func bfloatDepthwiseMatchesGroupedConvolution() throws {
+        let layer = VibeVoiceSynthesisConv(8, 8, kernel: 7, depthwise: true)
+        let weights = MLXArray((0..<56).map { sin(Float($0) * 0.3) }).reshaped(8,7,1).asType(.bfloat16)
+        let bias = MLXArray((0..<8).map { Float($0) * 0.03 }).asType(.bfloat16)
+        try layer.update(parameters: ModuleParameters.unflattened(["conv.weight": weights, "conv.bias": bias]), verify: .all)
+        let input = MLXArray((0..<160).map { cos(Float($0) * 0.7) }).reshaped(1,20,8).asType(.bfloat16)
+        let paddedInput = padded(input, widths: [.init((0,0)), .init((6,0)), .init((0,0))])
+        let expected = layer.conv(paddedInput)
+        #expect(abs(layer(input) - expected).max().item(Float.self) == 0)
+        let cache = VibeVoiceConvolutionCache()
+        let streamed = concatenated([layer(input[0..., ..<8, 0...], cache: cache), layer(input[0..., 8..., 0...], cache: cache)], axis: 1)
+        #expect(abs(streamed - expected).max().item(Float.self) == 0)
+        #expect(cache.state.values.allSatisfy { $0.dtype == .bfloat16 })
+    }
     @Test func configAndCanonicalPaths() throws {
         let c = try JSONDecoder().decode(VibeVoiceAcousticConfig.self, from: Data(#"{"encoder_ratios":[2,3],"encoder_depths":"1-2-3","decoder_depths":[3,2,1]}"#.utf8))
         #expect(c.encoderDepths == [1,2,3])
