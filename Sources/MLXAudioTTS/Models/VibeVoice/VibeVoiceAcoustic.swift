@@ -70,11 +70,11 @@ final class VibeVoiceSynthesisTransposeConv: Module {
     }
 }
 final class VibeVoiceSynthesisFFN: Module {
-    let linear1: Linear
-    let linear2: Linear
+    @ModuleInfo var linear1: Linear
+    @ModuleInfo var linear2: Linear
     init(_ dim: Int, bias: Bool) {
-        linear1 = Linear(dim, dim * 4, bias: bias)
-        linear2 = Linear(dim * 4, dim, bias: bias)
+        _linear1.wrappedValue = Linear(dim, dim * 4, bias: bias)
+        _linear2.wrappedValue = Linear(dim * 4, dim, bias: bias)
     }
     func callAsFunction(_ x: MLXArray) -> MLXArray { linear2(gelu(linear1(x))) }
 }
@@ -104,22 +104,28 @@ final class VibeVoiceSynthesisBlock: Module {
         return h + y
     }
 }
+final class VibeVoiceSynthesisStage: Module {
+    let blocks: [VibeVoiceSynthesisBlock]
+    init(_ depth: Int, dimension: Int, config: VibeVoiceAcousticConfig) {
+        blocks = (0..<depth).map { _ in VibeVoiceSynthesisBlock(dimension, config) }
+    }
+}
 final class VibeVoiceSynthesisEncoder: Module {
     @ModuleInfo(key: "downsample_layers") var downsampleLayers: [VibeVoiceSynthesisConv]
-    let stages: [[VibeVoiceSynthesisBlock]]
+    let stages: [VibeVoiceSynthesisStage]
     let norm: RMSNorm?
     let head: VibeVoiceSynthesisConv
     init(_ c: VibeVoiceAcousticConfig) {
         var layers = [VibeVoiceSynthesisConv(c.channels, c.encoderNFilters, kernel: 7, bias: c.convBias)]
         let ratios = Array(c.encoderRatios.reversed())
         var dim = c.encoderNFilters
-        var stages: [[VibeVoiceSynthesisBlock]] = []
+        var stages: [VibeVoiceSynthesisStage] = []
         for i in c.encoderDepths.indices {
             if i > 0 {
                 layers.append(VibeVoiceSynthesisConv(dim, dim * 2, kernel: ratios[i - 1] * 2, stride: ratios[i - 1], bias: c.convBias))
                 dim *= 2
             }
-            stages.append((0..<c.encoderDepths[i]).map { _ in VibeVoiceSynthesisBlock(dim, c) })
+            stages.append(VibeVoiceSynthesisStage(c.encoderDepths[i], dimension: dim, config: c))
         }
         _downsampleLayers.wrappedValue = layers
         self.stages = stages
@@ -130,7 +136,7 @@ final class VibeVoiceSynthesisEncoder: Module {
         var x = audio.ndim == 2 ? audio.expandedDimensions(axis: -1) : audio
         for i in stages.indices {
             x = downsampleLayers[i](x, cache: cache)
-            for block in stages[i] { x = block(x, cache: cache) }
+            for block in stages[i].blocks { x = block(x, cache: cache) }
             eval(x)
         }
         return head(norm?(x) ?? x, cache: cache)
@@ -155,7 +161,7 @@ final class VibeVoiceSynthesisUpsample: Module {
 }
 final class VibeVoiceSynthesisDecoder: Module {
     @ModuleInfo(key: "upsample_layers") var upsampleLayers: [VibeVoiceSynthesisUpsample]
-    let stages: [[VibeVoiceSynthesisBlock]]
+    let stages: [VibeVoiceSynthesisStage]
     let head: VibeVoiceSynthesisConv
     init(_ c: VibeVoiceAcousticConfig) {
         let ratios = c.decoderRatios ?? c.encoderRatios
@@ -163,9 +169,9 @@ final class VibeVoiceSynthesisDecoder: Module {
         let filters = c.decoderNFilters
         var dim = filters * (1 << (depths.count - 1))
         var layers = [VibeVoiceSynthesisUpsample(c.vaeDim, dim, ratio: nil, bias: c.convBias)]
-        var stages: [[VibeVoiceSynthesisBlock]] = []
+        var stages: [VibeVoiceSynthesisStage] = []
         for i in depths.indices {
-            stages.append((0..<depths[i]).map { _ in VibeVoiceSynthesisBlock(dim, c) })
+            stages.append(VibeVoiceSynthesisStage(depths[i], dimension: dim, config: c))
             if i < ratios.count {
                 let next = i < ratios.count - 1 ? dim / 2 : filters
                 layers.append(VibeVoiceSynthesisUpsample(dim, next, ratio: ratios[i], bias: c.convBias))
@@ -179,7 +185,7 @@ final class VibeVoiceSynthesisDecoder: Module {
     func callAsFunction(_ latents: MLXArray, cache: VibeVoiceConvolutionCache? = nil) -> MLXArray {
         var x = upsampleLayers[0](latents, cache: cache)
         for i in stages.indices {
-            for block in stages[i] { x = block(x, cache: cache) }
+            for block in stages[i].blocks { x = block(x, cache: cache) }
             if i + 1 < upsampleLayers.count { x = upsampleLayers[i + 1](x, cache: cache) }
             eval(x)
         }
@@ -200,9 +206,11 @@ func canonicalVibeVoiceSynthesisPath(_ key: String) -> String {
     var key = key.hasPrefix("model.") ? String(key.dropFirst(6)) : key
     key = key.replacingOccurrences(of: #"\.(upsample_layers|downsample_layers)\.(\d+)\.0\."#, with: ".$1.$2.", options: .regularExpression)
     key = key.replacingOccurrences(of: #"\.downsample_layers\.(\d+)\.conv\.conv\."#, with: ".downsample_layers.$1.conv.", options: .regularExpression)
+    key = key.replacingOccurrences(of: #"\.stages\.(\d+)\.(\d+)\."#, with: ".stages.$1.blocks.$2.", options: .regularExpression)
     key = key.replacingOccurrences(of: ".head.conv.conv.", with: ".head.conv.")
     key = key.replacingOccurrences(of: ".mixer.conv.conv.conv.", with: ".mixer.conv.")
-    key = key.replacingOccurrences(of: ".mlp.layers.", with: ".mlp.")
-    key = key.replacingOccurrences(of: ".adaLN_modulation.layers.", with: ".adaLN_modulation.")
+    key = key.replacingOccurrences(of: #"\.t_embedder\.mlp\.(layers\.)?0\."#, with: ".t_embedder.mlp.fc1.", options: .regularExpression)
+    key = key.replacingOccurrences(of: #"\.t_embedder\.mlp\.(layers\.)?2\."#, with: ".t_embedder.mlp.fc2.", options: .regularExpression)
+    key = key.replacingOccurrences(of: #"\.adaLN_modulation\.(layers\.)?1\."#, with: ".adaLN_modulation.linear.", options: .regularExpression)
     return key
 }

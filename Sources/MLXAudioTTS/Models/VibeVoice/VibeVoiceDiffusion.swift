@@ -4,25 +4,25 @@ import MLX
 import MLXNN
 
 final class VibeVoiceSpeechConnector: Module {
-    let fc1: Linear
+    @ModuleInfo var fc1: Linear
     let norm: RMSNorm
-    let fc2: Linear
+    @ModuleInfo var fc2: Linear
     init(input: Int, output: Int, eps: Float = 1e-6) {
-        fc1 = Linear(input, output)
+        _fc1.wrappedValue = Linear(input, output)
         norm = RMSNorm(dimensions: output, eps: eps)
-        fc2 = Linear(output, output)
+        _fc2.wrappedValue = Linear(output, output)
     }
     func callAsFunction(_ x: MLXArray) -> MLXArray { fc2(norm(fc1(x))) }
 }
 final class VibeVoiceBinaryClassifier: Module {
-    let fc1: Linear
-    let fc2: Linear
-    init(_ dim: Int) { fc1 = Linear(dim, dim); fc2 = Linear(dim, 1) }
+    @ModuleInfo var fc1: Linear
+    @ModuleInfo var fc2: Linear
+    init(_ dim: Int) { _fc1.wrappedValue = Linear(dim, dim); _fc2.wrappedValue = Linear(dim, 1) }
     func callAsFunction(_ x: MLXArray) -> MLXArray { fc2(relu(fc1(x))) }
 }
 final class VibeVoiceTimestepMLP: Module {
-    @ModuleInfo(key: "0") var fc1: Linear
-    @ModuleInfo(key: "2") var fc2: Linear
+    @ModuleInfo var fc1: Linear
+    @ModuleInfo var fc2: Linear
     init(_ dim: Int) {
         _fc1.wrappedValue = Linear(256, dim, bias: false)
         _fc2.wrappedValue = Linear(dim, dim, bias: false)
@@ -50,7 +50,7 @@ final class VibeVoiceDiffusionFFN: Module {
     func callAsFunction(_ x: MLXArray) -> MLXArray { down(silu(gate(x)) * up(x)) }
 }
 final class VibeVoiceAdaLN: Module {
-    @ModuleInfo(key: "1") var linear: Linear
+    @ModuleInfo var linear: Linear
     init(_ dim: Int, multiplier: Int) { _linear.wrappedValue = Linear(dim, dim * multiplier, bias: false) }
     func callAsFunction(_ x: MLXArray) -> MLXArray { linear(silu(x)) }
 }
@@ -69,11 +69,11 @@ final class VibeVoiceDiffusionLayer: Module {
     }
 }
 final class VibeVoiceDiffusionFinal: Module {
-    let linear: Linear
+    @ModuleInfo var linear: Linear
     @ModuleInfo(key: "adaLN_modulation") var modulation: VibeVoiceAdaLN
     let epsilon: Float
     init(_ c: VibeVoiceDiffusionConfig) {
-        linear = Linear(c.hiddenSize, c.latentSize, bias: false)
+        _linear.wrappedValue = Linear(c.hiddenSize, c.latentSize, bias: false)
         epsilon = c.rmsNormEps
         _modulation.wrappedValue = VibeVoiceAdaLN(c.hiddenSize, multiplier: 2)
     }
