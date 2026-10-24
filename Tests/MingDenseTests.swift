@@ -6,6 +6,7 @@ import MLXNN
 @testable import MLXAudioTTS
 import MLXAudioCodecs
 
+@Suite(.serialized)
 struct MingDenseTests {
     @Test func textFragmentsPreserveTagsAndAbbreviations() {
         let parts = MingText.fragments("[Laughter] Dr. Smith paid 3.14 dollars, and then walked home. 我今天特别高兴。", maxLength: 7)
@@ -52,7 +53,7 @@ struct MingDenseTests {
         let x = MLXArray.ones([1, 2, 64])
         #expect(max(abs(first(x) - second(x))).item(Float.self) < 1e-6)
     }
-    @Test func transformerAudioShapeAndSlidingAttention() {
+    @Test func transformerAudioShapeAndSlidingAttention() throws {
         let qwen = Qwen2Configuration(hiddenSize: 8, hiddenLayers: 1, intermediateSize: 16,
             attentionHeads: 2, rmsNormEps: 1e-6, vocabularySize: 1, kvHeads: 1)
         let backbone = MingAudioBackboneConfiguration(backbone: qwen, inputDim: 4, outputDim: 4,
@@ -64,11 +65,28 @@ struct MingDenseTests {
         #expect(wave.shape == [1, 24])
         #expect(all(isFinite(wave)).item(Bool.self))
         let stack = Qwen2ModelInner(qwen, slidingWindow: 3)
-        let embeddings = MLXRandom.normal([1, 7, 8])
+        let weights = Dictionary(uniqueKeysWithValues: stack.parameters().flattened().map { key, value in
+            let tensor: MLXArray
+            if key.hasSuffix("layernorm.weight") || key == "norm.weight" {
+                tensor = MLXArray.ones(value.shape)
+            } else {
+                tensor = (sin(MLXArray(0..<value.size).asType(.float32) * 0.37) * 0.07).reshaped(value.shape)
+            }
+            return (key, tensor)
+        })
+        try stack.update(parameters: ModuleParameters.unflattened(weights), verify: .all)
+        let embeddings = sin(MLXArray(0..<56).asType(.float32) * 0.17).reshaped(1, 7, 8)
         let cache: [KVCache] = [KVCacheSimple()]
         let whole = stack(inputEmbeddings: embeddings)
-        let chunks = (0..<7).map { stack(inputEmbeddings: embeddings[0..., $0..<($0 + 1), 0...], cache: cache) }
-        #expect(max(abs(whole - concatenated(chunks, axis: 1))).item(Float.self) < 1e-4)
+        eval(whole)
+        let chunks = (0..<7).map { index in
+            let output = stack(inputEmbeddings: embeddings[0..., index..<(index + 1), 0...], cache: cache)
+            eval(output)
+            return output
+        }
+        // Full-sequence and vector SDPA kernels differ slightly in their reductions.
+        #expect(max(abs(whole - concatenated(chunks, axis: 1))).item(Float.self) < 3e-4)
+
     }
     @Test func rawSpeakerMappingAndFrontend() {
         let raw = ["onnx::Conv_4423": MLXArray.ones([32, 1, 3, 3]),
