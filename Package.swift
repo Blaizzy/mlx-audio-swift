@@ -62,7 +62,8 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMajor(from: "0.32.3")),
         .package(url: "https://github.com/huggingface/swift-transformers.git", .upToNextMajor(from: "1.1.6")),
-        .package(url: "https://github.com/huggingface/swift-huggingface.git", .upToNextMajor(from: "0.8.1"))
+        .package(url: "https://github.com/huggingface/swift-huggingface.git", .upToNextMajor(from: "0.8.1")),
+        .package(url: "https://github.com/facebook/zstd.git", from: "1.5.7")
     ],
     targets: [
         // MARK: - MLXAudioCore
@@ -132,6 +133,7 @@ let package = Package(
             name: "MLXAudioSTT",
             dependencies: [
                 "MLXAudioCore",
+                .product(name: "libzstd", package: "zstd"),
                 "MLXAudioCodecs",
                 "MLXAudioVAD",
                 .product(name: "MLX", package: "mlx-swift"),
@@ -289,6 +291,7 @@ let package = Package(
             name: "MLXAudioTests",
             dependencies: [
                 "MLXAudioCore",
+                .product(name: "libzstd", package: "zstd"),
                 "MLXAudioCodecs",
                 "MLXAudioTTS",
                 "MLXAudioSTT",
