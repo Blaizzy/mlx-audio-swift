@@ -42,7 +42,8 @@ final class MingAttention: Module {
     }
     private func rotary(_ x: MLXArray) -> MLXArray {
         // The Ming DiT rotates adjacent pairs after FP32 phase generation.
-        let frequencies = exp(-log(Float(10000)) * MLXArray(stride(from: 0, to: headDim, by: 2)).asType(.float32) / Float(headDim))
+        let powers = MLXArray(stride(from: 0, to: headDim, by: 2)).asType(.float32) / Float(headDim)
+        let frequencies = 1 / pow(MLXArray(Float(10000)), powers)
         let phase = MLXArray(0..<x.dim(2)).asType(.float32)[0..., .newAxis] * frequencies[.newAxis]
         let c = cos(phase)[.newAxis, .newAxis]; let s = sin(phase)[.newAxis, .newAxis]
         let pairs = x.reshaped(x.dim(0), heads, x.dim(2), headDim / 2, 2)
