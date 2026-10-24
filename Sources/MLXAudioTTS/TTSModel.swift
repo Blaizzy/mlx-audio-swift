@@ -113,6 +113,12 @@ public enum TTS {
         }
 
         switch resolvedType {
+        case "vibevoice_streaming":
+            return try await load(
+                source, modelType: resolvedType,
+                pretrained: { try await VibeVoiceRealtimeModel.fromPretrained($0, cache: $1) },
+                local: { directory, _ in try await VibeVoiceRealtimeModel.fromModelDirectory(directory) }
+            )
         case "breeze", "breeze_tts":
             return try await load(
                 source,
@@ -310,6 +316,9 @@ public enum TTS {
 
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
+        if lower.contains("vibevoice") && lower.contains("realtime") {
+            return "vibevoice_streaming"
+        }
         if lower.contains("breeze") && lower.contains("tts") {
             return "breeze"
         }
