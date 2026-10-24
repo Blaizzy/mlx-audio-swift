@@ -126,9 +126,9 @@ public class Qwen2ModelInner: Module {
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding?
 
     fileprivate let layers: [Qwen2TransformerBlock]
-    let norm: RMSNorm
+    let norm: RMSNorm?
 
-    public init(_ args: Qwen2Configuration, includeEmbedding: Bool = true) {
+    public init(_ args: Qwen2Configuration, includeEmbedding: Bool = true, includeNorm: Bool = true) {
         precondition(args.vocabularySize > 0)
 
         if includeEmbedding {
@@ -140,7 +140,7 @@ public class Qwen2ModelInner: Module {
             .map { _ in
                 Qwen2TransformerBlock(args)
             }
-        self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        self.norm = includeNorm ? RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps) : nil
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
@@ -172,7 +172,7 @@ public class Qwen2ModelInner: Module {
             h = layer(h, mask: mask, cache: cache?[i])
         }
 
-        return norm(h)
+        return norm?(h) ?? h
     }
 }
 
