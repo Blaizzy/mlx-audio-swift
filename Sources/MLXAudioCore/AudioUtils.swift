@@ -65,18 +65,25 @@ public func loadAudioArray(from url: URL, sampleRate: Int? = nil) throws -> send
     let format = audioFile.processingFormat
     let frameCount = AVAudioFrameCount(audioFile.length)
 
-    guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+    let capacity = max(1, min(frameCount, 65_536))
+    guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else {
         throw AudioUtils.AudioUtilsErrors.cannotCreateAudioBuffer
     }
 
-    try audioFile.read(into: buffer)
-
-    guard let floatChannelData = buffer.floatChannelData else {
-        throw AudioUtils.AudioUtilsErrors.cannotReadFloatChannelData
+    var samples: [Float] = []
+    samples.reserveCapacity(Int(frameCount))
+    while audioFile.framePosition < audioFile.length {
+        let previousPosition = audioFile.framePosition
+        try audioFile.read(into: buffer)
+        guard buffer.frameLength > 0 else { break }
+        guard let floatChannelData = buffer.floatChannelData else {
+            throw AudioUtils.AudioUtilsErrors.cannotReadFloatChannelData
+        }
+        samples.append(contentsOf: UnsafeBufferPointer(start: floatChannelData[0], count: Int(buffer.frameLength)))
+        if audioFile.framePosition <= previousPosition { break }
     }
 
     let sourceSampleRate = Int(format.sampleRate)
-    let samples = Array(UnsafeBufferPointer(start: floatChannelData[0], count: Int(buffer.frameLength)))
     let targetSampleRate = sampleRate ?? sourceSampleRate
 
     if targetSampleRate <= 0 {
