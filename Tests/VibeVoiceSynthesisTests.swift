@@ -29,6 +29,8 @@ struct VibeVoiceSynthesisTests {
         #expect(c.encoderDepths == [1,2,3])
         #expect(c.decoderDepths == [3,2,1])
         #expect(c.hopLength == 6)
+        #expect(canonicalVibeVoiceSynthesisPath("prediction_head.t_embedder.mlp.0") == "prediction_head.t_embedder.mlp.fc1")
+        #expect(canonicalVibeVoiceSynthesisPath("prediction_head.final_layer.adaLN_modulation.1") == "prediction_head.final_layer.adaLN_modulation.linear")
         #expect(canonicalVibeVoiceSynthesisPath("model.acoustic_tokenizer.decoder.upsample_layers.1.0.convtr.convtr.weight") == "acoustic_tokenizer.decoder.upsample_layers.1.convtr.convtr.weight")
         #expect(canonicalVibeVoiceSynthesisPath("prediction_head.layers.0.adaLN_modulation.layers.1.scales") == "prediction_head.layers.0.adaLN_modulation.linear.scales")
     }
