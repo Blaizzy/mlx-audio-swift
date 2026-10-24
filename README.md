@@ -15,7 +15,7 @@ MLXAudio follows a modular design allowing you to import only what you need:
 - **MLXAudioCore**: Base types, protocols, and utilities
 - **MLXAudioCodecs**: Audio codec implementations (SNAC, Encodec, Vocos, Mimi, DACVAE, Descript DAC, Fish S1 DAC, S3TokenizerV2, MOSS Audio Tokenizer, Higgs Audio Tokenizer, Step-Audio-2 token-to-wav, MiMo Audio Tokenizer, Nemotron VoiceChat Codec)
 - **MLXAudioTTS**: Text-to-Speech models (Breeze TTS 2, Qwen3-TTS, OmniVoice, Fish Audio S2 Pro, IndexTTS, Soprano, VyvoTTS, Orpheus, MOSS-TTS, Marvis TTS, Pocket TTS, Irodori TTS, Dia)
-- **MLXAudioSTT**: Speech-to-Text models (Qwen2-Audio, Qwen3-ASR, Qwen3-ForcedAligner, MiMo-V2.5-ASR, VibeVoice ASR, Voxtral Mini, Voxtral Realtime, Cohere Transcribe, Parakeet, Parakeet Redux, Phonon-2, Nemotron ASR, GLMASR, FireRedASR2, SenseVoice, Fun-ASR-Nano, Granite Speech, Whisper, Canary, Moonshine, Wav2Vec2, MMS)
+- **MLXAudioSTT**: Speech-to-Text models (Qwen2-Audio, Qwen3-ASR, Qwen3-ForcedAligner, Ming-3.0 ASR Tiny, MiMo-V2.5-ASR, VibeVoice ASR, Voxtral Mini, Voxtral Realtime, Cohere Transcribe, Parakeet, Parakeet Redux, Phonon-2, Nemotron ASR, GLMASR, FireRedASR2, SenseVoice, Fun-ASR-Nano, Granite Speech, Whisper, Canary, Moonshine, Wav2Vec2, MMS)
 - **MLXAudioVAD**: Voice Activity Detection & Speaker Diarization (Sortformer, SmartTurn, FSMN VAD, Silero VAD)
 - **MLXAudioSTS**: Speech-to-Speech models (LFM2.5-Audio, SAM-Audio, MossFormer2-SE, DeepFilterNet)
 - **MLXAudioUI**: SwiftUI components for audio interfaces
@@ -144,6 +144,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | Qwen3-ASR | [Qwen3-ASR README](Sources/MLXAudioSTT/Models/Qwen3ASR/README.md) | [mlx-community/Qwen3-ASR-1.7B-bf16](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-bf16) |
 | Qwen3-ForcedAligner | [Qwen3-ASR README](Sources/MLXAudioSTT/Models/Qwen3ASR/README.md) | [mlx-community/Qwen3-ForcedAligner-0.6B-bf16](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-bf16) |
 | MOSS-Transcribe-Diarize | [MOSS-Transcribe-Diarize README](Sources/MLXAudioSTT/Models/MossTranscribeDiarize/README.md) | [OpenMOSS-Team/MOSS-Transcribe-Diarize](https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize) |
+| Ming-3.0 ASR Tiny | [Ming ASR README](Sources/MLXAudioSTT/Models/MingASR/README.md) | [mlx-community/Ming-3.0-asr-tiny-4bit](https://huggingface.co/mlx-community/Ming-3.0-asr-tiny-4bit) |
 | MiMo-V2.5-ASR | [MiMo ASR README](Sources/MLXAudioSTT/Models/MiMoASR/README.md) | [mlx-community/MiMo-V2.5-ASR-MLX](https://huggingface.co/mlx-community/MiMo-V2.5-ASR-MLX) |
 | VibeVoice ASR | [VibeVoice ASR README](Sources/MLXAudioSTT/Models/VibeVoiceASR/README.md) | [microsoft/VibeVoice-ASR-Streaming-1.5B](https://huggingface.co/microsoft/VibeVoice-ASR-Streaming-1.5B) |
 | Voxtral Mini | [Voxtral Mini README](Sources/MLXAudioSTT/Models/Voxtral/README.md) | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |

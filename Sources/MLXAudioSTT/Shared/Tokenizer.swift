@@ -2,10 +2,16 @@ import Foundation
 import Hub
 import Tokenizers
 
-func loadSTTTokenizer(from directory: URL) async throws -> Tokenizer {
+func loadSTTTokenizer(from directory: URL, tokenizerClass: String? = nil) async throws -> Tokenizer
+{
     let configuration = LanguageModelConfigurationFromHub(modelFolder: directory)
-    guard let config = try await configuration.tokenizerConfig else {
+    guard let originalConfig = try await configuration.tokenizerConfig else {
         throw TokenizerError.missingConfig
+    }
+    var config = originalConfig
+    if let tokenizerClass, var fields = config.dictionary() {
+        fields["tokenizer_class"] = Config(tokenizerClass)
+        config = Config(fields)
     }
     let data = try await configuration.tokenizerData
     guard var dictionary = data.dictionary() else {
