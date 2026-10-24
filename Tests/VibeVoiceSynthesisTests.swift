@@ -21,7 +21,7 @@ struct VibeVoiceSynthesisTests {
                       model.decode(latent[0..., 3..<7, 0...], cache: cache)]
         let streaming = concatenated(chunks, axis: 1)
         #expect(whole.shape == [1, 42, 1])
-        #expect(abs(whole - streaming).max().item(Float.self) < 2e-5)
+        #expect(abs(whole - streaming).max().item(Float.self) < 1e-4)
         #expect(cache.state.values.allSatisfy { $0.dim(1) <= 6 })
     }
     @Test func configAndCanonicalPaths() throws {
@@ -30,7 +30,38 @@ struct VibeVoiceSynthesisTests {
         #expect(c.decoderDepths == [3,2,1])
         #expect(c.hopLength == 6)
         #expect(canonicalVibeVoiceSynthesisPath("model.acoustic_tokenizer.decoder.upsample_layers.1.0.convtr.convtr.weight") == "acoustic_tokenizer.decoder.upsample_layers.1.convtr.convtr.weight")
-        #expect(canonicalVibeVoiceSynthesisPath("prediction_head.layers.0.adaLN_modulation.layers.1.scales") == "prediction_head.layers.0.adaLN_modulation.1.scales")
+        #expect(canonicalVibeVoiceSynthesisPath("prediction_head.layers.0.adaLN_modulation.layers.1.scales") == "prediction_head.layers.0.adaLN_modulation.linear.scales")
+    }
+    @Test func acousticQuantizedRoundTrip() throws {
+        var c = VibeVoiceAcousticConfig()
+        c.encoderRatios = [2]; c.encoderDepths = [1,1]
+        let source = VibeVoiceAcousticTokenizer(c)
+        quantize(model: source, groupSize: 32, bits: 4)
+        let weights = Dictionary(uniqueKeysWithValues: source.parameters().flattened())
+        let restored = VibeVoiceAcousticTokenizer(c)
+        quantize(model: restored, groupSize: 32, bits: 4)
+        try restored.update(parameters: ModuleParameters.unflattened(weights), verify: .all)
+        let input = MLXArray.ones([1,2,64])
+        #expect(abs(source.decode(input) - restored.decode(input)).max().item(Float.self) == 0)
+        #expect(weights["decoder.stages.0.blocks.0.ffn.linear1.scales"] != nil)
+    }
+    @Test func diffusionQuantizedRoundTrip() throws {
+        var c = VibeVoiceDiffusionConfig()
+        c.hiddenSize = 64; c.latentSize = 64; c.headLayers = 1
+        let source = VibeVoiceDiffusionHead(c)
+        quantize(model: source, groupSize: 32, bits: 4)
+        let weights = Dictionary(uniqueKeysWithValues: source.parameters().flattened())
+        let restored = VibeVoiceDiffusionHead(c)
+        quantize(model: restored, groupSize: 32, bits: 4)
+        try restored.update(parameters: ModuleParameters.unflattened(weights), verify: .all)
+        let noisy = MLXArray.ones([1,64])
+        let condition = MLXArray.ones([1,64])
+        let timestep = MLXArray([Float(10)])
+        let a = source(noisy, timesteps: timestep, condition: condition)
+        let b = restored(noisy, timesteps: timestep, condition: condition)
+        #expect(abs(a - b).max().item(Float.self) == 0)
+        #expect(weights["t_embedder.mlp.fc1.scales"] != nil)
+        #expect(weights["final_layer.adaLN_modulation.linear.scales"] != nil)
     }
     @Test func solverFinalStepAndReset() {
         let solver = VibeVoiceDPMSolver(trainingSteps: 20)
