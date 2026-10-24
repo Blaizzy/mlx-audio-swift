@@ -23,13 +23,13 @@ public enum TTSModelError: Error, LocalizedError, CustomStringConvertible {
 public enum TTS {
     private enum ModelSource {
         case repository(String, cache: HubCache)
-        case localDirectory(URL, repoHint: String)
+        case localDirectory(URL, repoHint: String, cache: HubCache)
 
         /// Where text processors keep their own downloads.
         var cache: HubCache {
             switch self {
             case .repository(_, let cache): cache
-            case .localDirectory: .default
+            case .localDirectory(_, _, let cache): cache
             }
         }
 
@@ -37,7 +37,7 @@ public enum TTS {
             switch self {
             case .repository(let modelRepo, _):
                 modelRepo
-            case .localDirectory(let modelDir, let repoHint):
+            case .localDirectory(let modelDir, let repoHint, _):
                 repoHint.isEmpty ? modelDir.path : repoHint
             }
         }
@@ -53,7 +53,7 @@ public enum TTS {
             let modelType = try localModelType(modelDir) ?? inferModelType(from: modelRepo)
             return try await loadResolvedModel(
                 modelType: modelType,
-                source: .localDirectory(modelDir, repoHint: modelRepo),
+                source: .localDirectory(modelDir, repoHint: modelRepo, cache: cache),
                 textProcessor: textProcessor
             )
         }
@@ -87,7 +87,7 @@ public enum TTS {
                 ?? inferModelType(from: modelRepo)
             return try await loadResolvedModel(
                 modelType: resolvedModelType,
-                source: .localDirectory(modelDir, repoHint: modelRepo),
+                source: .localDirectory(modelDir, repoHint: modelRepo, cache: cache),
                 textProcessor: textProcessor
             )
         }
@@ -111,7 +111,7 @@ public enum TTS {
         if ["qwen3", "qwen", "llama", "qwen2"].contains(resolvedType ?? "") {
             let directory: URL
             switch source {
-            case .localDirectory(let modelDir, _): directory = modelDir
+            case .localDirectory(let modelDir, _, _): directory = modelDir
             case .repository(let repo, let cache):
                 guard let id = Repo.ID(rawValue: repo) else { throw TTSModelError.invalidRepositoryID(repo) }
                 directory = try await ModelUtils.resolveOrDownloadModel(
@@ -285,7 +285,7 @@ public enum TTS {
         switch source {
         case .repository(let modelRepo, let cache):
             return try await pretrained(modelRepo, cache)
-        case .localDirectory(let modelDir, let repoHint):
+        case .localDirectory(let modelDir, let repoHint, _):
             guard let local else {
                 throw TTSModelError.unsupportedModelType("\(modelType) from local directory")
             }
