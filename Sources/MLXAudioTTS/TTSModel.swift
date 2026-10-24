@@ -113,6 +113,13 @@ public enum TTS {
         }
 
         switch resolvedType {
+        case "dense", "ming_dense":
+            return try await load(
+                source, modelType: resolvedType,
+                pretrained: { try await MingDenseModel.fromPretrained($0, cache: $1) },
+                local: { directory, _ in try await MingDenseModel.fromModelDirectory(directory) })
+        case "bailingmm", "ming_omni_tts":
+            throw TTSModelError.unsupportedModelType("Ming Bailing MoE backbone; this loader supports the dense Qwen2.5 variants only")
         case "breeze", "breeze_tts":
             return try await load(
                 source,
@@ -310,6 +317,9 @@ public enum TTS {
 
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
+        if lower.contains("ming"), lower.contains("tts"), lower.contains("0.5b") {
+            return "dense"
+        }
         if lower.contains("breeze") && lower.contains("tts") {
             return "breeze"
         }

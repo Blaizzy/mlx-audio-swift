@@ -100,4 +100,58 @@ struct MingDenseTests {
         #expect(features.shape == [8, 80])
         #expect(max(abs(features.mean(axis: 0))).item(Float.self) < 1e-4)
     }
+    @Test func configVariantsAndMoeRejection() throws {
+        let backbone: [String: Any] = ["hidden_size": 8, "num_hidden_layers": 1, "intermediate_size": 16,
+            "num_attention_heads": 2, "num_key_value_heads": 1, "rms_norm_eps": 1e-6, "vocab_size": 1,
+            "use_sliding_window": true, "sliding_window": 3, "max_window_layers": 0]
+        var root: [String: Any] = ["model_type": "dense", "llm_config": backbone,
+            "audio_tokenizer_config": ["sample_rate": 44100, "patch_size": 4,
+                "enc_kwargs": ["backbone": backbone, "input_dim": 4, "latent_dim": 2],
+                "dec_kwargs": ["backbone": backbone, "output_dim": 4, "latent_dim": 2]],
+            "ditar_config": ["patch_size": 1, "history_patch_size": 1], "aggregator_config": [:]]
+        let decoder = JSONDecoder()
+        let ming3 = try decoder.decode(MingDenseConfiguration.self, from: JSONSerialization.data(withJSONObject: root))
+        #expect(ming3.isMing3)
+        #expect(ming3.audio.encoder.useSlidingWindow)
+        #expect(ming3.audio.encoder.maxWindowLayers == 0)
+        root["ditar_config"] = ["patch_size": 4, "history_patch_size": 32]
+        let omni = try decoder.decode(MingDenseConfiguration.self, from: JSONSerialization.data(withJSONObject: root))
+        #expect(!omni.isMing3)
+        var moe = backbone; moe["num_experts"] = 64; root["llm_config"] = moe
+        #expect(throws: DecodingError.self) {
+            _ = try decoder.decode(MingDenseConfiguration.self, from: JSONSerialization.data(withJSONObject: root))
+        }
+        #expect(TTS.resolveModelType(modelRepo: "inclusionAI/Ming-omni-tts-0.5B") == "dense")
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1"))
+    func checkpointReferenceAndFragmentStreaming() async throws {
+        let source = ProcessInfo.processInfo.environment["MLXAUDIO_MING_REPO"]
+            ?? "mlx-community/Ming-3.0-tts-0.5B-bf16"
+        let shared = try await TTS.loadModel(modelRepo: source)
+        let model = try #require(shared as? MingDenseModel)
+        #expect(model.sampleRate == 44100)
+        let file = try #require(Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media"))
+        let (_, human) = try loadAudioArray(from: file, sampleRate: model.sampleRate)
+        let reference = MLXArray(Array(human.asArray(Float.self).prefix(model.sampleRate * 2)))
+        let cloned = try await model.generate(text: "Hello world.", voice: nil, refAudio: reference,
+            refText: model.configuration.isMing3 ? "Coffee's story likely begins in Ethiopia." : nil, language: "en",
+            generationParameters: GenerateParameters(maxTokens: 60, temperature: 0, seed: 42))
+        #expect(cloned.size > model.sampleRate / 4)
+        #expect(all(isFinite(cloned)).item(Bool.self))
+        #expect(sqrt(mean(cloned.square())).item(Float.self) > 1e-4)
+        model.options.fragmentLength = 2
+        var chunks = 0, samples = 0
+        for try await event in model.generateStream(text: "Hello world. Good morning.", voice: "UK_Charlotte",
+            refAudio: nil, refText: nil, language: "en",
+            generationParameters: GenerateParameters(maxTokens: 60, temperature: 0, seed: 42)) {
+            if case .audio(let audio) = event {
+                #expect(audio.ndim == 1 && audio.size > 0)
+                #expect(all(isFinite(audio)).item(Bool.self))
+                chunks += 1; samples += audio.size
+            }
+        }
+        #expect(chunks == (model.configuration.isMing3 ? 2 : 1))
+        #expect(samples > model.sampleRate / 2)
+    }
 }
