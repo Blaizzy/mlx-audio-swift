@@ -113,6 +113,13 @@ public enum TTS {
         }
 
         switch resolvedType {
+        case "higgs_audio", "higgs_audio_v2":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await HiggsV2Model.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await HiggsV2Model.fromModelDirectory(modelDir, cache: source.cache) }
+            )
         case "breeze", "breeze_tts":
             return try await load(
                 source,
