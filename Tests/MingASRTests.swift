@@ -194,7 +194,11 @@ struct MingASRTests {
         let c = tinyMingConfig().textConfig
         let experts = MingSwitchMLP(tinyMingConfig().textConfig, limit: nil)
         let x = MLXRandom.normal([1, 40, c.hiddenSize])
-        let indices = MLXArray((0 ..< 80).map { Int32(($0 * 3 + $0 / 5) % 4) }).reshaped(1, 40, 2)
+        let expertIndices: [Int32] = (0 ..< 80).map { tokenIndex in
+            let expertIndex: Int = (tokenIndex * 3 + tokenIndex / 5) % 4
+            return Int32(expertIndex)
+        }
+        let indices = MLXArray(expertIndices).reshaped(1, 40, 2)
         let batched = experts(x, indices: indices)
         let individual = concatenated(
             (0 ..< 40).map {
