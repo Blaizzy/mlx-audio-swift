@@ -113,6 +113,13 @@ public enum TTS {
         }
 
         switch resolvedType {
+        case "vibevoice":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await VibeVoiceTTSModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await VibeVoiceTTSModel.fromModelDirectory(modelDir, cache: source.cache) }
+            )
         case "breeze", "breeze_tts":
             return try await load(
                 source,
