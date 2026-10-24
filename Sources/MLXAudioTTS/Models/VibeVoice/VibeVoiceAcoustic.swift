@@ -209,8 +209,8 @@ func canonicalVibeVoiceSynthesisPath(_ key: String) -> String {
     key = key.replacingOccurrences(of: #"\.stages\.(\d+)\.(\d+)\."#, with: ".stages.$1.blocks.$2.", options: .regularExpression)
     key = key.replacingOccurrences(of: ".head.conv.conv.", with: ".head.conv.")
     key = key.replacingOccurrences(of: ".mixer.conv.conv.conv.", with: ".mixer.conv.")
-    key = key.replacingOccurrences(of: #"\.t_embedder\.mlp\.(layers\.)?0\."#, with: ".t_embedder.mlp.fc1.", options: .regularExpression)
-    key = key.replacingOccurrences(of: #"\.t_embedder\.mlp\.(layers\.)?2\."#, with: ".t_embedder.mlp.fc2.", options: .regularExpression)
-    key = key.replacingOccurrences(of: #"\.adaLN_modulation\.(layers\.)?1\."#, with: ".adaLN_modulation.linear.", options: .regularExpression)
+    key = key.replacingOccurrences(of: #"\.t_embedder\.mlp\.(?:layers\.)?0(?=\.|$)"#, with: ".t_embedder.mlp.fc1", options: .regularExpression)
+    key = key.replacingOccurrences(of: #"\.t_embedder\.mlp\.(?:layers\.)?2(?=\.|$)"#, with: ".t_embedder.mlp.fc2", options: .regularExpression)
+    key = key.replacingOccurrences(of: #"\.adaLN_modulation\.(?:layers\.)?1(?=\.|$)"#, with: ".adaLN_modulation.linear", options: .regularExpression)
     return key
 }
