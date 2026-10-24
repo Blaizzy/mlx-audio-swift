@@ -118,6 +118,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 
 | Model | Model README | HuggingFace Repo |
 |-------|--------------|------------------|
+| Higgs Audio v2 TTS | [Higgs Audio v2 README](Sources/MLXAudioTTS/Models/HiggsAudioV2/README.md) | [mlx-community/higgs-audio-v2-3B-mlx-q8](https://huggingface.co/mlx-community/higgs-audio-v2-3B-mlx-q8), [q6](https://huggingface.co/mlx-community/higgs-audio-v2-3B-mlx-q6) |
 | Breeze TTS 2 | [Breeze TTS 2 README](Sources/MLXAudioTTS/Models/BreezeTTS/README.md) | [mlx-community/Breeze-TTS-2-mlx-4bit](https://huggingface.co/mlx-community/Breeze-TTS-2-mlx-4bit) |
 | Qwen3-TTS | [Qwen3-TTS README](Sources/MLXAudioTTS/Models/Qwen3TTS/README.md) | [mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit) |
 | OmniVoice | [OmniVoice README](Sources/MLXAudioTTS/Models/OmniVoice/README.md) | [mlx-community/OmniVoice](https://huggingface.co/mlx-community/OmniVoice) |
