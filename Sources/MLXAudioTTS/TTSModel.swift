@@ -113,6 +113,13 @@ public enum TTS {
         }
 
         switch resolvedType {
+        case "rumik_oss", "rumik":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await RumikModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await RumikModel.fromModelDirectory(modelDir) }
+            )
         case "breeze", "breeze_tts":
             return try await load(
                 source,
@@ -314,6 +321,7 @@ public enum TTS {
             return "breeze"
         }
         // Repo names are hyphenated (e.g. "Irodori-TTS-600M-…"); match the bare name.
+        if lower.contains("rumik") { return "rumik_oss" }
         if lower.contains("spark") {
             return "spark"
         }
