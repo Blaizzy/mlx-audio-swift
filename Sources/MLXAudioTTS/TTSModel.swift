@@ -113,6 +113,10 @@ public enum TTS {
         }
 
         switch resolvedType {
+        case "kugelaudio":
+            return try await load(source, modelType: resolvedType,
+                pretrained: { try await KugelAudioModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await KugelAudioModel.fromModelDirectory(modelDir) })
         case "breeze", "breeze_tts":
             return try await load(
                 source,
@@ -310,6 +314,7 @@ public enum TTS {
 
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
+        if lower.contains("kugelaudio") { return "kugelaudio" }
         if lower.contains("breeze") && lower.contains("tts") {
             return "breeze"
         }
