@@ -124,6 +124,9 @@ let package = Package(
                 "Models/VoxCPM2/README.md",
                 "Models/StyleTTS2/KittenTTS/README.md",
                 "Models/StyleTTS2/Kokoro/README.md",
+            ],
+            resources: [
+                .copy("Models/Chatterbox/Resources/chatterbox_s3gen_attn_out_biases.safetensors")
             ]
         ),
 

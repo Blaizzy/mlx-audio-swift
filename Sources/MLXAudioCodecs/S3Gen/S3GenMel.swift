@@ -61,7 +61,8 @@ public func s3genMelSpectrogram(
     for i in 0 ..< B {
         let spec = stft(
             audio: input[i], window: window,
-            nFft: nFft, hopLength: hopSize)
+            nFft: nFft, hopLength: hopSize,
+            center: false)
         specs.append(spec)
     }
     // Stack: each spec is (T', F) -> (B, T', F)
