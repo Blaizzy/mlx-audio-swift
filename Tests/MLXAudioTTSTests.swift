@@ -2879,6 +2879,45 @@ struct IndexTTSTests {
         #expect(generated.latentStates.shape == [1, 3, config.gpt.modelDim])
     }
 
+    @Test func melSequenceStartsAtMelPositionZero() throws {
+        let config = IndexTTSConfig.tinyForTests()
+        let core = IndexTTSCore(config: config)
+        let conditioning = MLXRandom.normal([1, config.gpt.conditionNumLatent, config.gpt.modelDim])
+        let prepared = try core.prepareInputEmbedding(textTokenIDs: [1, 2], conditioningLatents: conditioning)
+
+        // The start mel token is the last prompt row: mel embedding at mel position 0.
+        let startMel = MLXArray([Int32(config.gpt.startMelToken)]).reshaped(1, 1)
+        let expected = core.melEmbedding(startMel) + core.melPositionEmbedding(sequenceLength: 1)
+        let last = prepared.embeddings[0..., (prepared.embeddings.dim(1) - 1)..., 0...]
+        #expect(allClose(last, expected).item(Bool.self))
+    }
+
+    @Test func generatedMelTokensUseReferenceMelPositions() throws {
+        // Weights and inputs from fixed keys, not the global seed, so tests running in
+        // parallel can't change which tokens come out.
+        let config = IndexTTSConfig.tinyForTests()
+        let core = IndexTTSCore(config: config)
+        let weights = core.parameters().flattened().enumerated().map { index, entry in
+            (entry.0, MLXRandom.normal(entry.1.shape, scale: 0.02, key: MLXRandom.key(UInt64(index))))
+        }
+        try core.update(parameters: ModuleParameters.unflattened(Dictionary(uniqueKeysWithValues: weights)), verify: .all)
+        let conditioning = MLXRandom.normal(
+            [1, config.gpt.conditionNumLatent, config.gpt.modelDim], key: MLXRandom.key(1000)
+        )
+        let generated = try core.generateMelTokens(textTokenIDs: [1], conditioningLatents: conditioning, maxTokens: 2)
+        try #require(generated.latentStates.dim(1) == 2)
+
+        // Second step by hand: the first generated token sits at mel position 2, as the
+        // reference's get_fixed_embedding(attention_mask length - prompt length) gives.
+        let prepared = try core.prepareInputEmbedding(textTokenIDs: [1], conditioningLatents: conditioning)
+        let cache = core.gpt.makeCache()
+        _ = core.gpt(inputsEmbeds: prepared.embeddings, cache: cache)
+        let first = MLXArray([Int32(generated.tokenIDs[0])]).reshaped(1, 1)
+        let input = core.melEmbedding(first) + core.melPositionEmbedding(sequenceLength: 1, offset: 2)
+        let latent = core.finalNorm(core.gpt(inputsEmbeds: input, cache: cache))
+        #expect(allClose(generated.latentStates[0..., 1..<2, 0...], latent, atol: 1e-5).item(Bool.self))
+    }
+
     @Test func bigVGANConditioningUsesPrecomputedSpeakerEmbedding() throws {
         let config = IndexTTSConfig.tinyForTests()
         let vocoder = makeTinyIndexTTSVocoder(config: config)
