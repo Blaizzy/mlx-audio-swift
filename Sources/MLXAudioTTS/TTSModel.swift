@@ -126,6 +126,13 @@ public enum TTS {
         }
 
         switch resolvedType {
+        case "bark":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await BarkModel.fromPretrained($0, cache: $1) },
+                local: { folder, _ in try await BarkModel.fromModelDirectory(folder, cache: source.cache) }
+            )
         case "higgs_audio_v3", "higgs_multimodal_qwen3":
             return try await load(
                 source,
@@ -401,6 +408,7 @@ public enum TTS {
         if lower.contains("qwen3") || lower.contains("qwen") {
             return "qwen3"
         }
+        if lower.contains("bark") { return "bark" }
         if lower.contains("soprano") {
             return "soprano"
         }

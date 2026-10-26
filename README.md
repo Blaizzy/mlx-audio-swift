@@ -118,6 +118,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 
 | Model | Model README | HuggingFace Repo |
 |-------|--------------|------------------|
+| Bark Small | [Bark README](Sources/MLXAudioTTS/Models/Bark/README.md) | [mlx-community/bark-small](https://huggingface.co/mlx-community/bark-small) |
 | Higgs Audio v2 TTS | [Higgs Audio v2 README](Sources/MLXAudioTTS/Models/HiggsAudioV2/README.md) | [mlx-community/higgs-audio-v2-3B-mlx-q8](https://huggingface.co/mlx-community/higgs-audio-v2-3B-mlx-q8), [q6](https://huggingface.co/mlx-community/higgs-audio-v2-3B-mlx-q6) |
 | Higgs Audio v3 TTS | [Higgs Audio v3 TTS README](Sources/MLXAudioTTS/Models/HiggsAudio3TTS/README.md) | [bosonai/higgs-tts-3-4b](https://huggingface.co/bosonai/higgs-tts-3-4b) |
 | Breeze TTS 2 | [Breeze TTS 2 README](Sources/MLXAudioTTS/Models/BreezeTTS/README.md) | [mlx-community/Breeze-TTS-2-mlx-4bit](https://huggingface.co/mlx-community/Breeze-TTS-2-mlx-4bit) |
