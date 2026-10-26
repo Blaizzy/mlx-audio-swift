@@ -54,11 +54,17 @@ class TimestepEmbedding: Module {
     }
 }
 
-// MARK: - DiT V2
+// MARK: - Local Diffusion Transformer
 
-class VoxCPMLocDiTV2: Module {
+enum VoxCPMDiTConditioning {
+    case summed
+    case tokens
+}
+
+class VoxCPMLocDiT: Module {
     let config: VoxCPM2LMConfig
     let inChannels: Int
+    let conditioning: VoxCPMDiTConditioning
 
     @ModuleInfo(key: "in_proj") var inProj: Linear
     @ModuleInfo(key: "cond_proj") var condProj: Linear
@@ -68,9 +74,10 @@ class VoxCPMLocDiTV2: Module {
     @ModuleInfo(key: "delta_time_mlp") var deltaTimeMlp: TimestepEmbedding
     @ModuleInfo var decoder: VoxMiniCPMModel
 
-    init(_ config: VoxCPM2LMConfig, inChannels: Int = 64) {
+    init(_ config: VoxCPM2LMConfig, inChannels: Int = 64, conditioning: VoxCPMDiTConditioning = .tokens) {
         self.config = config
         self.inChannels = inChannels
+        self.conditioning = conditioning
 
         self._inProj.wrappedValue = Linear(inChannels, config.hiddenSize)
         self._condProj.wrappedValue = Linear(inChannels, config.hiddenSize)
@@ -112,20 +119,20 @@ class VoxCPMLocDiTV2: Module {
         let dtEmb = deltaTimeMlp(timeEmbeddings(dt))
         let tComb = tEmb + dtEmb // (N, H)
 
-        // V2: mu is (N, 2*H) → reshape to (N, numMuTokens, H)
-        let H = xProj.dim(-1)
-        let muTokens = mu.reshaped(x.dim(0), -1, H) // (N, numMuTokens, H)
-        let numMuTokens = muTokens.dim(1)
-
-        let hidden = MLX.concatenated(
-            [muTokens, tComb[0..., .newAxis, 0...], condProjVal, xProj],
-            axis: 1
-        )
+        let startTokens: MLXArray
+        switch conditioning {
+        case .summed:
+            startTokens = (mu + tComb).expandedDimensions(axis: 1)
+        case .tokens:
+            let muTokens = mu.reshaped(x.dim(0), -1, xProj.dim(-1))
+            startTokens = MLX.concatenated([muTokens, tComb.expandedDimensions(axis: 1)], axis: 1)
+        }
+        let hidden = MLX.concatenated([startTokens, condProjVal, xProj], axis: 1)
 
         let (decoded, _) = decoder(inputsEmbeds: hidden, isCausal: false)
 
-        // Slice: skip mu_tokens + t_token + cond prefix
-        let sliced = decoded[0..., (numMuTokens + 1 + prefix)..., 0...]
+        // Skip the conditioning tokens and reference prefix.
+        let sliced = decoded[0..., (startTokens.dim(1) + prefix)..., 0...]
 
         let out = outProj(sliced)
 
@@ -137,14 +144,14 @@ class VoxCPMLocDiTV2: Module {
 
 class VoxUnifiedCFM: Module {
     let inChannels: Int
-    @ModuleInfo(key: "estimator") var estimator: VoxCPMLocDiTV2
+    @ModuleInfo(key: "estimator") var estimator: VoxCPMLocDiT
     let cfmParams: VoxCPM2CFMConfig
     let meanMode: Bool
 
     init(
         inChannels: Int,
         cfmParams: VoxCPM2CFMConfig,
-        estimator: VoxCPMLocDiTV2,
+        estimator: VoxCPMLocDiT,
         meanMode: Bool = false
     ) {
         self.inChannels = inChannels
