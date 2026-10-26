@@ -235,6 +235,12 @@ public enum TTS {
             return try await load(source, modelType: resolvedType,
                 pretrained: { try await KugelAudioModel.fromPretrained($0, cache: $1) },
                 local: { modelDir, _ in try await KugelAudioModel.fromModelDirectory(modelDir) })
+        case "lingv3_tts", "ming_tiny":
+            return try await load(
+                source, modelType: resolvedType,
+                pretrained: { try await MingTinyModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await MingTinyModel.fromModelDirectory(modelDir) }
+            )
         case "llama_tts", "llama3_tts", "llama3", "llama", "orpheus", "orpheus_tts":
             return try await load(
                 source,
@@ -394,6 +400,7 @@ public enum TTS {
 
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
+        if lower.contains("ming-3.0-tts-tiny") { return "lingv3_tts" }
         if lower.contains("ming"), lower.contains("tts"), lower.contains("0.5b") {
             return "dense"
         }

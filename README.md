@@ -118,6 +118,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 
 | Model | Model README | HuggingFace Repo |
 |-------|--------------|------------------|
+| Ming-3.0 TTS Tiny | [Ming Tiny README](Sources/MLXAudioTTS/Models/MingTiny/README.md) | [mlx-community/Ming-3.0-tts-tiny-4bit](https://huggingface.co/mlx-community/Ming-3.0-tts-tiny-4bit) |
 | Ming dense TTS | [Ming dense README](Sources/MLXAudioTTS/Models/Ming/README.md) | [mlx-community/Ming-3.0-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-3.0-tts-0.5B-bf16), [inclusionAI/Ming-omni-tts-0.5B](https://huggingface.co/inclusionAI/Ming-omni-tts-0.5B) |
 | KugelAudio | [KugelAudio README](Sources/MLXAudioTTS/Models/KugelAudio/README.md) | [kugelaudio/kugelaudio-0-open](https://huggingface.co/kugelaudio/kugelaudio-0-open) |
 | Bark Small | [Bark README](Sources/MLXAudioTTS/Models/Bark/README.md) | [mlx-community/bark-small](https://huggingface.co/mlx-community/bark-small) |
