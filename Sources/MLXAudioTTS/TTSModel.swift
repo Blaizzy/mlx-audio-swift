@@ -108,6 +108,19 @@ public enum TTS {
         if resolvedType == "qwen2", source.fallbackName.lowercased().contains("spark") {
             resolvedType = "spark"
         }
+        if ["qwen3", "qwen", "llama", "qwen2"].contains(resolvedType ?? "") {
+            let directory: URL
+            switch source {
+            case .localDirectory(let modelDir, _, _): directory = modelDir
+            case .repository(let repo, let cache):
+                guard let id = Repo.ID(rawValue: repo) else { throw TTSModelError.invalidRepositoryID(repo) }
+                directory = try await ModelUtils.resolveOrDownloadModel(
+                    repoID: id, requiredExtension: "safetensors", cache: cache)
+            }
+            if try isOuteTTS(directory) || source.fallbackName.lowercased().contains("outetts") {
+                resolvedType = "outetts"
+            }
+        }
         guard let resolvedType else {
             throw TTSModelError.unsupportedModelType(modelType)
         }
@@ -119,6 +132,13 @@ public enum TTS {
                 modelType: resolvedType,
                 pretrained: { try await HiggsV2Model.fromPretrained($0, cache: $1) },
                 local: { modelDir, _ in try await HiggsV2Model.fromModelDirectory(modelDir, cache: source.cache) }
+            )
+        case "outetts", "oute_tts":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await OuteTTSModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await OuteTTSModel.fromModelDirectory(modelDir, cache: source.cache) }
             )
         case "breeze", "breeze_tts":
             return try await load(
@@ -295,7 +315,11 @@ public enum TTS {
     }
 
     static func resolveModelType(modelRepo: String, modelType: String? = nil) -> String? {
-        normalizedModelType(modelType) ?? inferModelType(from: modelRepo)
+        if modelRepo.lowercased().contains("outetts"),
+           modelType == nil || ["qwen3", "qwen2", "llama", "qwen"].contains(normalizedModelType(modelType) ?? "") {
+            return "outetts"
+        }
+        return normalizedModelType(modelType) ?? inferModelType(from: modelRepo)
     }
 
     private static func localModelDirectory(_ path: String) -> URL? {
@@ -316,6 +340,7 @@ public enum TTS {
         guard let config = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
+        if try isOuteTTS(modelDir) { return "outetts" }
         return (config["model_type"] as? String)
             ?? (config["architecture"] as? String)
             ?? (config["model_version"] as? String)
@@ -324,6 +349,7 @@ public enum TTS {
 
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
+        if lower.contains("outetts") { return "outetts" }
         if lower.contains("breeze") && lower.contains("tts") {
             return "breeze"
         }
@@ -399,6 +425,31 @@ public enum TTS {
             return "dia"
         }
         return nil
+    }
+
+    /// Oute checkpoints advertise their language backbone as model_type. Their
+    /// paired audio-token vocabulary identifies them even in renamed snapshots.
+    static func isOuteTTS(_ directory: URL) throws -> Bool {
+        let config = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("config.json"))) as? [String: Any]
+        if (config?["model_type"] as? String) == "outetts" { return true }
+        if ["tokenizer_name", "_name_or_path"].contains(where: {
+            (config?[$0] as? String)?.lowercased().contains("outetts") == true
+        }) { return true }
+        for filename in ["added_tokens.json", "tokenizer_config.json"] {
+            guard let data = try? Data(contentsOf: directory.appendingPathComponent(filename)),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            let tokens: Set<String>
+            if filename == "added_tokens.json" {
+                tokens = Set(object.keys)
+            } else {
+                let decoder = object["added_tokens_decoder"] as? [String: [String: Any]] ?? [:]
+                tokens = Set(decoder.values.compactMap { $0["content"] as? String })
+            }
+            if ["<|c1_0|>", "<|c2_0|>", "<|word_start|>", "<|features|>"].allSatisfy(tokens.contains) {
+                return true
+            }
+        }
+        return false
     }
 }
 

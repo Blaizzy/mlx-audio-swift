@@ -44,4 +44,33 @@ public struct DescriptDACConfig: Codable, Sendable {
         case codebookDim = "codebook_dim"
         case sampleRate = "sample_rate"
     }
+
+    private enum PublishedKeys: String, CodingKey {
+        case encoderDim = "encoder_hidden_size"
+        case encoderRates = "downsampling_ratios"
+        case latentDim = "hidden_size"
+        case decoderDim = "decoder_hidden_size"
+        case decoderRates = "upsampling_ratios"
+        case sampleRate = "sampling_rate"
+    }
+
+    public init(from decoder: Swift.Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let p = try decoder.container(keyedBy: PublishedKeys.self)
+        encoderDim = try c.decodeIfPresent(Int.self, forKey: .encoderDim)
+            ?? p.decode(Int.self, forKey: .encoderDim)
+        encoderRates = try c.decodeIfPresent([Int].self, forKey: .encoderRates)
+            ?? p.decode([Int].self, forKey: .encoderRates)
+        latentDim = try c.decodeIfPresent(Int.self, forKey: .latentDim)
+            ?? p.decodeIfPresent(Int.self, forKey: .latentDim)
+        decoderDim = try c.decodeIfPresent(Int.self, forKey: .decoderDim)
+            ?? p.decode(Int.self, forKey: .decoderDim)
+        decoderRates = try c.decodeIfPresent([Int].self, forKey: .decoderRates)
+            ?? p.decode([Int].self, forKey: .decoderRates)
+        sampleRate = try c.decodeIfPresent(Int.self, forKey: .sampleRate)
+            ?? p.decode(Int.self, forKey: .sampleRate)
+        nCodebooks = try c.decode(Int.self, forKey: .nCodebooks)
+        codebookSize = try c.decode(Int.self, forKey: .codebookSize)
+        codebookDim = try c.decode(Int.self, forKey: .codebookDim)
+    }
 }

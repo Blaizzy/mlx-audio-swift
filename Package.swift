@@ -119,6 +119,7 @@ let package = Package(
                 "Models/Llama/README.md",
                 "Models/HiggsAudioV2/README.md",
                 "Models/Marvis/README.md",
+                "Models/OuteTTS/README.md",
                 "Models/PocketTTS/README.md",
                 "Models/Qwen3/README.md",
                 "Models/Qwen3TTS/README.md",
@@ -127,7 +128,8 @@ let package = Package(
                 "Models/VoxCPM2/README.md",
                 "Models/StyleTTS2/KittenTTS/README.md",
                 "Models/StyleTTS2/Kokoro/README.md",
-            ]
+            ],
+            resources: [.copy("Models/OuteTTS/outetts_default_speaker.json")]
         ),
 
         // MARK: - MLXAudioSTT
