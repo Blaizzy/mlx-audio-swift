@@ -119,6 +119,8 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | Model | Model README | HuggingFace Repo |
 |-------|--------------|------------------|
 | Ming-3.0 TTS Tiny | [Ming Tiny README](Sources/MLXAudioTTS/Models/MingTiny/README.md) | [mlx-community/Ming-3.0-tts-tiny-4bit](https://huggingface.co/mlx-community/Ming-3.0-tts-tiny-4bit) |
+| Ming dense TTS | [Ming dense README](Sources/MLXAudioTTS/Models/Ming/README.md) | [mlx-community/Ming-3.0-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-3.0-tts-0.5B-bf16), [inclusionAI/Ming-omni-tts-0.5B](https://huggingface.co/inclusionAI/Ming-omni-tts-0.5B) |
+| KugelAudio | [KugelAudio README](Sources/MLXAudioTTS/Models/KugelAudio/README.md) | [kugelaudio/kugelaudio-0-open](https://huggingface.co/kugelaudio/kugelaudio-0-open) |
 | Bark Small | [Bark README](Sources/MLXAudioTTS/Models/Bark/README.md) | [mlx-community/bark-small](https://huggingface.co/mlx-community/bark-small) |
 | Higgs Audio v2 TTS | [Higgs Audio v2 README](Sources/MLXAudioTTS/Models/HiggsAudioV2/README.md) | [mlx-community/higgs-audio-v2-3B-mlx-q8](https://huggingface.co/mlx-community/higgs-audio-v2-3B-mlx-q8), [q6](https://huggingface.co/mlx-community/higgs-audio-v2-3B-mlx-q6) |
 | Higgs Audio v3 TTS | [Higgs Audio v3 TTS README](Sources/MLXAudioTTS/Models/HiggsAudio3TTS/README.md) | [bosonai/higgs-tts-3-4b](https://huggingface.co/bosonai/higgs-tts-3-4b) |
@@ -126,8 +128,10 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | Qwen3-TTS | [Qwen3-TTS README](Sources/MLXAudioTTS/Models/Qwen3TTS/README.md) | [mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit) |
 | OuteTTS | [OuteTTS README](Sources/MLXAudioTTS/Models/OuteTTS/README.md) | [mlx-community/OuteTTS-1.0-0.6B-fp16](https://huggingface.co/mlx-community/OuteTTS-1.0-0.6B-fp16) |
 | OmniVoice | [OmniVoice README](Sources/MLXAudioTTS/Models/OmniVoice/README.md) | [mlx-community/OmniVoice](https://huggingface.co/mlx-community/OmniVoice) |
+| Audio8 0.6B | [Audio8 README](Sources/MLXAudioTTS/Models/Audio8/README.md) | [mlx-community/Audio8-TTS-Preview-0.6b-bf16](https://huggingface.co/mlx-community/Audio8-TTS-Preview-0.6b-bf16) |
 | Fish Audio S2 Pro | [Fish Audio S2 Pro README](Sources/MLXAudioTTS/Models/FishSpeech/README.md) | [mlx-community/fish-audio-s2-pro-8bit](https://huggingface.co/mlx-community/fish-audio-s2-pro-8bit) |
 | Soprano | [Soprano README](Sources/MLXAudioTTS/Models/Soprano/README.md) | [mlx-community/Soprano-80M-bf16](https://huggingface.co/mlx-community/Soprano-80M-bf16) |
+| VibeVoice Realtime | [VibeVoice Realtime README](Sources/MLXAudioTTS/Models/VibeVoice/README.md) | [mlx-community/VibeVoice-Realtime-0.5B-8bit](https://huggingface.co/mlx-community/VibeVoice-Realtime-0.5B-8bit) |
 | VoxCPM 1 / 1.5 | [VoxCPM README](Sources/MLXAudioTTS/Models/VoxCPM/README.md) | [mlx-community/VoxCPM1.5-4bit](https://huggingface.co/mlx-community/VoxCPM1.5-4bit), [fp16](https://huggingface.co/mlx-community/VoxCPM1.5-fp16), [8-bit](https://huggingface.co/mlx-community/VoxCPM1.5-8bit) |
 | VyvoTTS | [VyvoTTS README](Sources/MLXAudioTTS/Models/Qwen3/README.md) | [mlx-community/VyvoTTS-EN-Beta-4bit](https://huggingface.co/mlx-community/VyvoTTS-EN-Beta-4bit) |
 | Orpheus | [Orpheus README](Sources/MLXAudioTTS/Models/Llama/README.md) | [mlx-community/orpheus-3b-0.1-ft-bf16](https://huggingface.co/mlx-community/orpheus-3b-0.1-ft-bf16) |
