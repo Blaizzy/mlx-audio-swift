@@ -226,6 +226,13 @@ public enum TTS {
                 pretrained: { try await KokoroModel.fromPretrained($0, textProcessor: processor, cache: $1) },
                 local: { modelDir, _ in try await KokoroModel.fromModelDirectory(modelDir, textProcessor: processor) }
             )
+        case "voxcpm", "vox_cpm", "voxcpm1", "voxcpm1.5":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await VoxCPMModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await VoxCPMModel.fromModelDirectory(modelDir) }
+            )
         case "voxcpm2", "vox_cpm2":
             return try await load(
                 source,
@@ -377,8 +384,11 @@ public enum TTS {
         if lower.contains("kokoro") {
             return "kokoro"
         }
-        if lower.contains("voxcpm") {
+        if lower.contains("voxcpm2") || lower.contains("vox_cpm2") {
             return "voxcpm2"
+        }
+        if lower.contains("voxcpm") || lower.contains("vox_cpm") {
+            return "voxcpm"
         }
         if lower.contains("omnivoice") {
             return "omnivoice"
