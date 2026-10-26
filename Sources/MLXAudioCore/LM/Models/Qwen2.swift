@@ -162,6 +162,14 @@ public class Qwen2ModelInner: Module {
         return embedTokens(tokens)
     }
 
+    /// Project hidden states with the input embedding table, including quantized embeddings.
+    public func projectToVocabulary(_ hidden: MLXArray) -> MLXArray {
+        guard let embedTokens else {
+            preconditionFailure("This Qwen2 stack has no vocabulary embedding table")
+        }
+        return embedTokens.asLinear(hidden)
+    }
+
     public func callAsFunction(inputEmbeddings: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
         callAsFunction(
             inputEmbeddings: inputEmbeddings, cache: cache,

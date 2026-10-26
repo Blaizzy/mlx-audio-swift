@@ -316,6 +316,13 @@ public enum TTS {
                 modelType: resolvedType,
                 pretrained: { try await SparkModel.fromPretrained($0, cache: $1) }
             )
+        case "vibevoice":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await VibeVoiceTTSModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await VibeVoiceTTSModel.fromModelDirectory(modelDir, cache: source.cache) }
+            )
         case "vibevoice_streaming":
             return try await load(
                 source, modelType: resolvedType,
