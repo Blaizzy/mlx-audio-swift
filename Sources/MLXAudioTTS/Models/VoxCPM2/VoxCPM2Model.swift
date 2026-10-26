@@ -122,7 +122,7 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
         ditConfig.kvChannels = config.ditConfig.kvChannels
         ditConfig.vocabSize = 0
 
-        let estimator = VoxCPMLocDiTV2(ditConfig, inChannels: config.featDim)
+        let estimator = VoxCPMLocDiT(ditConfig, inChannels: config.featDim)
         self._featDecoder.wrappedValue = VoxUnifiedCFM(
             inChannels: config.featDim,
             cfmParams: config.ditConfig.cfmConfig,

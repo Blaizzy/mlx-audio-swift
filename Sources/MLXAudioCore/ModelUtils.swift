@@ -8,14 +8,8 @@ public enum ModelUtils {
         cache: HubCache = .default
     ) async throws -> String? {
         let modelNameComponents = repoID.name.split(separator: "/").last?.split(separator: "-")
-        let modelURL = try await resolveOrDownloadModel(
-            repoID: repoID,
-            requiredExtension: "safetensors",
-            additionalMatchingPatterns: ["*.model"],
-            hfToken: hfToken,
-            cache: cache
-        )
-        let configJSON = try JSONSerialization.jsonObject(with: Data(contentsOf: modelURL.appendingPathComponent("config.json")))
+        let configURL = try await resolveModelConfig(repoID: repoID, hfToken: hfToken, cache: cache)
+        let configJSON = try JSONSerialization.jsonObject(with: Data(contentsOf: configURL))
         if let config = configJSON as? [String: Any] {
             return (config["model_type"] as? String)
                 ?? (config["architecture"] as? String)
@@ -24,6 +18,29 @@ public enum ModelUtils {
                 ?? modelNameComponents?.first?.lowercased()
         }
         return nil
+    }
+
+    /// Resolves only config.json, including for models whose weights use a custom container.
+    public static func resolveModelConfig(
+        repoID: Repo.ID,
+        hfToken: String? = nil,
+        cache: HubCache = .default
+    ) async throws -> URL {
+        let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
+        let cachedConfig = cache.cacheDirectory.appendingPathComponent("mlx-audio/\(modelSubdir)/config.json")
+        let configURL: URL
+        if FileManager.default.fileExists(atPath: cachedConfig.path) {
+            configURL = cachedConfig
+        } else {
+            let client: HubClient
+            if let hfToken, !hfToken.isEmpty {
+                client = HubClient(host: HubClient.defaultHost, bearerToken: hfToken, cache: cache)
+            } else {
+                client = HubClient(cache: cache)
+            }
+            configURL = try await client.downloadFile(at: "config.json", from: repoID)
+        }
+        return configURL
     }
 
     /// Resolves a model from cache or downloads it if not cached.
