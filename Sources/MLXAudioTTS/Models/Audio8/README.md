@@ -1,6 +1,6 @@
 # Audio8 TTS
 
-Audio8 0.1B and 0.6B generate multilingual speech at 44.1 kHz and supports voice cloning from a mono reference recording and its matching transcript.
+Audio8 0.1B and 0.6B generate multilingual speech at 44.1 kHz and support voice cloning from a mono reference recording and its matching transcript.
 
 Supported models:
 
