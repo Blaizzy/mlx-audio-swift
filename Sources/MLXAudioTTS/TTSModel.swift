@@ -126,6 +126,12 @@ public enum TTS {
         }
 
         switch resolvedType {
+        case "arktts", "audio8":
+            return try await load(
+                source, modelType: resolvedType,
+                pretrained: { try await Audio8Model.fromPretrained($0, cache: $1) },
+                local: { directory, _ in try await Audio8Model.fromModelDirectory(directory) }
+            )
         case "bark":
             return try await load(
                 source,
@@ -370,6 +376,7 @@ public enum TTS {
 
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
+        if lower.contains("audio8") || lower.contains("arktts") { return "arktts" }
         if lower.contains("outetts") { return "outetts" }
         if lower.contains("breeze") && lower.contains("tts") {
             return "breeze"

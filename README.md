@@ -125,6 +125,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | Qwen3-TTS | [Qwen3-TTS README](Sources/MLXAudioTTS/Models/Qwen3TTS/README.md) | [mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit) |
 | OuteTTS | [OuteTTS README](Sources/MLXAudioTTS/Models/OuteTTS/README.md) | [mlx-community/OuteTTS-1.0-0.6B-fp16](https://huggingface.co/mlx-community/OuteTTS-1.0-0.6B-fp16) |
 | OmniVoice | [OmniVoice README](Sources/MLXAudioTTS/Models/OmniVoice/README.md) | [mlx-community/OmniVoice](https://huggingface.co/mlx-community/OmniVoice) |
+| Audio8 0.6B | [Audio8 README](Sources/MLXAudioTTS/Models/Audio8/README.md) | [mlx-community/Audio8-TTS-Preview-0.6b-bf16](https://huggingface.co/mlx-community/Audio8-TTS-Preview-0.6b-bf16) |
 | Fish Audio S2 Pro | [Fish Audio S2 Pro README](Sources/MLXAudioTTS/Models/FishSpeech/README.md) | [mlx-community/fish-audio-s2-pro-8bit](https://huggingface.co/mlx-community/fish-audio-s2-pro-8bit) |
 | Soprano | [Soprano README](Sources/MLXAudioTTS/Models/Soprano/README.md) | [mlx-community/Soprano-80M-bf16](https://huggingface.co/mlx-community/Soprano-80M-bf16) |
 | VoxCPM 1 / 1.5 | [VoxCPM README](Sources/MLXAudioTTS/Models/VoxCPM/README.md) | [mlx-community/VoxCPM1.5-4bit](https://huggingface.co/mlx-community/VoxCPM1.5-4bit), [fp16](https://huggingface.co/mlx-community/VoxCPM1.5-fp16), [8-bit](https://huggingface.co/mlx-community/VoxCPM1.5-8bit) |
