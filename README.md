@@ -14,8 +14,8 @@ MLXAudio follows a modular design allowing you to import only what you need:
 
 - **MLXAudioCore**: Base types, protocols, and utilities
 - **MLXAudioCodecs**: Audio codec implementations (SNAC, Encodec, Vocos, Mimi, DACVAE, Descript DAC, Fish S1 DAC, S3TokenizerV2, MOSS Audio Tokenizer, Higgs Audio Tokenizer, Step-Audio-2 token-to-wav, MiMo Audio Tokenizer, Nemotron VoiceChat Codec)
-- **MLXAudioTTS**: Text-to-Speech models (Breeze TTS 2, Qwen3-TTS, OuteTTS, OmniVoice, Fish Audio S2 Pro, IndexTTS, Soprano, VyvoTTS, Orpheus, MOSS-TTS, Marvis TTS, Pocket TTS, Irodori TTS, Dia, rumik-oss 1)
-- **MLXAudioSTT**: Speech-to-Text models (Qwen2-Audio, Qwen3-ASR, Qwen3-ForcedAligner, Ming-3.0 ASR Tiny, MOSS-Music, MiMo-V2.5-ASR, VibeVoice ASR, Voxtral Mini, Voxtral Realtime, Cohere Transcribe, Parakeet, Parakeet Redux, Phonon-2/2.5, Nemotron ASR, GLMASR, FireRedASR2, SenseVoice, Fun-ASR-Nano, Granite Speech, Whisper, Canary, Moonshine, Wav2Vec2, MMS)
+- **MLXAudioTTS**: Text-to-Speech models (Qwen3-TTS, Fish Audio S2 Pro, Soprano, Orpheus, Pocket TTS, and more). [Full TTS model list](#tts-models).
+- **MLXAudioSTT**: Speech-to-Text models (Whisper, Parakeet, Qwen3-ASR, Voxtral Mini, VibeVoice ASR, and more). [Full STT model list](#stt-models).
 - **MLXAudioVAD**: Voice Activity Detection & Speaker Diarization (Sortformer, SmartTurn, FSMN VAD, Silero VAD)
 - **MLXAudioSTS**: Speech-to-Speech models (LFM2.5-Audio, SAM-Audio, MossFormer2-SE, DeepFilterNet)
 - **MLXAudioUI**: SwiftUI components for audio interfaces
