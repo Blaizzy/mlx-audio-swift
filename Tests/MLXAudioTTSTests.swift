@@ -1072,6 +1072,35 @@ struct Qwen3TTSTests {
         #expect(conditioning.codecLanguageID == 3057)
     }
 
+    @Test func iclPromptKeepsTalkerDtypeWithFloat32SpeakerEmbedding() async throws {
+        let fixture = try await makeTinyQwen3TTSModel(
+            ttsModelType: "voice_design",
+            includeSpeechEncoder: true
+        )
+        defer { cleanupTemporaryArtifactDirectory(fixture.tokenizerDirectory) }
+        let talker = fixture.model.talker
+        let bf16 = talker.parameters().flattened().map { ($0.0, $0.1.asType(.bfloat16)) }
+        talker.update(parameters: ModuleParameters.unflattened(bf16))
+
+        let refAudio = try loadTTSNetworkFixture(sampleRate: 24_000, maxSamples: 24_000)
+        let prepared = try fixture.model.prepareReferenceConditioning(
+            refAudio: refAudio,
+            refText: "one two three four five",
+            language: "English"
+        )
+        // The speaker encoder returns float32 embeddings.
+        let conditioning = Qwen3TTSModel.Qwen3TTSReferenceConditioning(
+            speakerEmbedding: MLXArray.ones([1, talker.getInputEmbeddings().weight.dim(-1)], dtype: .float32),
+            referenceSpeechCodes: prepared.referenceSpeechCodes,
+            referenceTextTokenIDs: prepared.referenceTextTokenIDs,
+            resolvedLanguage: prepared.resolvedLanguage,
+            codecLanguageID: prepared.codecLanguageID
+        )
+
+        let inputs = try fixture.model.prepareICLGenerationInputs(text: "one two", conditioning: conditioning)
+        #expect(inputs.0.dtype == .bfloat16)
+    }
+
     @Test func generateFromPreparedConditioningSupportsDirectAndStreamingCalls() async throws {
         let fixture = try await makeTinyQwen3TTSModel(
             ttsModelType: "voice_design",
