@@ -15,6 +15,8 @@ public struct HiggsAudioTokenizerConfig: Codable, Sendable {
     public var dacEncoderRatios: [Int]
     public var dacEncoderHidden: Int
     public var dacDecoderHidden: Int
+    public var semanticModelConfig: HiggsAudioSemanticConfig? = nil
+    public var semanticSampleRate: Int = 16_000
 
     public init(
         modelType: String = "higgs_audio_v2_tokenizer",
@@ -51,7 +53,26 @@ public struct HiggsAudioTokenizerConfig: Codable, Sendable {
         case dacEncoderRatios = "dac_encoder_ratios"
         case dacEncoderHidden = "dac_encoder_hidden"
         case dacDecoderHidden = "dac_decoder_hidden"
+        case semanticModelConfig = "semantic_model_config"
+        case semanticSampleRate = "semantic_sample_rate"
     }
+    public init(from decoder: Swift.Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        modelType = try c.decodeIfPresent(String.self, forKey: .modelType) ?? modelType
+        sampleRate = try c.decodeIfPresent(Int.self, forKey: .sampleRate) ?? sampleRate
+        codebookSize = try c.decodeIfPresent(Int.self, forKey: .codebookSize) ?? codebookSize
+        codebookDim = try c.decodeIfPresent(Int.self, forKey: .codebookDim) ?? codebookDim
+        downsampleFactor = try c.decodeIfPresent(Int.self, forKey: .downsampleFactor) ?? downsampleFactor
+        dacSampleRate = try c.decodeIfPresent(Int.self, forKey: .dacSampleRate) ?? dacSampleRate
+        dacNumCodebooks = try c.decodeIfPresent(Int.self, forKey: .dacNumCodebooks) ?? dacNumCodebooks
+        dacEncoderRatios = try c.decodeIfPresent([Int].self, forKey: .dacEncoderRatios) ?? dacEncoderRatios
+        dacEncoderHidden = try c.decodeIfPresent(Int.self, forKey: .dacEncoderHidden) ?? dacEncoderHidden
+        dacDecoderHidden = try c.decodeIfPresent(Int.self, forKey: .dacDecoderHidden) ?? dacDecoderHidden
+        semanticSampleRate = try c.decodeIfPresent(Int.self, forKey: .semanticSampleRate) ?? semanticSampleRate
+        semanticModelConfig = try c.decodeIfPresent(HiggsAudioSemanticConfig.self, forKey: .semanticModelConfig)
+    }
+
 }
 
 public enum HiggsAudioTokenizerError: Error, LocalizedError {
@@ -345,6 +366,9 @@ public final class HiggsAudioTokenizer: Module {
     @ModuleInfo private var quantizer: HiggsResidualVectorQuantizer
     @ModuleInfo(key: "acoustic_decoder") private var acousticDecoder: HiggsAcousticDecoder
     @ModuleInfo var fc2: Linear
+    @ModuleInfo(key: "semantic_model") private var semanticModel: HiggsAudioHubertModel?
+    @ModuleInfo(key: "encoder_semantic") private var encoderSemantic: HiggsAudioSemanticEncoder?
+    @ModuleInfo private var fc: Linear?
 
     public init(config: HiggsAudioTokenizerConfig = HiggsAudioTokenizerConfig()) {
         self.config = config
@@ -356,6 +380,15 @@ public final class HiggsAudioTokenizer: Module {
         )
         _acousticDecoder.wrappedValue = HiggsAcousticDecoder()
         _fc2.wrappedValue = Linear(1_024, 256)
+        if let semantic = config.semanticModelConfig {
+            _semanticModel.wrappedValue = HiggsAudioHubertModel(config: semantic)
+            _encoderSemantic.wrappedValue = HiggsAudioSemanticEncoder(config: semantic)
+            _fc.wrappedValue = Linear(256 + semantic.hiddenSize, 256 + semantic.hiddenSize)
+        } else {
+            _semanticModel.wrappedValue = nil
+            _encoderSemantic.wrappedValue = nil
+            _fc.wrappedValue = nil
+        }
     }
 
     public func decode(_ tokens: MLXArray) -> MLXArray {
@@ -373,18 +406,54 @@ public final class HiggsAudioTokenizer: Module {
         return quantizer.encode(features)
     }
 
+    /// Encode mono 24 kHz waveform [B, samples, 1] into [B, frames, codebooks].
+    public func encode(_ waveform: MLXArray) throws -> MLXArray {
+        guard let semanticModel, let encoderSemantic, let fc else {
+            throw HiggsAudioTokenizerError.invalidInput("The Higgs codec lacks semantic encoding weights")
+        }
+        guard waveform.ndim == 3, waveform.dim(2) == 1, waveform.dim(1) >= 960 else {
+            throw HiggsAudioTokenizerError.invalidInput("Expected mono waveform [B, samples, 1] with at least 960 samples")
+        }
+        let batch = waveform.dim(0)
+        let pad = config.downsampleFactor / 2
+        var resampled: [[Float]] = []
+        for i in 0..<batch {
+            let values = higgsAudioSincResample(waveform[i, 0..., 0].asArray(Float.self),
+                from: config.sampleRate, to: config.semanticSampleRate)
+            resampled.append([Float](repeating: 0, count: pad) + values + [Float](repeating: 0, count: pad))
+        }
+        let audio16k = MLXArray(resampled.flatMap { $0 }).reshaped([batch, resampled[0].count])
+        var semantic = semanticModel.meanHiddenStates(audio16k)
+        let downsample = max(1, Int((Double(config.semanticSampleRate) / Double(config.downsampleFactor)
+            / (Double(config.sampleRate) / 960)).rounded()))
+        if downsample > 1 {
+            let indices: [Int32] = Swift.stride(from: 0, to: semantic.dim(1), by: downsample).map(Int32.init)
+            semantic = take(semantic, MLXArray(indices), axis: 1)
+        }
+        semantic = encoderSemantic(semantic)
+        let acoustic = acousticEncoder(waveform.asType(.float32))
+        let count = min(acoustic.dim(1), semantic.dim(1))
+        let fused = concatenated([acoustic[0..., 0..<count, 0...], semantic[0..., 0..<count, 0...]], axis: -1)
+        return quantizer.encode(fc(fused)).asType(.int32)
+    }
+
     public static func fromPretrained(
         _ source: String,
         hfToken: String? = nil,
         cache: HubCache = .default
     ) async throws -> HiggsAudioTokenizer {
+        let localURL = URL(fileURLWithPath: NSString(string: source).expandingTildeInPath)
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: localURL.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            return try fromModelDirectory(localURL)
+        }
         guard let repoID = Repo.ID(rawValue: source) else {
             return try fromModelDirectory(URL(fileURLWithPath: NSString(string: source).expandingTildeInPath))
         }
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
             requiredExtension: ".safetensors",
-            additionalMatchingPatterns: ["*.json", "*.index.json"],
+            additionalMatchingPatterns: ["*.json", "*.index.json", "audio_tokenizer/*.json", "audio_tokenizer/*.safetensors"],
             hfToken: hfToken,
             cache: cache
         )
@@ -397,14 +466,19 @@ public final class HiggsAudioTokenizer: Module {
         guard FileManager.default.fileExists(atPath: configURL.path) else {
             throw HiggsAudioTokenizerError.missingConfig(configURL)
         }
-        let config = try JSONDecoder().decode(HiggsAudioTokenizerConfig.self, from: Data(contentsOf: configURL))
-        let model = HiggsAudioTokenizer(config: config)
+        var config = try JSONDecoder().decode(HiggsAudioTokenizerConfig.self, from: Data(contentsOf: configURL))
         let weightsURL = modelDir.appendingPathComponent("model.safetensors")
         guard FileManager.default.fileExists(atPath: weightsURL.path) else {
             throw HiggsAudioTokenizerError.missingWeights(weightsURL)
         }
         let weights = try loadArrays(url: weightsURL)
-        try model.update(parameters: ModuleParameters.unflattened(sanitize(weights: weights)), verify: .noUnusedKeys)
+        let codebooks = weights.keys.compactMap { key -> Int? in
+            guard key.hasPrefix("quantizer.quantizers.") else { return nil }
+            return Int(key.split(separator: ".")[2])
+        }
+        if let last = codebooks.max() { config.dacNumCodebooks = last + 1 }
+        let model = HiggsAudioTokenizer(config: config)
+        try model.update(parameters: ModuleParameters.unflattened(sanitize(weights: weights, includeSemantic: config.semanticModelConfig != nil)), verify: .all)
         eval(model)
         return model
     }
@@ -417,7 +491,7 @@ public final class HiggsAudioTokenizer: Module {
         return directory
     }
 
-    public static func sanitize(weights: [String: MLXArray], prefix: String = "") -> [String: MLXArray] {
+    public static func sanitize(weights: [String: MLXArray], prefix: String = "", includeSemantic: Bool = false) -> [String: MLXArray] {
         var result: [String: MLXArray] = [:]
         result.reserveCapacity(weights.count)
         for (rawKey, rawValue) in weights {
@@ -426,6 +500,8 @@ public final class HiggsAudioTokenizer: Module {
                 guard key.hasPrefix(prefix) else { continue }
                 key = String(key.dropFirst(prefix.count))
             }
+            if !includeSemantic && (key.hasPrefix("semantic_model.") || key.hasPrefix("encoder_semantic.")
+                || key == "fc.weight" || key == "fc.bias") { continue }
             if key == "semantic_model.masked_spec_embed" { continue }
             if key.hasPrefix("decoder_semantic.") || key.hasPrefix("fc1.") { continue }
             if key.hasSuffix(".embed_avg") || key.hasSuffix(".cluster_size") || key.hasSuffix(".inited") { continue }
@@ -433,6 +509,9 @@ public final class HiggsAudioTokenizer: Module {
                 || key.hasPrefix("acoustic_decoder.")
                 || key.hasPrefix("quantizer.")
                 || key.hasPrefix("fc2.")
+                || key.hasPrefix("semantic_model.")
+                || key.hasPrefix("encoder_semantic.")
+                || key == "fc.weight" || key == "fc.bias"
             else {
                 continue
             }
@@ -442,7 +521,10 @@ public final class HiggsAudioTokenizer: Module {
                 key = String(key.dropLast("embed".count)) + "weight"
             }
 
-            if key.hasSuffix(".alpha"), value.ndim == 3 {
+            if key.hasPrefix("semantic_model.") || key.hasPrefix("encoder_semantic.") {
+                key = key.replacingOccurrences(of: ".parametrizations.weight.original0", with: ".weight_g")
+                    .replacingOccurrences(of: ".parametrizations.weight.original1", with: ".weight_v")
+            } else if key.hasSuffix(".alpha"), value.ndim == 3 {
                 value = value.transposed(0, 2, 1)
             } else if key.contains(".conv_t"), key.hasSuffix(".weight"), value.ndim == 3 {
                 value = value.transposed(1, 2, 0)

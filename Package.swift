@@ -112,12 +112,17 @@ let package = Package(
             ],
             path: "Sources/MLXAudioTTS",
             exclude: [
+                "Models/Bark/README.md",
                 "Models/Chatterbox/README.md",
                 "Models/Dia/README.md",
                 "Models/EchoTTS/README.md",
                 "Models/FishSpeech/README.md",
                 "Models/Llama/README.md",
+                "Models/HiggsAudio3TTS/README.md",
+                "Models/Rumik/README.md",
+                "Models/HiggsAudioV2/README.md",
                 "Models/Marvis/README.md",
+                "Models/OuteTTS/README.md",
                 "Models/PocketTTS/README.md",
                 "Models/Qwen3/README.md",
                 "Models/Qwen3TTS/README.md",
@@ -127,7 +132,8 @@ let package = Package(
                 "Models/VibeVoiceTTS/README.md",
                 "Models/StyleTTS2/KittenTTS/README.md",
                 "Models/StyleTTS2/Kokoro/README.md",
-            ]
+            ],
+            resources: [.copy("Models/OuteTTS/outetts_default_speaker.json")]
         ),
 
         // MARK: - MLXAudioSTT

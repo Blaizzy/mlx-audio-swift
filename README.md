@@ -14,8 +14,8 @@ MLXAudio follows a modular design allowing you to import only what you need:
 
 - **MLXAudioCore**: Base types, protocols, and utilities
 - **MLXAudioCodecs**: Audio codec implementations (SNAC, Encodec, Vocos, Mimi, DACVAE, Descript DAC, Fish S1 DAC, S3TokenizerV2, MOSS Audio Tokenizer, Higgs Audio Tokenizer, Step-Audio-2 token-to-wav, MiMo Audio Tokenizer, Nemotron VoiceChat Codec)
-- **MLXAudioTTS**: Text-to-Speech models (Breeze TTS 2, Qwen3-TTS, OmniVoice, Fish Audio S2 Pro, IndexTTS, Soprano, VyvoTTS, Orpheus, MOSS-TTS, Marvis TTS, Pocket TTS, Irodori TTS, Dia)
-- **MLXAudioSTT**: Speech-to-Text models (Qwen2-Audio, Qwen3-ASR, Qwen3-ForcedAligner, Ming-3.0 ASR Tiny, MOSS-Music, MiMo-V2.5-ASR, VibeVoice ASR, Voxtral Mini, Voxtral Realtime, Cohere Transcribe, Parakeet, Parakeet Redux, Phonon-2/2.5, Nemotron ASR, GLMASR, FireRedASR2, SenseVoice, Fun-ASR-Nano, Granite Speech, Whisper, Canary, Moonshine, Wav2Vec2, MMS)
+- **MLXAudioTTS**: Text-to-Speech models (Qwen3-TTS, Fish Audio S2 Pro, Soprano, Orpheus, Pocket TTS, and more). [Full TTS model list](#tts-models).
+- **MLXAudioSTT**: Speech-to-Text models (Whisper, Parakeet, Qwen3-ASR, Voxtral Mini, VibeVoice ASR, and more). [Full STT model list](#stt-models).
 - **MLXAudioVAD**: Voice Activity Detection & Speaker Diarization (Sortformer, SmartTurn, FSMN VAD, Silero VAD)
 - **MLXAudioSTS**: Speech-to-Speech models (LFM2.5-Audio, SAM-Audio, MossFormer2-SE, DeepFilterNet)
 - **MLXAudioUI**: SwiftUI components for audio interfaces
@@ -119,8 +119,12 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | Model | Model README | HuggingFace Repo |
 |-------|--------------|------------------|
 | VibeVoice TTS | [VibeVoice TTS README](Sources/MLXAudioTTS/Models/VibeVoiceTTS/README.md) | [microsoft/VibeVoice-1.5B](https://huggingface.co/microsoft/VibeVoice-1.5B) |
+| Bark Small | [Bark README](Sources/MLXAudioTTS/Models/Bark/README.md) | [mlx-community/bark-small](https://huggingface.co/mlx-community/bark-small) |
+| Higgs Audio v2 TTS | [Higgs Audio v2 README](Sources/MLXAudioTTS/Models/HiggsAudioV2/README.md) | [mlx-community/higgs-audio-v2-3B-mlx-q8](https://huggingface.co/mlx-community/higgs-audio-v2-3B-mlx-q8), [q6](https://huggingface.co/mlx-community/higgs-audio-v2-3B-mlx-q6) |
+| Higgs Audio v3 TTS | [Higgs Audio v3 TTS README](Sources/MLXAudioTTS/Models/HiggsAudio3TTS/README.md) | [bosonai/higgs-tts-3-4b](https://huggingface.co/bosonai/higgs-tts-3-4b) |
 | Breeze TTS 2 | [Breeze TTS 2 README](Sources/MLXAudioTTS/Models/BreezeTTS/README.md) | [mlx-community/Breeze-TTS-2-mlx-4bit](https://huggingface.co/mlx-community/Breeze-TTS-2-mlx-4bit) |
 | Qwen3-TTS | [Qwen3-TTS README](Sources/MLXAudioTTS/Models/Qwen3TTS/README.md) | [mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit) |
+| OuteTTS | [OuteTTS README](Sources/MLXAudioTTS/Models/OuteTTS/README.md) | [mlx-community/OuteTTS-1.0-0.6B-fp16](https://huggingface.co/mlx-community/OuteTTS-1.0-0.6B-fp16) |
 | OmniVoice | [OmniVoice README](Sources/MLXAudioTTS/Models/OmniVoice/README.md) | [mlx-community/OmniVoice](https://huggingface.co/mlx-community/OmniVoice) |
 | Fish Audio S2 Pro | [Fish Audio S2 Pro README](Sources/MLXAudioTTS/Models/FishSpeech/README.md) | [mlx-community/fish-audio-s2-pro-8bit](https://huggingface.co/mlx-community/fish-audio-s2-pro-8bit) |
 | Soprano | [Soprano README](Sources/MLXAudioTTS/Models/Soprano/README.md) | [mlx-community/Soprano-80M-bf16](https://huggingface.co/mlx-community/Soprano-80M-bf16) |
@@ -134,6 +138,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | Phonon | [Phonon README](Sources/MLXAudioTTS/Models/PocketTTS/README.md) | [Gradium 31M](https://huggingface.co/gradium/phonon-31m-en), [Gradium 40M](https://huggingface.co/gradium/phonon-40m-en) |
 | Irodori TTS | [Irodori TTS README](Sources/MLXAudioTTS/Models/IrodoriTTS/README.md) | [mlx-community/Irodori-TTS-600M-v3-VoiceDesign-8bit](https://huggingface.co/mlx-community/Irodori-TTS-600M-v3-VoiceDesign-8bit), [mlx-community/Irodori-TTS-v4.1-Small-8bit](https://huggingface.co/mlx-community/Irodori-TTS-v4.1-Small-8bit), [mlx-community/Irodori-TTS-v4.1-Small-MF-8bit](https://huggingface.co/mlx-community/Irodori-TTS-v4.1-Small-MF-8bit) |
 | Spark-TTS | [Spark-TTS README](Sources/MLXAudioTTS/Models/Spark/README.md) | [mlx-community/Spark-TTS-0.5B-bf16](https://huggingface.co/mlx-community/Spark-TTS-0.5B-bf16) |
+| rumik-oss 1 | [Rumik README](Sources/MLXAudioTTS/Models/Rumik/README.md) | [rumik-ai/rumik-oss-1-mlx-8bit](https://huggingface.co/rumik-ai/rumik-oss-1-mlx-8bit), [4-bit](https://huggingface.co/rumik-ai/rumik-oss-1-mlx-4bit), [BF16](https://huggingface.co/rumik-ai/rumik-oss-1) |
 | Dia | [Dia README](Sources/MLXAudioTTS/Models/Dia/README.md) | [mlx-community/Dia-1.6B](https://huggingface.co/mlx-community/Dia-1.6B) |
 
 ### STT Models
