@@ -133,6 +133,8 @@ public enum TTS {
                 pretrained: { try await Audio8Model.fromPretrained($0, cache: $1) },
                 local: { directory, _ in try await Audio8Model.fromModelDirectory(directory) }
             )
+        case "bailingmm", "ming_omni_tts":
+            throw TTSModelError.unsupportedModelType("Ming Bailing MoE backbone; this loader supports the dense Qwen2.5 variants only")
         case "bark":
             return try await load(
                 source,
@@ -160,6 +162,11 @@ public enum TTS {
                 modelType: resolvedType,
                 pretrained: { try await MarvisTTSModel.fromPretrained($0, cache: $1) }
             )
+        case "dense", "ming_dense":
+            return try await load(
+                source, modelType: resolvedType,
+                pretrained: { try await MingDenseModel.fromPretrained($0, cache: $1) },
+                local: { directory, _ in try await MingDenseModel.fromModelDirectory(directory) })
         case "dia":
             return try await load(
                 source,
@@ -387,6 +394,9 @@ public enum TTS {
 
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
+        if lower.contains("ming"), lower.contains("tts"), lower.contains("0.5b") {
+            return "dense"
+        }
         if lower.contains("kugelaudio") { return "kugelaudio" }
         if lower.contains("vibevoice") && lower.contains("realtime") {
             return "vibevoice_streaming"
