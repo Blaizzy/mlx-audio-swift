@@ -118,6 +118,7 @@ let package = Package(
                 "Models/FishSpeech/README.md",
                 "Models/Llama/README.md",
                 "Models/HiggsAudio3TTS/README.md",
+                "Models/Rumik/README.md",
                 "Models/HiggsAudioV2/README.md",
                 "Models/Marvis/README.md",
                 "Models/OuteTTS/README.md",
