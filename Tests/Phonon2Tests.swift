@@ -1,4 +1,5 @@
 import Foundation
+import HuggingFace
 import MLX
 import MLXNN
 import Testing
@@ -190,10 +191,11 @@ struct Phonon2Tests {
         #expect(throws: (any Error).self) { try Phonon2Model.fromDirectory(temporary) }
     }
 
-    @Test func commonLoaderDispatchesPhonon2() async throws {
+    @Test(arguments: ["phonon2", "phonon_2", "parakeet_tdt_five_value"])
+    func commonLoaderDispatchesPhonon2(modelType: String) async throws {
         let directory = try checkpointDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let model = try await STT.loadModel(modelRepo: directory.path, modelType: "phonon2")
+        let model = try await STT.loadModel(modelRepo: directory.path, modelType: modelType)
         #expect(model is Phonon2Model)
     }
 
@@ -206,4 +208,51 @@ struct Phonon2Tests {
         let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: 16000)
         #expect(model.generate(audio: audio).text.split(separator: " ").count > 3)
     }
+    @Test func unpackedPublishedContainerLoadsAndCachesWithoutPython() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var graph = tinyConfig
+        let modules = graph.removeValue(forKey: "phonon2_modules") as! [[String: Any]]
+        graph["model_type"] = "parakeet"
+        graph["languages"] = ["en", "fr"]
+        graph["fermion"] = ["container_format": Phonon2Container.format]
+        try JSONSerialization.data(withJSONObject: graph).write(to: directory.appendingPathComponent("config.json"))
+        var rows: [[String: Any]] = []
+        var payload = Data()
+        func record(_ name: String, _ kind: String, _ shape: [Int], _ blob: Data) {
+            rows.append(["n": name, "k": kind, "shape": shape, "b": blob.count])
+            payload.append(blob)
+        }
+        for row in modules {
+            let name = row["name"] as! String
+            let shape = row["shape"] as! [Int]
+            var blob = Data(repeating: 121, count: shape[0] * ((shape[1] + 4) / 5))
+            blob.append(Data(repeating: 0, count: 4 * shape[0]))
+            record(name, "five_value", shape, blob)
+        }
+        for (name, weight) in try tinyWeights() where !name.hasSuffix(".base_q") && !name.hasSuffix(".residual_q")
+            && !name.hasSuffix(".row_lo") && !name.hasSuffix(".row_hi") {
+            let source = name.hasSuffix(".conv.depthwise_conv.weight") ? weight.transposed(0, 2, 1) : weight
+            record(name, "fp16", source.shape, source.asType(.float16).asData().data)
+        }
+        let header = try JSONSerialization.data(withJSONObject: ["format": Phonon2Container.format, "index": rows])
+        var size = UInt64(header.count).littleEndian
+        var container = withUnsafeBytes(of: &size) { Data($0) }
+        container.append(header); container.append(payload)
+        try container.write(to: directory.appendingPathComponent("model.fermion"))
+        let cache = HubCache(cacheDirectory: directory.appendingPathComponent("cache"))
+        let prepared = try Phonon2Checkpoint.prepare(directory, cache: cache)
+        let weightURL = prepared.appendingPathComponent("model.safetensors")
+        let firstWrite = try weightURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        let second = try Phonon2Checkpoint.prepare(directory, cache: cache)
+        #expect(second.appendingPathComponent("model.safetensors").path == weightURL.path)
+        #expect(try weightURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate == firstWrite)
+        let model = try await STT.loadModel(modelRepo: directory.path, cache: cache)
+        let phonon = try #require(model as? Phonon2Model)
+        #expect(phonon.config.languages == ["en", "fr"])
+        #expect(phonon.generate(audio: MLXArray.ones([1600])).text.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.fermion").path))
+    }
+
 }
