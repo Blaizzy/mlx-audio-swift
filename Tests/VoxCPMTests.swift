@@ -46,29 +46,47 @@ struct VoxCPMTests {
         let config = VoxCPM2LMConfig(hiddenSize: 8, numHiddenLayers: 1,
             numAttentionHeads: 2, numKeyValueHeads: 1, intermediateSize: 16, vocabSize: 0,
             ropeLongFactor: [1, 1], ropeShortFactor: [1, 1], useMup: false)
-        // Reference: mlx-audio voxcpm and voxcpm2, with generated sinusoidal weights.
+        // Python CPU references with weights ((i * 17 + size) % 31 - 15) / 128.
         let expected: [[Float]] = [
-            [0.6267100, 0.6420444, 0.6446339, 0.09078055, 0.09841772, 0.10540756],
-            [0.6411184, 0.6508014, 0.6482990, 0.08759702, 0.09527177, 0.10268240],
+            [-0.227741897, -0.215427861, -0.202871650, 0.145720899, 0.115450203, 0.086226530],
+            [-0.214767396, -0.201279581, -0.188007340, 0.090439394, 0.059648253, 0.031368062],
         ]
+        func output(version: Int, on device: Device) throws -> MLXArray {
+            try Device.withDefaultDevice(device) {
+                // The default must retain VoxCPM2's separate mu and time tokens.
+                let dit = version == 1
+                    ? VoxCPMLocDiT(config, inChannels: 2, conditioning: .summed)
+                    : VoxCPMLocDiT(config, inChannels: 2)
+                let weights = Dictionary(uniqueKeysWithValues: dit.parameters().flattened().map { key, value in
+                    if key.contains("rope") || key.hasSuffix("time_embeddings.freqs") { return (key, value) }
+                    // Binary fractions avoid GPU-dependent transcendental rounding in the weights.
+                    let values: [Float] = (0..<value.size).map { Float(($0 * 17 + value.size) % 31 - 15) / 128 }
+                    let generated = key.contains("norm.weight") ? MLXArray.ones(value.shape)
+                        : MLXArray(values).reshaped(value.shape)
+                    return (key, generated)
+                })
+                try dit.update(parameters: .unflattened(weights), verify: .all)
+                let result = dit(MLXArray(0..<6).asType(.float32).reshaped(1, 2, 3) / 10,
+                    mu: MLXArray(0..<(8 * version)).asType(.float32).reshaped(1, -1) / 20,
+                    t: MLXArray([Float(0.4)]), cond: MLXArray.ones([1, 2, 3]) * 0.2,
+                    dt: MLXArray([Float(0)]))
+                eval(result)
+                return result
+            }
+        }
         for version in 1...2 {
-            // The default must retain VoxCPM2's separate mu and time tokens.
-            let dit = version == 1
-                ? VoxCPMLocDiT(config, inChannels: 2, conditioning: .summed)
-                : VoxCPMLocDiT(config, inChannels: 2)
-            let weights = Dictionary(uniqueKeysWithValues: dit.parameters().flattened().map { key, value in
-                if key.contains("rope") || key.hasSuffix("time_embeddings.freqs") { return (key, value) }
-                let generated = key.contains("norm.weight") ? MLXArray.ones(value.shape)
-                    : MLX.sin(MLXArray(0..<value.size).asType(.float32).reshaped(value.shape) + 1) * 0.1
-                return (key, generated)
-            })
-            try dit.update(parameters: .unflattened(weights), verify: .all)
-            let output = dit(MLXArray(0..<6).asType(.float32).reshaped(1, 2, 3) / 10,
-                mu: MLXArray(0..<(8 * version)).asType(.float32).reshaped(1, -1) / 20,
-                t: MLXArray([Float(0.4)]), cond: MLXArray.ones([1, 2, 3]) * 0.2,
-                dt: MLXArray([Float(0)]))
-            #expect(output.shape == [1, 2, 3])
-            #expect(zip(output.asArray(Float.self), expected[version - 1]).allSatisfy { abs($0 - $1) < 2e-5 })
+            let cpu = try output(version: version, on: .cpu)
+            #expect(cpu.shape == [1, 2, 3])
+            let reference = MLXArray(expected[version - 1]).reshaped(1, 2, 3)
+            let referenceError = MLX.abs(cpu - reference).max().item(Float.self)
+            #expect(referenceError < 2e-5, "VoxCPM \(version) CPU reference error: \(referenceError)")
+
+            // Retain the tight architecture check above, then allow GPU matmul
+            // rounding, including TF32, when comparing against the CPU result.
+            let gpu = try output(version: version, on: .gpu)
+            #expect(gpu.shape == cpu.shape)
+            let gpuError = MLX.abs(gpu - cpu).max().item(Float.self)
+            #expect(gpuError < 1e-3, "VoxCPM \(version) GPU rounding error: \(gpuError)")
         }
     }
 
