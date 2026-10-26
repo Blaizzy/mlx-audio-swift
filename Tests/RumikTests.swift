@@ -17,8 +17,9 @@ struct RumikTests {
 
     private static func fill(_ m: RumikModel) {
         let values = m.parameters().flattened().map { key, p -> (String, MLXArray) in
-            let i = MLXArray(0..<p.size).asType(.float32)
-            var v = 0.05 * MLX.sin(i * 0.37 + Float(p.size % 97) * 0.13) + 0.02 * MLX.cos(i * 0.11)
+            // Exact binary fractions keep the generated weights identical on CPU and GPU.
+            let values: [Float] = (0..<p.size).map { Float(($0 * 17 + p.size) % 31 - 15) / 256 }
+            var v = MLXArray(values)
             if key.contains("norm") && key.hasSuffix("weight") { v = v + 1 }
             return (key, v.reshaped(p.shape))
         }
@@ -64,8 +65,9 @@ struct RumikTests {
         let stepped = concatenated(pieces, axis: 1)
         // Prefill and single-token SDPA kernels also differ slightly in the Python reference.
         #expect(MLX.abs(full - stepped).max().item(Float.self) < 0.002)
-        let expected = MLXArray([Float(-0.02846561), -0.24534930, -0.03308267, 0.26105517,
-                                 0.13249680, -0.19820327, -0.17110103, 0.13801551])
+        // Python CPU reference with the same generated tiny parameters.
+        let expected = MLXArray([Float(-0.46393615), -0.29505327, 0.51430446, -0.09731726,
+                                 0.05295812, 0.10113847, 0.30472639, 0.61862969])
         #expect(MLX.abs(stepped[0, -1, ..<8] - expected).max().item(Float.self) < 2e-5)
         #expect(cache.allSatisfy { $0.offset == 13 })
         #expect(m.model.layers.map { $0.attention.isLocal } == [true, true, true, false])
@@ -96,19 +98,44 @@ struct RumikTests {
     }
 
     @Test func cohere2NumericalReference() {
-        var c = Self.tiny(); c.logitScale = 0.25
-        let m = RumikModel(c)
-        Self.fill(m)
-        let input = MLXArray([Int32(2), 7, 9, 4, 6, 3]).reshaped(1, 6)
-        let hidden = m.model(input)
-        // Python mlx-audio Cohere2/Rumik with the same generated tiny parameters.
-        let expected = MLXArray([Float(1.60638976), -1.10882580, 0.37020123, -0.75385064,
-                                 1.81843996, -1.47297382, 0.05017263, -0.87206441])
-        #expect(MLX.abs(hidden[0, -1, ..<8] - expected).max().item(Float.self) < 2e-5)
-        let logits = MLXArray([Float(-0.03286441), -0.05915042, 0.02285962, 0.07543896,
-                               0.00679295, -0.06743149, -0.02529618, 0.05135524])
-        #expect(MLX.abs(m(input)[0, -1, ..<8] - logits).max().item(Float.self) < 2e-5)
-        #expect(abs(m.stopProbability(hidden[0..., -1, 0...]).item(Float.self) - 0.51779473) < 2e-6)
+        func output(on device: Device) -> (hidden: MLXArray, logits: MLXArray, stop: MLXArray) {
+            Device.withDefaultDevice(device) {
+                var c = Self.tiny(); c.logitScale = 0.25
+                let m = RumikModel(c)
+                Self.fill(m)
+                let input = MLXArray([Int32(2), 7, 9, 4, 6, 3]).reshaped(1, 6)
+                let hidden = m.model(input)
+                let logits = m(input)
+                let stop = m.stopProbability(hidden[0..., -1, 0...])
+                eval(hidden, logits, stop)
+                return (hidden, logits, stop)
+            }
+        }
+
+        // Python mlx-audio Cohere2/Rumik CPU references using the weights from fill(_:).
+        let cpu = output(on: .cpu)
+        #expect(cpu.hidden.shape == [1, 6, 64])
+        #expect(cpu.logits.shape == [1, 6, 128])
+        let expectedHidden = MLXArray([Float(1.70226634), -0.81456667, -0.19158809, -0.40276322,
+                                      -0.02495334, 1.82497811, -0.95095789, -0.52419353])
+        let hiddenError = MLX.abs(cpu.hidden[0, -1, ..<8] - expectedHidden).max().item(Float.self)
+        #expect(hiddenError < 2e-5, "Rumik CPU hidden reference error: \(hiddenError)")
+        let expectedLogits = MLXArray([Float(-0.00992873), 0.03266027, 0.11107627, -0.05016552,
+                                      0.01744533, -0.02986014, -0.00575606, 0.00077971])
+        let logitsError = MLX.abs(cpu.logits[0, -1, ..<8] - expectedLogits).max().item(Float.self)
+        #expect(logitsError < 2e-5, "Rumik CPU logits reference error: \(logitsError)")
+        #expect(abs(cpu.stop.item(Float.self) - 0.49237058) < 2e-6)
+
+        // Keep architecture parity strict above, then allow GPU matmul rounding,
+        // including TF32, when comparing the complete outputs against the CPU result.
+        let gpu = output(on: .gpu)
+        #expect(gpu.hidden.shape == cpu.hidden.shape)
+        #expect(gpu.logits.shape == cpu.logits.shape)
+        let gpuHiddenError = MLX.abs(gpu.hidden - cpu.hidden).max().item(Float.self)
+        let gpuLogitsError = MLX.abs(gpu.logits - cpu.logits).max().item(Float.self)
+        #expect(gpuHiddenError < 3e-3, "Rumik GPU hidden rounding error: \(gpuHiddenError)")
+        #expect(gpuLogitsError < 1e-3, "Rumik GPU logits rounding error: \(gpuLogitsError)")
+        #expect(MLX.abs(gpu.stop - cpu.stop).max().item(Float.self) < 2e-6)
     }
 
     @Test func configAndOriginalStopKeys() throws {
