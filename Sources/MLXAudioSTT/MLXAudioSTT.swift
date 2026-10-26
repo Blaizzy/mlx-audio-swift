@@ -55,7 +55,12 @@ public enum STT {
             let configuredType = (config?["model_type"] as? String)
                 ?? (config?["architecture"] as? String)
                 ?? (config?["model_version"] as? String)
-            resolved = normalizedModelType(configuredType)
+            if let fermion = config?["fermion"] as? [String: Any],
+                fermion["container_format"] as? String == Phonon2Container.format {
+                resolved = "phonon2"
+            } else {
+                resolved = normalizedModelType(configuredType)
+            }
         }
         guard let resolved = resolved ?? inferModelType(from: modelRepo) else {
             throw STTModelError.unsupportedModelType(modelType)
@@ -64,7 +69,7 @@ public enum STT {
         switch resolved {
         case "higgs_audio_3":
             return try await HiggsAudio3Model.fromPretrained(directory?.path ?? modelRepo, cache: cache)
-        case "phonon2", "phonon_2":
+        case "phonon2", "phonon_2", "parakeet_tdt_five_value":
             return try await Phonon2Model.fromPretrained(modelRepo, cache: cache)
         case "moss_music":
             if let directory { return try await MossMusicModel.fromModelDirectory(directory) }
