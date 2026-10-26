@@ -132,6 +132,7 @@ public enum TTS {
                 modelType: resolvedType,
                 pretrained: { try await BarkModel.fromPretrained($0, cache: $1) },
                 local: { folder, _ in try await BarkModel.fromModelDirectory(folder, cache: source.cache) }
+            )
         case "higgs_audio_v3", "higgs_multimodal_qwen3":
             return try await load(
                 source,
