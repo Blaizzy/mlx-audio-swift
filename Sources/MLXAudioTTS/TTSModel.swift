@@ -126,6 +126,13 @@ public enum TTS {
         }
 
         switch resolvedType {
+        case "higgs_audio_v3", "higgs_multimodal_qwen3":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await HiggsAudio3TTSModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await HiggsAudio3TTSModel.fromModelDirectory(modelDir) }
+            )
         case "rumik_oss", "rumik":
             return try await load(
                 source,
