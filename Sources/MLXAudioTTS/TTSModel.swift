@@ -125,17 +125,8 @@ public enum TTS {
             throw TTSModelError.unsupportedModelType(modelType)
         }
 
+        // Keep cases alphabetized by their first model type.
         switch resolvedType {
-        case "kugelaudio":
-            return try await load(source, modelType: resolvedType,
-                pretrained: { try await KugelAudioModel.fromPretrained($0, cache: $1) },
-                local: { modelDir, _ in try await KugelAudioModel.fromModelDirectory(modelDir) })
-        case "vibevoice_streaming":
-            return try await load(
-                source, modelType: resolvedType,
-                pretrained: { try await VibeVoiceRealtimeModel.fromPretrained($0, cache: $1) },
-                local: { directory, _ in try await VibeVoiceRealtimeModel.fromModelDirectory(directory) }
-            )
         case "arktts", "audio8":
             return try await load(
                 source, modelType: resolvedType,
@@ -149,34 +140,6 @@ public enum TTS {
                 pretrained: { try await BarkModel.fromPretrained($0, cache: $1) },
                 local: { folder, _ in try await BarkModel.fromModelDirectory(folder, cache: source.cache) }
             )
-        case "higgs_audio_v3", "higgs_multimodal_qwen3":
-            return try await load(
-                source,
-                modelType: resolvedType,
-                pretrained: { try await HiggsAudio3TTSModel.fromPretrained($0, cache: $1) },
-                local: { modelDir, _ in try await HiggsAudio3TTSModel.fromModelDirectory(modelDir) }
-            )
-        case "rumik_oss", "rumik":
-            return try await load(
-                source,
-                modelType: resolvedType,
-                pretrained: { try await RumikModel.fromPretrained($0, cache: $1) },
-                local: { modelDir, _ in try await RumikModel.fromModelDirectory(modelDir) }
-            )
-        case "higgs_audio", "higgs_audio_v2":
-            return try await load(
-                source,
-                modelType: resolvedType,
-                pretrained: { try await HiggsV2Model.fromPretrained($0, cache: $1) },
-                local: { modelDir, _ in try await HiggsV2Model.fromModelDirectory(modelDir, cache: source.cache) }
-            )
-        case "outetts", "oute_tts":
-            return try await load(
-                source,
-                modelType: resolvedType,
-                pretrained: { try await OuteTTSModel.fromPretrained($0, cache: $1) },
-                local: { modelDir, _ in try await OuteTTSModel.fromModelDirectory(modelDir, cache: source.cache) }
-            )
         case "breeze", "breeze_tts":
             return try await load(
                 source,
@@ -184,19 +147,24 @@ public enum TTS {
                 pretrained: { try await BreezeTTSModel.fromPretrained($0, cache: $1) },
                 local: { modelDir, _ in try await BreezeTTSModel.fromModelDirectory(modelDir) }
             )
-        case "moss_tts_nano":
+        case "chatterbox", "chatterbox_tts", "chatterbox_turbo":
             return try await load(
                 source,
                 modelType: resolvedType,
-                pretrained: { try await MossTTSNanoModel.fromPretrained($0, cache: $1) },
-                local: { modelDir, _ in try await MossTTSNanoModel.fromModelDirectory(modelDir) }
+                pretrained: { modelRepo, _ in try await ChatterboxModel.fromPretrained(modelRepo) },
+                local: { modelDir, _ in try await ChatterboxModel.fromModelDirectory(modelDir, hfToken: nil) }
             )
-        case "moss_tts", "moss_tts_delay", "moss_tts_local":
+        case "csm", "sesame":
             return try await load(
                 source,
                 modelType: resolvedType,
-                pretrained: { try await MossTTSModel.fromPretrained($0, cache: $1) },
-                local: { modelDir, _ in try await MossTTSModel.fromModelDirectory(modelDir) }
+                pretrained: { try await MarvisTTSModel.fromPretrained($0, cache: $1) }
+            )
+        case "dia":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await DiaTTSModel.fromPretrained($0, cache: $1) }
             )
         case "echo_tts", "echo":
             return try await load(
@@ -205,27 +173,6 @@ public enum TTS {
                 pretrained: { try await EchoTTSModel.fromPretrained($0, cache: $1) },
                 local: { modelDir, _ in try await EchoTTSModel.fromModelDirectory(modelDir) }
             )
-        case "irodori_tts", "irodori":
-            return try await load(
-                source,
-                modelType: resolvedType,
-                pretrained: { try await IrodoriTTSModel.fromPretrained($0, cache: $1) },
-                local: { modelDir, _ in try await IrodoriTTSModel.fromModelDirectory(modelDir) }
-            )
-        case "qwen3_tts":
-            return try await load(
-                source,
-                modelType: resolvedType,
-                pretrained: { try await Qwen3TTSModel.fromPretrained($0, cache: $1) },
-                local: { modelDir, _ in try await Qwen3TTSModel.fromModelDirectory(modelDir) }
-            )
-        case "qwen3", "qwen":
-            return try await load(
-                source,
-                modelType: resolvedType,
-                pretrained: { try await Qwen3Model.fromPretrained($0, cache: $1) },
-                local: { modelDir, _ in try await Qwen3Model.fromModelDirectory(modelDir) }
-            )
         case "fish_speech", "fish_qwen3_omni":
             return try await load(
                 source,
@@ -233,39 +180,33 @@ public enum TTS {
                 pretrained: { try await FishSpeechModel.fromPretrained($0, cache: $1) },
                 local: { modelDir, _ in try await FishSpeechModel.fromModelDirectory(modelDir) }
             )
-        case "llama_tts", "llama3_tts", "llama3", "llama", "orpheus", "orpheus_tts":
+        case "higgs_audio", "higgs_audio_v2":
             return try await load(
                 source,
                 modelType: resolvedType,
-                pretrained: { try await LlamaTTSModel.fromPretrained($0, cache: $1) },
-                local: { modelDir, _ in try await LlamaTTSModel.fromModelDirectory(modelDir) }
+                pretrained: { try await HiggsV2Model.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await HiggsV2Model.fromModelDirectory(modelDir, cache: source.cache) }
             )
-        case "csm", "sesame":
+        case "higgs_audio_v3", "higgs_multimodal_qwen3":
             return try await load(
                 source,
                 modelType: resolvedType,
-                pretrained: { try await MarvisTTSModel.fromPretrained($0, cache: $1) }
+                pretrained: { try await HiggsAudio3TTSModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await HiggsAudio3TTSModel.fromModelDirectory(modelDir) }
             )
-        case "soprano_tts", "soprano":
+        case "indextts", "index_tts":
             return try await load(
                 source,
                 modelType: resolvedType,
-                pretrained: { try await SopranoModel.fromPretrained($0, cache: $1) },
-                local: { modelDir, repoHint in try await SopranoModel.fromModelDirectory(modelDir, repo: repoHint) }
+                pretrained: { try await IndexTTSModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await IndexTTSModel.fromModelDirectory(modelDir) }
             )
-        case "pocket_tts", "phonon":
+        case "irodori_tts", "irodori":
             return try await load(
                 source,
                 modelType: resolvedType,
-                pretrained: { try await PocketTTSModel.fromPretrained($0, cache: $1) },
-                local: { modelDir, _ in try await PocketTTSModel.fromModelDirectory(modelDir) }
-            )
-        case "chatterbox", "chatterbox_tts", "chatterbox_turbo":
-            return try await load(
-                source,
-                modelType: resolvedType,
-                pretrained: { modelRepo, _ in try await ChatterboxModel.fromPretrained(modelRepo) },
-                local: { modelDir, _ in try await ChatterboxModel.fromModelDirectory(modelDir, hfToken: nil) }
+                pretrained: { try await IrodoriTTSModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await IrodoriTTSModel.fromModelDirectory(modelDir) }
             )
         case "kitten_tts", "kitten":
             let processor = textProcessor ?? MisakiTextProcessor(cache: source.cache)
@@ -283,6 +224,91 @@ public enum TTS {
                 pretrained: { try await KokoroModel.fromPretrained($0, textProcessor: processor, cache: $1) },
                 local: { modelDir, _ in try await KokoroModel.fromModelDirectory(modelDir, textProcessor: processor) }
             )
+        case "kugelaudio":
+            return try await load(source, modelType: resolvedType,
+                pretrained: { try await KugelAudioModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await KugelAudioModel.fromModelDirectory(modelDir) })
+        case "llama_tts", "llama3_tts", "llama3", "llama", "orpheus", "orpheus_tts":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await LlamaTTSModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await LlamaTTSModel.fromModelDirectory(modelDir) }
+            )
+        case "moss_tts", "moss_tts_delay", "moss_tts_local":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await MossTTSModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await MossTTSModel.fromModelDirectory(modelDir) }
+            )
+        case "moss_tts_nano":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await MossTTSNanoModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await MossTTSNanoModel.fromModelDirectory(modelDir) }
+            )
+        case "omnivoice":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await OmniVoiceModel.fromPretrained($0, cache: $1) }
+            )
+        case "outetts", "oute_tts":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await OuteTTSModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await OuteTTSModel.fromModelDirectory(modelDir, cache: source.cache) }
+            )
+        case "pocket_tts", "phonon":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await PocketTTSModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await PocketTTSModel.fromModelDirectory(modelDir) }
+            )
+        case "qwen3", "qwen":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await Qwen3Model.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await Qwen3Model.fromModelDirectory(modelDir) }
+            )
+        case "qwen3_tts":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await Qwen3TTSModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await Qwen3TTSModel.fromModelDirectory(modelDir) }
+            )
+        case "rumik_oss", "rumik":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await RumikModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await RumikModel.fromModelDirectory(modelDir) }
+            )
+        case "soprano_tts", "soprano":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await SopranoModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, repoHint in try await SopranoModel.fromModelDirectory(modelDir, repo: repoHint) }
+            )
+        case "spark", "spark_tts":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await SparkModel.fromPretrained($0, cache: $1) }
+            )
+        case "vibevoice_streaming":
+            return try await load(
+                source, modelType: resolvedType,
+                pretrained: { try await VibeVoiceRealtimeModel.fromPretrained($0, cache: $1) },
+                local: { directory, _ in try await VibeVoiceRealtimeModel.fromModelDirectory(directory) }
+            )
         case "voxcpm", "vox_cpm", "voxcpm1", "voxcpm1.5":
             return try await load(
                 source,
@@ -296,31 +322,6 @@ public enum TTS {
                 modelType: resolvedType,
                 pretrained: { try await VoxCPM2Model.fromPretrained($0, cache: $1) },
                 local: { modelDir, _ in try await VoxCPM2Model.fromModelDirectory(modelDir, hfToken: nil) }
-            )
-        case "omnivoice":
-            return try await load(
-                source,
-                modelType: resolvedType,
-                pretrained: { try await OmniVoiceModel.fromPretrained($0, cache: $1) }
-            )
-        case "indextts", "index_tts":
-            return try await load(
-                source,
-                modelType: resolvedType,
-                pretrained: { try await IndexTTSModel.fromPretrained($0, cache: $1) },
-                local: { modelDir, _ in try await IndexTTSModel.fromModelDirectory(modelDir) }
-            )
-        case "spark", "spark_tts":
-            return try await load(
-                source,
-                modelType: resolvedType,
-                pretrained: { try await SparkModel.fromPretrained($0, cache: $1) }
-            )
-        case "dia":
-            return try await load(
-                source,
-                modelType: resolvedType,
-                pretrained: { try await DiaTTSModel.fromPretrained($0, cache: $1) }
             )
         default:
             throw TTSModelError.unsupportedModelType(resolvedType)
