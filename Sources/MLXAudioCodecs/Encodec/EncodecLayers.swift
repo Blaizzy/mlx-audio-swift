@@ -404,47 +404,8 @@ public class EncodecBaseConvTranspose1d: Module {
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
-        // x shape: (batch, length, channels) - NLC format
-        let batch = x.shape[0]
-        let length = x.shape[1]
-
-        // Calculate output length
-        let outputLength = (length - 1) * strideVal - 2 * paddingVal + kernelSize
-
-        // Transpose to NCL for convolution
-        let h = x.transposed(0, 2, 1)  // (batch, channels, length)
-
-        // Use scatter-based transpose convolution
-        let xData = h.asArray(Float.self)
-        let wData = weight.asArray(Float.self)
-        var outData = [Float](repeating: 0, count: batch * outChannels * outputLength)
-
-        for b in 0..<batch {
-            for t in 0..<length {
-                for oc in 0..<outChannels {
-                    for k in 0..<kernelSize {
-                        let outT = t * strideVal + k - paddingVal
-                        if outT >= 0 && outT < outputLength {
-                            for ic in 0..<inChannels {
-                                let xIdx = b * inChannels * length + ic * length + t
-                                let wIdx = oc * kernelSize * inChannels + k * inChannels + ic
-                                let oIdx = b * outChannels * outputLength + oc * outputLength + outT
-                                outData[oIdx] += xData[xIdx] * wData[wIdx]
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        var output = MLXArray(outData).reshaped([batch, outChannels, outputLength])
-
-        // Add bias
-        if let b = biasParam {
-            output = output + b.reshaped([1, outChannels, 1])
-        }
-
-        // Transpose back to NLC
-        return output.transposed(0, 2, 1)
+        var output = MLX.convTransposed1d(x, weight, stride: strideVal, padding: paddingVal)
+        if let biasParam { output = output + biasParam }
+        return output
     }
 }

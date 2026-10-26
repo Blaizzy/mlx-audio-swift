@@ -4,6 +4,9 @@
 name: Run Tests
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
     branches:
       - main
@@ -19,9 +22,48 @@ jobs:
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: 'latest'
+      - name: Configure build cache
+        id: build-environment
+        shell: bash
+        run: |
+          xcode_build=$(xcodebuild -version | awk '/Build version/ { print $3 }')
+          echo "key=${RUNNER_OS}-${RUNNER_ARCH}-$(sw_vers -productVersion)-${xcode_build}" >> "$GITHUB_OUTPUT"
+          echo "DERIVED_DATA_PATH=${RUNNER_TEMP}/DerivedData" >> "$GITHUB_ENV"
+          echo "SOURCE_PACKAGES_PATH=${RUNNER_TEMP}/SourcePackages" >> "$GITHUB_ENV"
+      - name: Cache DerivedData and SourcePackages
+        uses: irgaly/xcode-cache@v1
+        with:
+          deriveddata-directory: ${{ env.DERIVED_DATA_PATH }}
+          sourcepackages-directory: ${{ env.SOURCE_PACKAGES_PATH }}
+          # A new key saves incremental build results; the prefix reuses compatible builds.
+          key: deriveddata-v1-${{ steps.build-environment.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved', '.github/workflows/tests.yaml') }}-${{ github.sha }}
+          restore-keys: deriveddata-v1-${{ steps.build-environment.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved', '.github/workflows/tests.yaml') }}-
+          swiftpm-cache-key: sourcepackages-v1-${{ steps.build-environment.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          # Source timestamps are restored by the action; include the test resources too.
+          restore-mtime-targets: |
+            Package.resolved
+            Tests/media/**/*
       - name: Install Metal toolchain
         run: xcodebuild -downloadComponent MetalToolchain
       - name: Build
-        run: xcodebuild build-for-testing -scheme MLXAudio-Package -destination 'platform=macOS' MACOSX_DEPLOYMENT_TARGET=14.0 CODE_SIGNING_ALLOWED=NO
+        run: >-
+          xcodebuild build-for-testing
+          -scheme MLXAudio-Package
+          -destination 'platform=macOS'
+          -derivedDataPath "$DERIVED_DATA_PATH"
+          -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_PATH"
+          -showBuildTimingSummary
+          MACOSX_DEPLOYMENT_TARGET=14.0
+          CODE_SIGNING_ALLOWED=NO
+          COMPILER_INDEX_STORE_ENABLE=NO
       - name: Run tests
-        run: xcodebuild test-without-building -scheme MLXAudio-Package -destination 'platform=macOS' -skip-testing:'MLXAudioTests/SmokeTests' CODE_SIGNING_ALLOWED=NO
+        run: >-
+          xcodebuild test-without-building
+          -scheme MLXAudio-Package
+          -destination 'platform=macOS'
+          -derivedDataPath "$DERIVED_DATA_PATH"
+          -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_PATH"
+          -skip-testing:'MLXAudioTests/SmokeTests'
+          MACOSX_DEPLOYMENT_TARGET=14.0
+          CODE_SIGNING_ALLOWED=NO
+          COMPILER_INDEX_STORE_ENABLE=NO
