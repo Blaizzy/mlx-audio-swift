@@ -132,6 +132,20 @@ public enum TTS {
                 pretrained: { try await Audio8Model.fromPretrained($0, cache: $1) },
                 local: { directory, _ in try await Audio8Model.fromModelDirectory(directory) }
             )
+        case "bark":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await BarkModel.fromPretrained($0, cache: $1) },
+                local: { folder, _ in try await BarkModel.fromModelDirectory(folder, cache: source.cache) }
+            )
+        case "higgs_audio_v3", "higgs_multimodal_qwen3":
+            return try await load(
+                source,
+                modelType: resolvedType,
+                pretrained: { try await HiggsAudio3TTSModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await HiggsAudio3TTSModel.fromModelDirectory(modelDir) }
+            )
         case "rumik_oss", "rumik":
             return try await load(
                 source,
@@ -401,6 +415,7 @@ public enum TTS {
         if lower.contains("qwen3") || lower.contains("qwen") {
             return "qwen3"
         }
+        if lower.contains("bark") { return "bark" }
         if lower.contains("soprano") {
             return "soprano"
         }
