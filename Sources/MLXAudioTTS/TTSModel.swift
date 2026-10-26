@@ -130,6 +130,18 @@ public enum TTS {
             return try await load(source, modelType: resolvedType,
                 pretrained: { try await KugelAudioModel.fromPretrained($0, cache: $1) },
                 local: { modelDir, _ in try await KugelAudioModel.fromModelDirectory(modelDir) })
+        case "vibevoice_streaming":
+            return try await load(
+                source, modelType: resolvedType,
+                pretrained: { try await VibeVoiceRealtimeModel.fromPretrained($0, cache: $1) },
+                local: { directory, _ in try await VibeVoiceRealtimeModel.fromModelDirectory(directory) }
+            )
+        case "arktts", "audio8":
+            return try await load(
+                source, modelType: resolvedType,
+                pretrained: { try await Audio8Model.fromPretrained($0, cache: $1) },
+                local: { directory, _ in try await Audio8Model.fromModelDirectory(directory) }
+            )
         case "bark":
             return try await load(
                 source,
@@ -375,6 +387,10 @@ public enum TTS {
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
         if lower.contains("kugelaudio") { return "kugelaudio" }
+        if lower.contains("vibevoice") && lower.contains("realtime") {
+            return "vibevoice_streaming"
+        }
+        if lower.contains("audio8") || lower.contains("arktts") { return "arktts" }
         if lower.contains("outetts") { return "outetts" }
         if lower.contains("breeze") && lower.contains("tts") {
             return "breeze"
