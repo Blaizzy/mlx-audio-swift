@@ -64,6 +64,7 @@ class VoxCausalTransposeConv1d: Module {
         stride: Int = 1,
         padding: Int = 0,
         outputPadding: Int = 0,
+        applyOutputPadding: Bool = false,
         bias: Bool = true
     ) {
         self.padVal = padding
@@ -74,6 +75,7 @@ class VoxCausalTransposeConv1d: Module {
             kernelSize: kernelSize,
             stride: stride,
             padding: 0,
+            outputPadding: applyOutputPadding ? outputPadding : 0,
             bias: bias
         )
         super.init()
@@ -252,7 +254,8 @@ class VoxCausalDecoderBlock: Module {
         outputDim: Int = 8,
         stride: Int = 1,
         groups: Int = 1,
-        useNoiseBlock: Bool = false
+        useNoiseBlock: Bool = false,
+        applyTransposeOutputPadding: Bool = false
     ) {
         self.inputChannels = inputDim
 
@@ -261,7 +264,8 @@ class VoxCausalDecoderBlock: Module {
             inChannels: inputDim, outChannels: outputDim,
             kernelSize: 2 * stride, stride: stride,
             padding: Int(ceil(Double(stride) / 2.0)),
-            outputPadding: stride % 2
+            outputPadding: stride % 2,
+            applyOutputPadding: applyTransposeOutputPadding
         )
 
         if useNoiseBlock {
@@ -373,7 +377,8 @@ class VoxCausalDecoder: Module {
         srBinBoundaries: [Int]? = nil,
         condType: String = "scale_bias",
         condDim: Int = 128,
-        condOutLayer: Bool = false
+        condOutLayer: Bool = false,
+        applyTransposeOutputPadding: Bool = false
     ) {
         // Conv in (depthwise: 2-layer sequential, else single conv)
         if depthwise {
@@ -398,7 +403,8 @@ class VoxCausalDecoder: Module {
             let groups = depthwise ? outDim : 1
             blockList.append(VoxCausalDecoderBlock(
                 inputDim: inDim, outputDim: outDim, stride: stride,
-                groups: groups, useNoiseBlock: useNoiseBlock
+                groups: groups, useNoiseBlock: useNoiseBlock,
+                applyTransposeOutputPadding: applyTransposeOutputPadding
             ))
         }
         self.blocks = blockList
@@ -506,7 +512,7 @@ class VoxAudioVAE: Module {
     @ModuleInfo var encoder: VoxCausalEncoder
     @ModuleInfo var decoder: VoxCausalDecoder
 
-    init(_ config: VoxCPM2AudioVAEConfig) {
+    init(_ config: VoxCPM2AudioVAEConfig, applyTransposeOutputPadding: Bool = false) {
         self.config = config
 
         self.hopLength = config.encoderRates.reduce(1, *)
@@ -532,7 +538,8 @@ class VoxAudioVAE: Module {
             srBinBoundaries: config.srBinBoundaries,
             condType: config.condType,
             condDim: config.condDim,
-            condOutLayer: config.condOutLayer
+            condOutLayer: config.condOutLayer,
+            applyTransposeOutputPadding: applyTransposeOutputPadding
         )
 
         super.init()
