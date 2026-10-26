@@ -126,12 +126,12 @@ public class Qwen2ModelInner: Module {
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding?
 
     fileprivate let layers: [Qwen2TransformerBlock]
-    let norm: RMSNorm
+    let norm: RMSNorm?
     private let slidingWindow: Int?
     private let slidingLayerStart: Int
 
     public init(
-        _ args: Qwen2Configuration, includeEmbedding: Bool = true,
+        _ args: Qwen2Configuration, includeEmbedding: Bool = true, includeNorm: Bool = true,
         slidingWindow: Int? = nil, slidingLayerStart: Int = 0
     ) {
         self.slidingWindow = slidingWindow
@@ -147,7 +147,7 @@ public class Qwen2ModelInner: Module {
             .map { _ in
                 Qwen2TransformerBlock(args)
             }
-        self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        self.norm = includeNorm ? RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps) : nil
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
@@ -186,7 +186,7 @@ public class Qwen2ModelInner: Module {
             h = layer(h, mask: layerMask, cache: cache?[i])
         }
 
-        return norm(h)
+        return norm?(h) ?? h
     }
 }
 
