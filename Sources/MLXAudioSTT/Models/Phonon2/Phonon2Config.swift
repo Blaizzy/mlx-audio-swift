@@ -1,6 +1,6 @@
 import Foundation
 
-/// Metadata for the prepared MLX Phonon-2 checkpoint, including its exact packed projections.
+/// Runtime metadata for Phonon-2 and Phonon-2.5, including their packed projections.
 public struct Phonon2Config: Decodable, Sendable {
     public struct PackedModule: Codable, Sendable {
         public let name: String
@@ -10,15 +10,18 @@ public struct Phonon2Config: Decodable, Sendable {
 
     public let modelType: String
     public let modules: [PackedModule]
+    public let languages: [String]
     public let parakeet: ParakeetTDTConfig
 
     enum CodingKeys: String, CodingKey {
+        case languages
         case modelType = "model_type"
         case modules = "phonon2_modules"
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        languages = try c.decodeIfPresent([String].self, forKey: .languages) ?? ["en"]
         modelType = try c.decode(String.self, forKey: .modelType)
         modules = try c.decode([PackedModule].self, forKey: .modules)
         parakeet = try ParakeetConfigParser.parseTDT(ParakeetRawConfig(from: decoder))
@@ -31,7 +34,9 @@ public struct Phonon2Config: Decodable, Sendable {
             parakeet.encoder.nLayers > 0, parakeet.encoder.dModel > 0,
             parakeet.encoder.ffExpansionFactor > 0
         else {
-            throw Phonon2Error.invalidConfiguration("Expected relative-position Parakeet TDT, nonnegative durations and positive max_symbols")
+            throw Phonon2Error.invalidConfiguration(
+                "Expected relative-position Parakeet TDT, nonnegative durations and positive max_symbols"
+            )
         }
 
         let d = parakeet.encoder.dModel
@@ -45,23 +50,29 @@ public struct Phonon2Config: Decodable, Sendable {
             "conv.pointwise_conv1": [2 * d, d], "conv.pointwise_conv2": [d, d],
         ]
         var expected: [String: [Int]] = [:]
-        for i in 0..<parakeet.encoder.nLayers {
+        for i in 0 ..< parakeet.encoder.nLayers {
             for (suffix, shape) in shapes { expected["encoder.layers.\(i).\(suffix)"] = shape }
         }
         guard modules.count == expected.count, Set(modules.map(\.name)).count == modules.count,
-            modules.allSatisfy({ expected[$0.name] == $0.shape && $0.shape[1] > 0 && $0.shape[1] % 128 == 0 })
+            modules.allSatisfy({
+                expected[$0.name] == $0.shape && $0.shape[1] > 0 && $0.shape[1] % 128 == 0
+            })
         else {
-            throw Phonon2Error.invalidConfiguration("phonon2_modules must cover every encoder projection exactly once with matching shapes")
+            throw Phonon2Error.invalidConfiguration(
+                "phonon2_modules must cover every encoder projection exactly once with matching shapes"
+            )
         }
     }
 }
 
 public enum Phonon2Error: Error, LocalizedError {
+    case invalidCheckpoint(String)
     case invalidConfiguration(String)
     case invalidPackedWeight(String)
 
     public var errorDescription: String? {
         switch self {
+        case .invalidCheckpoint(let message): "Invalid Phonon checkpoint: \(message)"
         case .invalidConfiguration(let message): "Invalid Phonon-2 configuration: \(message)"
         case .invalidPackedWeight(let message): "Invalid Phonon-2 packed weight: \(message)"
         }
