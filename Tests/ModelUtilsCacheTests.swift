@@ -251,4 +251,16 @@ struct ModelUtilsCacheTests {
         await #expect(throws: ModelUtilsError.self) { try await fixture.resolve(["tokenizer*"]) }
         #expect(!FileManager.default.fileExists(atPath: fixture.manifestURL.path))
     }
+    @Test func modelTypeDetectionNeedsOnlyConfigAndWorksOffline() async throws {
+        let config = Data(#"{"model_type":"parakeet_tdt_five_value"}"#.utf8)
+        let fixture = try ModelCacheFixture(baseFiles: ["config.json": config])
+        defer { fixture.cleanUp() }
+        for hubOnly in [false, true] {
+            if hubOnly { try FileManager.default.removeItem(at: fixture.modelDir) }
+            let type = try await ModelUtils.resolveModelType(repoID: fixture.repoID, cache: fixture.cache)
+            #expect(type == "parakeet_tdt_five_value")
+            #expect(fixture.requestCount == 0)
+        }
+    }
+
 }
