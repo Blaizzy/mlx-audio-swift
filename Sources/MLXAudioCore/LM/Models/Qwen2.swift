@@ -127,8 +127,15 @@ public class Qwen2ModelInner: Module {
 
     fileprivate let layers: [Qwen2TransformerBlock]
     let norm: RMSNorm?
+    private let slidingWindow: Int?
+    private let slidingLayerStart: Int
 
-    public init(_ args: Qwen2Configuration, includeEmbedding: Bool = true, includeNorm: Bool = true) {
+    public init(
+        _ args: Qwen2Configuration, includeEmbedding: Bool = true, includeNorm: Bool = true,
+        slidingWindow: Int? = nil, slidingLayerStart: Int = 0
+    ) {
+        self.slidingWindow = slidingWindow
+        self.slidingLayerStart = slidingLayerStart
         precondition(args.vocabularySize > 0)
 
         if includeEmbedding {
@@ -177,7 +184,14 @@ public class Qwen2ModelInner: Module {
         var h = inputEmbeddings
 
         for (i, layer) in layers.enumerated() {
-            h = layer(h, mask: mask, cache: cache?[i])
+            let layerMask: MLXFast.ScaledDotProductAttentionMaskMode
+            if let slidingWindow, i >= slidingLayerStart {
+                layerMask = .array(createCausalMask(
+                    n: h.dim(1), offset: cache?[i].offset ?? 0, windowSize: slidingWindow))
+            } else {
+                layerMask = mask
+            }
+            h = layer(h, mask: layerMask, cache: cache?[i])
         }
 
         return norm?(h) ?? h
