@@ -322,4 +322,3 @@ public struct LongCatConfiguration: Codable, Sendable {
         quantization = try c.decodeIfPresent(BaseConfiguration.Quantization.self, forKey: .quantization) ?? quantization
     }
 }
-
