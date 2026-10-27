@@ -62,11 +62,27 @@ public enum TTS {
             throw TTSModelError.invalidRepositoryID(modelRepo)
         }
 
-        let modelType = try await ModelUtils.resolveModelType(
-            repoID: repoID,
-            hfToken: hfToken,
-            cache: cache
-        )
+        let modelType: String?
+        let cachedNestedConfig = cache.cacheDirectory.appendingPathComponent(
+            "mlx-audio/" + modelRepo.replacingOccurrences(of: "/", with: "_") + "/model/config.json")
+        if let data = try? Data(contentsOf: cachedNestedConfig), let nestedType = try nestedModelType(data) {
+            modelType = nestedType
+        } else {
+            do {
+                modelType = try await ModelUtils.resolveModelType(repoID: repoID, hfToken: hfToken, cache: cache)
+            } catch {
+                // Some complete packages keep metadata beside their language model.
+                guard case let HTTPClientError.responseError(response, _) = error,
+                      response.statusCode == 404 else { throw error }
+                let client: HubClient
+                if let hfToken, !hfToken.isEmpty {
+                    client = HubClient(host: HubClient.defaultHost, bearerToken: hfToken, cache: cache)
+                } else { client = HubClient(cache: cache) }
+                let url = try await client.downloadFile(at: "model/config.json", from: repoID)
+                guard let type = try nestedModelType(Data(contentsOf: url)) else { throw error }
+                modelType = type
+            }
+        }
         return try await loadResolvedModel(
             modelType: modelType,
             source: .repository(modelRepo, cache: cache),
@@ -117,7 +133,8 @@ public enum TTS {
                 directory = try await ModelUtils.resolveOrDownloadModel(
                     repoID: id, requiredExtension: "safetensors", cache: cache)
             }
-            if try isOuteTTS(directory) || source.fallbackName.lowercased().contains("outetts") {
+            if try localModelType(directory) == "tada" { resolvedType = "tada" }
+            else if try isOuteTTS(directory) || source.fallbackName.lowercased().contains("outetts") {
                 resolvedType = "outetts"
             }
         }
@@ -316,6 +333,10 @@ public enum TTS {
                 modelType: resolvedType,
                 pretrained: { try await SparkModel.fromPretrained($0, cache: $1) }
             )
+        case "tada", "tada_tts":
+            return try await load(source, modelType: resolvedType,
+                pretrained: { try await TADAModel.fromPretrained($0, cache: $1) },
+                local: { directory, _ in try await TADAModel.fromModelDirectory(directory, cache: source.cache) })
         case "vibevoice":
             return try await load(
                 source,
@@ -380,29 +401,39 @@ public enum TTS {
         return normalizedModelType(modelType) ?? inferModelType(from: modelRepo)
     }
 
-    private static func localModelDirectory(_ path: String) -> URL? {
+    static func localModelDirectory(_ path: String) -> URL? {
         let expanded = (path as NSString).expandingTildeInPath
         let url = URL(fileURLWithPath: expanded)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
               isDirectory.boolValue,
-              FileManager.default.fileExists(atPath: url.appendingPathComponent("config.json").path)
+              (FileManager.default.fileExists(atPath: url.appendingPathComponent("config.json").path) || FileManager.default.fileExists(atPath: url.appendingPathComponent("model/config.json").path))
         else {
             return nil
         }
         return url
     }
 
-    private static func localModelType(_ modelDir: URL) throws -> String? {
+    static func localModelType(_ modelDir: URL) throws -> String? {
+        let nested = modelDir.appendingPathComponent("model/config.json")
+        if FileManager.default.fileExists(atPath: nested.path),
+           let type = try nestedModelType(Data(contentsOf: nested)) { return type }
         let data = try Data(contentsOf: modelDir.appendingPathComponent("config.json"))
         guard let config = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
+        if let type = try nestedModelType(data) { return type }
         if try isOuteTTS(modelDir) { return "outetts" }
         return (config["model_type"] as? String)
             ?? (config["architecture"] as? String)
             ?? (config["model_version"] as? String)
             ?? (config["flow_lm"] != nil && config["mimi"] != nil ? "pocket_tts" : nil)
+    }
+
+    static func nestedModelType(_ data: Data) throws -> String? {
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let architectures = object?["architectures"] as? [String] ?? []
+        return architectures.contains("TadaForCausalLM") ? "tada" : nil
     }
 
     private static func inferModelType(from modelRepo: String) -> String? {
@@ -411,6 +442,7 @@ public enum TTS {
         if lower.contains("ming"), lower.contains("tts"), lower.contains("0.5b") {
             return "dense"
         }
+        if lower.contains("tada") { return "tada" }
         if lower.contains("kugelaudio") { return "kugelaudio" }
         if lower.contains("vibevoice") && lower.contains("realtime") {
             return "vibevoice_streaming"

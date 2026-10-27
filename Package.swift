@@ -130,6 +130,7 @@ let package = Package(
                 "Models/Qwen3/README.md",
                 "Models/Qwen3TTS/README.md",
                 "Models/Soprano/README.md",
+                "Models/TADA/README.md",
                 "Models/Ming/README.md",
                 "Models/VibeVoice/README.md",
                 "Models/VoxCPM/README.md",
