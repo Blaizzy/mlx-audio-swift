@@ -24,7 +24,7 @@ let audio = try await model.generate(
     generationParameters: GenerateParameters(temperature: 0, seed: 42))
 ```
 
-Use `MingOmniModel` for model controls. Reference audio must be mono at 44.1 kHz. Supply its exact transcript for acoustic continuation. Set `automaticSpeakerEmbedding = true` to extract a speaker vector from reference audio, or supply `speakerEmbedding` explicitly. Reference conditioning may produce very quiet audio, repeated phrases, or poor text adherence; assess the output for your reference.
+Use `MingOmniModel` for model controls. Reference audio must be mono at 44.1 kHz. Supply a clean recording and its exact transcript for acoustic continuation. Speaker conditioning is optional: set `automaticSpeakerEmbedding = true` to extract a speaker vector, or supply `speakerEmbedding` explicitly. Speaker-conditioned generation can repeat phrases or lose text adherence; assess the output for your reference.
 
 ```swift
 import Foundation
@@ -32,12 +32,11 @@ import Foundation
 let model = try await MingOmniModel.fromPretrained(
     "mlx-community/Ming-omni-tts-16.8B-A3B-4bit")
 model.options.instruction = "Speak warmly, with medium pitch."
-model.options.automaticSpeakerEmbedding = true
 let (_, reference) = try loadAudioArray(
     from: URL(fileURLWithPath: "reference.wav"), sampleRate: model.sampleRate)
 let audio = try await model.generate(
     text: "Good morning.", voice: nil,
-    refAudio: reference, refText: nil, language: "en",
+    refAudio: reference, refText: "The exact words spoken in the reference recording.", language: "en",
     generationParameters: GenerateParameters(temperature: 0, seed: 42))
 ```
 

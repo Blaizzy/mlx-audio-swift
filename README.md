@@ -121,6 +121,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | VibeVoice TTS | [VibeVoice TTS README](Sources/MLXAudioTTS/Models/VibeVoiceTTS/README.md) | [microsoft/VibeVoice-1.5B](https://huggingface.co/microsoft/VibeVoice-1.5B) |
 | Ming-3.0 TTS Tiny | [Ming Tiny README](Sources/MLXAudioTTS/Models/MingTiny/README.md) | [mlx-community/Ming-3.0-tts-tiny-4bit](https://huggingface.co/mlx-community/Ming-3.0-tts-tiny-4bit) |
 | Ming dense TTS | [Ming dense README](Sources/MLXAudioTTS/Models/Ming/README.md) | [mlx-community/Ming-3.0-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-3.0-tts-0.5B-bf16), [inclusionAI/Ming-omni-tts-0.5B](https://huggingface.co/inclusionAI/Ming-omni-tts-0.5B) |
+| Ming Omni 16.8B/A3B | [Ming Omni README](Sources/MLXAudioTTS/Models/MingOmni/README.md) | [mlx-community/Ming-omni-tts-16.8B-A3B-4bit](https://huggingface.co/mlx-community/Ming-omni-tts-16.8B-A3B-4bit) |
 | KugelAudio | [KugelAudio README](Sources/MLXAudioTTS/Models/KugelAudio/README.md) | [kugelaudio/kugelaudio-0-open](https://huggingface.co/kugelaudio/kugelaudio-0-open) |
 | Bark Small | [Bark README](Sources/MLXAudioTTS/Models/Bark/README.md) | [mlx-community/bark-small](https://huggingface.co/mlx-community/bark-small) |
 | Higgs Audio v2 TTS | [Higgs Audio v2 README](Sources/MLXAudioTTS/Models/HiggsAudioV2/README.md) | [mlx-community/higgs-audio-v2-3B-mlx-q8](https://huggingface.co/mlx-community/higgs-audio-v2-3B-mlx-q8), [q6](https://huggingface.co/mlx-community/higgs-audio-v2-3B-mlx-q6) |
