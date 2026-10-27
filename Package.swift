@@ -131,6 +131,7 @@ let package = Package(
                 "Models/Qwen3TTS/README.md",
                 "Models/Soprano/README.md",
                 "Models/Ming/README.md",
+                "Models/MingOmni/README.md",
                 "Models/VibeVoice/README.md",
                 "Models/VoxCPM/README.md",
                 "Models/VoxCPM2/README.md",
