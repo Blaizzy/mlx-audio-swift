@@ -381,18 +381,25 @@ public final class TADAModel: Module, SpeechGenerationModel, @unchecked Sendable
 }
 
 extension TADAModel {
+    private static func hubClient(cache: HubCache, hfToken: String?) -> HubClient {
+        if let hfToken, !hfToken.isEmpty {
+            return HubClient(host: HubClient.defaultHost, bearerToken: hfToken, cache: cache)
+        }
+        return HubClient(cache: cache)
+    }
+
     /// Loads the published nested package without converting or copying its weights.
-    public static func fromPretrained(_ repository: String, cache: HubCache = .default) async throws -> TADAModel {
+    public static func fromPretrained(_ repository: String, cache: HubCache = .default, hfToken: String? = nil) async throws -> TADAModel {
         guard let id = Repo.ID(rawValue: repository) else { throw TTSModelError.invalidRepositoryID(repository) }
         let directory = cache.cacheDirectory.appendingPathComponent("mlx-audio/" + repository.replacingOccurrences(of: "/", with: "_"))
-        let client = HubClient(cache: cache)
+        let client = hubClient(cache: cache, hfToken: hfToken)
         let required = ["model/config.json", "model/weights.safetensors", "decoder/weights.safetensors", "encoder/weights.safetensors", "aligner/weights.safetensors"]
         if !required.allSatisfy({ FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path) }) {
             _ = try await client.downloadSnapshot(of: id, kind: .model, to: directory, matching: required)
         }
-        return try await fromModelDirectory(directory, cache: cache)
+        return try await fromModelDirectory(directory, cache: cache, hfToken: hfToken)
     }
-    public static func fromModelDirectory(_ directory: URL, cache: HubCache = .default, tokenizerDirectory: URL? = nil) async throws -> TADAModel {
+    public static func fromModelDirectory(_ directory: URL, cache: HubCache = .default, tokenizerDirectory: URL? = nil, hfToken: String? = nil) async throws -> TADAModel {
         let nested = directory.appendingPathComponent("model/config.json")
         let configURL = FileManager.default.fileExists(atPath: nested.path) ? nested : directory.appendingPathComponent("config.json")
         let config = try JSONDecoder().decode(TADAConfiguration.self, from: Data(contentsOf: configURL))
@@ -407,7 +414,7 @@ extension TADAModel {
         else if FileManager.default.fileExists(atPath: directory.appendingPathComponent("tokenizer.json").path) { tokenizerFolder = directory }
         else {
             guard let repo = Repo.ID(rawValue: config.tokenizerRepo) else { throw TADAError.invalidInput("Invalid tokenizer repository") }
-            let client = HubClient(cache: cache)
+            let client = hubClient(cache: cache, hfToken: hfToken)
             let file = try await client.downloadFile(at: "tokenizer.json", from: repo)
             _ = try await client.downloadFile(at: "tokenizer_config.json", from: repo)
             tokenizerFolder = file.deletingLastPathComponent()

@@ -54,7 +54,8 @@ public enum TTS {
             return try await loadResolvedModel(
                 modelType: modelType,
                 source: .localDirectory(modelDir, repoHint: modelRepo, cache: cache),
-                textProcessor: textProcessor
+                textProcessor: textProcessor,
+                hfToken: hfToken
             )
         }
 
@@ -86,7 +87,8 @@ public enum TTS {
         return try await loadResolvedModel(
             modelType: modelType,
             source: .repository(modelRepo, cache: cache),
-            textProcessor: textProcessor
+            textProcessor: textProcessor,
+            hfToken: hfToken
         )
     }
 
@@ -118,7 +120,8 @@ public enum TTS {
     private static func loadResolvedModel(
         modelType: String?,
         source: ModelSource,
-        textProcessor: TextProcessor?
+        textProcessor: TextProcessor?,
+        hfToken: String? = nil
     ) async throws -> SpeechGenerationModel {
         var resolvedType = normalizedModelType(modelType) ?? inferModelType(from: source.fallbackName)
         if resolvedType == "qwen2", source.fallbackName.lowercased().contains("spark") {
@@ -131,7 +134,7 @@ public enum TTS {
             case .repository(let repo, let cache):
                 guard let id = Repo.ID(rawValue: repo) else { throw TTSModelError.invalidRepositoryID(repo) }
                 directory = try await ModelUtils.resolveOrDownloadModel(
-                    repoID: id, requiredExtension: "safetensors", cache: cache)
+                    repoID: id, requiredExtension: "safetensors", hfToken: hfToken, cache: cache)
             }
             if try localModelType(directory) == "tada" { resolvedType = "tada" }
             else if try isOuteTTS(directory) || source.fallbackName.lowercased().contains("outetts") {
@@ -335,8 +338,8 @@ public enum TTS {
             )
         case "tada", "tada_tts":
             return try await load(source, modelType: resolvedType,
-                pretrained: { try await TADAModel.fromPretrained($0, cache: $1) },
-                local: { directory, _ in try await TADAModel.fromModelDirectory(directory, cache: source.cache) })
+                pretrained: { try await TADAModel.fromPretrained($0, cache: $1, hfToken: hfToken) },
+                local: { directory, _ in try await TADAModel.fromModelDirectory(directory, cache: source.cache, hfToken: hfToken) })
         case "vibevoice":
             return try await load(
                 source,
