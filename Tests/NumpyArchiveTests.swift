@@ -75,6 +75,16 @@ struct NumpyArchiveTests {
         #expect(try NumpyArchive.load(data: zip([], compressed: false)).isEmpty)
     }
 
+    @Test(arguments: [false, true])
+    func textAndJSONMembers(compressed: Bool) throws {
+        let text = Data("hello world\n".utf8)
+        let json = Data(#"{"token":7}"#.utf8)
+        let data = try zip([("data/readme.txt", text), ("vocab.json", json)], compressed: compressed)
+        let members = try ZipArchive.load(data: data)
+        #expect(members == ["data/readme.txt": text, "vocab.json": json])
+        #expect(try NumpyArchive.load(data: data).isEmpty)
+    }
+
     private func bytes<T>(_ values: [T]) -> Data { values.withUnsafeBytes { Data($0) } }
 
     private func npy(
