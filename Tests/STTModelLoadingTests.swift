@@ -31,6 +31,26 @@ struct STTModelLoadingTests {
         }
     }
 
+    @Test func localNemoConfigLoadsAsParakeet() async throws {
+        // A folder name with no model keyword, so only config.json can pick the loader.
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "local-model-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try JSONSerialization.data(withJSONObject: [
+            "target": "nemo.collections.asr.models.rnnt_bpe_models.EncDecRNNTBPEModel",
+        ]).write(to: url.appendingPathComponent("config.json"))
+
+        do {
+            _ = try await STT.loadModel(modelRepo: url.path)
+            Issue.record("Expected the Parakeet loader to fail on the missing weights")
+        } catch STTModelError.unsupportedModelType(let type) {
+            Issue.record("NeMo config was not recognised: \(String(describing: type))")
+        } catch {
+            // Reaching the Parakeet loader (which then fails on the empty folder) is the point.
+        }
+    }
+
     @Test func localConfigUsesModelTypeBeforeArchitecture() async throws {
         let url = try directory()
         defer { try? FileManager.default.removeItem(at: url) }

@@ -58,6 +58,11 @@ public enum STT {
             if let fermion = config?["fermion"] as? [String: Any],
                 fermion["container_format"] as? String == Phonon2Container.format {
                 resolved = "phonon2"
+            } else if configuredType == nil,
+                let target = config?["target"] as? String,
+                target.hasPrefix("nemo.collections.asr.models.") {
+                // NeMo exports name the model class in `target` and carry no `model_type`.
+                resolved = "parakeet"
             } else {
                 resolved = normalizedModelType(configuredType)
             }
