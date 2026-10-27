@@ -239,9 +239,14 @@ public final class LongCatModel: Module, SpeechGenerationModel, @unchecked Senda
                 let phase = MLXArray.linspace(0, 1, count: count)
                 let fade = 0.5 * (1 - cos(Float.pi * phase))
                 let blended = previous[0..<count] * (1 - fade) + audio[0..<count] * fade
-                output = concatenated([blended, audio[count..<(last ? audio.size : audio.size - overlapSamples)]])
-            } else { output = last || overlap == 0 ? audio : audio[0..<(audio.size - overlapSamples)] }
-            if !last, overlapSamples > 0 { tail = audio[(audio.size - overlapSamples)...]; eval(tail!) }
+                output = concatenated([blended, audio[count...]])
+            } else { output = audio }
+            if !last, overlapSamples > 0 {
+                let committed = output.size - overlapSamples
+                tail = output[committed...]
+                output = output[0..<committed]
+                eval(tail!)
+            }
             eval(output)
             // The consumer owns each chunk independently of the overlap tail.
             try emit(MLXArray(output.asArray(Float.self)))

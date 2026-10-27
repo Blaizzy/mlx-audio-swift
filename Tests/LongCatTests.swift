@@ -87,6 +87,20 @@ struct LongCatTests {
         #expect(chunks.reduce(0, +) == 40)
     }
 
+    @Test func overlapWiderThanHalfTheChunkPreservesPendingSamples() throws {
+        let model = LongCatModel(configuration())
+        let latent = MLXArray.zeros([1, 20, 2])
+        var chunks: [Int] = []
+        // 8-frame windows with 6-frame overlap require retaining the blended
+        // tail across more than two windows.
+        try model.decodeChunks(latent, options: .init(chunkSeconds: 0.002, overlapSeconds: 0.0015)) {
+            #expect(all(isFinite($0)).item(Bool.self))
+            chunks.append($0.size)
+        }
+        #expect(chunks == [4, 4, 4, 4, 4, 4, 16])
+        #expect(chunks.reduce(0, +) == 40)
+    }
+
     @Test func binaryWeightStagesMatchPythonCPU() throws {
         func stages(device: Device) throws -> [MLXArray] {
             try Device.withDefaultDevice(device) {
