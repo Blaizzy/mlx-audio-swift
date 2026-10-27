@@ -602,7 +602,7 @@ public class CAMPPlus: Module {
 
     let embeddingSize: Int
 
-    init(
+    public init(
         featDim: Int = 80, embeddingSize: Int = 192,
         growthRate: Int = 32, bnSize: Int = 4,
         initChannels: Int = 128, mChannels: Int = 32,
@@ -659,7 +659,7 @@ public class CAMPPlus: Module {
         )
     }
 
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
+    public func callAsFunction(_ x: MLXArray) -> MLXArray {
         // x: (B, T, F) fbank features
         var out = x.transposed(0, 2, 1) // (B, F, T)
 
