@@ -343,6 +343,10 @@ public enum TTS {
                 pretrained: { try await VoxCPM2Model.fromPretrained($0, cache: $1) },
                 local: { modelDir, _ in try await VoxCPM2Model.fromModelDirectory(modelDir, hfToken: nil) }
             )
+        case "voxtral_tts":
+            return try await load(source, modelType: resolvedType,
+                pretrained: { try await VoxtralTTSModel.fromPretrained($0, cache: $1) },
+                local: { directory, _ in try await VoxtralTTSModel.fromModelDirectory(directory) })
         default:
             throw TTSModelError.unsupportedModelType(resolvedType)
         }
@@ -476,6 +480,7 @@ public enum TTS {
         if lower.contains("kokoro") {
             return "kokoro"
         }
+        if lower.contains("voxtral") && lower.contains("tts") { return "voxtral_tts" }
         if lower.contains("voxcpm2") || lower.contains("vox_cpm2") {
             return "voxcpm2"
         }
