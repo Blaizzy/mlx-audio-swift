@@ -1,6 +1,6 @@
 # TADA
 
-[TADA](https://huggingface.co/collections/HumeAI/tada) generates 24 kHz speech with a Llama backbone and a diffusion head that predicts acoustic features and token durations. The bundled codec also supports voice conditioning from reference audio and its transcript.
+[TADA](https://huggingface.co/collections/HumeAI/tada) generates 24 kHz speech conditioned on a reference recording and its transcript. It combines a Llama backbone with a diffusion head that predicts acoustic features and token durations.
 
 Supported checkpoints:
 
