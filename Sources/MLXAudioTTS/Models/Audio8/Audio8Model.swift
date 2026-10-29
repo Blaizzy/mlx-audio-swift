@@ -83,6 +83,7 @@ public final class Audio8Model: Module, SpeechGenerationModel, @unchecked Sendab
     }
 
     private func semanticScores(_ logits: MLXArray) -> MLXArray {
+        if config.usesFalconSlow { return logits }
         let ids = MLX.arange(config.vocabSize).reshaped([1, -1])
         let valid = ((ids .>= config.semanticBeginID) .&& (ids .<= config.semanticEndID)) .|| (ids .== config.eosTokenID)
         return which(valid, logits, MLXArray(-Float.infinity).asType(logits.dtype))
@@ -100,7 +101,9 @@ public final class Audio8Model: Module, SpeechGenerationModel, @unchecked Sendab
         // Evaluate both draws even before the history is initialized, as in the reference.
         eval(normal, rescue)
         let token = normal.item(Int32.self)
-        return previous.contains(token) && Int(token) >= config.semanticBeginID && Int(token) <= config.semanticEndID ? rescue : normal
+        let isSemantic = config.usesFalconSlow ? (0..<config.codebookSize).contains(Int(token))
+            : (config.semanticBeginID...config.semanticEndID).contains(Int(token))
+        return previous.contains(token) && isSemantic ? rescue : normal
     }
 
     func generateCodes(prompt: MLXArray, parameters p: GenerateParameters, options: Audio8GenerationOptions) throws -> MLXArray {
@@ -108,7 +111,7 @@ public final class Audio8Model: Module, SpeechGenerationModel, @unchecked Sendab
         guard width < config.maxSeqLen else { throw AudioGenerationError.invalidInput("Audio8 prompt exceeds its context window") }
         guard p.topK > 0, p.topP > 0, p.topP <= 1, p.temperature.isFinite, p.temperature >= 0,
               (p.maxTokens ?? 512) > 0 else { throw AudioGenerationError.invalidInput("Invalid Audio8 sampling parameters; topK must be positive") }
-        let cache: [KVCache] = model.layers.map { _ in KVCacheSimple() }
+        let cache = model.makeSlowCache()
         var key = MLXRandom.key(p.seed ?? UInt64.random(in: 0...UInt64.max))
         var (logits, hidden) = model.slow(prompt, cache: cache)
         logits = logits[0..., -1, 0...]; hidden = hidden[0..., (hidden.shape[1] - 1)..<hidden.shape[1], 0...]
@@ -119,11 +122,11 @@ public final class Audio8Model: Module, SpeechGenerationModel, @unchecked Sendab
             let semantic = sample(logits, parameters: p, key: keys[0], options: options,
                                   semantic: true, previous: previous, rescueKey: keys[1])
             let semanticID = semantic.item(Int32.self)
-            if semanticID == config.eosTokenID { break }
+            if semanticID == (config.usesFalconSlow ? config.codebookSize : config.eosTokenID) { break }
             let fastCache: [KVCache] = model.fastLayers.map { _ in KVCacheSimple() }
             let projected = model.fastProjectIn?(hidden) ?? hidden
             eval(model.fast(projected, position: 0, cache: fastCache))
-            var current = clip(semantic - Int32(config.semanticBeginID), min: 0, max: config.codebookSize - 1)
+            var current = clip(config.usesFalconSlow ? semantic : semantic - Int32(config.semanticBeginID), min: 0, max: config.codebookSize - 1)
             var codes = [current], fastHidden = model.fastEmbeddings(current).expandedDimensions(axis: 1)
             var fastKey = keys[2]
             for position in 1..<config.numCodebooks {
@@ -139,7 +142,8 @@ public final class Audio8Model: Module, SpeechGenerationModel, @unchecked Sendab
             if step == 0 { previous = Array(repeating: 0, count: config.rasWindowSize) }
             else { previous.removeFirst(); previous.append(semanticID) }
             if step + 1 < min(p.maxTokens ?? 512, config.maxSeqLen - width) {
-                let column = concatenated([semantic.reshaped([1, 1]), frame], axis: 1).expandedDimensions(axis: 2)
+                let fullSemantic = config.usesFalconSlow ? semantic + Int32(config.semanticBeginID) : semantic
+                let column = concatenated([fullSemantic.reshaped([1, 1]), frame], axis: 1).expandedDimensions(axis: 2)
                 (logits, hidden) = model.slow(column, offset: width + step, cache: cache)
                 logits = logits[0..., -1, 0...]
             }
@@ -210,7 +214,11 @@ public final class Audio8Model: Module, SpeechGenerationModel, @unchecked Sendab
             var parts = key.split(separator: ".").map(String.init)
             if parts.count > 4, parts[0] == "codec", parts[1] == "quantizer",
                ["downsample", "upsample"].contains(parts[2]) { parts.insert("layers", at: 4) }
-            return (parts.joined(separator: "."), value)
+            let name = parts.joined(separator: ".")
+            let tensor = name.hasPrefix("model.slow.") && name.hasSuffix("conv1d.weight")
+                && value.ndim == 3 && value.dim(1) == 1 && value.dim(2) > 1
+                ? value.transposed(0, 2, 1) : value
+            return (name, tensor)
         })
     }
     public static func fromPretrained(_ repository: String = defaultRepositoryID, cache: HubCache = .default) async throws -> Audio8Model {

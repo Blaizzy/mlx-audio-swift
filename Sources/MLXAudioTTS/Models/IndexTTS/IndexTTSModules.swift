@@ -695,17 +695,21 @@ public final class IndexTTSCore: Module {
         }
 
         let textTokenIDs = rawTextTokenIDs.map { min(max($0, 0), gptConfig.numberTextTokens) }
-        let tokens = [gptConfig.startTextToken] + textTokenIDs + [gptConfig.stopTextToken, gptConfig.startMelToken]
+        let tokens = [gptConfig.startTextToken] + textTokenIDs + [gptConfig.stopTextToken]
         guard tokens.count <= gptConfig.maxTextTokens + 2 else {
             throw IndexTTSError.invalidInput("Text token count \(tokens.count) exceeds max_text_tokens + 2.")
         }
         let tokenArray = MLXArray(tokens.map(Int32.init)).reshaped(1, tokens.count)
         let textEmbeds = textEmbedding(tokenArray) + textPositionEmbedding(sequenceLength: tokens.count)
-        let embeddings = concatenated([conditioningLatents, textEmbeds], axis: 1)
+        // The start mel token opens the mel sequence: mel embedding at mel position 0,
+        // as the reference's GPT2InferenceModel embeds it.
+        let startMel = MLXArray([Int32(gptConfig.startMelToken)]).reshaped(1, 1)
+        let startMelEmbed = melEmbedding(startMel) + melPositionEmbedding(sequenceLength: 1)
+        let embeddings = concatenated([conditioningLatents, textEmbeds, startMelEmbed], axis: 1)
         eval(embeddings)
         return IndexTTSPreparedEmbedding(
             embeddings: embeddings,
-            textTokenCount: tokens.count,
+            textTokenCount: tokens.count + 1, // + the start mel token
             conditioningTokenCount: conditioningLatents.dim(1)
         )
     }
@@ -762,9 +766,10 @@ public final class IndexTTSCore: Module {
             }
             tokenIDs.append(nextID)
             let nextArray = MLXArray([Int32(nextID)]).reshaped(1, 1)
+            // Mel position k + 2 for the k-th generated token, as in the reference's kv-cache path.
             input = melEmbedding(nextArray) + melPositionEmbedding(
                 sequenceLength: 1,
-                offset: prepared.embeddings.dim(1) + position
+                offset: position + 2
             )
         }
 
