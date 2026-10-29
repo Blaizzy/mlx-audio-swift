@@ -348,6 +348,12 @@ public enum TTS {
                 pretrained: { try await VoxCPM2Model.fromPretrained($0, cache: $1) },
                 local: { modelDir, _ in try await VoxCPM2Model.fromModelDirectory(modelDir, hfToken: nil) }
             )
+        case "zonos2":
+            return try await load(
+                source, modelType: resolvedType,
+                pretrained: { try await Zonos2Model.fromPretrained($0, cache: $1) },
+                local: { folder, _ in try await Zonos2Model.fromModelDirectory(folder, cache: source.cache) }
+            )
         default:
             throw TTSModelError.unsupportedModelType(resolvedType)
         }
@@ -412,6 +418,7 @@ public enum TTS {
 
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
+        if lower.contains("zonos2") { return "zonos2" }
         if lower.contains("ming-3.0-tts-tiny") { return "lingv3_tts" }
         if lower.contains("ming"), lower.contains("tts"), lower.contains("0.5b") {
             return "dense"
