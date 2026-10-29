@@ -121,6 +121,7 @@ let package = Package(
                 "Models/FishSpeech/README.md",
                 "Models/Audio8/README.md",
                 "Models/Llama/README.md",
+                "Models/LongCatAudioDiT/README.md",
                 "Models/MingTiny/README.md",
                 "Models/HiggsAudio3TTS/README.md",
                 "Models/Rumik/README.md",
