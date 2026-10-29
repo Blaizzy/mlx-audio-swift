@@ -984,10 +984,11 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             if !extra.isEmpty {
                 print("[OmniVoiceModel] WARNING: \(extra.count) extra keys after sanitize: \(extra.prefix(10))")
             }
-            // Preserve the reduced precision of BF16 and native packed int8 weights.
+            // Preserve reduced-precision checkpoints and packed integer weights.
+            // Native MLX quantized layers require their weight tensors to stay uint32.
             let modelWeights = (repoID.lowercased().contains("bf16") || repoIs8Bit)
                 ? sanitizedWeights
-                : sanitizedWeights.mapValues { $0.asType(.float32) }
+                : sanitizedWeights.mapValues { $0.dtype.isFloatingPoint ? $0.asType(.float32) : $0 }
             try model.update(parameters: ModuleParameters.unflattened(modelWeights), verify: .noUnusedKeys)
             eval(model)
         }
