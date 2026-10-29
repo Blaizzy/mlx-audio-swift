@@ -248,6 +248,11 @@ public enum TTS {
                 pretrained: { try await LlamaTTSModel.fromPretrained($0, cache: $1) },
                 local: { modelDir, _ in try await LlamaTTSModel.fromModelDirectory(modelDir) }
             )
+        case "longcat_audiodit", "audiodit":
+            return try await load(
+                source, modelType: resolvedType,
+                pretrained: { try await LongCatModel.fromPretrained($0, cache: $1) },
+                local: { directory, _ in try await LongCatModel.fromModelDirectory(directory, cache: source.cache) })
         case "moss_tts", "moss_tts_delay", "moss_tts_local":
             return try await load(
                 source,
@@ -415,6 +420,7 @@ public enum TTS {
         if lower.contains("vibevoice") && lower.contains("realtime") {
             return "vibevoice_streaming"
         }
+        if lower.contains("longcat") && lower.contains("audiodit") { return "longcat_audiodit" }
         if lower.contains("audio8") || lower.contains("arktts") { return "arktts" }
         if lower.contains("outetts") { return "outetts" }
         if lower.contains("breeze") && lower.contains("tts") {
