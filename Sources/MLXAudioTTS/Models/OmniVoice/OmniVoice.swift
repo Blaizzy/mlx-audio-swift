@@ -33,11 +33,38 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         return OmniVoiceVoicePrompt(codes: codes.asArray(Int32.self), shape: codes.shape, transcript: transcript)
     }
 
+    /// Encodes a voice reference file without exposing MLXArray in the caller's
+    /// app code. Audio is resampled to the model's expected sample rate.
+    public func encodeVoicePrompt(fromAudioFile url: URL, transcript: String) throws -> OmniVoiceVoicePrompt {
+        let (_, audio) = try loadAudioArray(from: url, sampleRate: config.sampleRate)
+        return try encodeVoicePrompt(refAudio: audio, transcript: transcript)
+    }
+
     /// Releases the reference-only modules after a reusable prompt has been encoded.
     /// Encoding another reference requires reloading the model; synthesis from cached prompts remains available.
     public func releaseVoicePromptEncoders() throws {
         try audioTokenizer?.releaseReferenceEncoders()
         Memory.clearCache()
+    }
+
+    /// Generates a waveform from a previously encoded voice prompt as ordinary
+    /// Swift floats, keeping the MLX tensor type out of application targets.
+    public func generateSamples(
+        text: String,
+        language: String? = nil,
+        parameters: OmniVoiceGenerateParameters = OmniVoiceGenerateParameters(),
+        voiceClonePrompt: OmniVoiceVoicePrompt
+    ) async throws -> [Float] {
+        let audio = try await generate(
+            text: text,
+            voice: nil,
+            refAudio: nil,
+            refText: nil,
+            language: language,
+            ovParameters: parameters,
+            voiceClonePrompt: voiceClonePrompt
+        )
+        return audio.asArray(Float.self)
     }
 
     let config: OmniVoiceConfig
