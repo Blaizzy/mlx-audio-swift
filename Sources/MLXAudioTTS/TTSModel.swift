@@ -252,7 +252,14 @@ public enum TTS {
             return try await load(
                 source, modelType: resolvedType,
                 pretrained: { try await LongCatModel.fromPretrained($0, cache: $1) },
-                local: { directory, _ in try await LongCatModel.fromModelDirectory(directory, cache: source.cache) })
+                local: { directory, _ in try await LongCatModel.fromModelDirectory(directory, cache: source.cache) }
+            )
+        case "melotts", "melo_tts":
+            return try await load(
+                source, modelType: resolvedType,
+                pretrained: { try await MeloTTSModel.fromPretrained($0, cache: $1) },
+                local: { modelDir, _ in try await MeloTTSModel.fromModelDirectory(modelDir, cache: source.cache) }
+            )
         case "moss_tts", "moss_tts_delay", "moss_tts_local":
             return try await load(
                 source,
@@ -349,9 +356,10 @@ public enum TTS {
                 local: { modelDir, _ in try await VoxCPM2Model.fromModelDirectory(modelDir, hfToken: nil) }
             )
         case "voxtral_tts":
-            return try await load(source, modelType: resolvedType,
+            return try await load(
+                source, modelType: resolvedType,
                 pretrained: { try await VoxtralTTSModel.fromPretrained($0, cache: $1) },
-                local: { directory, _ in try await VoxtralTTSModel.fromModelDirectory(directory) })
+                local: { directory, _ in try await VoxtralTTSModel.fromModelDirectory(directory) }
             )
         case "zonos2":
             return try await load(
@@ -428,6 +436,7 @@ public enum TTS {
         if lower.contains("ming"), lower.contains("tts"), lower.contains("0.5b") {
             return "dense"
         }
+        if lower.contains("melotts") { return "melotts" }
         if lower.contains("kugelaudio") { return "kugelaudio" }
         if lower.contains("vibevoice") && lower.contains("realtime") {
             return "vibevoice_streaming"
