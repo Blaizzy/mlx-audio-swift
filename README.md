@@ -123,6 +123,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | MeloTTS English | [MeloTTS README](Sources/MLXAudioTTS/Models/MeloTTS/README.md) | [mlx-community/MeloTTS-English-MLX](https://huggingface.co/mlx-community/MeloTTS-English-MLX) |
 | Ming-3.0 TTS Tiny | [Ming Tiny README](Sources/MLXAudioTTS/Models/MingTiny/README.md) | [mlx-community/Ming-3.0-tts-tiny-4bit](https://huggingface.co/mlx-community/Ming-3.0-tts-tiny-4bit) |
 | Ming dense TTS | [Ming dense README](Sources/MLXAudioTTS/Models/Ming/README.md) | [mlx-community/Ming-3.0-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-3.0-tts-0.5B-bf16), [inclusionAI/Ming-omni-tts-0.5B](https://huggingface.co/inclusionAI/Ming-omni-tts-0.5B) |
+| Ming Omni 16.8B/A3B | [Ming Omni README](Sources/MLXAudioTTS/Models/MingOmni/README.md) | [mlx-community/Ming-omni-tts-16.8B-A3B-4bit](https://huggingface.co/mlx-community/Ming-omni-tts-16.8B-A3B-4bit) |
 | KugelAudio | [KugelAudio README](Sources/MLXAudioTTS/Models/KugelAudio/README.md) | [kugelaudio/kugelaudio-0-open](https://huggingface.co/kugelaudio/kugelaudio-0-open) |
 | Bark Small | [Bark README](Sources/MLXAudioTTS/Models/Bark/README.md) | [mlx-community/bark-small](https://huggingface.co/mlx-community/bark-small) |
 | Confucius4-TTS | [Confucius4 README](Sources/MLXAudioTTS/Models/Confucius4/README.md) | [mlx-community/Confucius4-TTS-mlx-int8](https://huggingface.co/mlx-community/Confucius4-TTS-mlx-int8) |
