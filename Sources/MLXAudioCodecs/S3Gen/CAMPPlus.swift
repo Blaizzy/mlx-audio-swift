@@ -114,6 +114,8 @@ private func makeNonlinear(configStr: String, channels: Int) -> [Module] {
         switch String(part).lowercased() {
         case "batchnorm":
             layers.append(BatchNorm(featureCount: channels))
+        case "batchnorm_":
+            layers.append(BatchNorm(featureCount: channels, affine: false))
         case "relu":
             layers.append(ReLUModule())
         default:
@@ -142,7 +144,13 @@ private func statisticsPooling(_ x: MLXArray, axis: Int = -1) -> MLXArray {
 
 /// Segment-level average pooling: divides time axis into segments,
 /// pools each segment, expands back to original length.
-private func segPooling(_ x: MLXArray, segLen: Int = 100) -> MLXArray {
+private func segPooling(_ x: MLXArray, segLen: Int = 100, zeroPad: Bool = false) -> MLXArray {
+    if zeroPad {
+        let length = x.dim(2), segments = (length + segLen - 1) / segLen
+        let padded = MLX.padded(x, widths: [.init(0), .init(0), .init((0, segments * segLen - length))])
+        let means = padded.reshaped([x.dim(0), x.dim(1), segments, segLen]).mean(axis: 3)
+        return repeated(means, count: segLen, axis: 2)[0..., 0..., ..<length]
+    }
     // x: (B, C, T)
     let T = x.dim(2)
 
@@ -379,17 +387,19 @@ class CAMLayer: Module {
     @ModuleInfo(key: "linear_local") var linearLocal: Conv1d
     @ModuleInfo(key: "linear1") var linear1: Conv1d
     @ModuleInfo(key: "linear2") var linear2: Conv1d
-    @ModuleInfo(key: "bn1") var bn1: BatchNorm
-    @ModuleInfo(key: "bn2") var bn2: BatchNorm
+    @ModuleInfo(key: "bn1") var bn1: BatchNorm?
+    @ModuleInfo(key: "bn2") var bn2: BatchNorm?
 
+    let referenceCompatible: Bool
     let segLen: Int
     let outChannels: Int
 
     init(
         inChannels: Int, outChannels: Int,
         kernelSize: Int = 3, stride: Int = 1, padding: Int = 1,
-        dilation: Int = 1, segLen: Int = 100
+        dilation: Int = 1, segLen: Int = 100, referenceCompatible: Bool = false
     ) {
+        self.referenceCompatible = referenceCompatible
         self.segLen = segLen
         self.outChannels = outChannels
 
@@ -410,8 +420,8 @@ class CAMLayer: Module {
             inputChannels: innerChannels, outputChannels: outChannels,
             kernelSize: 1, stride: 1, padding: 0, bias: true
         )
-        self._bn1.wrappedValue = BatchNorm(featureCount: innerChannels)
-        self._bn2.wrappedValue = BatchNorm(featureCount: outChannels)
+        self._bn1.wrappedValue = referenceCompatible ? nil : BatchNorm(featureCount: innerChannels)
+        self._bn2.wrappedValue = referenceCompatible ? nil : BatchNorm(featureCount: outChannels)
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -422,15 +432,15 @@ class CAMLayer: Module {
 
         // Global context: mean + segment pooling
         let globalMean = x.mean(axis: 2, keepDims: true) // (B, C, 1)
-        let segPool = segPooling(x, segLen: segLen)        // (B, C, T)
+        let segPool = segPooling(x, segLen: segLen, zeroPad: referenceCompatible)        // (B, C, T)
         let context = globalMean + segPool                 // (B, C, T)
 
         // Bottleneck: reduce -> relu -> expand -> sigmoid
         var m = conv1dBCT(linear1, context)
-        m = batchNormBCT(bn1, m)
+        if let bn1 { m = batchNormBCT(bn1, m) }
         m = relu(m)
         m = conv1dBCT(linear2, m)
-        m = batchNormBCT(bn2, m)
+        if let bn2 { m = batchNormBCT(bn2, m) }
         m = sigmoid(m)
 
         return y * m // (B, outChannels, T)
@@ -449,7 +459,7 @@ class CAMDenseTDNNLayer: Module {
     init(
         inChannels: Int, outChannels: Int, bnChannels: Int,
         kernelSize: Int, stride: Int = 1, dilation: Int = 1,
-        configStr: String = "batchnorm-relu"
+        configStr: String = "batchnorm-relu", referenceCompatible: Bool = false
     ) {
         let padding = (kernelSize - 1) / 2 * dilation
 
@@ -462,7 +472,7 @@ class CAMDenseTDNNLayer: Module {
         self._camLayer.wrappedValue = CAMLayer(
             inChannels: bnChannels, outChannels: outChannels,
             kernelSize: kernelSize, stride: stride, padding: padding,
-            dilation: dilation
+            dilation: dilation, referenceCompatible: referenceCompatible
         )
     }
 
@@ -493,7 +503,7 @@ class CAMDenseTDNNBlock: Module {
     init(
         numLayers: Int, inChannels: Int, outChannels: Int, bnChannels: Int,
         kernelSize: Int, dilation: Int = 1,
-        configStr: String = "batchnorm-relu"
+        configStr: String = "batchnorm-relu", referenceCompatible: Bool = false
     ) {
         var layerList: [CAMDenseTDNNLayer] = []
         for i in 0 ..< numLayers {
@@ -501,7 +511,7 @@ class CAMDenseTDNNBlock: Module {
             layerList.append(CAMDenseTDNNLayer(
                 inChannels: layerInChannels, outChannels: outChannels,
                 bnChannels: bnChannels, kernelSize: kernelSize,
-                dilation: dilation, configStr: configStr
+                dilation: dilation, configStr: configStr, referenceCompatible: referenceCompatible
             ))
         }
         self._layers.wrappedValue = layerList
@@ -526,11 +536,11 @@ class TransitLayer: Module {
     @ModuleInfo(key: "nonlinear") var nonlinear: [Module]
     @ModuleInfo(key: "linear") var linear: Conv1d
 
-    init(inChannels: Int, outChannels: Int, configStr: String = "batchnorm-relu") {
+    init(inChannels: Int, outChannels: Int, configStr: String = "batchnorm-relu", bias: Bool = true) {
         self._nonlinear.wrappedValue = makeNonlinear(configStr: configStr, channels: inChannels)
         self._linear.wrappedValue = Conv1d(
             inputChannels: inChannels, outputChannels: outChannels,
-            kernelSize: 1, stride: 1, padding: 0, bias: true
+            kernelSize: 1, stride: 1, padding: 0, bias: bias
         )
     }
 
@@ -602,11 +612,14 @@ public class CAMPPlus: Module {
 
     let embeddingSize: Int
 
-    init(
+    /// `referenceCompatible` selects CAM++ checkpoints with no CAM bottleneck
+    /// BatchNorms, bias-free transits, a non-affine output BatchNorm, and zero-padded
+    /// partial context segments (the Python mlx-audio Confucius4 layout).
+    public init(
         featDim: Int = 80, embeddingSize: Int = 192,
         growthRate: Int = 32, bnSize: Int = 4,
         initChannels: Int = 128, mChannels: Int = 32,
-        configStr: String = "batchnorm-relu"
+        configStr: String = "batchnorm-relu", referenceCompatible: Bool = false
     ) {
         self.embeddingSize = embeddingSize
 
@@ -635,14 +648,14 @@ public class CAMPPlus: Module {
                 numLayers: numLayers, inChannels: channels,
                 outChannels: growthRate, bnChannels: bnChannels,
                 kernelSize: kernelSize, dilation: dilation,
-                configStr: configStr
+                configStr: configStr, referenceCompatible: referenceCompatible
             ))
 
             let blockOutChannels = channels + numLayers * growthRate
             let transitOutChannels = blockOutChannels / 2
             transitList.append(TransitLayer(
                 inChannels: blockOutChannels, outChannels: transitOutChannels,
-                configStr: configStr
+                configStr: configStr, bias: !referenceCompatible
             ))
             channels = transitOutChannels
         }
@@ -655,11 +668,11 @@ public class CAMPPlus: Module {
         self._pool.wrappedValue = StatsPool()
         self._dense.wrappedValue = DenseLayer(
             inChannels: channels * 2, outChannels: embeddingSize,
-            configStr: "batchnorm", bias: false
+            configStr: referenceCompatible ? "batchnorm_" : "batchnorm", bias: false
         )
     }
 
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
+    public func callAsFunction(_ x: MLXArray) -> MLXArray {
         // x: (B, T, F) fbank features
         var out = x.transposed(0, 2, 1) // (B, F, T)
 

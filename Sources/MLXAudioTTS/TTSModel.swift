@@ -156,6 +156,11 @@ public enum TTS {
                 pretrained: { modelRepo, _ in try await ChatterboxModel.fromPretrained(modelRepo) },
                 local: { modelDir, _ in try await ChatterboxModel.fromModelDirectory(modelDir, hfToken: nil) }
             )
+        case "confucius4", "confucius4_tts":
+            return try await load(
+                source, modelType: resolvedType,
+                pretrained: { try await Confucius4Model.fromPretrained($0, cache: $1) },
+                local: { directory, _ in try await Confucius4Model.fromModelDirectory(directory) })
         case "csm", "sesame":
             return try await load(
                 source,
@@ -436,6 +441,7 @@ public enum TTS {
         if lower.contains("ming"), lower.contains("tts"), lower.contains("0.5b") {
             return "dense"
         }
+        if lower.contains("confucius4") { return "confucius4" }
         if lower.contains("melotts") { return "melotts" }
         if lower.contains("kugelaudio") { return "kugelaudio" }
         if lower.contains("vibevoice") && lower.contains("realtime") {
