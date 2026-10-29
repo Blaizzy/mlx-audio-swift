@@ -42,7 +42,7 @@ public final class WhisperModel: Module, STTGenerationModel {
         let transcript = transcribe(audio: mono, generationParameters: generationParameters)
 
         let elapsed = Date().timeIntervalSince(startTime)
-        let combined = transcript.texts.joined(separator: " ")
+        let combined = transcript.text
         let totalPromptTokens = transcript.promptTokens
         let totalGenerationTokens = transcript.generationTokens
 
@@ -78,7 +78,7 @@ public final class WhisperModel: Module, STTGenerationModel {
             )
 
             let elapsed = Date().timeIntervalSince(startTime)
-            let combined = transcript.texts.joined(separator: " ")
+            let combined = transcript.text
             let totalPromptTokens = transcript.promptTokens
             let totalGenerationTokens = transcript.generationTokens
 
@@ -101,12 +101,33 @@ public final class WhisperModel: Module, STTGenerationModel {
 
     // MARK: - Long-form transcription
 
-    private struct Transcript {
-        var texts: [String] = []
+    struct Transcript {
+        let tokenizer: WhisperTokenizer
+        private var tokens: [Int] = []
         var segments: [[String: Any]] = []
         var promptTokens = 0
         var generationTokens = 0
         var language: String?
+
+        init(tokenizer: WhisperTokenizer) {
+            self.tokenizer = tokenizer
+        }
+
+        var text: String {
+            // Timestamp boundaries do not imply spaces, especially in CJK languages.
+            tokenizer.decode(tokens: tokens).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        mutating func append(
+            _ tokens: [Int], start: Double, end: Double, onTokenDelta: ((String) -> Void)? = nil
+        ) {
+            let raw = tokenizer.decode(tokens: tokens)
+            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return }
+            self.tokens.append(contentsOf: tokens)
+            segments.append(["text": text, "start": start, "end": end])
+            onTokenDelta?(raw)
+        }
     }
 
     /// Mel frames per encoder position (3000 / 1500) and seconds per timestamp token.
@@ -127,16 +148,7 @@ public final class WhisperModel: Module, STTGenerationModel {
         let sampleRate = WhisperAudioConfig.sampleRate
         let hop = WhisperAudioConfig.hopLength
         let totalSamples = audio.dim(0)
-        var transcript = Transcript()
-
-        func append(_ tokens: [Int], start: Double, end: Double, stream: Bool = false) {
-            let raw = tokenizer.decode(tokens: tokens)
-            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return }
-            transcript.texts.append(text)
-            transcript.segments.append(["text": text, "start": start, "end": end])
-            if stream { onTokenDelta?(raw) }
-        }
+        var transcript = Transcript(tokenizer: tokenizer)
 
         if totalSamples <= WhisperAudioConfig.chunkLengthSamples {
             let window = transcribeChunk(
@@ -148,7 +160,7 @@ public final class WhisperModel: Module, STTGenerationModel {
             transcript.promptTokens = window.promptTokens
             transcript.generationTokens = window.tokens.count
             transcript.language = window.language
-            append(window.tokens, start: 0, end: Double(totalSamples) / Double(sampleRate))
+            transcript.append(window.tokens, start: 0, end: Double(totalSamples) / Double(sampleRate))
             return transcript
         }
 
@@ -183,7 +195,10 @@ public final class WhisperModel: Module, STTGenerationModel {
             let streamed = zip(window.tokens, window.tokens.dropFirst())
                 .filter { $0 < tokenizer.timestampBeginId && $1 >= tokenizer.timestampBeginId }.count
             for (index, segment) in split.segments.enumerated() {
-                append(segment.tokens, start: offset + segment.start, end: offset + segment.end, stream: index >= streamed)
+                transcript.append(
+                    segment.tokens, start: offset + segment.start, end: offset + segment.end,
+                    onTokenDelta: index >= streamed ? onTokenDelta : nil
+                )
             }
             seek += split.seekFrames
         }

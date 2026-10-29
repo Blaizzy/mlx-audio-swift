@@ -4693,6 +4693,46 @@ struct WhisperTests {
         #expect(abs(split.segments[0].end - 15.0) < 1e-9)
         #expect(split.seekFrames == 1500)
     }
+
+    @Test(arguments: [
+        ([1, 2], "你好世界", ["你好", "世界"]),
+        ([3, 4, 5], "Hello  world!", ["Hello", "world", "!"]),
+    ])
+    func timestampedTranscriptPreservesTokenSpacing(
+        textTokens: [Int], expected: String, segmentTexts: [String]
+    ) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("whisper-tokenizer-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try JSONSerialization.data(withJSONObject: [
+            "model": [
+                "type": "BPE", "unk_token": "<unk>", "merges": [],
+                "vocab": ["<unk>": 0, "你好": 1, "世界": 2, " Hello": 3, "  world": 4, "!": 5],
+            ],
+        ]).write(to: directory.appendingPathComponent("tokenizer.json"))
+        try JSONSerialization.data(withJSONObject: [
+            "tokenizer_class": "PreTrainedTokenizerFast", "unk_token": "<unk>",
+            "clean_up_tokenization_spaces": false,
+        ]).write(to: directory.appendingPathComponent("tokenizer_config.json"))
+        let generationConfig = try JSONDecoder().decode(WhisperGenerationConfig.self, from: Data(
+            #"{"decoder_start_token_id":7,"eos_token_id":8,"no_timestamps_token_id":9,"is_multilingual":false}"#.utf8))
+        let tokenizer = try await WhisperTokenizer(
+            modelDirectory: directory, baseConfig: WhisperConfig(), generationConfig: generationConfig)
+        var transcript = WhisperModel.Transcript(tokenizer: tokenizer)
+        var streamed = ""
+        // These segments can come from one window or successive seek windows.
+        for (index, token) in textTokens.enumerated() {
+            transcript.append(
+                [Self.tb + index * 50, token, Self.tb + (index + 1) * 50],
+                start: Double(index), end: Double(index + 1),
+                onTokenDelta: { streamed += $0 }
+            )
+        }
+
+        #expect(transcript.text == expected)
+        #expect(transcript.text == streamed.trimmingCharacters(in: .whitespacesAndNewlines))
+        #expect(transcript.segments.compactMap { $0["text"] as? String } == segmentTexts)
+    }
 }
 
 struct WhisperTranslateNetworkTests {
