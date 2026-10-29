@@ -131,14 +131,15 @@ final class NemotronSpeechBlock: Module {
 }
 
 final class NemotronSpeechEncoder: Module {
-    @ModuleInfo(key: "pre_encode") var stacking: NemotronFeatureStacking
+    @ModuleInfo(key: "pre_encode") var featureStacking: NemotronFeatureStacking?
+    var stacking: NemotronFeatureStacking { featureStacking! }
     @ModuleInfo(key: "embed_norm") var embeddingNorm: LayerNorm?
     let layers: [NemotronSpeechBlock]
     @ModuleInfo(key: "final_norm") var finalNorm: LayerNorm
     let config: NemotronSpeechEncoderConfiguration
-    init(_ c: NemotronSpeechEncoderConfiguration) {
+    init(_ c: NemotronSpeechEncoderConfiguration, includeStacking: Bool = true) {
         config = c
-        _stacking.wrappedValue = NemotronFeatureStacking(c)
+        _featureStacking.wrappedValue = includeStacking ? NemotronFeatureStacking(c) : nil
         _embeddingNorm.wrappedValue = c.preBlockNorm ? LayerNorm(dimensions: c.width) : nil
         layers = (0 ..< c.layers).map { _ in NemotronSpeechBlock(c) }
         _finalNorm.wrappedValue = LayerNorm(dimensions: c.width)
@@ -299,7 +300,10 @@ final class NemotronParallelEncoder: Module {
         return speechNorm(states) + c.speakerScale
             * matmul(targets, _speakerKernel.asType(targets.dtype))
     }
-    func callAsFunction(_ features: MLXArray) -> MLXArray {
+    func callAsFunction(_ features: MLXArray) -> MLXArray { encode(features).fused }
+    func encode(_ features: MLXArray, returnAlignment: Bool = false)
+        -> (fused: MLXArray, states: MLXArray?, probabilities: MLXArray?)
+    {
         let c = config
         let factor = c.speech.factor
         let size = c.windowLength * factor
@@ -308,6 +312,8 @@ final class NemotronParallelEncoder: Module {
         let normalized = Self.normalize(features).asType(speechNorm.weight!.dtype)
         let state = speaker.makeState()
         var outputs: [MLXArray] = []
+        var alignmentStates: [MLXArray] = []
+        var alignmentProbabilities: [MLXArray] = []
         for start in stride(from: 0, to: features.dim(-1), by: size) {
             let end = min(start + size, features.dim(-1))
             let contextStart = max(0, start - left)
@@ -317,18 +323,26 @@ final class NemotronParallelEncoder: Module {
             let encoded = speech(x, length: (length + factor - 1) / factor)
             let first = (start - contextStart) / factor
             let count = (end + factor - 1) / factor - (start + factor - 1) / factor
-            let probabilities = speaker.step(
+            let nativeProbabilities = speaker.step(
                 features[0..., 0..., contextStart ..< contextEnd],
                 state: state, centralFrames: count * factor, featureLength: length,
                 leftContextFrames: start - contextStart
             )
-            .reshaped(1, count, factor, -1).mean(axis: 2)
+            let probabilities = nativeProbabilities.reshaped(1, count, factor, -1).mean(axis: 2)
             let y = fuse(
                 encoded[0..., first ..< (first + count), 0...], probabilities: probabilities)
             eval(y)
             outputs.append(y)
+            if returnAlignment {
+                alignmentStates.append(encoded[0..., first ..< (first + count), 0...])
+                alignmentProbabilities.append(nativeProbabilities.expandedDimensions(axis: 0))
+            }
         }
-        return concatenated(outputs, axis: 1)
+        return (
+            concatenated(outputs, axis: 1),
+            returnAlignment ? concatenated(alignmentStates, axis: 1) : nil,
+            returnAlignment ? concatenated(alignmentProbabilities, axis: 1) : nil
+        )
     }
 }
 
@@ -342,4 +356,10 @@ final class NemotronPerception: Module {
         proj = Linear(c.speech.width, c.outputDimension)
     }
     func callAsFunction(_ audio: MLXArray) -> MLXArray { proj(encoder(preprocessor(audio))) }
+    func withAlignment(_ audio: MLXArray) -> (
+        embeddings: MLXArray, states: MLXArray, probabilities: MLXArray
+    ) {
+        let output = encoder.encode(preprocessor(audio), returnAlignment: true)
+        return (proj(output.fused), output.states!, output.probabilities!)
+    }
 }

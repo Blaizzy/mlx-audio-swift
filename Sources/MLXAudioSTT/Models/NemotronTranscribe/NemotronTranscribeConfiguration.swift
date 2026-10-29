@@ -174,10 +174,20 @@ public struct NemotronTranscribeConfiguration: Decodable, Sendable {
     public var speakerMode = "thresholded"
     public var speakerThreshold: Float? = 0.5
     public var speakerScale: Float = 1
+    public var timestamps: NemotronTimestampConfiguration?
     public init() {}
     public init(from decoder: Decoder) throws {
         self.init()
         let c = try decoder.container(keyedBy: NemotronConfigKey.self)
+        if c.contains(.init("ctc_timestamps")), !(try c.decodeNil(forKey: .init("ctc_timestamps")))
+        {
+            let timestamp = try c.nestedContainer(
+                keyedBy: NemotronConfigKey.self, forKey: .init("ctc_timestamps"))
+            if timestamp.contains(.init("decoder_config")) {
+                timestamps = try c.decode(
+                    NemotronTimestampConfiguration.self, forKey: .init("ctc_timestamps"))
+            }
+        }
         text = try c.decode(NemotronHConfiguration.self, forKey: .init("llm_config"))
         let lm = try c.nestedContainer(keyedBy: NemotronConfigKey.self, forKey: .init("llm_config"))
         guard try lm.value("model_type", "") == "nemotron_h",
@@ -241,6 +251,12 @@ public struct NemotronTranscribeConfiguration: Decodable, Sendable {
         try speaker.encoder.validate()
         try preprocessor.validate()
         try speaker.preprocessor.validate()
+        if let timestamps {
+            try timestamps.encoder.validate()
+            guard timestamps.encoder.width == speech.width else {
+                throw STTError.modelNotInitialized("CTC head width must match the speech encoder")
+            }
+        }
         let m = speaker.modules
         guard outputDimension == text.hiddenSize, speech.features == preprocessor.features,
             speaker.encoder.features == preprocessor.features,

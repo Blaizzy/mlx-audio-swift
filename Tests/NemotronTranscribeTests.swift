@@ -1,7 +1,9 @@
 import Foundation
+import Hub
 import MLX
 import MLXNN
 import Testing
+import Tokenizers
 
 @testable import MLXAudioCore
 @testable import MLXAudioSTT
@@ -30,12 +32,21 @@ struct NemotronTranscribeTests {
              "sortformer_modules":{"num_spks":2,"fc_d_model":16,"tf_d_model":8}}}}
         """#
 
-    func config() throws -> NemotronTranscribeConfiguration {
-        try JSONDecoder().decode(
-            NemotronTranscribeConfiguration.self, from: Data(Self.configuration.utf8))
+    func config(timestamps: Bool = false) throws -> NemotronTranscribeConfiguration {
+        let source =
+            timestamps
+            ? Self.configuration.replacingOccurrences(
+                of: "\"model_type\":\"nemotron_transcribe\",",
+                with: #"""
+                    "model_type":"nemotron_transcribe","ctc_timestamps":{"decoder_config":{
+                    "feat_in":16,"num_classes":64,"n_layers":2,"n_heads":2,"ff_expansion":0.5,
+                    "qk_norm":true,"rotary_fraction":0.5,"upsampling_factor":2,"residual_scale":0.1}},
+                    """#) : Self.configuration
+        return try JSONDecoder().decode(
+            NemotronTranscribeConfiguration.self, from: Data(source.utf8))
     }
-    func model() throws -> NemotronTranscribeModel {
-        let m = NemotronTranscribeModel(try config())
+    func model(timestamps: Bool = false) throws -> NemotronTranscribeModel {
+        let m = NemotronTranscribeModel(try config(timestamps: timestamps))
         var values: [String: MLXArray] = [:]
         for (key, value) in m.parameters().flattened() {
             let tensor: MLXArray
@@ -455,5 +466,243 @@ struct NemotronTranscribeTests {
                 #expect(message == "No Nemotron Transcribe safetensors found")
             }
         }
+    }
+
+    @Test(arguments: [Device.cpu, Device.gpu])
+    func ctcHeadMatchesPython(device: Device) throws {
+        try Device.withDefaultDevice(device) {
+            let m = try model(timestamps: true)
+            let head = try #require(m.ctcTimestamp)
+            let states = ((MLXArray(0 ..< 112) % 23) - 11).asType(.float32).reshaped(1, 7, 16) / 32
+            let logits = head.decoder(states)
+            #expect(logits.shape == [1, 14, 65])
+            // Python CPU reference with the same exact generated parameters.
+            close(
+                logits,
+                [
+                    -0.0105101299, 0.0064385701, 0.0202217717, 0.0190904215,
+                    0.0069566965, -0.0047822446, -0.0108795092, -0.0021039546, 0.0291477591,
+                    0.0890451819, 0.1439055055, -0.0899884626, -0.0696466640, -0.0565057695,
+                    -0.0377994590, -0.0100390837, -0.0225506239,
+                ], tolerance: device == .cpu ? 2e-6 : 5e-5)
+            let original = Dictionary(
+                uniqueKeysWithValues: head.parameters().flattened().map {
+                    ("ctc_timestamp." + $0.0, $0.1)
+                })
+            var source = original
+            source["ctc_timestamp.decoder.upsample.weight"] = head.decoder.upsample!.weight
+                .transposed(2, 0, 1)
+            source["ctc_timestamp.decoder.decoder_layers.0.weight"] = head.decoder.projections[0]
+                .weight.expandedDimensions(axis: -1)
+            source["ctc_timestamp.tokenizer.model_proto"] = .zeros([5], dtype: .uint8)
+            source["ctc_timestamp.decoder.upsample_factor"] = MLXArray(Int32(2))
+            let once = NemotronTranscribeModel.sanitize(
+                weights: source, includeTimestamps: true, timestampUpsamplingFactor: 2)
+            let twice = NemotronTranscribeModel.sanitize(
+                weights: once, includeTimestamps: true, timestampUpsamplingFactor: 2)
+            #expect(Set(once.keys) == Set(original.keys))
+            for (key, value) in original { #expect(arrayEqual(twice[key]!, value).item(Bool.self)) }
+            let aligned = m.perception.withAlignment(audio())
+            #expect(aligned.states.shape == [1, 8, 16])
+            #expect(aligned.probabilities.shape == [1, 16, 2])
+            #expect(arrayEqual(aligned.embeddings, m.perception(audio())).item(Bool.self))
+            let columns = [64, 1, 2]
+            let compact = head.compactLogProbabilities(
+                states: states, columns: columns, configuration: m.config)
+            #expect(compact.count == 14 * 3)
+            let first = head.decoder(states[0..., ..<5, 0...])[0, ..<8, 0...].asType(.float32)
+            let last = head.decoder(states[0..., 3..., 0...])[0, 2..., 0...].asType(.float32)
+            let joined = concatenated([first, last], axis: 0)
+            let expected =
+                joined[0..., MLXArray(columns.map(Int32.init))]
+                - logSumExp(joined, axis: -1, keepDims: true)
+            #expect(abs(MLXArray(compact).reshaped(14, 3) - expected).max().item(Float.self) < 1e-6)
+        }
+    }
+
+    @Test func ctcRepeatsAndImpossibleAlignment() throws {
+        let labels = [0, 1, 1, 0, 1, 0, 2, 2, 0]
+        var logits = Array(repeating: Float(-20), count: labels.count * 3)
+        for (i, label) in labels.enumerated() { logits[i * 3 + label] = 0 }
+        let path = try NemotronWordAlignment.ctcPath(
+            logProbabilities: logits, classes: 3, target: [1, 1, 2],
+            activity: Array(repeating: 1, count: 9))
+        #expect(path.path == [0, 1, 1, 2, 3, 4, 5, 5, 6])
+        #expect(path.frames == Array(0 ..< 9))
+        #expect(throws: NemotronWordAlignment.Failure.self) {
+            try NemotronWordAlignment.ctcPath(
+                logProbabilities: Array(logits.prefix(6)), classes: 3, target: [1, 1],
+                activity: [1, 1])
+        }
+        #expect(throws: NemotronWordAlignment.Failure.self) {
+            try NemotronWordAlignment.ctcPath(
+                logProbabilities: logits, classes: 3, target: [1],
+                activity: Array(repeating: 0, count: 9))
+        }
+    }
+
+    @Test func longAlignmentUsesBoundedSearch() throws {
+        let target = (0 ..< 400).map { ($0 * 31) % 39 + 1 }
+        var logits = Array(repeating: Float(-20), count: 1600 * 40)
+        for frame in 0 ..< 1600 {
+            logits[frame * 40 + (frame % 4 == 1 ? target[frame / 4] : 0)] = 0
+        }
+        let path = try NemotronWordAlignment.ctcPath(
+            logProbabilities: logits, classes: 40, target: target,
+            activity: Array(repeating: 1, count: 1600))
+        var allAligned = true
+        for i in 0 ..< 400 {
+            let observed: Int = (path.path[i * 4 + 1] - 1) / 2
+            if observed != i { allAligned = false }
+        }
+        #expect(allAligned)
+    }
+
+    @Test func timestampsPreserveTranscriptSpeakerIDs() throws {
+        let labels = [0, 1, 1, 0, 2, 2, 0, 0]
+        var logits = Array(repeating: Float(-20), count: 24)
+        for (frame, label) in labels.enumerated() { logits[frame * 3 + label] = 0 }
+        let probabilities = MLXArray([Float(0), 1, 0, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0])
+            .reshaped(8, 2)
+        let streams = [
+            NemotronWordAlignment.Stream(speaker: 0, words: [.init(text: "Hello", ids: [1])]),
+            .init(speaker: 1, words: [.init(text: "Hi", ids: [2])]),
+        ]
+        let result = try NemotronWordAlignment.alignCompact(
+            streams: streams, logProbabilities: logits, classes: 3,
+            nativeProbabilities: probabilities, duration: 0.08, configuration: config(),
+            upsamplingFactor: 2)
+        #expect(result.count == 2)
+        #expect(result[0]["text"] as? String == "Hello" && result[0]["speaker"] as? Int == 0)
+        #expect(result[1]["text"] as? String == "Hi" && result[1]["speaker"] as? Int == 1)
+        for word in result {
+            let start = try #require(word["start"] as? Double)
+            let end = try #require(word["end"] as? Double)
+            #expect(0 <= start && start <= end && end <= 0.08)
+        }
+    }
+
+    @Test func characterAlignmentAndUnsupportedThai() throws {
+        let config: Config = ["tokenizer_class": "TokenizersBackend", "unk_token": "<unk>"]
+        let data: Config = [
+            "model": [
+                "type": "BPE", "vocab": ["<unk>": 0, "你": 1, "好": 2, "あ": 3, "▁": 4],
+                "merges": [], "unk_token": "<unk>",
+            ], "added_tokens": [],
+        ]
+        let tokenizer = try AutoTokenizer.from(tokenizerConfig: config, tokenizerData: data)
+        let chinese = try NemotronWordAlignment.tokenize(
+            "你好。", tokenizer: .huggingFace(tokenizer), blank: 5, language: nil)
+        #expect(chinese[0].words.map(\.text) == ["你", "好"])
+        let japanese = try NemotronWordAlignment.tokenize(
+            "あ", tokenizer: .huggingFace(tokenizer), blank: 5, language: nil)
+        #expect(japanese[0].words.map(\.text) == ["あ"])
+        #expect(throws: NemotronWordAlignment.Failure.self) {
+            try NemotronWordAlignment.tokenize(
+                "ไทย", tokenizer: .huggingFace(tokenizer), blank: 5, language: nil)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func olderExportsLoadWithoutTimestampWeights(configuredHead: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var source =
+            try JSONSerialization.jsonObject(with: Data(Self.configuration.utf8)) as! [String: Any]
+        if configuredHead {
+            source["ctc_timestamps"] = [
+                "decoder_config": ["feat_in": 16, "num_classes": 64, "n_layers": 1, "n_heads": 2]
+            ]
+        }
+        try JSONSerialization.data(withJSONObject: source).write(
+            to: directory.appendingPathComponent("config.json"))
+        try writeTinyTokenizer(directory)
+        let weights = Dictionary(uniqueKeysWithValues: try model().parameters().flattened())
+        try MLX.save(arrays: weights, url: directory.appendingPathComponent("model.safetensors"))
+        let loaded = try await NemotronTranscribeModel.fromModelDirectory(directory)
+        #expect(!loaded.supportsWordTimestamps)
+        #expect(loaded.ctcTimestamp == nil)
+        #expect(loaded.parameters().flattened().count == 107)
+    }
+
+    private func writeTinyTokenizer(_ directory: URL) throws {
+        let vocabulary = Dictionary(
+            uniqueKeysWithValues: (0 ..< 64).map { ($0 == 0 ? "<unk>" : "t\($0)", $0) })
+        let tokenizer: [String: Any] = [
+            "model": ["type": "BPE", "vocab": vocabulary, "merges": [], "unk_token": "<unk>"],
+            "added_tokens": [
+                [
+                    "id": 64, "content": "<|audio|>", "special": true, "single_word": false,
+                    "lstrip": false, "rstrip": false, "normalized": false,
+                ]
+            ],
+        ]
+        try JSONSerialization.data(withJSONObject: tokenizer).write(
+            to: directory.appendingPathComponent("tokenizer.json"))
+        try Data(#"{"tokenizer_class":"TokenizersBackend","unk_token":"<unk>"}"#.utf8).write(
+            to: directory.appendingPathComponent("tokenizer_config.json"))
+    }
+
+    private func tinyAlignmentProto() -> Data {
+        func varint(_ value: Int) -> [UInt8] {
+            var value = value
+            var bytes: [UInt8] = []
+            while value >= 128 {
+                bytes.append(UInt8(value & 127) | 128)
+                value >>= 7
+            }
+            bytes.append(UInt8(value))
+            return bytes
+        }
+        func field(_ number: Int, _ bytes: [UInt8]) -> [UInt8] {
+            varint(number * 8 + 2) + varint(bytes.count) + bytes
+        }
+        var proto: [UInt8] = []
+        for (i, piece) in ["<unk>", "▁", "h", "i", "▁h", "▁hi"].enumerated() {
+            var score = Float(-i).bitPattern.littleEndian
+            let scoreBytes = withUnsafeBytes(of: &score) { Array($0) }
+            let value = field(1, Array(piece.utf8)) + [0x15] + scoreBytes + [0x18, i == 0 ? 2 : 1]
+            proto += field(1, value)
+        }
+        proto += field(2, [0x18, 2])  // SentencePiece BPE trainer model type.
+        return Data(proto)
+    }
+
+    @Test(arguments: [false, true])
+    func embeddedAndSidecarAlignmentTokenizers(sidecar: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var source =
+            try JSONSerialization.jsonObject(with: Data(Self.configuration.utf8)) as! [String: Any]
+        source["ctc_timestamps"] = [
+            "decoder_config": [
+                "feat_in": 16, "num_classes": 64, "n_layers": 2, "n_heads": 2,
+                "ff_expansion": 0.5, "qk_norm": true, "rotary_fraction": 0.5,
+                "upsampling_factor": 2, "residual_scale": 0.1,
+            ]
+        ]
+        try JSONSerialization.data(withJSONObject: source).write(
+            to: directory.appendingPathComponent("config.json"))
+        try writeTinyTokenizer(directory)
+        let proto = tinyAlignmentProto()
+        var weights = Dictionary(
+            uniqueKeysWithValues: try model(timestamps: true).parameters().flattened())
+        if sidecar {
+            let path = directory.appendingPathComponent("alignment_tokenizer")
+            try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+            try proto.write(to: path.appendingPathComponent("tokenizer.model"))
+        } else {
+            weights["ctc_timestamp.tokenizer.model_proto"] = MLXArray(Array(proto))
+        }
+        try MLX.save(arrays: weights, url: directory.appendingPathComponent("model.safetensors"))
+        let loaded = try await NemotronTranscribeModel.fromModelDirectory(directory)
+        #expect(loaded.supportsWordTimestamps)
+        let tokenizer = try #require(loaded.alignmentTokenizer?.value)
+        #expect(tokenizer.encode(text: " ｈｉ", addSpecialTokens: false) == [1, 5])
+        #expect(tokenizer.convertTokenToId("▁hi") == 5)
     }
 }

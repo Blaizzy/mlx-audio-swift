@@ -19,10 +19,11 @@ public struct NemotronTranscribeOptions: Sendable {
     public var enableThinking: Bool
     public var prefillStepSize: Int
     public var minP: Float
+    public var wordTimestamps: Bool
     public init(
         task: Task? = nil, prompt: String? = nil, systemPrompt: String? = nil,
         hotwords: [String] = [], enableThinking: Bool = false,
-        prefillStepSize: Int = 512, minP: Float = 0
+        prefillStepSize: Int = 512, minP: Float = 0, wordTimestamps: Bool = false
     ) {
         self.task = task
         self.prompt = prompt
@@ -31,6 +32,7 @@ public struct NemotronTranscribeOptions: Sendable {
         self.enableThinking = enableThinking
         self.prefillStepSize = prefillStepSize
         self.minP = minP
+        self.wordTimestamps = wordTimestamps
     }
 }
 
@@ -38,6 +40,10 @@ public final class NemotronTranscribeModel: Module, STTGenerationModel {
     public let config: NemotronTranscribeConfiguration
     public let llm: NemotronHLanguageModel
     let perception: NemotronPerception
+    @ModuleInfo(key: "ctc_timestamp") var ctcTimestamp: NemotronCTCTimestamp?
+    var alignmentTokenizer: UncheckedSendableBox<NemotronAlignmentTokenizer>?
+    var alignmentSpecialTokens: [String] = []
+    public var supportsWordTimestamps: Bool { ctcTimestamp != nil && alignmentTokenizer != nil }
     var _tokenizer: UncheckedSendableBox<any Tokenizer>?
     var tokenizer: (any Tokenizer)? { _tokenizer?.value }
     public var sampleRate: Int { config.preprocessor.sampleRate }
@@ -50,6 +56,7 @@ public final class NemotronTranscribeModel: Module, STTGenerationModel {
         self.config = config
         llm = NemotronHLanguageModel(config.text)
         perception = NemotronPerception(config)
+        _ctcTimestamp.wrappedValue = config.timestamps.map(NemotronCTCTimestamp.init)
     }
 
     static let asrPrompt =
@@ -118,7 +125,10 @@ public final class NemotronTranscribeModel: Module, STTGenerationModel {
     }
 
     func prepare(_ audio: MLXArray, prompt: String, options: NemotronTranscribeOptions)
-        -> (tokens: [Int], embeddings: MLXArray)?
+        -> (
+            tokens: [Int], embeddings: MLXArray,
+            alignment: (states: MLXArray, probabilities: MLXArray)?
+        )?
     {
         guard let tokenizer else { return nil }
         let ids = Self.turns(prompt: prompt, options: options)
@@ -127,7 +137,16 @@ public final class NemotronTranscribeModel: Module, STTGenerationModel {
         guard audioIDs.count == 1 else { return nil }
         let locations = ids.indices.filter { ids[$0] == audioIDs[0] }
         guard locations.count == 1, let index = locations.first else { return nil }
-        let acoustic = perception(audio)
+        let acoustic: MLXArray
+        let alignment: (states: MLXArray, probabilities: MLXArray)?
+        if options.wordTimestamps && supportsWordTimestamps {
+            let output = perception.withAlignment(audio)
+            acoustic = output.embeddings
+            alignment = (output.states, output.probabilities)
+        } else {
+            acoustic = perception(audio)
+            alignment = nil
+        }
         let count = acoustic.dim(1)
         let expanded =
             Array(ids[..<index]) + Array(repeating: config.padTokenID, count: count)
@@ -140,7 +159,7 @@ public final class NemotronTranscribeModel: Module, STTGenerationModel {
                 text[0..., (index + count)..., 0...],
             ], axis: 1)
         eval(embeddings)
-        return (expanded, embeddings)
+        return (expanded, embeddings, alignment)
     }
 
     public func generate(audio: MLXArray, generationParameters: STTGenerateParameters) -> STTOutput
@@ -236,10 +255,28 @@ public final class NemotronTranscribeModel: Module, STTGenerationModel {
             }
         }
         if p.verbose { print() }
+        var segments = Self.speakerSegments(raw)
+        let task = options.task ?? NemotronTranscribeOptions.Task(rawValue: p.task)
+        if options.wordTimestamps, task != .translate, task != .questionAnswering,
+            let alignment = prepared.alignment, let head = ctcTimestamp,
+            let alignmentTokenizer = alignmentTokenizer?.value
+        {
+            var transcript = raw
+            for token in alignmentSpecialTokens where !NemotronWordAlignment.isKeptTag(token) {
+                transcript = transcript.replacingOccurrences(of: token, with: " ")
+            }
+            segments =
+                (try? NemotronWordAlignment.align(
+                    text: transcript, tokenizer: alignmentTokenizer,
+                    head: head, states: alignment.states,
+                    nativeProbabilities: alignment.probabilities,
+                    duration: Double(waveform.size) / Double(sampleRate), configuration: config,
+                    language: p.language)) ?? segments
+        }
         let decodeTime = Date().timeIntervalSince(decodeStarted)
         return STTOutput(
             text: raw.trimmingCharacters(in: .whitespacesAndNewlines),
-            segments: Self.speakerSegments(raw), promptTokens: prepared.tokens.count,
+            segments: segments, promptTokens: prepared.tokens.count,
             generationTokens: generated.count, totalTokens: prepared.tokens.count + generated.count,
             promptTps: Double(prepared.tokens.count) / max(prefillTime, 0.001),
             generationTps: Double(generated.count) / max(decodeTime, 0.001),
@@ -277,17 +314,33 @@ public final class NemotronTranscribeModel: Module, STTGenerationModel {
         }
     }
 
-    public static func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+    public static func sanitize(
+        weights: [String: MLXArray], includeTimestamps: Bool = false,
+        timestampUpsamplingFactor: Int = 1, expertCount: Int? = nil
+    ) -> [String: MLXArray] {
+        var result = remap(
+            weights: weights, includeTimestamps: includeTimestamps,
+            timestampUpsamplingFactor: timestampUpsamplingFactor)
+        packExperts(&result, expertCount: expertCount, evaluate: false)
+        return result
+    }
+
+    private static func remap(
+        weights: [String: MLXArray], includeTimestamps: Bool, timestampUpsamplingFactor: Int
+    ) -> [String: MLXArray] {
         let sourceLayout = weights.keys.contains {
             $0.hasPrefix("llm.model.") || $0.contains(".preprocessor.featurizer.")
         }
         var output: [String: MLXArray] = [:]
         for (key, tensor) in weights {
-            if key.hasPrefix("llm.mtp.") || key.hasPrefix("ctc_timestamp.")
+            if key.hasPrefix("llm.mtp.") || (!includeTimestamps && key.hasPrefix("ctc_timestamp."))
                 || key.hasSuffix("._extra_state")
+                || key == "ctc_timestamp.tokenizer.model_proto"
+                || key == "ctc_timestamp.decoder.upsample_factor"
             {
                 continue
             }
+            let key = key.hasPrefix("backbone.") || key.hasPrefix("lm_head.") ? "llm." + key : key
             var name = key.replacingOccurrences(
                 of: "llm.model.embed_tokens.", with: "llm.backbone.embeddings."
             )
@@ -312,6 +365,12 @@ public final class NemotronTranscribeModel: Module, STTGenerationModel {
                 && value.dim(-1) == 3
             {
                 value = value.transposed(0, 2, 1)
+            } else if name == "ctc_timestamp.decoder.upsample.weight",
+                value.dim(-1) == timestampUpsamplingFactor
+            {
+                value = value.transposed(1, 2, 0)
+            } else if name == "ctc_timestamp.decoder.decoder_layers.0.weight", value.ndim == 3 {
+                value = value.squeezed(axis: -1)
             }
             if name.hasPrefix("llm.") && name.hasSuffix(".gate.weight") {
                 value = value.asType(.float32)
@@ -319,6 +378,38 @@ public final class NemotronTranscribeModel: Module, STTGenerationModel {
             output[name] = value
         }
         return output
+    }
+
+    private static func packExperts(
+        _ weights: inout [String: MLXArray], expertCount: Int?, evaluate: Bool
+    ) {
+        let pattern = try! NSRegularExpression(
+            pattern:
+                #"^(.+)\.experts\.0\.(up_proj|down_proj)\.(weight|scales|biases|weight_scale_2|weight_global_scale|pre_quant_scale)$"#
+        )
+        for key in weights.keys.sorted() {
+            let text = key as NSString
+            guard
+                let match = pattern.firstMatch(
+                    in: key, range: NSRange(location: 0, length: text.length))
+            else { continue }
+            let prefix = text.substring(with: match.range(at: 1))
+            let projection = text.substring(with: match.range(at: 2))
+            let suffix = text.substring(with: match.range(at: 3))
+            let count =
+                expertCount
+                ?? weights.keys.filter {
+                    $0.hasPrefix(prefix + ".experts.") && $0.hasSuffix(".\(projection).\(suffix)")
+                }.count
+            let keys = (0 ..< count).map { "\(prefix).experts.\($0).\(projection).\(suffix)" }
+            guard count > 0, keys.allSatisfy({ weights[$0] != nil }) else { continue }
+            let values = keys.map { weights.removeValue(forKey: $0)! }
+            let packed = stacked(values)
+            if evaluate { eval(packed) }
+            weights["\(prefix).switch_mlp.\(projection == "up_proj" ? "fc1" : "fc2").\(suffix)"] =
+                packed
+            if evaluate { Memory.clearCache() }
+        }
     }
 
     public static func fromPretrained(
@@ -330,7 +421,8 @@ public final class NemotronTranscribeModel: Module, STTGenerationModel {
         }
         let directory = try await ModelUtils.resolveOrDownloadModel(
             repoID: repo,
-            requiredExtension: ".safetensors", hfToken: hfToken, cache: cache)
+            requiredExtension: ".safetensors",
+            additionalMatchingPatterns: ["alignment_tokenizer/*"], hfToken: hfToken, cache: cache)
         return try await fromModelDirectory(directory)
     }
     public static func fromModelDirectory(_ directory: URL) async throws -> NemotronTranscribeModel
@@ -356,13 +448,32 @@ public final class NemotronTranscribeModel: Module, STTGenerationModel {
             }
             weights.merge(shard) { _, new in new }
         }
-        weights = sanitize(weights: weights)
-        let base = try JSONDecoder().decode(BaseConfiguration.self, from: data)
+        weights = weights.filter { !$0.key.hasPrefix("llm.mtp.") }
+        var source = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        try ModelOpt.prepare(weights: &weights, configuration: &source, directory: directory)
+        let hasCTC = weights.keys.contains {
+            $0.hasPrefix("ctc_timestamp.decoder.") && !$0.hasSuffix("upsample_factor")
+        }
+        let embeddedTokenizer = weights["ctc_timestamp.tokenizer.model_proto"].map {
+            Data($0.asArray(UInt8.self))
+        }
+        if !hasCTC, model.ctcTimestamp != nil {
+            try model.update(
+                modules: ModuleChildren(values: ["ctc_timestamp": .none]), verify: .none)
+        }
+        weights = remap(
+            weights: weights, includeTimestamps: hasCTC,
+            timestampUpsamplingFactor: config.timestamps?.upsamplingFactor ?? 1)
+        // Consume each source expert bank before materializing the next one.
+        packExperts(&weights, expertCount: config.text.experts, evaluate: true)
+        let base = try JSONDecoder().decode(
+            BaseConfiguration.self, from: JSONSerialization.data(withJSONObject: source))
         if let q = base.perLayerQuantization {
-            quantize(model: model) { path, _ in
+            try ModelOpt.quantize(model: model) { path, _ in
                 weights[path + ".scales"] == nil ? nil : q.quantization(layer: path)?.asTuple
             }
         }
+        try ModelOpt.installScaledLinears(in: model, weights: weights)
         try model.update(parameters: ModuleParameters.unflattened(weights), verify: .all)
         let tokenizer = try await loadSTTTokenizer(from: directory)
         guard tokenizer.encode(text: config.audioToken, addSpecialTokens: false).count == 1 else {
@@ -370,6 +481,48 @@ public final class NemotronTranscribeModel: Module, STTGenerationModel {
                 "Nemotron tokenizer must encode the audio placeholder as one token")
         }
         model._tokenizer = UncheckedSendableBox(tokenizer)
+        if let data = try? Data(
+            contentsOf: directory.appendingPathComponent("tokenizer_config.json")),
+            let fields = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        {
+            var special: Set<String> = []
+            for value in (fields["added_tokens_decoder"] as? [String: [String: Any]] ?? [:]).values
+            {
+                if value["special"] as? Bool == true, let token = value["content"] as? String {
+                    special.insert(token)
+                }
+            }
+            for name in [
+                "bos_token", "eos_token", "unk_token", "sep_token", "pad_token", "cls_token",
+                "mask_token",
+            ] {
+                if let token = fields[name] as? String { special.insert(token) }
+                if let token = (fields[name] as? [String: Any])?["content"] as? String {
+                    special.insert(token)
+                }
+            }
+            special.formUnion(fields["additional_special_tokens"] as? [String] ?? [])
+            model.alignmentSpecialTokens = special.sorted { $0.count > $1.count }
+        }
+        let alignmentDirectory = directory.appendingPathComponent("alignment_tokenizer")
+        if hasCTC
+            && FileManager.default.fileExists(
+                atPath: alignmentDirectory.appendingPathComponent("tokenizer.json").path)
+        {
+            model.alignmentTokenizer = UncheckedSendableBox(
+                .huggingFace(
+                    try await loadSTTTokenizer(from: alignmentDirectory)))
+        } else if hasCTC {
+            let file = alignmentDirectory.appendingPathComponent("tokenizer.model")
+            let proto =
+                FileManager.default.fileExists(atPath: file.path)
+                ? try Data(contentsOf: file) : embeddedTokenizer
+            if let proto {
+                model.alignmentTokenizer = UncheckedSendableBox(
+                    .sentencePiece(
+                        try SentencePieceTokenizer(sentencePieceModelData: proto)))
+            }
+        }
         model.train(false)
         eval(model)
         return model
