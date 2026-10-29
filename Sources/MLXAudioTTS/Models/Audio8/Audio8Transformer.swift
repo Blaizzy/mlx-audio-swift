@@ -114,24 +114,29 @@ final class Audio8Block: Module {
 
 final class Audio8Backbone: Module {
     let config: Audio8Config
-    @ModuleInfo var embeddings: Embedding
+    @ModuleInfo var embeddings: Embedding?
+    @ModuleInfo(key: "slow") var falcon: Audio8FalconSlowStack?
+    @ModuleInfo(key: "semantic_output") var semanticOutput: Linear?
     @ModuleInfo(key: "codebook_embeddings") var codebookEmbeddings: Embedding
     let layers: [Audio8Block]
-    let norm: Audio8Norm
+    let norm: Audio8Norm?
     @ModuleInfo(key: "fast_project_in") var fastProjectIn: Linear?
     @ModuleInfo(key: "fast_embeddings") var fastEmbeddings: Embedding
     @ModuleInfo(key: "fast_layers") var fastLayers: [Audio8Block]
     @ModuleInfo(key: "fast_norm") var fastNorm: Audio8Norm
     @ModuleInfo(key: "fast_output") var fastOutput: Linear
-    let slowRoPE: Audio8RoPE, fastRoPE: Audio8RoPE
+    let slowRoPE: Audio8RoPE?
+    let fastRoPE: Audio8RoPE
     init(_ c: Audio8Config) {
         config = c
-        _embeddings.wrappedValue = Embedding(embeddingCount: c.vocabSize, dimensions: c.dim)
+        _embeddings.wrappedValue = c.usesFalconSlow ? nil : Embedding(embeddingCount: c.vocabSize, dimensions: c.dim)
+        _falcon.wrappedValue = c.usesFalconSlow ? Audio8FalconSlowStack(c) : nil
+        _semanticOutput.wrappedValue = c.usesFalconSlow ? Linear(c.dim, c.codebookSize + 1, bias: false) : nil
         _codebookEmbeddings.wrappedValue = Embedding(embeddingCount: c.codebookSize * c.numCodebooks, dimensions: c.dim)
-        layers = (0..<c.nLayer).map { _ in Audio8Block(dim: c.dim, intermediate: c.intermediateSize,
+        layers = (0..<(c.usesFalconSlow ? 0 : c.nLayer)).map { _ in Audio8Block(dim: c.dim, intermediate: c.intermediateSize,
             heads: c.nHead, kvHeads: c.nLocalHeads, headDim: c.headDim, qkvBias: c.attentionQKVBias,
             outputBias: c.attentionOBias, qkNorm: c.attentionQKNorm, eps: c.normEps) }
-        norm = Audio8Norm(c.dim, eps: c.normEps)
+        norm = c.usesFalconSlow ? nil : Audio8Norm(c.dim, eps: c.normEps)
         _fastProjectIn.wrappedValue = c.fastDim == c.dim ? nil : Linear(c.dim, c.fastDim)
         _fastEmbeddings.wrappedValue = Embedding(embeddingCount: c.codebookSize, dimensions: c.fastDim)
         _fastLayers.wrappedValue = (0..<c.nFastLayer).map { _ in Audio8Block(dim: c.fastDim,
@@ -140,7 +145,7 @@ final class Audio8Backbone: Module {
             qkNorm: c.fastAttentionQKNorm, eps: c.normEps) }
         _fastNorm.wrappedValue = Audio8Norm(c.fastDim, eps: c.normEps)
         _fastOutput.wrappedValue = Linear(c.fastDim, c.codebookSize, bias: false)
-        slowRoPE = Audio8RoPE(length: c.maxSeqLen, dim: c.headDim, base: c.ropeBase)
+        slowRoPE = c.usesFalconSlow ? nil : Audio8RoPE(length: c.maxSeqLen, dim: c.headDim, base: c.ropeBase)
         fastRoPE = Audio8RoPE(length: c.numCodebooks, dim: c.fastHeadDim, base: c.ropeBase)
     }
     func embed(_ ids: MLXArray) -> MLXArray {
@@ -148,17 +153,27 @@ final class Audio8Backbone: Module {
         let book = (0..<c.numCodebooks).map { codebookEmbeddings(ids[0..., $0 + 1, 0...] + Int32($0 * c.codebookSize)) }
         let total = stacked(book, axis: 1).sum(axis: 1)
         let semantic = (tokens .>= c.semanticBeginID) .&& (tokens .<= c.semanticEndID)
-        return embeddings(tokens) + which(semantic.expandedDimensions(axis: -1), total, 0)
+        return (falcon?.embedTokens(tokens) ?? embeddings!(tokens)) + which(semantic.expandedDimensions(axis: -1), total, 0)
     }
     func slow(_ ids: MLXArray, offset: Int = 0, cache: [KVCache]? = nil) -> (MLXArray, MLXArray) {
         var h = embed(ids)
+        if let falcon, let semanticOutput {
+            let normalized = falcon(h, cache: cache)
+            return (semanticOutput(normalized), normalized)
+        }
         let t = ids.shape[2]
         let q = MLX.arange(offset, offset + t).expandedDimensions(axis: 1)
         let k = MLX.arange(offset + t).expandedDimensions(axis: 0)
         let mask = MLXFast.ScaledDotProductAttentionMaskMode.array((k .<= q).reshaped([1, 1, t, offset + t]))
-        for (i, layer) in layers.enumerated() { h = layer(h, rope: slowRoPE, offset: offset, mask: mask, cache: cache?[i]) }
-        let normalized = norm(h)
-        return (embeddings.asLinear(normalized), cFastHidden(h, normalized))
+        for (i, layer) in layers.enumerated() { h = layer(h, rope: slowRoPE!, offset: offset, mask: mask, cache: cache?[i]) }
+        let normalized = norm!(h)
+        return (embeddings!.asLinear(normalized), cFastHidden(h, normalized))
+    }
+    func makeSlowCache() -> [KVCache] {
+        if config.usesFalconSlow {
+            return (0..<config.nLayer).map { _ in CacheList(ArraysCache(size: 2), KVCacheSimple()) }
+        }
+        return layers.map { _ in KVCacheSimple() }
     }
     private func cFastHidden(_ h: MLXArray, _ n: MLXArray) -> MLXArray { config.normFastlayerInput ? n : h }
     func fast(_ h: MLXArray, position: Int, cache: [KVCache]) -> MLXArray {

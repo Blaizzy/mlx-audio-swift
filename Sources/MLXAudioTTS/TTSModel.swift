@@ -252,12 +252,13 @@ public enum TTS {
             return try await load(
                 source, modelType: resolvedType,
                 pretrained: { try await LongCatModel.fromPretrained($0, cache: $1) },
-                local: { directory, _ in try await LongCatModel.fromModelDirectory(directory, cache: source.cache) })
+                local: { directory, _ in try await LongCatModel.fromModelDirectory(directory, cache: source.cache) }
             )
         case "melotts", "melo_tts":
-            return try await load(source, modelType: resolvedType,
+            return try await load(
+                source, modelType: resolvedType,
                 pretrained: { try await MeloTTSModel.fromPretrained($0, cache: $1) },
-                local: { modelDir, _ in try await MeloTTSModel.fromModelDirectory(modelDir, cache: source.cache) })
+                local: { modelDir, _ in try await MeloTTSModel.fromModelDirectory(modelDir, cache: source.cache) }
             )
         case "moss_tts", "moss_tts_delay", "moss_tts_local":
             return try await load(
@@ -354,6 +355,12 @@ public enum TTS {
                 pretrained: { try await VoxCPM2Model.fromPretrained($0, cache: $1) },
                 local: { modelDir, _ in try await VoxCPM2Model.fromModelDirectory(modelDir, hfToken: nil) }
             )
+        case "zonos2":
+            return try await load(
+                source, modelType: resolvedType,
+                pretrained: { try await Zonos2Model.fromPretrained($0, cache: $1) },
+                local: { folder, _ in try await Zonos2Model.fromModelDirectory(folder, cache: source.cache) }
+            )
         default:
             throw TTSModelError.unsupportedModelType(resolvedType)
         }
@@ -418,6 +425,7 @@ public enum TTS {
 
     private static func inferModelType(from modelRepo: String) -> String? {
         let lower = modelRepo.lowercased()
+        if lower.contains("zonos2") { return "zonos2" }
         if lower.contains("ming-3.0-tts-tiny") { return "lingv3_tts" }
         if lower.contains("ming"), lower.contains("tts"), lower.contains("0.5b") {
             return "dense"

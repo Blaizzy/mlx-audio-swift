@@ -71,6 +71,7 @@ let package = Package(
             name: "MLXAudioCore",
             dependencies: [
                 .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXFast", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
             ],
@@ -136,6 +137,7 @@ let package = Package(
                 "Models/VibeVoice/README.md",
                 "Models/VoxCPM/README.md",
                 "Models/VoxCPM2/README.md",
+                "Models/Zonos2/README.md",
                 "Models/VibeVoiceTTS/README.md",
                 "Models/StyleTTS2/KittenTTS/README.md",
                 "Models/StyleTTS2/Kokoro/README.md",
