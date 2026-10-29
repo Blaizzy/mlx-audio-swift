@@ -193,6 +193,7 @@ struct SentencePieceModelParser {
 
 struct TokenLattice {
     let sentence: String
+    let scalars: [Unicode.Scalar]
     let bosTokenId: Int
     let eosTokenId: Int
 
@@ -200,23 +201,24 @@ struct TokenLattice {
     var beginNodes: [[TokenLatticeNode]]
     var endNodes: [[TokenLatticeNode]]
 
-    var count: Int { sentence.count }
+    var count: Int { scalars.count }
 
     init(sentence: String, bosTokenId: Int, eosTokenId: Int) {
         self.sentence = sentence
+        self.scalars = Array(sentence.unicodeScalars)
         self.bosTokenId = bosTokenId
         self.eosTokenId = eosTokenId
 
-        beginNodes = Array(repeating: [], count: sentence.count + 1)
-        endNodes = Array(repeating: [], count: sentence.count + 1)
+        beginNodes = Array(repeating: [], count: scalars.count + 1)
+        endNodes = Array(repeating: [], count: scalars.count + 1)
 
         let bos = TokenLatticeNode(tokenId: bosTokenId, startOffset: 0, length: 0, score: 0)
-        let eos = TokenLatticeNode(tokenId: eosTokenId, startOffset: sentence.count, length: 0, score: 0)
+        let eos = TokenLatticeNode(tokenId: eosTokenId, startOffset: scalars.count, length: 0, score: 0)
 
         nodes.append(bos)
         nodes.append(eos)
 
-        beginNodes[sentence.count].append(eos)
+        beginNodes[scalars.count].append(eos)
         endNodes[0].append(bos)
     }
 }
@@ -267,9 +269,7 @@ extension TokenLattice {
     }
 
     func piece(_ node: TokenLatticeNode) -> any StringProtocol {
-        let start = sentence.index(sentence.startIndex, offsetBy: node.startOffset)
-        let end = sentence.index(start, offsetBy: node.length)
-        return sentence[start..<end]
+        String(String.UnicodeScalarView(scalars[node.startOffset..<(node.startOffset + node.length)]))
     }
 }
 
@@ -311,7 +311,7 @@ final class TokenLatticeNode {
 }
 
 final class TrieNode {
-    var children: [Character: TrieNode] = [:]
+    var children: [Unicode.Scalar: TrieNode] = [:]
     var isEnd = false
 }
 
@@ -326,7 +326,7 @@ final class Trie {
 
     func insert(_ token: String) {
         var node = root
-        for ch in token {
+        for ch in token.unicodeScalars {
             if node.children[ch] == nil {
                 node.children[ch] = TrieNode()
             }
@@ -335,13 +335,13 @@ final class Trie {
         node.isEnd = true
     }
 
-    func commonPrefixSearchIterator(_ substring: Substring) -> [String] {
+    func commonPrefixSearchIterator(_ substring: ArraySlice<Unicode.Scalar>) -> [String] {
         var results: [String] = []
         var node = root
         var current = ""
         for ch in substring {
             guard let next = node.children[ch] else { break }
-            current.append(ch)
+            current.unicodeScalars.append(ch)
             node = next
             if node.isEnd {
                 results.append(current)
@@ -382,7 +382,9 @@ public final class SentencePieceTokenizer {
     let unknownTokenId: Int
     let unknownTokenScore: Float
     let modelType: SentencePieceModelType
-    let tokensToIds: [String: Int]
+    // Tokenizers compare byte sequences; Swift String equality also considers
+    // canonically equivalent Unicode strings equal, which can alias vocabulary IDs.
+    let tokensToIds: [Data: Int]
     let trie: Trie
 
     private init(
@@ -396,10 +398,10 @@ public final class SentencePieceTokenizer {
         let minScore = vocab.reduce(Float.greatestFiniteMagnitude) { min($0, $1.score) }
         self.unknownTokenScore = minScore - 10
 
-        var mapping: [String: Int] = [:]
+        var mapping: [Data: Int] = [:]
         mapping.reserveCapacity(vocab.count)
         for (i, tok) in vocab.enumerated() {
-            mapping[tok.token] = i
+            mapping[Data(tok.token.utf8)] = i
         }
         self.tokensToIds = mapping
 
@@ -466,7 +468,7 @@ public final class SentencePieceTokenizer {
     }
 
     public func tokenID(for token: String) -> Int? {
-        tokensToIds[token]
+        tokensToIds[Data(token.utf8)]
     }
 
     public func token(for id: Int) -> String? {
@@ -482,18 +484,17 @@ public final class SentencePieceTokenizer {
         let pre = applyMetaspace(text)
         var lattice = TokenLattice(sentence: pre, bosTokenId: unknownTokenId, eosTokenId: unknownTokenId)
 
-        let sentence = lattice.sentence
+        let sentence = lattice.scalars
         var beginPos = 0
         while beginPos < sentence.count {
             let mblen = 1
             var hasSingleNode = false
 
-            let beginIndex = sentence.index(sentence.startIndex, offsetBy: beginPos)
-            for token in trie.commonPrefixSearchIterator(sentence[beginIndex...]) {
-                guard let tokenId = tokensToIds[token] else { continue }
+            for token in trie.commonPrefixSearchIterator(sentence[beginPos...]) {
+                guard let tokenId = tokensToIds[Data(token.utf8)] else { continue }
                 let tokenScore = vocab[tokenId].score
-                lattice.insert(startOffset: beginPos, length: token.count, score: tokenScore, tokenId: tokenId)
-                if !hasSingleNode, token.count == mblen {
+                lattice.insert(startOffset: beginPos, length: token.unicodeScalars.count, score: tokenScore, tokenId: tokenId)
+                if !hasSingleNode, token.unicodeScalars.count == mblen {
                     hasSingleNode = true
                 }
             }
@@ -535,7 +536,7 @@ public final class SentencePieceTokenizer {
 
             for index in 0 ..< symbols.count - 1 {
                 let candidate = symbols[index] + symbols[index + 1]
-                guard let tokenId = tokensToIds[candidate] else { continue }
+                guard let tokenId = tokensToIds[Data(candidate.utf8)] else { continue }
                 let token = vocab[tokenId]
                 guard token.type == .normal || token.type == .userDefined else { continue }
                 if bestIndex == nil || token.score > bestScore {
@@ -551,7 +552,7 @@ public final class SentencePieceTokenizer {
 
         var ids: [Int] = []
         for symbol in symbols {
-            if let tokenId = tokensToIds[symbol] {
+            if let tokenId = tokensToIds[Data(symbol.utf8)] {
                 ids.append(tokenId)
             } else {
                 for byte in symbol.utf8 {
@@ -612,19 +613,20 @@ public final class SentencePieceTokenizer {
     private lazy var bpeAtomicPieces: [String] = vocab
         .filter { $0.type == .userDefined }
         .map(\.token)
-        .sorted { $0.count > $1.count }
+        .sorted { $0.unicodeScalars.count > $1.unicodeScalars.count }
 
     private func initialBPESymbols(_ text: String) -> [String] {
         var symbols: [String] = []
-        var index = text.startIndex
+        let scalars = text.unicodeScalars
+        var index = scalars.startIndex
 
-        while index < text.endIndex {
-            if let atomicPiece = bpeAtomicPieces.first(where: { text[index...].hasPrefix($0) }) {
+        while index < scalars.endIndex {
+            if let atomicPiece = bpeAtomicPieces.first(where: { scalars[index...].starts(with: $0.unicodeScalars) }) {
                 symbols.append(atomicPiece)
-                index = text.index(index, offsetBy: atomicPiece.count)
+                index = scalars.index(index, offsetBy: atomicPiece.unicodeScalars.count)
             } else {
-                let nextIndex = text.index(after: index)
-                symbols.append(String(text[index ..< nextIndex]))
+                let nextIndex = scalars.index(after: index)
+                symbols.append(String(scalars[index..<nextIndex]))
                 index = nextIndex
             }
         }
