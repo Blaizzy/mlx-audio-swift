@@ -4626,6 +4626,113 @@ struct WhisperTests {
         // Conv2 has stride 2, so 3000 -> 1500.
         #expect(hidden.shape == [1, config.maxSourcePositions, config.dModel])
     }
+
+    // Long-form decoding. Toy vocabulary: text 0..<8, end of text 8, <|notimestamps|> 9,
+    // timestamps from 10 (<|0.00|>) upward.
+    private static let tb = 10
+
+    private static func allowed(_ logits: MLXArray) -> [Int] {
+        let values = logits.asArray(Float.self)
+        return values.indices.filter { values[$0] > -1e8 }
+    }
+
+    private static func rules(_ generated: [Int], logits: [Float]? = nil) -> [Int] {
+        // By default text is far more likely than all timestamps together.
+        let raw = MLXArray(logits ?? (0 ..< 200).map { $0 < tb ? Float(10) : 0 })
+        return allowed(
+            WhisperModel.applyTimestampRules(
+                raw, generated: generated, timestampBegin: tb, endOfText: 8, noTimestamps: 9))
+    }
+
+    @Test func timestampRulesStartWithAnEarlyTimestamp() {
+        // First token: a timestamp no later than 1.0 s (index 50).
+        #expect(Self.rules([]) == Array(Self.tb ... Self.tb + 50))
+    }
+
+    @Test func timestampRulesPairAndNeverDecrease() {
+        // Inside a segment: text, end of text, or a timestamp after the opening one.
+        #expect(Self.rules([12, 3]) == Array(0 ... 8) + Array(13 ..< 200))
+        // Just closed a segment: end of text or the next opening timestamp, which may
+        // repeat the closing one.
+        #expect(Self.rules([12, 3, 14]) == [8] + Array(14 ..< 200))
+        // After a timestamp pair: text only (or end of text).
+        #expect(Self.rules([12, 3, 14, 14]) == Array(0 ... 8))
+    }
+
+    @Test func timestampRulesForceATimestampWhenTimestampsDominate() {
+        // Each text token alone is less likely than all timestamps together.
+        var logits = [Float](repeating: 0, count: 200)
+        for i in 0 ..< Self.tb { logits[i] = 1 }
+        #expect(Self.rules([12, 3], logits: logits) == Array(13 ..< 200))
+    }
+
+    @Test func splitWindowSeeksToTheLastClosedSegment() {
+        let tb = Self.tb
+        // Two closed segments (0.00-2.00, 2.00-3.00), then an unfinished one.
+        let split = WhisperModel.splitWindow(
+            tokens: [tb, 1, 2, tb + 100, tb + 100, 3, tb + 150, tb + 150, 4],
+            timestampBegin: tb, segmentFrames: 3000)
+        #expect(split.segments.count == 2)
+        #expect(split.segments[0].tokens == [tb, 1, 2, tb + 100])
+        #expect(abs(split.segments[1].start - 2.0) < 1e-9 && abs(split.segments[1].end - 3.0) < 1e-9)
+        #expect(split.seekFrames == 300)
+    }
+
+    @Test func splitWindowConsumesTheWindowAfterASingleTimestampEnding() {
+        let tb = Self.tb
+        let split = WhisperModel.splitWindow(
+            tokens: [tb, 1, tb + 50, tb + 50, 2, tb + 120], timestampBegin: tb, segmentFrames: 3000)
+        #expect(split.segments.map(\.tokens) == [[tb, 1, tb + 50], [tb + 50, 2, tb + 120]])
+        #expect(split.seekFrames == 3000)
+    }
+
+    @Test func splitWindowWithoutTimestampPairsIsOneSegment() {
+        let tb = Self.tb
+        let split = WhisperModel.splitWindow(tokens: [tb, 1, 2], timestampBegin: tb, segmentFrames: 1500)
+        #expect(split.segments.count == 1)
+        #expect(abs(split.segments[0].end - 15.0) < 1e-9)
+        #expect(split.seekFrames == 1500)
+    }
+
+    @Test(arguments: [
+        ([1, 2], "你好世界", ["你好", "世界"]),
+        ([3, 4, 5], "Hello  world!", ["Hello", "world", "!"]),
+    ])
+    func timestampedTranscriptPreservesTokenSpacing(
+        textTokens: [Int], expected: String, segmentTexts: [String]
+    ) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("whisper-tokenizer-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try JSONSerialization.data(withJSONObject: [
+            "model": [
+                "type": "BPE", "unk_token": "<unk>", "merges": [],
+                "vocab": ["<unk>": 0, "你好": 1, "世界": 2, " Hello": 3, "  world": 4, "!": 5],
+            ],
+        ]).write(to: directory.appendingPathComponent("tokenizer.json"))
+        try JSONSerialization.data(withJSONObject: [
+            "tokenizer_class": "PreTrainedTokenizerFast", "unk_token": "<unk>",
+            "clean_up_tokenization_spaces": false,
+        ]).write(to: directory.appendingPathComponent("tokenizer_config.json"))
+        let generationConfig = try JSONDecoder().decode(WhisperGenerationConfig.self, from: Data(
+            #"{"decoder_start_token_id":7,"eos_token_id":8,"no_timestamps_token_id":9,"is_multilingual":false}"#.utf8))
+        let tokenizer = try await WhisperTokenizer(
+            modelDirectory: directory, baseConfig: WhisperConfig(), generationConfig: generationConfig)
+        var transcript = WhisperModel.Transcript(tokenizer: tokenizer)
+        var streamed = ""
+        // These segments can come from one window or successive seek windows.
+        for (index, token) in textTokens.enumerated() {
+            transcript.append(
+                [Self.tb + index * 50, token, Self.tb + (index + 1) * 50],
+                start: Double(index), end: Double(index + 1),
+                onTokenDelta: { streamed += $0 }
+            )
+        }
+
+        #expect(transcript.text == expected)
+        #expect(transcript.text == streamed.trimmingCharacters(in: .whitespacesAndNewlines))
+        #expect(transcript.segments.compactMap { $0["text"] as? String } == segmentTexts)
+    }
 }
 
 struct WhisperTranslateNetworkTests {

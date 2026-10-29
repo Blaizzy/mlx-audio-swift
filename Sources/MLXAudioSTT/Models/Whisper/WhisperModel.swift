@@ -39,46 +39,17 @@ public final class WhisperModel: Module, STTGenerationModel {
     ) -> STTOutput {
         let startTime = Date()
         let mono = audio.ndim > 1 ? audio.mean(axis: -1) : audio
-        let chunks = chunkAudioFor30sWindows(mono)
-
-        var allText: [String] = []
-        var allSegments: [[String: Any]] = []
-        var totalPromptTokens = 0
-        var totalGenerationTokens = 0
-        var detectedLanguage: String? = nil
-
-        for (index, chunk) in chunks.enumerated() {
-            if generationParameters.verbose {
-                let endSeconds = chunk.offsetSeconds + Float(chunk.audio.dim(0)) / Float(WhisperAudioConfig.sampleRate)
-                print("[Whisper] chunk \(index + 1)/\(chunks.count) \(String(format: "%.1f", chunk.offsetSeconds))s..\(String(format: "%.1f", endSeconds))s")
-            }
-            let (text, promptTokens, generationTokens, lang) = transcribeChunk(
-                audio: chunk.audio,
-                generationParameters: generationParameters
-            )
-            totalPromptTokens += promptTokens
-            totalGenerationTokens += generationTokens
-            if detectedLanguage == nil { detectedLanguage = lang }
-
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                allText.append(trimmed)
-                let endSeconds = Double(chunk.offsetSeconds) + Double(chunk.audio.dim(0)) / Double(WhisperAudioConfig.sampleRate)
-                allSegments.append([
-                    "text": trimmed,
-                    "start": Double(chunk.offsetSeconds),
-                    "end": endSeconds,
-                ])
-            }
-        }
+        let transcript = transcribe(audio: mono, generationParameters: generationParameters)
 
         let elapsed = Date().timeIntervalSince(startTime)
-        let combined = allText.joined(separator: " ")
+        let combined = transcript.text
+        let totalPromptTokens = transcript.promptTokens
+        let totalGenerationTokens = transcript.generationTokens
 
         return STTOutput(
             text: combined,
-            segments: allSegments.isEmpty ? nil : allSegments,
-            language: detectedLanguage ?? generationParameters.language,
+            segments: transcript.segments.isEmpty ? nil : transcript.segments,
+            language: transcript.language ?? generationParameters.language,
             promptTokens: totalPromptTokens,
             generationTokens: totalGenerationTokens,
             totalTokens: totalPromptTokens + totalGenerationTokens,
@@ -96,52 +67,25 @@ public final class WhisperModel: Module, STTGenerationModel {
         AsyncThrowingStream { continuation in
             let startTime = Date()
             let mono = audio.ndim > 1 ? audio.mean(axis: -1) : audio
-            let chunks = chunkAudioFor30sWindows(mono)
-
-            var allText: [String] = []
-            var allSegments: [[String: Any]] = []
-            var totalPromptTokens = 0
-            var totalGenerationTokens = 0
-            var detectedLanguage: String? = nil
-
-            for (index, chunk) in chunks.enumerated() {
-                if generationParameters.verbose {
-                    let endSeconds = chunk.offsetSeconds + Float(chunk.audio.dim(0)) / Float(WhisperAudioConfig.sampleRate)
-                    print("[Whisper] chunk \(index + 1)/\(chunks.count) \(String(format: "%.1f", chunk.offsetSeconds))s..\(String(format: "%.1f", endSeconds))s")
-                }
-
-                let (text, promptTokens, generationTokens, lang) = transcribeChunk(
-                    audio: chunk.audio,
-                    generationParameters: generationParameters,
-                    onTokenDelta: { delta in
-                        if !delta.isEmpty {
-                            continuation.yield(.token(delta))
-                        }
+            let transcript = transcribe(
+                audio: mono,
+                generationParameters: generationParameters,
+                onTokenDelta: { delta in
+                    if !delta.isEmpty {
+                        continuation.yield(.token(delta))
                     }
-                )
-                totalPromptTokens += promptTokens
-                totalGenerationTokens += generationTokens
-                if detectedLanguage == nil { detectedLanguage = lang }
-
-                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    allText.append(trimmed)
-                    let endSeconds = Double(chunk.offsetSeconds) + Double(chunk.audio.dim(0)) / Double(WhisperAudioConfig.sampleRate)
-                    allSegments.append([
-                        "text": trimmed,
-                        "start": Double(chunk.offsetSeconds),
-                        "end": endSeconds,
-                    ])
                 }
-            }
+            )
 
             let elapsed = Date().timeIntervalSince(startTime)
-            let combined = allText.joined(separator: " ")
+            let combined = transcript.text
+            let totalPromptTokens = transcript.promptTokens
+            let totalGenerationTokens = transcript.generationTokens
 
             let output = STTOutput(
                 text: combined,
-                segments: allSegments.isEmpty ? nil : allSegments,
-                language: detectedLanguage ?? generationParameters.language,
+                segments: transcript.segments.isEmpty ? nil : transcript.segments,
+                language: transcript.language ?? generationParameters.language,
                 promptTokens: totalPromptTokens,
                 generationTokens: totalGenerationTokens,
                 totalTokens: totalPromptTokens + totalGenerationTokens,
@@ -155,49 +99,166 @@ public final class WhisperModel: Module, STTGenerationModel {
         }
     }
 
-    // MARK: - Chunking
+    // MARK: - Long-form transcription
 
-    private struct AudioChunk {
-        let audio: MLXArray
-        let offsetSeconds: Float
+    struct Transcript {
+        let tokenizer: WhisperTokenizer
+        private var tokens: [Int] = []
+        var segments: [[String: Any]] = []
+        var promptTokens = 0
+        var generationTokens = 0
+        var language: String?
+
+        init(tokenizer: WhisperTokenizer) {
+            self.tokenizer = tokenizer
+        }
+
+        var text: String {
+            // Timestamp boundaries do not imply spaces, especially in CJK languages.
+            tokenizer.decode(tokens: tokens).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        mutating func append(
+            _ tokens: [Int], start: Double, end: Double, onTokenDelta: ((String) -> Void)? = nil
+        ) {
+            let raw = tokenizer.decode(tokens: tokens)
+            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return }
+            self.tokens.append(contentsOf: tokens)
+            segments.append(["text": text, "start": start, "end": end])
+            onTokenDelta?(raw)
+        }
     }
 
-    private func chunkAudioFor30sWindows(_ audio: MLXArray) -> [AudioChunk] {
+    /// Mel frames per encoder position (3000 / 1500) and seconds per timestamp token.
+    static let inputStride = 2
+    static let timePrecision =
+        Double(inputStride * WhisperAudioConfig.hopLength) / Double(WhisperAudioConfig.sampleRate)
+
+    /// Audio up to 30 s is one window without timestamps. Longer audio follows OpenAI Whisper's
+    /// seek loop: each window resumes at the last closed timestamp, so cut-off speech is redone.
+    private func transcribe(
+        audio: MLXArray,
+        generationParameters: STTGenerateParameters,
+        onTokenDelta: ((String) -> Void)? = nil
+    ) -> Transcript {
+        guard let tokenizer else {
+            fatalError("WhisperTokenizer not loaded — call fromPretrained / fromDirectory before generate.")
+        }
         let sampleRate = WhisperAudioConfig.sampleRate
-        let windowSamples = WhisperAudioConfig.chunkLengthSamples
+        let hop = WhisperAudioConfig.hopLength
         let totalSamples = audio.dim(0)
-        if totalSamples <= windowSamples {
-            return [AudioChunk(audio: audio, offsetSeconds: 0)]
+        var transcript = Transcript(tokenizer: tokenizer)
+
+        if totalSamples <= WhisperAudioConfig.chunkLengthSamples {
+            let window = transcribeChunk(
+                audio: audio,
+                tokenizer: tokenizer,
+                generationParameters: generationParameters,
+                onTokenDelta: onTokenDelta
+            )
+            transcript.promptTokens = window.promptTokens
+            transcript.generationTokens = window.tokens.count
+            transcript.language = window.language
+            transcript.append(window.tokens, start: 0, end: Double(totalSamples) / Double(sampleRate))
+            return transcript
         }
 
-        var chunks: [AudioChunk] = []
-        var start = 0
-        while start < totalSamples {
-            let end = min(start + windowSamples, totalSamples)
-            let slice = audio[start..<end]
-            chunks.append(AudioChunk(audio: slice, offsetSeconds: Float(start) / Float(sampleRate)))
-            start = end
+        let contentFrames = totalSamples / hop
+        var seek = 0
+        while seek < contentFrames {
+            let segmentFrames = min(WhisperAudioConfig.nFrames, contentFrames - seek)
+            let start = seek * hop
+            let offset = Double(start) / Double(sampleRate)
+            if generationParameters.verbose {
+                let endSeconds = offset + Double(segmentFrames * hop) / Double(sampleRate)
+                print("[Whisper] window \(String(format: "%.1f", offset))s..\(String(format: "%.1f", endSeconds))s")
+            }
+            let window = transcribeChunk(
+                audio: audio[start ..< start + segmentFrames * hop],
+                tokenizer: tokenizer,
+                generationParameters: generationParameters,
+                withTimestamps: true,
+                onTokenDelta: onTokenDelta
+            )
+            transcript.promptTokens += window.promptTokens
+            transcript.generationTokens += window.tokens.count
+            if transcript.language == nil { transcript.language = window.language }
+
+            let split = Self.splitWindow(
+                tokens: window.tokens,
+                timestampBegin: tokenizer.timestampBeginId,
+                segmentFrames: segmentFrames
+            )
+            // transcribeChunk already streamed every segment closed by a timestamp; a window
+            // without timestamp pairs is one segment that has not been streamed yet.
+            let streamed = zip(window.tokens, window.tokens.dropFirst())
+                .filter { $0 < tokenizer.timestampBeginId && $1 >= tokenizer.timestampBeginId }.count
+            for (index, segment) in split.segments.enumerated() {
+                transcript.append(
+                    segment.tokens, start: offset + segment.start, end: offset + segment.end,
+                    onTokenDelta: index >= streamed ? onTokenDelta : nil
+                )
+            }
+            seek += split.seekFrames
         }
-        return chunks
+        return transcript
+    }
+
+    /// Cut a timestamped window after each timestamp pair (times from the window start). Unless it
+    /// ends on a single timestamp, drop the unfinished tail and seek to the last closed timestamp.
+    static func splitWindow(
+        tokens: [Int], timestampBegin: Int, segmentFrames: Int
+    ) -> (segments: [(start: Double, end: Double, tokens: [Int])], seekFrames: Int) {
+        let isTimestamp = tokens.map { $0 >= timestampBegin }
+        let singleTimestampEnding = tokens.count >= 2 && !isTimestamp[tokens.count - 2] && isTimestamp[tokens.count - 1]
+        var cuts = (1 ..< max(tokens.count, 1)).filter { isTimestamp[$0 - 1] && isTimestamp[$0] }
+        let windowSeconds = Double(segmentFrames * WhisperAudioConfig.hopLength) / Double(WhisperAudioConfig.sampleRate)
+
+        guard !cuts.isEmpty else {
+            var end = windowSeconds
+            if let last = tokens.last(where: { $0 >= timestampBegin }), last != timestampBegin {
+                end = Double(last - timestampBegin) * timePrecision
+            }
+            return ([(0, end, tokens)], segmentFrames)
+        }
+
+        if singleTimestampEnding { cuts.append(tokens.count) }
+        var segments: [(start: Double, end: Double, tokens: [Int])] = []
+        var lastCut = 0
+        for cut in cuts {
+            let slice = Array(tokens[lastCut ..< cut])
+            segments.append((
+                Double(slice[0] - timestampBegin) * timePrecision,
+                Double(slice[slice.count - 1] - timestampBegin) * timePrecision,
+                slice
+            ))
+            lastCut = cut
+        }
+        if singleTimestampEnding {
+            return (segments, segmentFrames)
+        }
+        let seekFrames = (tokens[lastCut - 1] - timestampBegin) * inputStride
+        return (segments, seekFrames > 0 ? seekFrames : segmentFrames)
     }
 
     // MARK: - Single-chunk transcription
 
     private func transcribeChunk(
         audio: MLXArray,
+        tokenizer: WhisperTokenizer,
         generationParameters: STTGenerateParameters,
+        withTimestamps: Bool = false,
         onTokenDelta: ((String) -> Void)? = nil
-    ) -> (text: String, promptTokens: Int, generationTokens: Int, language: String?) {
-        guard let tokenizer else {
-            fatalError("WhisperTokenizer not loaded — call fromPretrained / fromDirectory before generate.")
-        }
+    ) -> (tokens: [Int], promptTokens: Int, language: String?) {
         let features = WhisperAudio.encoderFeatures(audio: audio, nMels: config.numMelBins)
         let encoderHidden = model.encoder(features)
 
         var caches = (0..<config.decoderLayers).map { _ in WhisperLayerCache() }
         let promptIds = tokenizer.buildPromptTokens(
             language: generationParameters.language,
-            task: generationParameters.task
+            task: generationParameters.task,
+            withTimestamps: withTimestamps
         )
 
         let promptArray = MLXArray(promptIds.map(Int32.init)).expandedDimensions(axis: 0)
@@ -214,13 +275,18 @@ public final class WhisperModel: Module, STTGenerationModel {
         // Decode-and-diff: re-decode the full token list each step and emit only
         // the new suffix, so multi-token UTF-8 sequences stream cleanly.
         var previousText = ""
+        var segmentStart = 0
+        let timestampBegin = tokenizer.timestampBeginId
         let beginSuppress = generationConfig?.beginSuppressTokens ?? [tokenizer.endOfTextId]
         let suppress = generationConfig?.suppressTokens ?? []
 
         let maxTokens = max(
             1,
             min(
-                generationParameters.maxTokens,
+                // OpenAI's long-form windows sample at most half the text context.
+                withTimestamps
+                    ? min(generationParameters.maxTokens, config.maxTargetPositions / 2)
+                    : generationParameters.maxTokens,
                 config.maxTargetPositions - promptIds.count - 1
             )
         )
@@ -233,13 +299,35 @@ public final class WhisperModel: Module, STTGenerationModel {
             if !suppress.isEmpty {
                 stepLogits = suppressLogits(stepLogits, ids: suppress)
             }
-            stepLogits = suppressFromIndex(stepLogits, fromIndex: tokenizer.timestampBeginId)
+            if withTimestamps {
+                stepLogits = Self.applyTimestampRules(
+                    stepLogits,
+                    generated: generated,
+                    timestampBegin: timestampBegin,
+                    endOfText: tokenizer.endOfTextId,
+                    noTimestamps: tokenizer.noTimestampsId
+                )
+            } else {
+                stepLogits = suppressFromIndex(stepLogits, fromIndex: timestampBegin)
+            }
 
             let nextToken = sample(stepLogits, temperature: generationParameters.temperature)
             if nextToken == tokenizer.endOfTextId { break }
             generated.append(nextToken)
 
-            if let onTokenDelta {
+            if let onTokenDelta, withTimestamps {
+                // Stream a segment once a timestamp closes it; the window's unfinished last
+                // segment is decoded again by the next window.
+                if nextToken >= timestampBegin, generated.count >= 2,
+                    generated[generated.count - 2] < timestampBegin
+                {
+                    let text = tokenizer.decode(tokens: Array(generated[segmentStart...]))
+                    if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        onTokenDelta(text)
+                    }
+                    segmentStart = generated.count
+                }
+            } else if let onTokenDelta {
                 let textSoFar = tokenizer.decode(tokens: generated)
                 if textSoFar != previousText {
                     let delta: String
@@ -268,7 +356,6 @@ public final class WhisperModel: Module, STTGenerationModel {
             }
         }
 
-        let text = tokenizer.decode(tokens: generated)
         // The language token sits at prompt index 1 for multilingual models.
         var language: String? = nil
         if tokenizer.isMultilingual, promptIds.count > 1 {
@@ -278,7 +365,7 @@ public final class WhisperModel: Module, STTGenerationModel {
                 break
             }
         }
-        return (text, promptIds.count, generated.count, language)
+        return (generated, promptIds.count, language)
     }
 
     private func sample(_ logits: MLXArray, temperature: Float) -> Int {
@@ -305,6 +392,52 @@ public final class WhisperModel: Module, STTGenerationModel {
         if fromIndex >= length { return logits }
         var mask = [Float](repeating: 0, count: length)
         for i in fromIndex..<length { mask[i] = -1e9 }
+        return logits + MLXArray(mask).asType(logits.dtype)
+    }
+
+    /// OpenAI Whisper's `ApplyTimestampRules`: an early first timestamp, paired and non-decreasing
+    /// timestamps, and a forced timestamp when all of them outweigh any single text token.
+    static func applyTimestampRules(
+        _ logits: MLXArray,
+        generated: [Int],
+        timestampBegin: Int,
+        endOfText: Int,
+        noTimestamps: Int,
+        maxInitialTimestampIndex: Int = 50
+    ) -> MLXArray {
+        let length = logits.dim(-1)
+        var mask = [Float](repeating: 0, count: length)
+        func suppress(_ range: Range<Int>) {
+            for i in range.clamped(to: 0 ..< length) { mask[i] = -1e9 }
+        }
+        suppress(noTimestamps ..< noTimestamps + 1)
+
+        let lastWasTimestamp = (generated.last ?? -1) >= timestampBegin
+        let penultimateWasTimestamp = generated.count < 2 || generated[generated.count - 2] >= timestampBegin
+        if lastWasTimestamp {
+            if penultimateWasTimestamp {
+                suppress(timestampBegin ..< length)
+            } else {
+                suppress(0 ..< endOfText)
+            }
+        }
+        if let lastTimestamp = generated.last(where: { $0 >= timestampBegin }) {
+            // A closing timestamp may repeat the opening one of the next segment; otherwise
+            // timestamps must increase, so every segment has a nonzero length.
+            let firstAllowed = lastWasTimestamp && !penultimateWasTimestamp ? lastTimestamp : lastTimestamp + 1
+            suppress(timestampBegin ..< firstAllowed)
+        }
+        if generated.isEmpty {
+            suppress(0 ..< timestampBegin)
+            suppress(timestampBegin + maxInitialTimestampIndex + 1 ..< length)
+        }
+
+        let masked = logits + MLXArray(mask).asType(logits.dtype)
+        let logprobs = logSoftmax(masked.asType(.float32), axis: -1)
+        let timestampLogprob = logSumExp(logprobs[timestampBegin ..< length], axis: -1)
+        let maxTextLogprob = logprobs[0 ..< timestampBegin].max()
+        guard (timestampLogprob .> maxTextLogprob).item(Bool.self) else { return masked }
+        suppress(0 ..< timestampBegin)
         return logits + MLXArray(mask).asType(logits.dtype)
     }
 

@@ -95,7 +95,9 @@ public final class WhisperTokenizer {
     /// Build the decoder prefix for a transcription request. `language` may be
     /// an ISO code ("en") or a full name ("English"); pass `nil` to let
     /// multilingual variants auto-detect.
-    public func buildPromptTokens(language: String?, task: String = "transcribe") -> [Int] {
+    public func buildPromptTokens(
+        language: String?, task: String = "transcribe", withTimestamps: Bool = false
+    ) -> [Int] {
         var tokens: [Int] = [startOfTranscriptId]
         if isMultilingual {
             if let resolved = resolveLanguage(language) {
@@ -108,7 +110,7 @@ public final class WhisperTokenizer {
                 if let id = transcribeId { tokens.append(id) }
             }
         }
-        tokens.append(noTimestampsId)
+        if !withTimestamps { tokens.append(noTimestampsId) }
         return tokens
     }
 
