@@ -57,9 +57,11 @@ for try await event in model.generateStream(audio: audio) {
 ## Notes
 
 - Input audio should be mono 16 kHz.
-- Whisper consumes a fixed 30 s window; longer audio is split into
-  non-overlapping 30 s chunks and joined with a single space. Per-chunk
-  offsets appear as `start` / `end` in `STTOutput.segments`.
+- Whisper consumes a fixed 30 s window. Longer audio follows OpenAI's
+  long-form loop: each window is decoded with timestamps and the next one
+  starts at the end of the last finished segment, so speech across a window
+  edge is decoded whole. `STTOutput.segments` carries each segment's
+  `start` / `end` time. Audio up to 30 s is one window without timestamps.
 - Pass `language` (ISO code or English name) to force the transcription
   language for multilingual variants. Omit it to let Whisper auto-detect.
   The `.en` repos ignore the parameter.

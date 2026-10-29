@@ -4626,6 +4626,73 @@ struct WhisperTests {
         // Conv2 has stride 2, so 3000 -> 1500.
         #expect(hidden.shape == [1, config.maxSourcePositions, config.dModel])
     }
+
+    // Long-form decoding. Toy vocabulary: text 0..<8, end of text 8, <|notimestamps|> 9,
+    // timestamps from 10 (<|0.00|>) upward.
+    private static let tb = 10
+
+    private static func allowed(_ logits: MLXArray) -> [Int] {
+        let values = logits.asArray(Float.self)
+        return values.indices.filter { values[$0] > -1e8 }
+    }
+
+    private static func rules(_ generated: [Int], logits: [Float]? = nil) -> [Int] {
+        // By default text is far more likely than all timestamps together.
+        let raw = MLXArray(logits ?? (0 ..< 200).map { $0 < tb ? Float(10) : 0 })
+        return allowed(
+            WhisperModel.applyTimestampRules(
+                raw, generated: generated, timestampBegin: tb, endOfText: 8, noTimestamps: 9))
+    }
+
+    @Test func timestampRulesStartWithAnEarlyTimestamp() {
+        // First token: a timestamp no later than 1.0 s (index 50).
+        #expect(Self.rules([]) == Array(Self.tb ... Self.tb + 50))
+    }
+
+    @Test func timestampRulesPairAndNeverDecrease() {
+        // Inside a segment: text, end of text, or a timestamp after the opening one.
+        #expect(Self.rules([12, 3]) == Array(0 ... 8) + Array(13 ..< 200))
+        // Just closed a segment: end of text or the next opening timestamp, which may
+        // repeat the closing one.
+        #expect(Self.rules([12, 3, 14]) == [8] + Array(14 ..< 200))
+        // After a timestamp pair: text only (or end of text).
+        #expect(Self.rules([12, 3, 14, 14]) == Array(0 ... 8))
+    }
+
+    @Test func timestampRulesForceATimestampWhenTimestampsDominate() {
+        // Each text token alone is less likely than all timestamps together.
+        var logits = [Float](repeating: 0, count: 200)
+        for i in 0 ..< Self.tb { logits[i] = 1 }
+        #expect(Self.rules([12, 3], logits: logits) == Array(13 ..< 200))
+    }
+
+    @Test func splitWindowSeeksToTheLastClosedSegment() {
+        let tb = Self.tb
+        // Two closed segments (0.00-2.00, 2.00-3.00), then an unfinished one.
+        let split = WhisperModel.splitWindow(
+            tokens: [tb, 1, 2, tb + 100, tb + 100, 3, tb + 150, tb + 150, 4],
+            timestampBegin: tb, segmentFrames: 3000)
+        #expect(split.segments.count == 2)
+        #expect(split.segments[0].tokens == [tb, 1, 2, tb + 100])
+        #expect(abs(split.segments[1].start - 2.0) < 1e-9 && abs(split.segments[1].end - 3.0) < 1e-9)
+        #expect(split.seekFrames == 300)
+    }
+
+    @Test func splitWindowConsumesTheWindowAfterASingleTimestampEnding() {
+        let tb = Self.tb
+        let split = WhisperModel.splitWindow(
+            tokens: [tb, 1, tb + 50, tb + 50, 2, tb + 120], timestampBegin: tb, segmentFrames: 3000)
+        #expect(split.segments.map(\.tokens) == [[tb, 1, tb + 50], [tb + 50, 2, tb + 120]])
+        #expect(split.seekFrames == 3000)
+    }
+
+    @Test func splitWindowWithoutTimestampPairsIsOneSegment() {
+        let tb = Self.tb
+        let split = WhisperModel.splitWindow(tokens: [tb, 1, 2], timestampBegin: tb, segmentFrames: 1500)
+        #expect(split.segments.count == 1)
+        #expect(abs(split.segments[0].end - 15.0) < 1e-9)
+        #expect(split.seekFrames == 1500)
+    }
 }
 
 struct WhisperTranslateNetworkTests {
