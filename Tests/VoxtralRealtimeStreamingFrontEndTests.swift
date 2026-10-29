@@ -12,6 +12,7 @@
 //      CODE_SIGNING_ALLOWED=NO
 
 import Foundation
+import MLXAudioCore
 import Testing
 import MLX
 import MLXNN
