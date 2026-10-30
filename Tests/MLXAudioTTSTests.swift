@@ -1301,6 +1301,16 @@ struct SopranoTextCleaningTests {
 
         print("\u{001B}[32mText cleaning tests passed!\u{001B}[0m")
     }
+
+    @Test func ordinalsReadAsOrdinals() {
+        #expect(cleanTextForSoprano("July 4th") == "july fourth")
+        #expect(cleanTextForSoprano("the 20th century") == "the twentieth century")
+        #expect(cleanTextForSoprano("101st") == "one hundred first")
+        #expect(cleanTextForSoprano("112th") == "one hundred twelfth")
+        #expect(cleanTextForSoprano("100th") == "one hundredth")
+        #expect(cleanTextForSoprano("10K") == "ten thousand")
+        #expect(cleanTextForSoprano("25M") == "twenty five million")
+    }
 }
 
 struct EchoTTSTests {
