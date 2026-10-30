@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import MLX
 import MLXAudioCore
@@ -111,6 +112,32 @@ struct AudioTransferAPITests {
         #expect(throws: AudioUtils.AudioUtilsErrors.self) {
             _ = try loadAudioArray(from: url, sampleRate: 0)
         }
+    }
+
+    @Test func loaderAveragesChannelsToMono() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let frames = 70_000
+        let left = (0..<frames).map { Float(sin(Double($0) * 0.1)) * 0.25 }
+        let right = (0..<frames).map { Float(cos(Double($0) * 0.3)) * 0.5 }
+        let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 2)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames))!
+        buffer.frameLength = AVAudioFrameCount(frames)
+        for i in 0..<frames {
+            buffer.floatChannelData![0][i] = left[i]
+            buffer.floatChannelData![1][i] = right[i]
+        }
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: format.settings)
+            try file.write(from: buffer)
+        }
+
+        let (rate, loaded) = try loadAudioArray(from: url)
+        #expect(rate == 16_000)
+        let mono = loaded.asArray(Float.self)
+        #expect(mono.count == frames)
+        #expect(zip(mono, zip(left, right)).allSatisfy { abs($0 - ($1.0 + $1.1) / 2) < 1e-6 })
     }
 
     @MainActor

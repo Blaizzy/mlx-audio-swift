@@ -70,6 +70,7 @@ public func loadAudioArray(from url: URL, sampleRate: Int? = nil) throws -> send
         throw AudioUtils.AudioUtilsErrors.cannotCreateAudioBuffer
     }
 
+    let channelCount = Int(format.channelCount)
     var samples: [Float] = []
     samples.reserveCapacity(Int(frameCount))
     while audioFile.framePosition < audioFile.length {
@@ -79,7 +80,15 @@ public func loadAudioArray(from url: URL, sampleRate: Int? = nil) throws -> send
         guard let floatChannelData = buffer.floatChannelData else {
             throw AudioUtils.AudioUtilsErrors.cannotReadFloatChannelData
         }
-        samples.append(contentsOf: UnsafeBufferPointer(start: floatChannelData[0], count: Int(buffer.frameLength)))
+        let start = samples.count
+        let frames = Int(buffer.frameLength)
+        samples.append(contentsOf: UnsafeBufferPointer(start: floatChannelData[0], count: frames))
+        if channelCount > 1 {
+            for channel in 1..<channelCount {
+                for frame in 0..<frames { samples[start + frame] += floatChannelData[channel][frame] }
+            }
+            for frame in 0..<frames { samples[start + frame] /= Float(channelCount) }
+        }
         if audioFile.framePosition <= previousPosition { break }
     }
 
