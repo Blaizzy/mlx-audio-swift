@@ -1,7 +1,37 @@
 @preconcurrency import MLX
+import MLXAudioCore
+import MLXFFT
 import MLXNN
 
 // MARK: - Speaker Encoder Utilities
+
+func speakerEncoderMelSpectrogram(
+    _ audio: MLXArray,
+    sampleRate: Int,
+    nFft: Int = 1024,
+    hopLength: Int = 256,
+    nMels: Int = 128
+) -> MLXArray {
+    let pad = (nFft - hopLength) / 2
+    let left = audio[1 ..< (pad + 1)][.stride(by: -1)]
+    let right = audio[(-(pad + 1)) ..< (-1)][.stride(by: -1)]
+    let padded = concatenated([left, audio, right])
+
+    let numFrames = 1 + (padded.dim(0) - nFft) / hopLength
+    let frames = asStrided(padded, [numFrames, nFft], strides: [hopLength, 1], offset: 0)
+    let spectrum = MLXFFT.rfft(frames * hanningWindow(size: nFft), axis: 1)
+    let magnitude = sqrt(abs(spectrum).square() + 1e-9)
+
+    let filters = melFilters(
+        sampleRate: sampleRate,
+        nFft: nFft,
+        nMels: nMels,
+        fMax: 12000,
+        norm: "slaney",
+        melScale: .slaney
+    )
+    return log(maximum(matmul(magnitude, filters), 1e-5))
+}
 
 private func reflectPad1D(_ x: MLXArray, pad: Int) -> MLXArray {
     guard pad > 0 else { return x }

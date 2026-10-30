@@ -999,6 +999,30 @@ struct Qwen3TTSTests {
         }
     }
 
+    @Test func speakerEncoderMelMatchesReference() {
+        let samples: [Float] = (0 ..< 6000).map { i in
+            let phase = 2 * Double.pi * Double(i) / 24000.0
+            let value: Double = 0.5 * sin(440.0 * phase) + 0.25 * sin(3000.0 * phase)
+            return Float(value)
+        }
+        let signal = MLXArray(samples)
+        let mel = speakerEncoderMelSpectrogram(signal, sampleRate: 24000)
+        #expect(mel.shape == [23, 128])
+
+        let reference: [Int: [Float]] = [
+            0: [-1.092172, 1.015472, -3.563627, 0.260005],
+            11: [-9.130633, 1.482101, -11.512925, 0.213109],
+            22: [-1.559293, 1.320042, -4.581027, 0.291832],
+        ]
+        let values = mel.asArray(Float.self)
+        for (frame, expected) in reference {
+            for (bin, value) in zip([0, 16, 64, 77], expected) {
+                let actual = values[frame * 128 + bin]
+                #expect(abs(actual - value) < 2e-3, "frame \(frame) bin \(bin): \(actual)")
+            }
+        }
+    }
+
     @Test func interleavedMropeHandlesTransposedFrequencies() {
         // Run with TEST_RUNNER_MTL_DEBUG_LAYER=1 to catch the scalar-gather regression.
         let rotary = TalkerRotaryEmbedding(dim: 12, mropeSection: [2, 2, 2])

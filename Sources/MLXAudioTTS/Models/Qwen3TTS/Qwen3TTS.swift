@@ -866,13 +866,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
         for batch in 0 ..< batchSize {
             let waveform = rawAudio[batch]
-            let mel = computeMelSpectrogram(
-                audio: waveform,
-                sampleRate: speakerEncoder.config.sampleRate,
-                nFft: 1024,
-                hopLength: 256,
-                nMels: 128
-            )
+            let mel = speakerEncoderMelSpectrogram(waveform, sampleRate: speakerEncoder.config.sampleRate)
             mels.append(mel)
         }
 
