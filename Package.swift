@@ -179,6 +179,7 @@ let package = Package(
                 "Models/MossMusic/README.md",
                 "Models/MossTranscribeDiarize/README.md",
                 "Models/NemotronASR/README.md",
+                "Models/NemotronTranscribe/README.md",
                 "Models/Parakeet/README.md",
                 "Models/Phonon2/README.md",
                 "Models/Qwen2Audio/README.md",

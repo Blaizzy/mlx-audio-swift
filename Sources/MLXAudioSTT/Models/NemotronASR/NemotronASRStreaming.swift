@@ -135,6 +135,7 @@ extension NemotronASRModel {
         let convLeft = encoderConfig.convKernelSize - 1
 
         while state.consumed < limit {
+            if Task.isCancelled { break }
             let end = min(state.consumed + chunkMel, limit)
             // Mid-stream: defer a partial trailing chunk until the next call / flush.
             if !flushTail && (end - state.consumed) < chunkMel { break }

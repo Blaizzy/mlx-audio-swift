@@ -480,22 +480,23 @@ public final class CohereTranscribeModel: Module, STTGenerationModel {
         audio: MLXArray,
         generationParameters: STTGenerateParameters
     ) -> AsyncThrowingStream<STTGeneration, Error> {
-        let audio1D = audio.ndim > 1 ? audio.mean(axis: -1) : audio
-        let chunks = splitAudioIntoChunks(
-            audio1D,
-            sampleRate: config.sampleRate,
-            chunkDuration: generationParameters.chunkDuration,
-            minChunkDuration: generationParameters.minChunkDuration
-        )
+        makeSTTStream { [self] continuation in
+            let audio1D = audio.ndim > 1 ? audio.mean(axis: -1) : audio
+            let chunks = splitAudioIntoChunks(
+                audio1D,
+                sampleRate: config.sampleRate,
+                chunkDuration: generationParameters.chunkDuration,
+                minChunkDuration: generationParameters.minChunkDuration
+            )
 
-        if chunks.count > 1 {
-            return AsyncThrowingStream { continuation in
+            if chunks.count > 1 {
                 var outputs: [STTOutput] = []
                 outputs.reserveCapacity(chunks.count)
                 var remainingTokens = generationParameters.maxTokens
                 var emittedAnyText = false
 
                 for chunk in chunks {
+                    try Task.checkCancellation()
                     if remainingTokens <= 0 {
                         break
                     }
@@ -539,11 +540,9 @@ public final class CohereTranscribeModel: Module, STTGenerationModel {
                     totalTime: totalTime,
                     peakMemoryUsage: peakMemoryUsage
                 )))
-                continuation.finish()
+                return
             }
-        }
 
-        return AsyncThrowingStream { continuation in
             var context = encodeAndPrefill(
                 audio: audio1D,
                 generationParameters: generationParameters
@@ -561,6 +560,7 @@ public final class CohereTranscribeModel: Module, STTGenerationModel {
             )
 
             for pos in context.promptLength..<(context.promptLength + maxGenerationTokens) {
+                try Task.checkCancellation()
                 let token = sample(logits: context.logits, temperature: generationParameters.temperature)
                 generated.append(token)
 
@@ -624,7 +624,6 @@ public final class CohereTranscribeModel: Module, STTGenerationModel {
 
             Memory.clearCache()
             continuation.yield(.result(output))
-            continuation.finish()
         }
     }
 }

@@ -134,7 +134,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
         audio: MLXArray,
         generationParameters: STTGenerateParameters
     ) -> AsyncThrowingStream<STTGeneration, Error> {
-        AsyncThrowingStream { continuation in
+        makeSTTStream { [self] continuation in
             let audio1D = self.normalizeAudioToMono(audio).asType(.float32)
             let sampleRate = self.preprocessConfig.sampleRate
             let audioDuration = Double(audio1D.shape[0]) / Double(sampleRate)
@@ -179,7 +179,6 @@ public final class NemotronASRModel: Module, STTGenerationModel {
                     )
                 )
             )
-            continuation.finish()
         }
     }
 

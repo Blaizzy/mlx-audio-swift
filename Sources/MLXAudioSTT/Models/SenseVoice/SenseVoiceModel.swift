@@ -488,10 +488,9 @@ public final class SenseVoiceModel: Module, STTGenerationModel {
         audio: MLXArray,
         generationParameters: STTGenerateParameters
     ) -> AsyncThrowingStream<STTGeneration, Error> {
-        AsyncThrowingStream { continuation in
+        makeSTTStream { [self] continuation in
             let output = generate(audio: audio, generationParameters: generationParameters)
             continuation.yield(.result(output))
-            continuation.finish()
         }
     }
 
