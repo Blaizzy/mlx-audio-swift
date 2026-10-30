@@ -112,6 +112,42 @@ struct MimiConvAdapterTests {
     }
 }
 
+struct MimiAttentionTests {
+
+    private func attention(context: Int) -> MLXAudioCodecs.Attention {
+        MLXRandom.seed(0)
+        return MLXAudioCodecs.Attention(cfg: TransformerConfig(
+            dModel: 16, numHeads: 2, numLayers: 1, causal: true, normFirst: true,
+            biasFF: false, biasAttn: false, layerScale: nil, positionalEmbedding: "rope",
+            useConvBlock: false, crossAttention: false, convKernelSize: 3, useConvBias: false,
+            gating: false, norm: "layer_norm", context: context, maxPeriod: 10000,
+            maxSeqLen: 64, kvRepeat: 1, dimFeedforward: 32, convLayout: false
+        ))
+    }
+
+    @Test func attentionWindowHoldsAcrossChunking() {
+        let context = 4
+        let attn = attention(context: context)
+        let xs = MLXRandom.normal([1, 12, 16])
+        let oneShot = attn(xs, cache: KVCacheSimple())
+
+        for i in 0..<12 {
+            let window = xs[0..., max(0, i - context + 1) ... i]
+            let alone = attn(window, cache: KVCacheSimple())[0..., -1]
+            #expect(MLX.max(MLX.abs(alone - oneShot[0..., i])).item(Float.self) < 1e-4, "position \(i)")
+        }
+
+        for chunk in [1, 3, 5] {
+            let cache = KVCacheSimple()
+            let parts = stride(from: 0, to: 12, by: chunk).map { start in
+                attn(xs[0..., start ..< min(start + chunk, 12)], cache: cache)
+            }
+            let streamed = concatenated(parts, axis: 1)
+            #expect(MLX.max(MLX.abs(streamed - oneShot)).item(Float.self) < 1e-4, "chunk \(chunk)")
+        }
+    }
+}
+
 struct SharedDSPTests {
 
     @Test func hammingWindowSupportsPeriodicAndSymmetricVariants() {
