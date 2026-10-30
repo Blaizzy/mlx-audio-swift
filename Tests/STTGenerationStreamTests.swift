@@ -4,19 +4,24 @@ import Testing
 
 @testable import MLXAudioSTT
 
-@Suite("STT generation streams", .serialized)
+@Suite("STT generation streams", .serialized, .timeLimit(.minutes(5)))
 struct STTGenerationStreamTests {
-    private enum Failure: Error, Equatable { case expected, timedOut }
+    private enum Failure: Error, Equatable { case expected }
 
     @Test @MainActor func returnsBeforeInferenceFinishesAndDeliversEventsIncrementally() async throws {
         let release = DispatchSemaphore(value: 0)
         defer { release.signal() }
         let stream = makeSTTStream { @Sendable continuation in
-            #expect(!Thread.isMainThread)
+            // Fail before waiting if inference regresses to running inline.
+            guard !Thread.isMainThread else {
+                Issue.record("Inference ran on the caller's main thread")
+                return
+            }
             continuation.yield(.token("first"))
             // The consumer must receive the first token before the producer can
-            // finish. A synchronous stream initializer times out here.
-            guard release.wait(timeout: .now() + 5) == .success else { throw Failure.timedOut }
+            // finish. Other suites may delay MainActor for tens of seconds, so
+            // synchronize explicitly and let the test's time limit bound hangs.
+            release.wait()
             continuation.yield(.token(" second"))
             continuation.yield(.info(STTGenerationInfo(
                 promptTokenCount: 1, generationTokenCount: 2, prefillTime: 0,
@@ -67,24 +72,33 @@ struct STTGenerationStreamTests {
         }
     }
 
-    @Test func cancellingConsumerCancelsProducer() async throws {
+    @Test @MainActor func cancellingConsumerCancelsProducer() async throws {
         let release = DispatchSemaphore(value: 0)
         defer { release.signal() }
         let (received, receivedContinuation) = AsyncStream<Void>.makeStream()
         let (finished, finishedContinuation) = AsyncStream<Void>.makeStream()
-        let stream = makeSTTStream { continuation in
+        let stream = makeSTTStream { @Sendable continuation in
             defer { finishedContinuation.finish() }
+            guard !Thread.isMainThread else {
+                Issue.record("Inference ran on the caller's main thread")
+                return
+            }
             continuation.yield(.token("first"))
-            guard release.wait(timeout: .now() + 5) == .success else { throw Failure.timedOut }
+            release.wait()
             #expect(Task.isCancelled)
             try Task.checkCancellation()
             Issue.record("Cancelled producer continued generation")
         }
         let consumer = Task {
+            defer { receivedContinuation.finish() }
             for try await _ in stream { receivedContinuation.yield(()) }
         }
+        defer { consumer.cancel() }
         var receivedIterator = received.makeAsyncIterator()
-        _ = await receivedIterator.next()
+        guard let _ = await receivedIterator.next() else {
+            Issue.record("Expected a token before cancelling generation")
+            return
+        }
         consumer.cancel()
         _ = await consumer.result
         release.signal()
