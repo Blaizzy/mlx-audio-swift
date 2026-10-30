@@ -123,6 +123,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | MeloTTS English | [MeloTTS README](Sources/MLXAudioTTS/Models/MeloTTS/README.md) | [mlx-community/MeloTTS-English-MLX](https://huggingface.co/mlx-community/MeloTTS-English-MLX) |
 | Ming-3.0 TTS Tiny | [Ming Tiny README](Sources/MLXAudioTTS/Models/MingTiny/README.md) | [mlx-community/Ming-3.0-tts-tiny-4bit](https://huggingface.co/mlx-community/Ming-3.0-tts-tiny-4bit) |
 | Ming dense TTS | [Ming dense README](Sources/MLXAudioTTS/Models/Ming/README.md) | [mlx-community/Ming-3.0-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-3.0-tts-0.5B-bf16), [inclusionAI/Ming-omni-tts-0.5B](https://huggingface.co/inclusionAI/Ming-omni-tts-0.5B) |
+| Ming Omni 16.8B/A3B | [Ming Omni README](Sources/MLXAudioTTS/Models/MingOmni/README.md) | [mlx-community/Ming-omni-tts-16.8B-A3B-4bit](https://huggingface.co/mlx-community/Ming-omni-tts-16.8B-A3B-4bit) |
 | KugelAudio | [KugelAudio README](Sources/MLXAudioTTS/Models/KugelAudio/README.md) | [kugelaudio/kugelaudio-0-open](https://huggingface.co/kugelaudio/kugelaudio-0-open) |
 | Bark Small | [Bark README](Sources/MLXAudioTTS/Models/Bark/README.md) | [mlx-community/bark-small](https://huggingface.co/mlx-community/bark-small) |
 | Confucius4-TTS | [Confucius4 README](Sources/MLXAudioTTS/Models/Confucius4/README.md) | [mlx-community/Confucius4-TTS-mlx-int8](https://huggingface.co/mlx-community/Confucius4-TTS-mlx-int8) |
@@ -135,6 +136,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | Audio8 0.1B / 0.6B | [Audio8 README](Sources/MLXAudioTTS/Models/Audio8/README.md) | [mlx-community/Audio8-TTS-Preview-0.1b-bf16](https://huggingface.co/mlx-community/Audio8-TTS-Preview-0.1b-bf16), [mlx-community/Audio8-TTS-Preview-0.6b-bf16](https://huggingface.co/mlx-community/Audio8-TTS-Preview-0.6b-bf16) |
 | Fish Audio S2 Pro | [Fish Audio S2 Pro README](Sources/MLXAudioTTS/Models/FishSpeech/README.md) | [mlx-community/fish-audio-s2-pro-8bit](https://huggingface.co/mlx-community/fish-audio-s2-pro-8bit) |
 | Soprano | [Soprano README](Sources/MLXAudioTTS/Models/Soprano/README.md) | [mlx-community/Soprano-80M-bf16](https://huggingface.co/mlx-community/Soprano-80M-bf16) |
+| TADA 1B / 3B | [TADA README](Sources/MLXAudioTTS/Models/TADA/README.md) | [HumeAI/mlx-tada-1b](https://huggingface.co/HumeAI/mlx-tada-1b), [3B](https://huggingface.co/HumeAI/mlx-tada-3b) |
 | VibeVoice Realtime | [VibeVoice Realtime README](Sources/MLXAudioTTS/Models/VibeVoice/README.md) | [mlx-community/VibeVoice-Realtime-0.5B-8bit](https://huggingface.co/mlx-community/VibeVoice-Realtime-0.5B-8bit) |
 | VoxCPM 1 / 1.5 | [VoxCPM README](Sources/MLXAudioTTS/Models/VoxCPM/README.md) | [mlx-community/VoxCPM1.5-4bit](https://huggingface.co/mlx-community/VoxCPM1.5-4bit), [fp16](https://huggingface.co/mlx-community/VoxCPM1.5-fp16), [8-bit](https://huggingface.co/mlx-community/VoxCPM1.5-8bit) |
 | ZONOS2 | [ZONOS2 README](Sources/MLXAudioTTS/Models/Zonos2/README.md) | [amal-david/Zyphra-ZONOS2-4bit](https://huggingface.co/amal-david/Zyphra-ZONOS2-4bit) |
@@ -172,6 +174,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 | Parakeet Redux | [Parakeet README](Sources/MLXAudioSTT/Models/Parakeet/README.md) | [moondream/parakeet-redux](https://huggingface.co/moondream/parakeet-redux) |
 | Phonon-2 / 2.5 | [Phonon README](Sources/MLXAudioSTT/Models/Phonon2/README.md) | [Phonon-2.5](https://huggingface.co/FermionResearch/Phonon-2.5), [Phonon-2.5-English](https://huggingface.co/FermionResearch/Phonon-2.5-English), [Phonon-2](https://huggingface.co/mlx-community/Phonon-2) |
 | Nemotron ASR | [Nemotron ASR README](Sources/MLXAudioSTT/Models/NemotronASR/README.md) | [Nemotron Speech Streaming](https://huggingface.co/animaslabs/nemotron-speech-streaming-en-0.6b-mlx-8bit), [Nemotron 3.5 ASR](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit) |
+| Nemotron 3.5 Transcribe | [Nemotron Transcribe README](Sources/MLXAudioSTT/Models/NemotronTranscribe/README.md) | [nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B), [MLX 4-bit](https://huggingface.co/nativ-community/Nemotron-3.5-Transcribe-30B-A4B-EA-4bit) |
 | GLMASR | [GLMASR README](Sources/MLXAudioSTT/Models/GLMASR/README.md) | [mlx-community/GLM-ASR-Nano-2512-4bit](https://huggingface.co/mlx-community/GLM-ASR-Nano-2512-4bit) |
 | FireRedASR2 | [FireRedASR2 README](Sources/MLXAudioSTT/Models/FireRedASR2/README.md) | Converted FireRedASR2-compatible MLX checkpoints |
 | SenseVoice | [SenseVoice README](Sources/MLXAudioSTT/Models/SenseVoice/README.md) | Converted SenseVoice-compatible MLX checkpoints |

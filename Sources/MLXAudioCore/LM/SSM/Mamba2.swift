@@ -50,11 +50,15 @@ public enum Mamba2Scan {
 
     public static func callAsFunction(
         x: MLXArray, aLog: MLXArray, b: MLXArray, c: MLXArray, d: MLXArray,
-        dt: MLXArray, dtBias: MLXArray, state: MLXArray? = nil
+        dt: MLXArray, dtBias: MLXArray, state: MLXArray? = nil,
+        minimumTimeStep: Float = 0, maximumTimeStep: Float = .infinity
     ) -> (output: MLXArray, state: MLXArray) {
         let batch = x.dim(0), length = x.dim(1), heads = x.dim(2), channels = x.dim(3)
         let groups = b.dim(2), stateSize = b.dim(3)
-        let delta = softplus(dt.asType(.float32) + dtBias)
+        var delta = softplus(dt.asType(.float32) + dtBias)
+        if minimumTimeStep > 0 || maximumTimeStep.isFinite {
+            delta = clip(delta, min: minimumTimeStep, max: maximumTimeStep)
+        }
         // Match mlx-lm: initial prefill computes A in its stored precision;
         // recurrent single-token updates compute the exponent in Float32.
         let a = state != nil && length == 1 ? exp(aLog.asType(.float32)) : exp(aLog)

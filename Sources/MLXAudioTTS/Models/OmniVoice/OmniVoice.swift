@@ -15,8 +15,57 @@ import Tokenizers
 /// - **Voice Cloning**: Clone any voice from a reference audio + transcript
 /// - **Voice Design**: Create custom voices via text instructions
 /// - **Auto Voice**: Default voice when no voice specification is provided
+public struct OmniVoiceVoicePrompt: Sendable {
+    public let codes: [Int32]
+    public let shape: [Int]
+    public let transcript: String
+}
+
 public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sendable {
     // MARK: - Properties
+
+    public var useTargetOnlyProjection = false
+
+    public func encodeVoicePrompt(refAudio: sending MLXArray, transcript: String) throws -> OmniVoiceVoicePrompt {
+        guard let audioTokenizer else { throw AudioGenerationError.modelNotInitialized("Audio tokenizer not loaded") }
+        let codes = try audioTokenizer.encode(refAudio)
+        eval(codes)
+        return OmniVoiceVoicePrompt(codes: codes.asArray(Int32.self), shape: codes.shape, transcript: transcript)
+    }
+
+    /// Encodes a voice reference file without exposing MLXArray in the caller's
+    /// app code. Audio is resampled to the model's expected sample rate.
+    public func encodeVoicePrompt(fromAudioFile url: URL, transcript: String) throws -> OmniVoiceVoicePrompt {
+        let (_, audio) = try loadAudioArray(from: url, sampleRate: config.sampleRate)
+        return try encodeVoicePrompt(refAudio: audio, transcript: transcript)
+    }
+
+    /// Releases the reference-only modules after a reusable prompt has been encoded.
+    /// Encoding another reference requires reloading the model; synthesis from cached prompts remains available.
+    public func releaseVoicePromptEncoders() throws {
+        try audioTokenizer?.releaseReferenceEncoders()
+        Memory.clearCache()
+    }
+
+    /// Generates a waveform from a previously encoded voice prompt as ordinary
+    /// Swift floats, keeping the MLX tensor type out of application targets.
+    public func generateSamples(
+        text: String,
+        language: String? = nil,
+        parameters: OmniVoiceGenerateParameters = OmniVoiceGenerateParameters(),
+        voiceClonePrompt: OmniVoiceVoicePrompt
+    ) async throws -> [Float] {
+        let audio = try await generate(
+            text: text,
+            voice: nil,
+            refAudio: nil,
+            refText: nil,
+            language: language,
+            ovParameters: parameters,
+            voiceClonePrompt: voiceClonePrompt
+        )
+        return audio.asArray(Float.self)
+    }
 
     let config: OmniVoiceConfig
 
@@ -126,7 +175,8 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         inputIds: MLXArray,
         audioMask: MLXArray,
         attentionMask: MLXFast.ScaledDotProductAttentionMaskMode? = nil,
-        cache: [KVCache]? = nil
+        cache: [KVCache]? = nil,
+        targetStart: Int = 0
     ) -> MLXArray {
         let inputsEmbeds = prepareEmbedInputs(inputIds: inputIds, audioMask: audioMask)
 
@@ -137,11 +187,13 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         // enum `.none` literally would be ambiguous with Optional.none and once
         // fell through to a CAUSAL mask here, garbling generation.
         let mask: MLXFast.ScaledDotProductAttentionMaskMode = attentionMask ?? .none
-        let hiddenStates = llm.forwardWithEmbeddings(
+        let fullHiddenStates = llm.forwardWithEmbeddings(
             inputsEmbeds: inputsEmbeds,
             cache: cache,
             mask: mask
         )
+
+        let hiddenStates = targetStart > 0 ? fullHiddenStates[0..., targetStart..., 0...] : fullHiddenStates
 
         // Project to audio codebook logits via per-codebook heads
         let batchSize = hiddenStates.shape[0]
@@ -199,7 +251,8 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         refAudio: sending MLXArray? = nil,
         refText: String? = nil,
         language: String? = nil,
-        ovParameters: OmniVoiceGenerateParameters
+        ovParameters: OmniVoiceGenerateParameters,
+        voiceClonePrompt: OmniVoiceVoicePrompt? = nil
     ) async throws -> sending MLXArray {
         guard tokenizer != nil else {
             throw AudioGenerationError.modelNotInitialized("Tokenizer not loaded")
@@ -210,7 +263,8 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             refAudio: refAudio,
             refText: refText,
             language: language,
-            ovParameters: ovParameters
+            ovParameters: ovParameters,
+            voiceClonePrompt: voiceClonePrompt
         )
     }
 
@@ -291,20 +345,27 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         refText: String?,
         language: String?,
         ovParameters: OmniVoiceGenerateParameters,
-        onStepProgress: (@Sendable (Int, Int) -> Void)? = nil
+        onStepProgress: (@Sendable (Int, Int) -> Void)? = nil,
+        voiceClonePrompt: OmniVoiceVoicePrompt? = nil
     ) async throws -> sending MLXArray {
         guard let audioTok = audioTokenizer else {
             throw AudioGenerationError.modelNotInitialized("Audio tokenizer not loaded")
         }
+        print("[OmniVoiceDiag] generation start textChars=\(text.count) refSamples=\(refAudio?.shape.last ?? 0) peakMB=\(Double(Memory.peakMemory) / 1_000_000)")
 
         if let seed = ovParameters.seed {
             MLXRandom.seed(seed)
         }
 
         // 1. Encode reference audio to tokens if provided
+        let refText = voiceClonePrompt?.transcript ?? refText
         var refAudioTokens: MLXArray?
-        if let refAudio {
+        if let voiceClonePrompt {
+            refAudioTokens = MLXArray(voiceClonePrompt.codes, voiceClonePrompt.shape)
+        } else if let refAudio {
+            print("[OmniVoiceDiag] reference encode begin peakMB=\(Double(Memory.peakMemory) / 1_000_000)")
             refAudioTokens = try audioTok.encode(refAudio)
+            print("[OmniVoiceDiag] reference encode done tokens=\(refAudioTokens?.shape.description ?? "nil") peakMB=\(Double(Memory.peakMemory) / 1_000_000)")
         }
 
         // 2. Estimate target token count
@@ -316,6 +377,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             speed: ovParameters.speed,
             duration: ovParameters.duration
         )
+        print("[OmniVoiceDiag] target tokens=\(numTargetTokens), refTokens=\(numRefTokCount), peakMB=\(Double(Memory.peakMemory) / 1_000_000)")
 
         // 3. Prepare inference inputs
         let prepared = try prepareInferenceInputs(
@@ -327,6 +389,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             instruct: voice,
             denoise: ovParameters.denoise
         )
+        print("[OmniVoiceDiag] inputs prepared shape=\(prepared.inputIds.shape) peakMB=\(Double(Memory.peakMemory) / 1_000_000)")
 
         var inputIds = prepared.inputIds
         let audioMask = prepared.audioMask
@@ -390,7 +453,8 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             // Separate forward passes for cond and uncond (bidirectional attention)
             let condLogits = forward(
                 inputIds: inputIds,
-                audioMask: audioMask
+                audioMask: audioMask,
+                targetStart: useTargetOnlyProjection ? prefixLen : 0
             ).asType(.float32)
             let uLogitsFull = forward(
                 inputIds: uncondInputIds,
@@ -398,7 +462,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             ).asType(.float32)
 
             // Extract target region logits
-            let cLogits = condLogits[0, (condLength - targetLen)..<condLength, 0..., 0...]
+            let cLogits = condLogits[0, (useTargetOnlyProjection ? 0 : prefixLen)..., 0..., 0...]
             let uLogits = uLogitsFull[0, 0..<targetLen, 0..., 0...]
 
             // Reshape for scoring: [T, C, V] -> [1, C, T, V]
@@ -461,14 +525,15 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             let finalCondLogits = forward(
                 inputIds: inputIds,
                 audioMask: audioMask,
-                attentionMask: nil
+                attentionMask: nil,
+                targetStart: useTargetOnlyProjection ? prefixLen : 0
             ).asType(.float32)
             let finalULogitsFull = forward(
                 inputIds: uncondInputIds,
                 audioMask: uncondAudioMask,
                 attentionMask: nil
             ).asType(.float32)
-            let finalC = finalCondLogits[0, (condLength - targetLen)..<condLength, 0..., 0...]
+            let finalC = finalCondLogits[0, (useTargetOnlyProjection ? 0 : prefixLen)..., 0..., 0...]
                 .transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
             let finalU = finalULogitsFull[0, 0..<targetLen, 0..., 0...]
                 .transposed(1, 0, 2).reshaped([1, numCodebooks, targetLen, config.audioVocabSize])
@@ -862,14 +927,15 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             requiredExtension: ".safetensors",
             additionalMatchingPatterns: ["model.safetensors"]
         ).appendingPathComponent("model.safetensors")
-        let rawWeights = try MLX.loadArrays(url: weightsURL)
+        var loadedWeights = try MLX.loadArrays(url: weightsURL)
+        let repoIs8Bit = repoID.lowercased().contains("omnivoice-8bit")
 
         // Parse and modify main config to match checkpoint
         var configDict = try JSONSerialization.jsonObject(with: configData) as! [String: Any]
         // Prefer the codebook count inferred from split checkpoint keys; fused
         // checkpoints (audio_embeddings.weight [C*V, H]) carry no per-codebook
         // keys, so fall back to the config value before the legacy default.
-        let inferredNumCodebooks = Self.inferNumCodebooks(from: rawWeights)
+        let inferredNumCodebooks = Self.inferNumCodebooks(from: loadedWeights)
             ?? (configDict["num_audio_codebook"] as? Int ?? 9)
         if let currentNum = configDict["num_audio_codebook"] as? Int, currentNum != inferredNumCodebooks {
             print("[OmniVoiceModel] INFO: overriding num_audio_codebook from \(currentNum) to \(inferredNumCodebooks) to match checkpoint")
@@ -889,23 +955,44 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         let config = try JSONDecoder().decode(OmniVoiceConfig.self, from: modifiedConfigData)
 
         let model = try OmniVoiceModel(config: config)
-        let sanitizedWeights = model.sanitize(weights: rawWeights)
-        let moduleParams = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
-        let weightKeys = Set(sanitizedWeights.keys)
-        let paramKeys = Set(moduleParams.keys)
-        let missing = paramKeys.subtracting(weightKeys).sorted()
-        let extra = weightKeys.subtracting(paramKeys).sorted()
-        if !missing.isEmpty {
-            print("[OmniVoiceModel] WARNING: \(missing.count) parameters missing from checkpoint: \(missing.prefix(10))")
+        do {
+            // Preserve the mlx-community row-wise int8 checkpoint in native
+            // MLX quantized layers. Expanding it to fp16 here defeats the
+            // checkpoint's memory savings and raises the iOS load peak.
+            let rawWeights: [String: MLXArray]
+            if repoIs8Bit {
+                quantize(model: model, groupSize: 64, bits: 8)
+                rawWeights = try Self.packRowwiseInt8ForMLX(weights: loadedWeights, groupSize: 64)
+            } else {
+                rawWeights = loadedWeights
+            }
+            let sanitizedWeights = model.sanitize(weights: rawWeights)
+            if repoIs8Bit {
+                print("[OmniVoiceModel] loaded row-wise int8 checkpoint into native MLX quantized layers (groupSize=64)")
+            } else if let quantization = config.quantization {
+                print("[OmniVoiceModel] applying quantization: bits=\(quantization.bits) groupSize=\(quantization.groupSize)")
+                quantize(model: model) { path, _ in quantization.asTuple }
+            }
+            let moduleParams = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
+            let weightKeys = Set(sanitizedWeights.keys)
+            let paramKeys = Set(moduleParams.keys)
+            let missing = paramKeys.subtracting(weightKeys).sorted()
+            let extra = weightKeys.subtracting(paramKeys).sorted()
+            if !missing.isEmpty {
+                print("[OmniVoiceModel] WARNING: \(missing.count) parameters missing from checkpoint: \(missing.prefix(10))")
+            }
+            if !extra.isEmpty {
+                print("[OmniVoiceModel] WARNING: \(extra.count) extra keys after sanitize: \(extra.prefix(10))")
+            }
+            // Preserve reduced-precision checkpoints and packed integer weights.
+            // Native MLX quantized layers require their weight tensors to stay uint32.
+            let modelWeights = (repoID.lowercased().contains("bf16") || repoIs8Bit)
+                ? sanitizedWeights
+                : sanitizedWeights.mapValues { $0.dtype.isFloatingPoint ? $0.asType(.float32) : $0 }
+            try model.update(parameters: ModuleParameters.unflattened(modelWeights), verify: .noUnusedKeys)
+            eval(model)
         }
-        if !extra.isEmpty {
-            print("[OmniVoiceModel] WARNING: \(extra.count) extra keys after sanitize: \(extra.prefix(10))")
-        }
-        // Weights run as float32: the diffusion loop is sensitive to logit
-        // precision and the reference checkpoint ships fp32 (no-op there).
-        let float32Weights = sanitizedWeights.mapValues { $0.asType(.float32) }
-        try model.update(parameters: ModuleParameters.unflattened(float32Weights), verify: .noUnusedKeys)
-        eval(model)
+        loadedWeights.removeAll(keepingCapacity: false)
 
         // Load text tokenizer
         model.tokenizer = try await AutoTokenizer.from(modelFolder: {
@@ -924,6 +1011,77 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         )
 
         return model
+    }
+
+    /// Converts the `omnivoice-rowwise` int8 checkpoint format used by
+    /// mlx-community/OmniVoice-8bit to MLX's packed QuantizedLinear format.
+    /// Values are signed int8 with one symmetric scale per 64-element group.
+    /// MLX affine quantization uses unsigned codes, so offsetting by 128 and
+    /// setting bias to -128 * scale preserves the represented weights exactly.
+    static func packRowwiseInt8ForMLX(
+        weights: [String: MLXArray],
+        groupSize: Int
+    ) throws -> [String: MLXArray] {
+        let scaleKeys = weights.keys.filter { $0.hasSuffix(".scales") }
+        guard !scaleKeys.isEmpty else {
+            throw AudioGenerationError.invalidInput("The OmniVoice 8-bit checkpoint has no row-wise scale tensors.")
+        }
+
+        let quantizedWeightKeys = Set(scaleKeys.map { String($0.dropLast(".scales".count)) })
+        var result = weights.filter {
+            !quantizedWeightKeys.contains($0.key) && !$0.key.hasSuffix(".scales")
+        }
+        for scaleKey in scaleKeys {
+            let weightKey = String(scaleKey.dropLast(".scales".count))
+            guard let quantized = weights[weightKey], let scales = weights[scaleKey],
+                  scales.shape.count == 2 else {
+                throw AudioGenerationError.invalidInput(
+                    "Unsupported OmniVoice row-wise tensor \(weightKey): weight=\(weights[weightKey]?.shape.description ?? "missing"), scales=\(weights[scaleKey]?.shape.description ?? "missing")"
+                )
+            }
+
+            let rows = scales.shape[0]
+            let groups = scales.shape[1]
+            let columns = groups * groupSize
+            let weightElementCount = quantized.shape.reduce(1, *)
+            guard weightElementCount == rows * columns else {
+                throw AudioGenerationError.invalidInput(
+                    "Unexpected OmniVoice int8 tensor dimensions for \(weightKey): weight=\(quantized.shape), scales=\(scales.shape)"
+                )
+            }
+
+            guard columns.isMultiple(of: 4) else {
+                throw AudioGenerationError.invalidInput(
+                    "OmniVoice int8 tensor \(weightKey) has a column count not divisible by 4: \(columns)"
+                )
+            }
+
+            let sourceCodes = quantized.asArray(Int8.self)
+            var packed = [UInt32](repeating: 0, count: rows * columns / 4)
+            for row in 0..<rows {
+                let sourceRow = row * columns
+                let packedRow = row * columns / 4
+                for column in stride(from: 0, to: columns, by: 4) {
+                    let a = UInt32(UInt8(bitPattern: sourceCodes[sourceRow + column]) &+ 128)
+                    let b = UInt32(UInt8(bitPattern: sourceCodes[sourceRow + column + 1]) &+ 128)
+                    let c = UInt32(UInt8(bitPattern: sourceCodes[sourceRow + column + 2]) &+ 128)
+                    let d = UInt32(UInt8(bitPattern: sourceCodes[sourceRow + column + 3]) &+ 128)
+                    packed[packedRow + column / 4] = a | (b << 8) | (c << 16) | (d << 24)
+                }
+            }
+
+            result[weightKey] = MLXArray(packed, [rows, columns / 4])
+            // MLX quantized modules store scales and biases beside `weight`
+            // at the module level (e.g. layer.weight, layer.scales), whereas
+            // this checkpoint names them as layer.weight.scales.
+            let moduleKey = weightKey.hasSuffix(".weight")
+                ? String(weightKey.dropLast(".weight".count))
+                : weightKey
+            result["\(moduleKey).scales"] = scales
+            result["\(moduleKey).biases"] = scales * -128
+        }
+        print("[OmniVoiceModel] packed \(scaleKeys.count) row-wise int8 tensors for MLX")
+        return result
     }
 
     // MARK: - Weight Inspection
@@ -964,6 +1122,19 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
                 let vocabSize = value.dim(0) / count
                 for i in 0..<count {
                     sanitized["\(prefix).\(i).weight"] = value[(i * vocabSize)..<((i + 1) * vocabSize)]
+                }
+            } else if key == "audio_embeddings.scales"
+                || key == "audio_heads.scales"
+                || key == "audio_embeddings.biases"
+                || key == "audio_heads.biases" {
+                // The quantized fused tensors use the same [C*V, ...] layout;
+                // split their per-codebook scale/bias rows alongside weights.
+                let prefix = key.hasPrefix("audio_embeddings.") ? "audio_embeddings" : "audio_heads"
+                let suffix = key.dropFirst(prefix.count + 1)
+                let count = audioHeads.count
+                let vocabSize = value.dim(0) / count
+                for i in 0..<count {
+                    sanitized["\(prefix).\(i).\(suffix)"] = value[(i * vocabSize)..<((i + 1) * vocabSize)]
                 }
             } else if key.hasPrefix("audio_embeddings.") || key.hasPrefix("audio_heads.") {
                 sanitized[key] = value
@@ -1469,6 +1640,14 @@ public final class OmniVoiceAudioTokenizer: Module {
     @ModuleInfo(key: "semantic_model") var semanticModel: OmniVoiceHubertModel?
     @ModuleInfo(key: "encoder_semantic") var encoderSemantic: OmniVoiceSemanticEncoder?
     @ModuleInfo(key: "fc") var fc: MLXNN.Linear?
+
+    func releaseReferenceEncoders() throws {
+        try update(modules: ModuleChildren(values: [
+            "semantic_model": .none,
+            "encoder_semantic": .none,
+            "fc": .none
+        ]), verify: .noUnusedKeys)
+    }
 
     init(config: OmniVoiceAudioTokenizerConfig, includeSemantic: Bool = false) {
         self.config = config

@@ -51,4 +51,4 @@ When loading a local legacy Omni folder, pass a native CAMPPlus safetensors file
 
 Ming-3.0 weights use the [MIT license](https://huggingface.co/mlx-community/Ming-3.0-tts-0.5B-bf16/blob/main/LICENSE). Legacy Omni weights use [Apache 2.0](https://huggingface.co/inclusionAI/Ming-omni-tts-0.5B). See the [Ming-3.0 project](https://github.com/inclusionAI/Ming-3.0-tts), [Ming project](https://github.com/inclusionAI/Ming) and [CAMPPlus project](https://github.com/modelscope/3D-Speaker) for attribution and voice guidance. The legacy speaker component uses Apache 2.0 and is supplied by [StepAudio2](https://huggingface.co/mlx-community/Step-Audio-2-token2wav).
 
-The 16.8B Bailing MoE model is a separate backbone and is unsupported by this dense model.
+The 16.8B Bailing MoE model uses the separate [Ming Omni model](../MingOmni/README.md).

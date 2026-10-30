@@ -110,6 +110,31 @@ public struct ModulesConfig: Codable, Sendable {
     public var minPosScoresRate: Float
     public var useAosc: Bool
 
+    public init(
+        numSpeakers: Int = 4, fcDModel: Int = 512, tfDModel: Int = 192,
+        subsamplingFactor: Int = 8
+    ) {
+        self.numSpeakers = numSpeakers
+        self.fcDModel = fcDModel
+        self.tfDModel = tfDModel
+        self.subsamplingFactor = subsamplingFactor
+        chunkLen = 188
+        fifoLen = 0
+        spkcacheLen = 188
+        spkcacheUpdatePeriod = 188
+        chunkLeftContext = 1
+        chunkRightContext = 1
+        spkcacheSilFramesPerSpk = 5
+        predScoreThreshold = 1e-6
+        maxIndex = 10000
+        scoresBoostLatest = 0.5
+        silThreshold = 0.1
+        strongBoostRate = 0.3
+        weakBoostRate = 0.7
+        minPosScoresRate = 0.5
+        useAosc = false
+    }
+
     enum CodingKeys: String, CodingKey {
         case numSpeakers = "num_speakers"
         case fcDModel = "fc_d_model"

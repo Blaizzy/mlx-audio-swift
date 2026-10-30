@@ -139,3 +139,78 @@ public final class MingAudioVAE: Module {
     }
     public func decode(_ latent: MLXArray) -> MLXArray { decoder(latent) }
 }
+
+/// Per-utterance state for the legacy Ming decoder. It holds one patch of interpolation lookahead.
+public final class MingAudioDecoderState {
+    var previous: MLXArray?
+    var historyLast: MLXArray?
+    var cache: [KVCache]
+    var audioOverlap: [[Float]]?
+    var windowOverlap: [[Float]]?
+    public init(configuration: MingAudioVAEConfiguration) {
+        cache = (0..<configuration.decoder.backbone.hiddenLayers).map { _ in KVCacheSimple() }
+    }
+}
+
+extension MingISTFTHead {
+    func streaming(_ x: MLXArray, state: MingAudioDecoderState, lastChunk: Bool) -> MLXArray {
+        let projected = out(x).asType(.float32), half = nFFT / 2 + 1
+        let magnitude = minimum(exp(projected[0..., 0..., ..<half]), 100)
+        let phase = projected[0..., 0..., half...]
+        let spectrum = magnitude * cos(phase) + MLXArray(real: Float(0), imaginary: Float(1)) * magnitude * sin(phase)
+        let frames = MLXFFT.irfft(spectrum, n: nFFT, axis: -1) * istft.window
+        let count = frames.dim(1), length = (count - 1) * hop + nFFT
+        let values = frames.asArray(Float.self), window = istft.window.asArray(Float.self)
+        let overlap = nFFT - hop, pad = overlap / 2
+        var result: [MLXArray] = [], nextAudio: [[Float]] = [], nextWindow: [[Float]] = []
+        for batch in 0..<x.dim(0) {
+            var audio = [Float](repeating: 0, count: length), envelope = audio
+            for t in 0..<count {
+                for j in 0..<nFFT {
+                    audio[t * hop + j] += values[(batch * count + t) * nFFT + j]
+                    envelope[t * hop + j] += window[j] * window[j]
+                }
+            }
+            if let previous = state.audioOverlap, let previousWindow = state.windowOverlap {
+                for j in 0..<overlap { audio[j] += previous[batch][j]; envelope[j] += previousWindow[batch][j] }
+            } else {
+                audio.removeFirst(pad); envelope.removeFirst(pad)
+            }
+            nextAudio.append(Array(audio.suffix(overlap))); nextWindow.append(Array(envelope.suffix(overlap)))
+            let emitted = audio.count - (lastChunk ? pad : overlap)
+            for j in 0..<emitted { audio[j] /= max(envelope[j], 1e-11) }
+            result.append(MLXArray(Array(audio.prefix(emitted))))
+        }
+        state.audioOverlap = nextAudio; state.windowOverlap = nextWindow
+        return stacked(result)
+    }
+}
+
+extension MingAudioVAE {
+    /// Decode successive latent patches with native causal caches and overlap-add state.
+    /// Pass `lastChunk` for the final patch to flush interpolation lookahead and the waveform tail.
+    public func decode(_ latent: MLXArray, state: MingAudioDecoderState, lastChunk: Bool) -> MLXArray {
+        let x = decoder.fc1(latent)
+        var pieces: [MLXArray] = []
+        if let previous = state.previous {
+            let lookahead = x[0..., ..<1, 0...]
+            let joined: MLXArray
+            let start: Int
+            if let history = state.historyLast {
+                joined = concatenated([history, previous, lookahead], axis: 1); start = decoder.patchSize
+            } else { joined = concatenated([previous, lookahead], axis: 1); start = 0 }
+            pieces.append(decoder.upsample(joined)[0..., start..<(start + previous.dim(1) * decoder.patchSize), 0...])
+            state.historyLast = previous[0..., (previous.dim(1) - 1)..., 0...]
+            state.previous = x
+            if lastChunk {
+                let final = decoder.upsample(concatenated([state.historyLast!, x], axis: 1))
+                pieces.append(final[0..., decoder.patchSize..., 0...])
+                state.previous = nil
+            }
+        } else if lastChunk { pieces = [decoder.upsample(x)] }
+        else { state.previous = x }
+        guard !pieces.isEmpty else { return .zeros([latent.dim(0), 0]) }
+        let embedded = pieces.count == 1 ? pieces[0] : concatenated(pieces, axis: 1)
+        return decoder.head.streaming(decoder.decoder(inputEmbeddings: embedded, cache: state.cache), state: state, lastChunk: lastChunk)
+    }
+}

@@ -208,80 +208,6 @@ final class MingTinyMLP: MingTinyFeedForward {
     }
 }
 
-// Copyright © 2023-2024 Apple Inc.
-// Expert projections and batching adapted from mlx-lm (MIT).
-class MingTinySwitchLinear: Module, Quantizable {
-    let weight: MLXArray
-    init(input: Int, output: Int, experts: Int) {
-        weight = MLXRandom.normal([experts, output, input]) * sqrt(1 / Float(input))
-    }
-    init(weight: MLXArray) { self.weight = weight }
-    func callAsFunction(_ x: MLXArray, indices: MLXArray, sorted: Bool = false) -> MLXArray {
-        gatherMM(x, weight.swappedAxes(-1, -2), rhsIndices: indices, sortedIndices: sorted)
-    }
-    func toQuantized(groupSize: Int, bits: Int, mode: QuantizationMode) -> Module {
-        MingTinyQuantizedSwitchLinear(weight: weight, groupSize: groupSize, bits: bits, mode: mode)
-    }
-}
-final class MingTinyQuantizedSwitchLinear: MingTinySwitchLinear, Quantized {
-    let scales: MLXArray
-    let biases: MLXArray?
-    let groupSize: Int
-    let bits: Int
-    let mode: QuantizationMode
-    init(weight: MLXArray, groupSize: Int, bits: Int, mode: QuantizationMode) {
-        self.groupSize = groupSize
-        self.bits = bits
-        self.mode = mode
-        let packed = MLX.quantized(weight, groupSize: groupSize, bits: bits, mode: mode)
-        scales = packed.1
-        biases = packed.2
-        super.init(weight: packed.0)
-        freeze()
-    }
-    override func callAsFunction(_ x: MLXArray, indices: MLXArray, sorted: Bool = false) -> MLXArray
-    {
-        gatherQuantizedMM(
-            x, weight, scales: scales, biases: biases, rhsIndices: indices,
-            groupSize: groupSize, bits: bits, mode: mode, sortedIndices: sorted)
-    }
-}
-final class MingTinySwitchMLP: Module {
-    @ModuleInfo(key: "gate_proj") var gate: MingTinySwitchLinear
-    @ModuleInfo(key: "up_proj") var up: MingTinySwitchLinear
-    @ModuleInfo(key: "down_proj") var down: MingTinySwitchLinear
-    let limit: Float?
-    init(_ c: MingTinyTextConfiguration, limit: Float?) {
-        self.limit = limit
-        _gate.wrappedValue = MingTinySwitchLinear(
-            input: c.hiddenSize, output: c.moeIntermediateSize, experts: c.numExperts)
-        _up.wrappedValue = MingTinySwitchLinear(
-            input: c.hiddenSize, output: c.moeIntermediateSize, experts: c.numExperts)
-        _down.wrappedValue = MingTinySwitchLinear(
-            input: c.moeIntermediateSize, output: c.hiddenSize, experts: c.numExperts)
-    }
-    func callAsFunction(_ x: MLXArray, indices: MLXArray) -> MLXArray {
-        var input = x.expandedDimensions(axes: [-2, -3])
-        var selected = indices
-        let sorted = indices.size >= 64
-        var inverse: MLXArray?
-        if sorted {
-            let flat = indices.reshaped(-1)
-            let order = argSort(flat)
-            inverse = argSort(order)
-            input = input.reshaped(-1, 1, x.dim(-1))[order.floorDivide(indices.dim(-1))]
-            selected = flat[order]
-        }
-        let activated = mingTinySwiGLU(
-            up: up(input, indices: selected, sorted: sorted),
-            gate: gate(input, indices: selected, sorted: sorted), limit: limit)
-        var output = down(activated, indices: selected, sorted: sorted)
-        if let inverse {
-            output = output[inverse].reshaped(indices.shape + [1, x.dim(-1)])
-        }
-        return output.squeezed(axis: -2)
-    }
-}
 final class MingTinyRouter: Module {
     let config: MingTinyTextConfiguration
     let weight: MLXArray
@@ -318,14 +244,14 @@ final class MingTinyRouter: Module {
 }
 final class MingTinySparseMoE: MingTinyFeedForward {
     @ModuleInfo var gate: MingTinyRouter
-    @ModuleInfo(key: "switch_mlp") var experts: MingTinySwitchMLP
+    @ModuleInfo(key: "switch_mlp") var experts: MingSwitchMLP
     @ModuleInfo(key: "shared_experts") var shared: MingTinyMLP?
     init(_ c: MingTinyTextConfiguration, index: Int) {
         func limit(_ list: [Float]?) -> Float? {
             list.flatMap { index < $0.count ? $0[index] : nil }
         }
         _gate.wrappedValue = MingTinyRouter(c)
-        _experts.wrappedValue = MingTinySwitchMLP(c, limit: limit(c.expertSwiGLULimits))
+        _experts.wrappedValue = MingSwitchMLP(c, limit: limit(c.expertSwiGLULimits))
         if c.numSharedExperts > 0 {
             _shared.wrappedValue = MingTinyMLP(
                 hidden: c.hiddenSize,

@@ -2974,6 +2974,54 @@ struct ParakeetSTTTests {
         #expect(mergedLCS.map(\.id) == [1, 2, 3, 4])
     }
 
+    @Test func settledTokensSurviveEveryMergeBranch() {
+        func token(_ id: Int, _ start: Double, _ duration: Double = 0.2, _ text: String = " w") -> ParakeetAlignedToken {
+            .init(id: id, text: text, start: start, duration: duration)
+        }
+        func check(_ branch: String, _ a: [ParakeetAlignedToken], _ b: [ParakeetAlignedToken], tail: [Int]) {
+            let k = ParakeetModel.settledTokens(a, before: 9.0, overlapDuration: 1.0).count
+            let merged = (try? ParakeetAlignment.mergeLongestContiguous(a, b, overlapDuration: 1.0))
+                ?? ParakeetAlignment.mergeLongestCommonSubsequence(a, b, overlapDuration: 1.0)
+            let ids = merged.map(\.id)
+            #expect(Array(ids.prefix(k)) == a.prefix(k).map(\.id), "\(branch)")
+            #expect(Array(ids.dropFirst(k)) == tail, "\(branch)")
+        }
+
+        let a = (1...20).map { token($0, Double($0 - 1) * 0.5) }
+        #expect(ParakeetModel.settledTokens(a, before: 9.0, overlapDuration: 1.0).map(\.id) == Array(1...16))
+
+        check("a + b", a, [token(21, 9.8), token(22, 10.3)], tail: [17, 18, 19, 20, 21, 22])
+        check("few overlap tokens", a, [token(19, 9.1), token(21, 11.0)], tail: [17, 18, 19, 21])
+        check(
+            "contiguous match, revised tail",
+            Array(a.prefix(19)) + [token(20, 9.5), token(50, 9.6, 0, ".")],
+            [token(19, 9.02), token(20, 9.52), token(60, 9.6, 0.2, " seven"), token(61, 9.8, 0.2, " times")],
+            tail: [17, 18, 19, 20, 60, 61]
+        )
+        check(
+            "LCS fallback",
+            a, [token(19, 9.02), token(77, 9.3), token(20, 9.52), token(21, 10.0), token(22, 10.5)],
+            tail: [17, 18, 19, 77, 20, 21, 22]
+        )
+        check("LCS without pairs", a, [token(90, 9.1), token(91, 9.4), token(92, 10.0)], tail: [17, 18, 19, 91, 92])
+
+        var a6 = a
+        a6[14] = token(15, 7.0, 1.5)
+        #expect(ParakeetModel.settledTokens(a6, before: 9.0, overlapDuration: 1.0).map(\.id) == Array(1...14))
+        check(
+            "end times out of order",
+            a6, [token(19, 9.02), token(77, 9.3), token(20, 9.52), token(21, 10.0)],
+            tail: [15, 16, 17, 18, 19, 77, 20, 21]
+        )
+        check(
+            "token ending at the next chunk start is not settled",
+            Array(a.prefix(16))
+                + [token(17, 8.0), token(18, 8.55), token(19, 8.7), token(20, 8.8, 0.2, "."), token(21, 8.95)],
+            [token(18, 9.0), token(19, 9.1), token(22, 9.5)],
+            tail: [17, 18, 19, 22]
+        )
+    }
+
     @Test func melPreprocessingProducesExpectedShape() {
         let config = ParakeetPreprocessConfig(
             sampleRate: 16000,
@@ -4642,6 +4690,113 @@ struct WhisperTests {
         let hidden = encoder(features)
         // Conv2 has stride 2, so 3000 -> 1500.
         #expect(hidden.shape == [1, config.maxSourcePositions, config.dModel])
+    }
+
+    // Long-form decoding. Toy vocabulary: text 0..<8, end of text 8, <|notimestamps|> 9,
+    // timestamps from 10 (<|0.00|>) upward.
+    private static let tb = 10
+
+    private static func allowed(_ logits: MLXArray) -> [Int] {
+        let values = logits.asArray(Float.self)
+        return values.indices.filter { values[$0] > -1e8 }
+    }
+
+    private static func rules(_ generated: [Int], logits: [Float]? = nil) -> [Int] {
+        // By default text is far more likely than all timestamps together.
+        let raw = MLXArray(logits ?? (0 ..< 200).map { $0 < tb ? Float(10) : 0 })
+        return allowed(
+            WhisperModel.applyTimestampRules(
+                raw, generated: generated, timestampBegin: tb, endOfText: 8, noTimestamps: 9))
+    }
+
+    @Test func timestampRulesStartWithAnEarlyTimestamp() {
+        // First token: a timestamp no later than 1.0 s (index 50).
+        #expect(Self.rules([]) == Array(Self.tb ... Self.tb + 50))
+    }
+
+    @Test func timestampRulesPairAndNeverDecrease() {
+        // Inside a segment: text, end of text, or a timestamp after the opening one.
+        #expect(Self.rules([12, 3]) == Array(0 ... 8) + Array(13 ..< 200))
+        // Just closed a segment: end of text or the next opening timestamp, which may
+        // repeat the closing one.
+        #expect(Self.rules([12, 3, 14]) == [8] + Array(14 ..< 200))
+        // After a timestamp pair: text only (or end of text).
+        #expect(Self.rules([12, 3, 14, 14]) == Array(0 ... 8))
+    }
+
+    @Test func timestampRulesForceATimestampWhenTimestampsDominate() {
+        // Each text token alone is less likely than all timestamps together.
+        var logits = [Float](repeating: 0, count: 200)
+        for i in 0 ..< Self.tb { logits[i] = 1 }
+        #expect(Self.rules([12, 3], logits: logits) == Array(13 ..< 200))
+    }
+
+    @Test func splitWindowSeeksToTheLastClosedSegment() {
+        let tb = Self.tb
+        // Two closed segments (0.00-2.00, 2.00-3.00), then an unfinished one.
+        let split = WhisperModel.splitWindow(
+            tokens: [tb, 1, 2, tb + 100, tb + 100, 3, tb + 150, tb + 150, 4],
+            timestampBegin: tb, segmentFrames: 3000)
+        #expect(split.segments.count == 2)
+        #expect(split.segments[0].tokens == [tb, 1, 2, tb + 100])
+        #expect(abs(split.segments[1].start - 2.0) < 1e-9 && abs(split.segments[1].end - 3.0) < 1e-9)
+        #expect(split.seekFrames == 300)
+    }
+
+    @Test func splitWindowConsumesTheWindowAfterASingleTimestampEnding() {
+        let tb = Self.tb
+        let split = WhisperModel.splitWindow(
+            tokens: [tb, 1, tb + 50, tb + 50, 2, tb + 120], timestampBegin: tb, segmentFrames: 3000)
+        #expect(split.segments.map(\.tokens) == [[tb, 1, tb + 50], [tb + 50, 2, tb + 120]])
+        #expect(split.seekFrames == 3000)
+    }
+
+    @Test func splitWindowWithoutTimestampPairsIsOneSegment() {
+        let tb = Self.tb
+        let split = WhisperModel.splitWindow(tokens: [tb, 1, 2], timestampBegin: tb, segmentFrames: 1500)
+        #expect(split.segments.count == 1)
+        #expect(abs(split.segments[0].end - 15.0) < 1e-9)
+        #expect(split.seekFrames == 1500)
+    }
+
+    @Test(arguments: [
+        ([1, 2], "你好世界", ["你好", "世界"]),
+        ([3, 4, 5], "Hello  world!", ["Hello", "world", "!"]),
+    ])
+    func timestampedTranscriptPreservesTokenSpacing(
+        textTokens: [Int], expected: String, segmentTexts: [String]
+    ) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("whisper-tokenizer-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try JSONSerialization.data(withJSONObject: [
+            "model": [
+                "type": "BPE", "unk_token": "<unk>", "merges": [],
+                "vocab": ["<unk>": 0, "你好": 1, "世界": 2, " Hello": 3, "  world": 4, "!": 5],
+            ],
+        ]).write(to: directory.appendingPathComponent("tokenizer.json"))
+        try JSONSerialization.data(withJSONObject: [
+            "tokenizer_class": "PreTrainedTokenizerFast", "unk_token": "<unk>",
+            "clean_up_tokenization_spaces": false,
+        ]).write(to: directory.appendingPathComponent("tokenizer_config.json"))
+        let generationConfig = try JSONDecoder().decode(WhisperGenerationConfig.self, from: Data(
+            #"{"decoder_start_token_id":7,"eos_token_id":8,"no_timestamps_token_id":9,"is_multilingual":false}"#.utf8))
+        let tokenizer = try await WhisperTokenizer(
+            modelDirectory: directory, baseConfig: WhisperConfig(), generationConfig: generationConfig)
+        var transcript = WhisperModel.Transcript(tokenizer: tokenizer)
+        var streamed = ""
+        // These segments can come from one window or successive seek windows.
+        for (index, token) in textTokens.enumerated() {
+            transcript.append(
+                [Self.tb + index * 50, token, Self.tb + (index + 1) * 50],
+                start: Double(index), end: Double(index + 1),
+                onTokenDelta: { streamed += $0 }
+            )
+        }
+
+        #expect(transcript.text == expected)
+        #expect(transcript.text == streamed.trimmingCharacters(in: .whitespacesAndNewlines))
+        #expect(transcript.segments.compactMap { $0["text"] as? String } == segmentTexts)
     }
 }
 

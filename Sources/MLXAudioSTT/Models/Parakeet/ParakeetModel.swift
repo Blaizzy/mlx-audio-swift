@@ -239,8 +239,12 @@ public final class ParakeetModel: Module, STTGenerationModel {
                     overlapDuration: overlapDuration
                 )
 
+                let nextChunkStart = Double(start + stepSamples) / Double(sampleRate)
+                let streamTokens = isLast
+                    ? allTokens
+                    : Self.settledTokens(allTokens, before: nextChunkStart, overlapDuration: overlapDuration)
                 let currentResult = ParakeetAlignment.sentencesToResult(
-                    ParakeetAlignment.tokensToSentences(allTokens)
+                    ParakeetAlignment.tokensToSentences(streamTokens)
                 )
                 let fullText = currentResult.text
                 let nextText: String
@@ -914,6 +918,15 @@ public final class ParakeetModel: Module, STTGenerationModel {
         } catch {
             return ParakeetAlignment.mergeLongestCommonSubsequence(existing, incoming, overlapDuration: overlapDuration)
         }
+    }
+
+    // The next merge can only rewrite tokens from the first one ending after nextChunkStart - overlapDuration.
+    static func settledTokens(
+        _ tokens: [ParakeetAlignedToken],
+        before nextChunkStart: Double,
+        overlapDuration: Double
+    ) -> [ParakeetAlignedToken] {
+        Array(tokens.prefix { $0.end <= nextChunkStart - overlapDuration })
     }
 }
 
