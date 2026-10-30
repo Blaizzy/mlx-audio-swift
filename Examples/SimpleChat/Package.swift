@@ -13,7 +13,8 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../.."),
-        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", exact: "3.32.3"),
+        // mlx-swift 0.33 support is not yet available in a tagged mlx-swift-lm release.
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", revision: "128f49f1db38ea7b949f2ebb60967def8b76f58e"),
         .package(url: "https://github.com/huggingface/swift-huggingface.git", exact: "0.8.1"),
         .package(url: "https://github.com/huggingface/swift-transformers.git", exact: "1.1.9")
     ],
