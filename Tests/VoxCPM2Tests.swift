@@ -1,6 +1,7 @@
 import Foundation
 import MLX
 import Testing
+import Tokenizers
 
 @testable import MLXAudioCore
 @testable import MLXAudioTTS
@@ -12,6 +13,28 @@ struct VoxCPM2Tests {
             encoderDim: 4, encoderRates: [2], latentDim: 3,
             decoderDim: 8, decoderRates: [2], depthwise: true
         ))
+    }
+
+    @Test func multiCharacterChineseTokensAreFedOneCharacterAtATime() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let data =
+            #"{"model":{"type":"BPE","vocab":{"<unk>":0,"你":1,"好":2,"你好":3,"▁你好":4,"▁":5,"ab":6,"中国":7},"merges":[],"unk_token":"<unk>"}}"#
+        try Data(data.utf8).write(to: directory.appendingPathComponent("tokenizer.json"))
+        try Data(#"{"tokenizer_class":"GPT2Tokenizer","unk_token":"<unk>"}"#.utf8).write(
+            to: directory.appendingPathComponent("tokenizer_config.json"))
+        let tokenizer = try await AutoTokenizer.from(modelFolder: directory)
+
+        func split(_ id: Int) -> [Int] {
+            VoxCPM2Model.singleCharacterChineseIDs(for: id, tokenizer: tokenizer)
+        }
+        #expect(split(3) == [1, 2])
+        #expect(split(4) == [1, 2])
+        #expect(split(5) == [5])
+        #expect(split(6) == [6])
+        #expect(split(7) == [7])
     }
 
     @Test func rawVAEWeightsConvertConvolutionAndSnakeLayouts() throws {

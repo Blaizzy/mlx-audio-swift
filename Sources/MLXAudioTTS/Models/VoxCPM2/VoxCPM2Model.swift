@@ -248,7 +248,24 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
         if let last = ids.last, last == (tokenizer.eosTokenId ?? -1) {
             ids.removeLast()
         }
-        return ids
+        return ids.flatMap { Self.singleCharacterChineseIDs(for: $0, tokenizer: tokenizer) }
+    }
+
+    static func singleCharacterChineseIDs(for id: Int, tokenizer: Tokenizers.Tokenizer) -> [Int] {
+        guard let token = tokenizer.convertIdToToken(id) else { return [id] }
+        let word = token.replacingOccurrences(of: "▁", with: "")
+        let characters = word.unicodeScalars.map { String($0) }
+        guard characters.count >= 2,
+            word.unicodeScalars.allSatisfy({ (0x4E00 ... 0x9FFF).contains($0.value) }),
+            Self.vocabularyID(of: word, tokenizer: tokenizer) != nil
+        else { return [id] }
+        let ids = characters.compactMap { Self.vocabularyID(of: $0, tokenizer: tokenizer) }
+        return ids.count == characters.count ? ids : [id]
+    }
+
+    private static func vocabularyID(of token: String, tokenizer: Tokenizers.Tokenizer) -> Int? {
+        guard let id = tokenizer.convertTokenToId(token), id != tokenizer.unknownTokenId else { return nil }
+        return id
     }
 
     // MARK: - Generation
