@@ -245,10 +245,10 @@ struct Zonos2Tests {
         let empty = try await model.generateBatch(texts: [])
         #expect(empty.isEmpty)
         await #expect(throws: Zonos2Error.self) {
-            try await model.generateBatch(texts: ["one", "two"], refAudios: [MLXArray.zeros([500])])
+            try await model.generateBatch(texts: ["one", "two"], refAudios: [MLXArray.zeros([500]).materialized()])
         }
         await #expect(throws: Zonos2Error.self) {
-            try await model.generateBatch(texts: ["one"], speakerEmbeddings: MLXArray.zeros([2, 2048]))
+            try await model.generateBatch(texts: ["one"], speakerEmbeddings: MLXArray.zeros([2, 2048]).materialized())
         }
     }
 

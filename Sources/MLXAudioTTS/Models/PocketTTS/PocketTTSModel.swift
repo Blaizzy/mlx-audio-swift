@@ -94,14 +94,6 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         }
     }
 
-    private static func evaluatedWaveform(_ audio: MLXArray) -> sending MLXArray {
-        eval(audio)
-        // Completed waveform tensors are never mutated by subsequent decoder
-        // steps. Swift cannot infer this independence through MLX operations.
-        nonisolated(unsafe) let output = audio
-        return output
-    }
-
     public func initState() -> PocketTTSState {
         PocketTTSState(flowCache: flow_lm.makeCache())
     }
@@ -425,11 +417,11 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
     public func generate(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray? = nil,
+        refAudio: MaterializedArray? = nil,
         refText: String? = nil,
         language: String? = nil,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         _ = refText
         _ = language
 
@@ -440,17 +432,17 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         let prompt = try await resolveAudioPrompt(voice: voice, refAudio: refAudio)
         let state = try getStateForAudioPrompt(prompt)
 
-        return try generateAudio(state: state, text: text, framesAfterEos: nil, maxFrames: generationParameters.maxTokens)
+        return (try generateAudio(state: state, text: text, framesAfterEos: nil, maxFrames: generationParameters.maxTokens)).materialized()
     }
 
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text, voice: voice, refAudio: refAudio, refText: refText, language: language,
             generationParameters: generationParameters, streamingInterval: 2.0)
@@ -459,17 +451,15 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters,
         streamingInterval: Double
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
 
-        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self] in
-            let refAudio = refAudio.take()
             guard let self else { continuation.finish(); return }
             do {
                 guard streamingInterval.isFinite else { throw Self.modelError("Streaming interval must be finite") }
@@ -487,7 +477,7 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
                     let audio = buffer.count == 1 ? buffer[0] : concatenated(buffer, axis: 0)
                     buffer.removeAll(keepingCapacity: true)
                     bufferedSamples = 0
-                    continuation.yield(.audio(Self.evaluatedWaveform(audio)))
+                    continuation.yield(.audio(audio))
                 }
                 try self.forEachAudioChunk(
                     state: state, text: text, framesAfterEos: nil, maxFrames: generationParameters.maxTokens

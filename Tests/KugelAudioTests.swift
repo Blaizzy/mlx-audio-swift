@@ -104,7 +104,7 @@ struct KugelAudioTests {
             try await model.generate(text: "hello", options: .init(diffusionSteps: 0))
         }
         await #expect(throws: AudioGenerationError.self) {
-            try await model.generate(text: "hello", voice: nil, refAudio: .zeros([128]), refText: "hello",
+            try await model.generate(text: "hello", voice: nil, refAudio: MLXArray.zeros([128]).materialized(), refText: "hello",
                 language: nil, generationParameters: .init())
         }
     }

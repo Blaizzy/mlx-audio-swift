@@ -144,13 +144,13 @@ public final class KugelAudioModel: Module, SpeechGenerationModel, @unchecked Se
     }
 
     public func generate(text: String, options: KugelAudioGenerationOptions = .init(),
-                         generationParameters: GenerateParameters = .init(maxTokens: 2048, temperature: 0)) async throws -> sending MLXArray {
-        try synthesize(text: text, parameters: generationParameters, options: options)
+                         generationParameters: GenerateParameters = .init(maxTokens: 2048, temperature: 0)) async throws -> MaterializedArray {
+        try synthesize(text: text, parameters: generationParameters, options: options).materialized()
     }
-    public func generate(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
-                         language: String?, generationParameters: GenerateParameters) async throws -> sending MLXArray {
+    public func generate(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
+                         language: String?, generationParameters: GenerateParameters) async throws -> MaterializedArray {
         try validateReference(refAudio, refText: refText)
-        return try synthesize(text: text, parameters: generationParameters, options: generationOptions)
+        return (try synthesize(text: text, parameters: generationParameters, options: generationOptions)).materialized()
     }
     private func validateReference(_ audio: MLXArray?, refText: String?) throws {
         if audio != nil || refText != nil {
@@ -158,14 +158,14 @@ public final class KugelAudioModel: Module, SpeechGenerationModel, @unchecked Se
         }
     }
     /// KugelAudio decodes all latents together and emits one complete waveform.
-    public func generateStream(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
-                               language: String?, generationParameters: GenerateParameters) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let reference = SendingBox(refAudio)
+    public func generateStream(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
+                               language: String?, generationParameters: GenerateParameters) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let reference = refAudio
         let options = generationOptions
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    try self.validateReference(reference.take(), refText: refText)
+                    try self.validateReference(reference, refText: refText)
                     let audio = try self.synthesize(text: text, parameters: generationParameters, options: options)
                     continuation.yield(.audio(audio))
                     continuation.finish()

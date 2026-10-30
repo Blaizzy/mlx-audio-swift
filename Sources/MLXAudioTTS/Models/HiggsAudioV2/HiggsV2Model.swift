@@ -216,15 +216,15 @@ public final class HiggsV2Model: Module, SpeechGenerationModel, @unchecked Senda
         return clip(aligned[0..., 1..<(aligned.dim(1) - 1)], min: 0, max: configuration.audioCodebookSize - 1)
     }
 
-    public func generate(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
-                         language: String?, generationParameters: GenerateParameters) async throws -> sending MLXArray {
+    public func generate(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
+                         language: String?, generationParameters: GenerateParameters) async throws -> MaterializedArray {
         try await generate(text: text, refAudio: refAudio, refText: refText,
                            parameters: generationParameters, options: .init())
     }
 
-    public func generate(text: String, refAudio: sending MLXArray? = nil, refText: String? = nil,
+    public func generate(text: String, refAudio: MaterializedArray? = nil, refText: String? = nil,
                          parameters: GenerateParameters? = nil,
-                         options: HiggsV2GenerationOptions = .init()) async throws -> sending MLXArray {
+                         options: HiggsV2GenerationOptions = .init()) async throws -> MaterializedArray {
         guard let codec = _codec else {
             throw AudioGenerationError.modelNotInitialized("Higgs codec is unavailable")
         }
@@ -234,25 +234,25 @@ public final class HiggsV2Model: Module, SpeechGenerationModel, @unchecked Senda
         var pcm = codec.decode(codes.transposed(1, 0)).asType(.float32).asArray(Float.self)
         higgsV2Fade(&pcm, milliseconds: options.fadeInMilliseconds, sampleRate: sampleRate, fadeIn: true)
         higgsV2Fade(&pcm, milliseconds: options.fadeOutMilliseconds, sampleRate: sampleRate, fadeIn: false)
-        return MLXArray(pcm)
+        return (MLXArray(pcm)).materialized()
     }
 
-    public func generateStream(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
-                               language: String?, generationParameters: GenerateParameters) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    public func generateStream(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
+                               language: String?, generationParameters: GenerateParameters) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(text: text, refAudio: refAudio, refText: refText, parameters: generationParameters)
     }
 
-    public func generateStream(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
+    public func generateStream(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
                                language: String?, generationParameters: GenerateParameters,
-                               streamingInterval: Double) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+                               streamingInterval: Double) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(text: text, refAudio: refAudio, refText: refText, parameters: generationParameters,
                        streamingInterval: streamingInterval)
     }
 
-    public func generateStream(text: String, refAudio: sending MLXArray? = nil, refText: String? = nil,
+    public func generateStream(text: String, refAudio: MaterializedArray? = nil, refText: String? = nil,
                                parameters: GenerateParameters? = nil, options: HiggsV2GenerationOptions = .init(),
-                               streamingInterval: Double = 0.64) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let reference = SendingBox(refAudio)
+                               streamingInterval: Double = 0.64) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let reference = refAudio
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
         let task = Task { @Sendable [weak self] in
             guard let self else { continuation.finish(throwing: CancellationError()); return }
@@ -264,7 +264,7 @@ public final class HiggsV2Model: Module, SpeechGenerationModel, @unchecked Senda
                 guard let codec = self._codec else {
                     throw AudioGenerationError.modelNotInitialized("Higgs codec is unavailable")
                 }
-                let (prompt, mask) = try self.preparePrompt(text: text, refAudio: reference.take(), refText: refText, options: options)
+                let (prompt, mask) = try self.preparePrompt(text: text, refAudio: reference, refText: refText, options: options)
                 let interval = max(self.configuration.audioNumCodebooks + 2, Int(streamingInterval / 0.04))
                 var emittedAt = 0
                 var streamer = HiggsV2PCMStreamer(overlap: Int(options.overlapMilliseconds * Float(self.sampleRate) / 1000))

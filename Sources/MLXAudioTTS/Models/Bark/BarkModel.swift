@@ -137,19 +137,19 @@ public final class BarkModel: Module, SpeechGenerationModel, @unchecked Sendable
             fine: arrays["fine_prompt"]!)
     }
 
-    public func generate(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
-                         language: String?, generationParameters: GenerateParameters) async throws -> sending MLXArray {
+    public func generate(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
+                         language: String?, generationParameters: GenerateParameters) async throws -> MaterializedArray {
         guard refAudio == nil else {
             throw AudioGenerationError.invalidInput("Bark accepts token histories or speaker presets for conditioning")
         }
         let history: BarkHistory?
         if let voice { history = try await self.history(for: voice) } else { history = nil }
-        return try generate(text: text, history: history, parameters: generationParameters)
+        return try (generate(text: text, history: history, parameters: generationParameters)).materialized()
     }
 
     /// Generate with an explicit token history. Language is inferred from the multilingual text.
     public func generate(text: String, history: BarkHistory? = nil,
-                         parameters: GenerateParameters? = nil) throws -> MLXArray {
+                         parameters: GenerateParameters? = nil) throws -> MaterializedArray {
         guard let tokenizer, let codec else {
             throw AudioGenerationError.modelNotInitialized("Bark tokenizer and Encodec")
         }
@@ -173,7 +173,7 @@ public final class BarkModel: Module, SpeechGenerationModel, @unchecked Sendable
         let audio = codec.decode(codes, [nil]).reshaped([-1]).asType(.float32)
         eval(audio)
         try Task.checkCancellation()
-        return audio
+        return audio.materialized()
     }
 
     func semanticInput(_ tokens: [Int], history: BarkHistory?) -> [Int32] {
@@ -282,15 +282,15 @@ public final class BarkModel: Module, SpeechGenerationModel, @unchecked Sendable
     }
 
     /// Bark emits its complete utterance after the fine stage and codec finish.
-    public func generateStream(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
+    public func generateStream(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
                                language: String?, generationParameters: GenerateParameters)
-        -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let reference = SendingBox(refAudio)
+        -> AsyncThrowingStream<AudioGeneration, Error> {
+        let reference = refAudio
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
         let task = Task { @Sendable [weak self] in
             guard let self else { continuation.finish(); return }
             do {
-                let audio = try await self.generate(text: text, voice: voice, refAudio: reference.take(),
+                let audio = try await self.generate(text: text, voice: voice, refAudio: reference,
                     refText: refText, language: language, generationParameters: generationParameters)
                 continuation.yield(.audio(audio)); continuation.finish()
             } catch { continuation.finish(throwing: error) }

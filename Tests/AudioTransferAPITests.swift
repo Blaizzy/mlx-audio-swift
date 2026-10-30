@@ -12,6 +12,8 @@ struct AudioTransferAPITests {
         let producer = IndexTTSProducer()
         let first = try await producer.prepare()
         let firstSamples = first.embeddings.asArray(Float.self)
+        let sharedSamples = await Task.detached { first.embeddings.asArray(Float.self) }.value
+        #expect(sharedSamples == firstSamples)
         let second = try await producer.prepare()
         #expect(firstSamples == second.embeddings.asArray(Float.self))
         #expect(first.embeddings !== second.embeddings)
@@ -104,6 +106,8 @@ struct AudioTransferAPITests {
         let (rate, loaded) = try await loader.load(url)
         #expect(rate == 16_000)
         #expect(loaded.asArray(Float.self) == samples)
+        let shared = await Task.detached { loaded.asArray(Float.self) }.value
+        #expect(shared == loaded.asArray(Float.self))
         let (resampledRate, resampled) = try await loader.load(url, sampleRate: 8_000)
         #expect(resampledRate == 8_000)
         #expect(resampled.size == 160)
@@ -114,10 +118,10 @@ struct AudioTransferAPITests {
     }
 
     @MainActor
-    @Test func protocolTransfersInputAndResultWithoutCopying() async throws {
+    @Test func protocolSharesReferenceAndResultWithoutCopying() async throws {
         let model: any SpeechGenerationModel = TransferAPIProbe()
         let tensor = MLXArray([Float(1), 2, 3, 4, 5, 6])
-            .asType(.float16).reshaped([2, 3]).transposed(1, 0)
+            .asType(.float16).reshaped([2, 3]).transposed(1, 0).materialized()
         let identity = ObjectIdentifier(tensor)
         let audio = try await model.generate(
             text: "test", voice: nil, refAudio: tensor, refText: nil, language: nil)
@@ -125,6 +129,10 @@ struct AudioTransferAPITests {
         #expect(audio.shape == [3, 2])
         #expect(audio.dtype == .float16)
         #expect(audio.asArray(Float.self) == [1, 4, 2, 5, 3, 6])
+        let repeated = try await model.generate(
+            text: "again", voice: nil, refAudio: tensor, refText: nil, language: nil)
+        #expect(repeated === tensor)
+        #expect(await Task.detached { audio.asArray(Float.self) }.value == tensor.asArray(Float.self))
 
         let empty = try await model.generate(
             text: "test", voice: nil, refAudio: nil, refText: nil, language: nil)
@@ -132,9 +140,9 @@ struct AudioTransferAPITests {
     }
 
     @MainActor
-    @Test func eventsTransferAcrossActorBoundaryWithoutCopying() async throws {
+    @Test func eventsShareMaterializedAudioAcrossActorBoundary() async throws {
         let tensor = MLXArray([Float(1), 2, 3, 4, 5, 6])
-            .asType(.float16).reshaped([2, 3]).transposed(1, 0)
+            .asType(.float16).reshaped([2, 3]).transposed(1, 0).materialized()
         let identity = ObjectIdentifier(tensor)
         let producer = AudioEventProducer()
         let stream = await producer.events(refAudio: tensor)
@@ -160,6 +168,7 @@ struct AudioTransferAPITests {
             }
         }
         #expect(kinds == ["token", "progress", "info", "audio"])
+        #expect(tensor.asArray(Float.self) == [1, 4, 2, 5, 3, 6])
     }
 
     @MainActor
@@ -168,7 +177,7 @@ struct AudioTransferAPITests {
         let samples: [Float] = [0.125, -0.25, 0.5]
         var chunks: [[Float]] = []
         for try await chunk in model.generateSamplesStream(
-            text: "test", voice: nil, refAudio: MLXArray(samples), refText: nil, language: nil)
+            text: "test", voice: nil, refAudio: MLXArray(samples).materialized(), refText: nil, language: nil)
         {
             chunks.append(chunk)
         }
@@ -223,7 +232,7 @@ private actor DiarizationProducer {
         model = SortformerModel(try tinySortformerConfig())
     }
 
-    func stream(samples: [Float]) -> sending AsyncThrowingStream<DiarizationOutput, Error> {
+    func stream(samples: [Float]) -> AsyncThrowingStream<DiarizationOutput, Error> {
         model.generateStream(audio: MLXArray(samples), chunkDuration: 0.1)
     }
 }
@@ -238,23 +247,23 @@ private actor IndexTTSProducer {
         conditioning = MLXArray.zeros([1, config.gpt.conditionNumLatent, config.gpt.modelDim])
     }
 
-    func prepare() throws -> sending IndexTTSPreparedEmbedding {
+    func prepare() throws -> IndexTTSPreparedEmbedding {
         try core.prepareInputEmbedding(textTokenIDs: [1], conditioningLatents: conditioning)
     }
 
-    func generate() throws -> sending IndexTTSMelGeneration {
+    func generate() throws -> IndexTTSMelGeneration {
         try core.generateMelTokens(textTokenIDs: [1], conditioningLatents: conditioning, maxTokens: 2)
     }
 }
 
 private actor AudioLoader {
-    func load(_ url: URL, sampleRate: Int? = nil) throws -> sending (Int, MLXArray) {
+    func load(_ url: URL, sampleRate: Int? = nil) throws -> (Int, MaterializedArray) {
         try loadAudioArray(from: url, sampleRate: sampleRate)
     }
 }
 
 private actor AudioEventProducer {
-    func events(refAudio: sending MLXArray?) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    func events(refAudio: MaterializedArray?) -> AsyncThrowingStream<AudioGeneration, Error> {
         TransferAPIProbe().generateStream(
             text: "test", voice: nil, refAudio: refAudio, refText: nil, language: nil,
             generationParameters: GenerateParameters(maxTokens: 1))
@@ -266,20 +275,20 @@ private final class TransferAPIProbe: SpeechGenerationModel {
     let defaultGenerationParameters = GenerateParameters(maxTokens: 1)
 
     func generate(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
         language: String?, generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
-        refAudio ?? MLXArray([Float]())
+    ) async throws -> MaterializedArray {
+        refAudio ?? MLXArray([Float]()).materialized()
     }
 
     func generateStream(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
         language: String?, generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let input = SendingBox(refAudio)
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let input = refAudio
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
         let task = Task { @Sendable in
-            let audio = input.take() ?? MLXArray([Float]())
+            let audio = input ?? MLXArray([Float]())
             continuation.yield(.token(42))
             continuation.yield(.progress(1))
             continuation.yield(.info(AudioGenerationInfo(

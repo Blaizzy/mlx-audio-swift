@@ -35,7 +35,7 @@ transcript as `refText` to also seed the reference semantic tokens):
 let audio = try await model.generate(
     text: "This sentence is spoken in the reference voice.",
     voice: nil,
-    refAudio: referenceWaveform16k, refText: nil, language: nil,
+    refAudio: referenceWaveform16k.materialized(), refText: nil, language: nil,
     generationParameters: model.defaultGenerationParameters
 )
 ```

@@ -256,12 +256,12 @@ public final class EchoTTSModel: Module, @unchecked Sendable {
 
     func generateDetailed(
         text: String,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         rngSeed: Int = 0,
         numSteps: Int? = nil,
         sequenceLength: Int? = nil,
         blockSizes: [Int]? = nil
-    ) throws -> (audio: MLXArray, info: AudioGenerationInfo) {
+    ) throws -> (audio: MaterializedArray, info: AudioGenerationInfo) {
         let started = CFAbsoluteTimeGetCurrent()
         let preparedText = prepareText(text)
         try Task.checkCancellation()
@@ -319,7 +319,7 @@ public final class EchoTTSModel: Module, @unchecked Sendable {
             tokensPerSecond: Double(latents.shape[1]) / elapsed,
             peakMemoryUsage: Double(Memory.peakMemory) / 1e9
         )
-        return (waveform, info)
+        return (waveform.materialized(), info)
     }
 
     public static func fromPretrained(
@@ -386,34 +386,32 @@ extension EchoTTSModel: SpeechGenerationModel {
     public func generate(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         _ = voice
         _ = refText
         _ = language
-        return try generateDetailed(
+        return (try generateDetailed(
             text: text,
             refAudio: refAudio,
             rngSeed: 0,
             sequenceLength: generationParameters.maxTokens
-        ).audio
+        ).audio).materialized()
     }
 
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
-        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self] in
-            let refAudio = refAudio.take()
             guard let self else {
                 continuation.finish(throwing: AudioGenerationError.modelNotInitialized("Model deallocated"))
                 return

@@ -24,18 +24,35 @@ func resolveChatterboxEmotionAdv(default value: MLXArray, override: Float?) -> M
 // MARK: - Default Voice Conditioning
 
 /// Pre-computed voice conditioning loaded from conds.safetensors (Turbo default voice).
-public struct DefaultConditioning {
+public struct DefaultConditioning: Sendable {
     /// T3 conditioning
-    public var speakerEmb: MLXArray           // (1, 256)
-    public var condPromptSpeechTokens: MLXArray // (1, T)
-    public var emotionAdv: MLXArray           // (1, 1, 1)
+    public var speakerEmb: MaterializedArray           // (1, 256)
+    public var condPromptSpeechTokens: MaterializedArray // (1, T)
+    public var emotionAdv: MaterializedArray           // (1, 1, 1)
 
     /// S3Gen conditioning
-    public var xVector: MLXArray              // (1, 192)
-    public var promptToken: MLXArray          // (1, T)
-    public var promptTokenLen: MLXArray       // (1,)
-    public var promptFeat: MLXArray           // (1, T, 80)
-    public var promptFeatLen: MLXArray        // not stored — derived from promptFeat
+    public var xVector: MaterializedArray              // (1, 192)
+    public var promptToken: MaterializedArray          // (1, T)
+    public var promptTokenLen: MaterializedArray       // (1,)
+    public var promptFeat: MaterializedArray           // (1, T, 80)
+    public var promptFeatLen: MaterializedArray        // not stored — derived from promptFeat
+
+    public init(
+        speakerEmb: MLXArray, condPromptSpeechTokens: MLXArray, emotionAdv: MLXArray,
+        xVector: MLXArray, promptToken: MLXArray, promptTokenLen: MLXArray,
+        promptFeat: MLXArray, promptFeatLen: MLXArray
+    ) {
+        let tensors = materialize([speakerEmb, condPromptSpeechTokens, emotionAdv,
+                                   xVector, promptToken, promptTokenLen, promptFeat, promptFeatLen])
+        self.speakerEmb = tensors[0]
+        self.condPromptSpeechTokens = tensors[1]
+        self.emotionAdv = tensors[2]
+        self.xVector = tensors[3]
+        self.promptToken = tensors[4]
+        self.promptTokenLen = tensors[5]
+        self.promptFeat = tensors[6]
+        self.promptFeatLen = tensors[7]
+    }
 }
 
 // MARK: - Chatterbox Model
@@ -680,11 +697,11 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
     public func generate(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         // Use reference audio, or fall back to default conditioning
         let t3Cond: T3Cond
         let xVector: MLXArray
@@ -855,22 +872,20 @@ public final class ChatterboxModel: Module, SpeechGenerationModel, @unchecked Se
         }
 
         print("[Chatterbox] Stage 3 complete: waveform \(waveform.shape) in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - vocStart))s")
-        return waveform
+        return waveform.materialized()
     }
 
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
 
-        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self] in
-            let refAudio = refAudio.take()
             guard let self else {
                 continuation.finish(throwing: AudioGenerationError.modelNotInitialized("Model deallocated"))
                 return

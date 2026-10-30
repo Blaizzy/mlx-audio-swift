@@ -105,7 +105,7 @@ public final class OuteTTSModel: Module, SpeechGenerationModel, @unchecked Senda
         return speaker
     }
 
-    func decode(_ tokens: [Int], map: OuteTTSTokenMap, codec: DescriptDAC) throws -> sending MLXArray? {
+    func decode(_ tokens: [Int], map: OuteTTSTokenMap, codec: DescriptDAC) throws -> MaterializedArray? {
         let codes = map.extract(tokens)
         guard !codes[0].isEmpty else { return nil }
         var chunks = [MLXArray]()
@@ -117,13 +117,13 @@ public final class OuteTTSModel: Module, SpeechGenerationModel, @unchecked Senda
             eval(audio)
             chunks.append(audio)
         }
-        return try OuteTTSAudio.normalize(concatenated(chunks), sampleRate: sampleRate)
+        return (try OuteTTSAudio.normalize(concatenated(chunks), sampleRate: sampleRate)).materialized()
     }
 
     private func synthesize(
         text: String, voice: String?, refAudio: MLXArray?, refText: String?,
         parameters: GenerateParameters, streamingInterval: Double?,
-        emit: (sending AudioGeneration) -> Void
+        emit: (AudioGeneration) -> Void
     ) throws {
         guard let tokenizer, let map = tokenMap, let codec else {
             throw AudioGenerationError.modelNotInitialized("OuteTTS tokenizer and DAC codec")
@@ -203,34 +203,34 @@ public final class OuteTTSModel: Module, SpeechGenerationModel, @unchecked Senda
     }
 
     public func generate(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         var samples = [MLXArray]()
         try synthesize(text: text, voice: voice, refAudio: refAudio, refText: refText,
                        parameters: generationParameters, streamingInterval: nil) {
             if case .audio(let audio) = $0 { samples.append(audio) }
         }
-        return concatenated(samples)
+        return (concatenated(samples)).materialized()
     }
 
     public func generateStream(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(text: text, voice: voice, refAudio: refAudio, refText: refText,
                        language: language, generationParameters: generationParameters, streamingInterval: 2)
     }
 
     public func generateStream(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
         generationParameters: GenerateParameters, streamingInterval: Double
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let reference = SendingBox(refAudio)
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let reference = refAudio
         return AsyncThrowingStream { continuation in
             let task = Task { @Sendable in
                 do {
-                    try self.synthesize(text: text, voice: voice, refAudio: reference.take(), refText: refText,
+                    try self.synthesize(text: text, voice: voice, refAudio: reference, refText: refText,
                                         parameters: generationParameters, streamingInterval: streamingInterval) {
                         continuation.yield($0)
                     }

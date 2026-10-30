@@ -971,7 +971,7 @@ final class Qwen3TTSSpeechTokenizerDecoder: Module {
     }
 
     /// Incrementally decode only new codec tokens.
-    func streamingStep(_ codes: MLXArray) -> sending MLXArray {
+    func streamingStep(_ codes: MLXArray) -> MaterializedArray {
         if transformerCache == nil {
             transformerCache = preTransformer.makeCache()
         }
@@ -1006,13 +1006,7 @@ final class Qwen3TTSSpeechTokenizerDecoder: Module {
         }
 
         let clipped = clip(wav, min: -1, max: 1)
-        eval(clipped)
-        // This final clipped output is not stored in the decoder's caches.
-        // Complete its lazy graph before transfer so subsequent decoder steps
-        // cannot race with evaluation by the consumer. Swift cannot infer this
-        // independence from MLX's tensor operations.
-        nonisolated(unsafe) let output = clipped
-        return output
+        return clipped.materialized()
     }
 
     func chunkedDecode(_ codes: MLXArray, chunkSize: Int = 300, leftContextSize: Int = 25) -> MLXArray {
@@ -1088,8 +1082,7 @@ final class Qwen3TTSSpeechTokenizer: Module {
         while startIndex < totalTokens {
             let endIndex = min(startIndex + chunkTokens, totalTokens)
             let chunk = codes[0..., 0..., startIndex ..< endIndex]
-            var wavChunk = decoder.streamingStep(chunk)
-            wavChunk = wavChunk.squeezed(axis: 1)
+            let wavChunk = decoder.streamingStep(chunk).squeezed(axis: 1)
             eval(wavChunk)
             chunks.append(wavChunk)
             Memory.clearCache()

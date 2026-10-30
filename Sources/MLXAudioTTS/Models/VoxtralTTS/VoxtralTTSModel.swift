@@ -7,8 +7,9 @@ import MLXRandom
 import MLXAudioCore
 
 private final class VoxtralTTSVoices {
+    let lock = NSLock()
     var files: [String: URL] = [:]
-    var embeddings: [String: MLXArray] = [:]
+    var embeddings: [String: MaterializedArray] = [:]
 }
 
 /// Multilingual Voxtral speech synthesis with preset voices and incremental codec decoding.
@@ -18,7 +19,7 @@ public final class VoxtralTTSModel: Module, SpeechGenerationModel, @unchecked Se
     public var generationOptions = VoxtralTTSGenerationOptions()
     public var sampleRate: Int { configuration.sampleRate }
     public var defaultGenerationParameters: GenerateParameters { .init(maxTokens: 4096, temperature: 0) }
-    public var availableVoices: [String] { voices.files.keys.sorted() }
+    public var availableVoices: [String] { voices.lock.withLock { voices.files.keys.sorted() } }
     let backbone: VoxtralTTSBackbone
     @ModuleInfo(key: "acoustic_transformer") var acousticHead: VoxtralTTSAcousticHead
     @ModuleInfo(key: "audio_tokenizer") var audioDecoder: VoxtralTTSAudioDecoder
@@ -33,10 +34,16 @@ public final class VoxtralTTSModel: Module, SpeechGenerationModel, @unchecked Se
         _audioDecoder.wrappedValue = VoxtralTTSAudioDecoder(configuration)
         _audioEmbeddings.wrappedValue = Embedding(embeddingCount: configuration.audioEmbeddingCount, dimensions: configuration.dim)
     }
-    func registerVoice(_ name: String, file: URL) { voices.files[name] = file }
-    func voiceEmbedding(_ name: String) throws -> MLXArray {
-        if let cached = voices.embeddings[name] { return cached }
-        guard let file = voices.files[name] else { throw AudioGenerationError.invalidInput("Missing Voxtral voice embedding: \(name)") }
+    func registerVoice(_ name: String, file: URL) {
+        voices.lock.lock()
+        defer { voices.lock.unlock() }
+        voices.files[name] = file
+        voices.embeddings[name] = nil
+    }
+    func voiceEmbedding(_ name: String) throws -> MaterializedArray {
+        let (cached, file) = voices.lock.withLock { (voices.embeddings[name], voices.files[name]) }
+        if let cached { return cached }
+        guard let file else { throw AudioGenerationError.invalidInput("Missing Voxtral voice embedding: \(name)") }
         let arrays = try MLX.loadArrays(url: file)
         guard let value = arrays["embedding"] ?? (arrays.count == 1 ? arrays.values.first : nil),
               let expected = textProcessor?.voiceLengths[name], value.shape == [expected,configuration.dim] else {
@@ -44,8 +51,12 @@ public final class VoxtralTTSModel: Module, SpeechGenerationModel, @unchecked Se
         }
         eval(value)
         guard isFinite(value).all().item(Bool.self) else { throw AudioGenerationError.invalidInput("Nonfinite Voxtral voice embedding: \(name)") }
-        voices.embeddings[name] = value
-        return value
+        let embedding = value.materialized()
+        return voices.lock.withLock {
+            if let cached = voices.embeddings[name] { return cached }
+            if voices.files[name] == file { voices.embeddings[name] = embedding }
+            return embedding
+        }
     }
     func promptTokens(_ text: String, voice: String, options: VoxtralTTSGenerationOptions) throws -> [Int] {
         guard let textProcessor else { throw AudioGenerationError.modelNotInitialized("Voxtral speech tokenizer") }
@@ -78,7 +89,7 @@ public final class VoxtralTTSModel: Module, SpeechGenerationModel, @unchecked Se
     }
     private func synthesize(text: String, voice: String, parameters: GenerateParameters,
                             options: VoxtralTTSGenerationOptions, interval: Double? = nil,
-                            emit: ((sending MLXArray) -> Void)? = nil) throws -> sending MLXArray {
+                            emit: ((MLXArray) -> Void)? = nil) throws -> MaterializedArray {
         try Task.checkCancellation()
         try validate(parameters, options: options, refAudio: nil, refText: nil, interval: interval)
         if let seed = parameters.seed { MLXRandom.seed(seed) }
@@ -109,10 +120,10 @@ public final class VoxtralTTSModel: Module, SpeechGenerationModel, @unchecked Se
             }
         }
         guard !frames.isEmpty else { throw AudioGenerationError.generationFailed("Voxtral generated no audio frames") }
-        if yielded == frames.count { return .zeros([0]) }
+        if yielded == frames.count { return MLXArray.zeros([0]).materialized() }
         return decodeChunk(frames, from: yielded)
     }
-    func decodeChunk(_ frames: [MLXArray], from start: Int) -> sending MLXArray {
+    func decodeChunk(_ frames: [MLXArray], from start: Int) -> MaterializedArray {
         let contextStart = max(0, start - 16)
         let codes = concatenated(Array(frames[contextStart...]), axis: 1)
         let audio = audioDecoder.decode(codes).reshaped(-1)
@@ -120,30 +131,29 @@ public final class VoxtralTTSModel: Module, SpeechGenerationModel, @unchecked Se
         let result = audio[trim...].asType(.float32)
         eval(result)
         // The evaluated waveform owns fresh output storage; it aliases neither model parameters nor codes.
-        nonisolated(unsafe) let output = result
-        return output
+        return result.materialized()
     }
     public func generate(text: String, voice: String = "casual_male", options: VoxtralTTSGenerationOptions = .init(),
-                         generationParameters: GenerateParameters = .init(maxTokens: 4096, temperature: 0)) async throws -> sending MLXArray {
+                         generationParameters: GenerateParameters = .init(maxTokens: 4096, temperature: 0)) async throws -> MaterializedArray {
         try synthesize(text: text, voice: voice, parameters: generationParameters, options: options)
     }
-    public func generate(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
-                         language: String?, generationParameters: GenerateParameters) async throws -> sending MLXArray {
+    public func generate(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
+                         language: String?, generationParameters: GenerateParameters) async throws -> MaterializedArray {
         try validate(generationParameters, options: generationOptions, refAudio: refAudio, refText: refText, interval: nil)
-        return try synthesize(text: text, voice: voice ?? "casual_male", parameters: generationParameters, options: generationOptions)
+        return (try synthesize(text: text, voice: voice ?? "casual_male", parameters: generationParameters, options: generationOptions)).materialized()
     }
-    public func generateStream(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
-                               language: String?, generationParameters: GenerateParameters) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    public func generateStream(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
+                               language: String?, generationParameters: GenerateParameters) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(text: text, voice: voice, refAudio: refAudio, refText: refText, language: language,
                        generationParameters: generationParameters, streamingInterval: 2)
     }
-    public func generateStream(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
-                               language: String?, generationParameters: GenerateParameters, streamingInterval: Double) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let reference = SendingBox(refAudio), options = generationOptions
+    public func generateStream(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
+                               language: String?, generationParameters: GenerateParameters, streamingInterval: Double) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let reference = refAudio, options = generationOptions
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    try self.validate(generationParameters, options: options, refAudio: reference.take(), refText: refText, interval: streamingInterval)
+                    try self.validate(generationParameters, options: options, refAudio: reference, refText: refText, interval: streamingInterval)
                     let audio = try self.synthesize(text: text, voice: voice ?? "casual_male", parameters: generationParameters,
                         options: options, interval: streamingInterval, emit: { continuation.yield(.audio($0)) })
                     if audio.size > 0 { continuation.yield(.audio(audio)) }

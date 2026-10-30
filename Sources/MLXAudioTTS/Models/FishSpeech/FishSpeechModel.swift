@@ -539,11 +539,11 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
     public func generate(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         _ = voice
         _ = language
 
@@ -561,17 +561,17 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
             onSegment: { segments.append($0) }
         )
         try Task.checkCancellation()
-        return concatenateAudioSegments(segments)
+        return (concatenateAudioSegments(segments)).materialized()
     }
 
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text,
             voice: voice,
@@ -586,19 +586,17 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters,
         streamingInterval: Double
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         _ = voice
         _ = language
 
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
-        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self] in
-            let refAudio = refAudio.take()
             guard let self else {
                 continuation.finish()
                 return
@@ -915,7 +913,7 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
         return MLXArray(rows.flatMap { $0 }).reshaped([model.numCodebooks, generatedSteps.count])
     }
 
-    private func decodeCodes(_ codes: MLXArray, speed: Float) throws -> sending MLXArray {
+    private func decodeCodes(_ codes: MLXArray, speed: Float) throws -> MaterializedArray {
         guard let codec else {
             throw AudioGenerationError.modelNotInitialized("Codec not loaded")
         }
@@ -931,8 +929,7 @@ public final class FishSpeechModel: Module, SpeechGenerationModel, @unchecked Se
         // The codec does not retain this output. Evaluation completes its lazy
         // graph before transfer; no producer accesses this waveform afterward.
         // MLX's operations do not express that independence to Swift's checker.
-        nonisolated(unsafe) let output = waveform
-        return output
+        return waveform.materialized()
     }
 
     private func generateSegments(

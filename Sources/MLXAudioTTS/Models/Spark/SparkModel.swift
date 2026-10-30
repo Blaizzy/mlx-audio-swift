@@ -126,11 +126,11 @@ public final class SparkModel: SpeechGenerationModel, @unchecked Sendable {
     public func generate(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         var refGlobalIds: [Int]? = nil
         let prompt: String
         if let refAudio {
@@ -184,17 +184,17 @@ public final class SparkModel: SpeechGenerationModel, @unchecked Sendable {
         let audio = bicodec.detokenize(semanticTokens: s, globalTokens: g)
         eval(audio)
         Memory.clearCache()
-        return audio
+        return audio.materialized()
     }
 
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text, voice: voice, refAudio: refAudio, refText: refText,
             language: language, generationParameters: generationParameters, streamingInterval: 2.0)
@@ -203,16 +203,14 @@ public final class SparkModel: SpeechGenerationModel, @unchecked Sendable {
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters,
         streamingInterval: Double
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
-        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self] in
-            let refAudio = refAudio.take()
             guard let self else { continuation.finish(); return }
             do {
                 let audio = try await self.generate(

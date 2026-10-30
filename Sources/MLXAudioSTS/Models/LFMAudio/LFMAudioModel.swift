@@ -44,9 +44,17 @@ public struct LFMGenerationConfig: Sendable {
 
 // MARK: - Generation Output
 
-public enum LFMGenerationOutput: @unchecked Sendable {
-    case text(MLXArray)
-    case audio(MLXArray)
+public enum LFMGenerationOutput: Sendable {
+    case text(MaterializedArray)
+    case audio(MaterializedArray)
+
+    public static func text(_ tokens: MLXArray) -> LFMGenerationOutput {
+        .text(tokens.materialized())
+    }
+
+    public static func audio(_ codes: MLXArray) -> LFMGenerationOutput {
+        .audio(codes.materialized())
+    }
 }
 
 // MARK: - Audio Embedding
@@ -396,7 +404,7 @@ public class LFM2AudioModel: Module, STSModel, @unchecked Sendable {
         audioCodes: MLXArray? = nil,
         modalities: MLXArray? = nil,
         config genConfig: LFMGenerationConfig = LFMGenerationConfig()
-    ) -> AsyncThrowingStream<(MLXArray, LFMModality), Error> {
+    ) -> AsyncThrowingStream<(MaterializedArray, LFMModality), Error> {
         AsyncThrowingStream { continuation in
             let nText = config.interleavedNText
             let nAudio = config.interleavedNAudio
@@ -423,7 +431,7 @@ public class LFM2AudioModel: Module, STSModel, @unchecked Sendable {
 
                     if tokenId == lfmImEndToken { break }
 
-                    continuation.yield((textToken, .text))
+                    continuation.yield((textToken.materialized(), .text))
 
                     if tokenId == lfmTextEndToken { textDone = true }
 
@@ -446,7 +454,7 @@ public class LFM2AudioModel: Module, STSModel, @unchecked Sendable {
 
                     if audioFrame[0, 0].item(Int.self) == lfmAudioEOSToken {
                         let eosFrame = MLX.full(audioFrame.shape, values: MLXArray(Int32(lfmAudioEOSToken)), type: Int32.self)
-                        continuation.yield((eosFrame.squeezed(axis: 0), .audioOut))
+                        continuation.yield((eosFrame.squeezed(axis: 0).materialized(), .audioOut))
 
                         // Embed EOS back into the model
                         let nextEmb = embedAudioOut(eosFrame).expandedDimensions(axis: 1)
@@ -458,7 +466,7 @@ public class LFM2AudioModel: Module, STSModel, @unchecked Sendable {
                         continue
                     }
 
-                    continuation.yield((audioFrame.squeezed(axis: 0), .audioOut))
+                    continuation.yield((audioFrame.squeezed(axis: 0).materialized(), .audioOut))
 
                     let nextEmb = embedAudioOut(audioFrame).expandedDimensions(axis: 1)
                     lastHidden = lfm(inputEmbeddings: nextEmb, cache: cache)
@@ -485,7 +493,7 @@ public class LFM2AudioModel: Module, STSModel, @unchecked Sendable {
         audioCodes: MLXArray? = nil,
         modalities: MLXArray? = nil,
         config genConfig: LFMGenerationConfig = LFMGenerationConfig()
-    ) -> AsyncThrowingStream<(MLXArray, LFMModality), Error> {
+    ) -> AsyncThrowingStream<(MaterializedArray, LFMModality), Error> {
         AsyncThrowingStream { continuation in
             let (hiddenStates, cache) = prefill(
                 textTokens: textTokens, audioFeatures: audioFeatures,
@@ -511,7 +519,7 @@ public class LFM2AudioModel: Module, STSModel, @unchecked Sendable {
                     let tokenId = textToken.item(Int.self)
 
                     if tokenId == lfmImEndToken {
-                        continuation.yield((textToken, .text))
+                        continuation.yield((textToken.materialized(), .text))
                         break
                     }
 
@@ -522,7 +530,7 @@ public class LFM2AudioModel: Module, STSModel, @unchecked Sendable {
                         continue
                     }
 
-                    continuation.yield((textToken, .text))
+                    continuation.yield((textToken.materialized(), .text))
 
                     let nextEmb = embedText(MLXArray([Int32(tokenId)]).reshaped(1, 1))
                     lastHidden = lfm(inputEmbeddings: nextEmb, cache: cache)
@@ -537,14 +545,14 @@ public class LFM2AudioModel: Module, STSModel, @unchecked Sendable {
                     if audioFrame[0, 0].item(Int.self) == lfmAudioEOSToken {
                         let eosFrame = MLX.full(audioFrame.shape, values: MLXArray(Int32(lfmAudioEOSToken)), type: Int32.self)
                         currentModality = .text
-                        continuation.yield((eosFrame.squeezed(axis: 0), .audioOut))
+                        continuation.yield((eosFrame.squeezed(axis: 0).materialized(), .audioOut))
                         let nextEmb = embedAudioOut(eosFrame).expandedDimensions(axis: 1)
                         lastHidden = lfm(inputEmbeddings: nextEmb, cache: cache)
                         generated += 1
                         continue
                     }
 
-                    continuation.yield((audioFrame.squeezed(axis: 0), .audioOut))
+                    continuation.yield((audioFrame.squeezed(axis: 0).materialized(), .audioOut))
 
                     let nextEmb = embedAudioOut(audioFrame).expandedDimensions(axis: 1)
                     lastHidden = lfm(inputEmbeddings: nextEmb, cache: cache)

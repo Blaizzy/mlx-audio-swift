@@ -609,11 +609,11 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
     public func generate(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language _: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         try await generate(
             text: text,
             voice: voice,
@@ -627,11 +627,11 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language _: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text,
             voice: voice,
@@ -653,11 +653,11 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
     ///   - refText: Optional transcript of reference audio
     ///   - cache: Optional reusable cache container; calls sharing it are serialized
     ///   - parameters: Generation parameters
-    /// - Returns: Generated audio as MLXArray
+    /// - Returns: Generated audio as an immutable MaterializedArray
     public func generate(
         text: String,
         voice: String? = nil,
-        refAudio: sending MLXArray? = nil,
+        refAudio: MaterializedArray? = nil,
         refText: String? = nil,
         cache: TTSGenerationCache? = nil,
         parameters: GenerateParameters = GenerateParameters(
@@ -667,12 +667,10 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
             repetitionPenalty: 1.3,
             repetitionContextSize: 20
         )
-    ) async throws -> sending MLXArray {
-        let refAudio = SendingBox(refAudio)
+    ) async throws -> MaterializedArray {
         let result = try await (cache ?? TTSGenerationCache()).withCache(
             model: self, makeCache: { self.makeCache() }
         ) { cache in
-            let refAudio = refAudio.take()
             guard let snacModel = _snacModel else {
                 throw LlamaTTSError.modelNotInitialized("SNAC model not loaded")
             }
@@ -759,9 +757,9 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
 
             Memory.clearCache()
 
-            return SendingBox(audio)
+            return audio.materialized()
         }
-        return result.take()
+        return result
     }
 
     /// Generate audio with streaming token output.
@@ -777,7 +775,7 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
     public func generateStream(
         text: String,
         voice: String? = nil,
-        refAudio: sending MLXArray? = nil,
+        refAudio: MaterializedArray? = nil,
         refText: String? = nil,
         cache: TTSGenerationCache? = nil,
         parameters: GenerateParameters = GenerateParameters(
@@ -789,7 +787,6 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
         )
     ) -> sending AsyncThrowingStream<LlamaTTSGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<LlamaTTSGeneration, Error>.makeStream()
-        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self] in
             guard let self else {
                 continuation.finish(throwing: CancellationError())
@@ -800,7 +797,6 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
                 try await (cache ?? TTSGenerationCache()).withCache(
                     model: self, makeCache: { self.makeCache() }
                 ) { cache in
-                    let refAudio = refAudio.take()
                     guard let snacModel = self._snacModel else {
                         throw LlamaTTSError.modelNotInitialized("SNAC model not loaded")
                     }

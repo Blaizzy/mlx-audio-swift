@@ -141,7 +141,7 @@ public final class MingDenseModel: Module, SpeechGenerationModel, @unchecked Sen
         return audio[..<min(count * frame, (last + 1) * frame + tail)]
     }
     private func run(text: String, voice: String?, refAudio: MLXArray?, refText: String?, language: String?,
-                     parameters: GenerateParameters, emit: ((sending MLXArray) throws -> Void)? = nil) throws -> MLXArray {
+                     parameters: GenerateParameters, emit: ((MLXArray) throws -> Void)? = nil) throws -> MLXArray {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AudioGenerationError.invalidInput("Ming text is empty") }
         var controls = options
         if configuration.isMing3, let voice, refAudio == nil, MingText.isVoice(voice) {
@@ -206,17 +206,17 @@ public final class MingDenseModel: Module, SpeechGenerationModel, @unchecked Sen
         }
         return parts.count == 1 ? parts[0] : concatenated(parts, axis: 0)
     }
-    public func generate(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
-                         language: String?, generationParameters: GenerateParameters) async throws -> sending MLXArray {
-        try run(text: text, voice: voice, refAudio: refAudio, refText: refText, language: language, parameters: generationParameters)
+    public func generate(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
+                         language: String?, generationParameters: GenerateParameters) async throws -> MaterializedArray {
+        try run(text: text, voice: voice, refAudio: refAudio, refText: refText, language: language, parameters: generationParameters).materialized()
     }
-    public func generateStream(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
-                               language: String?, generationParameters: GenerateParameters) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let reference = SendingBox(refAudio)
+    public func generateStream(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
+                               language: String?, generationParameters: GenerateParameters) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let reference = refAudio
         return AsyncThrowingStream { continuation in
             let task = Task { @Sendable in
                 do {
-                    _ = try self.run(text: text, voice: voice, refAudio: reference.take(), refText: refText,
+                    _ = try self.run(text: text, voice: voice, refAudio: reference, refText: refText,
                         language: language, parameters: generationParameters) { continuation.yield(.audio($0)) }
                     continuation.finish()
                 } catch { continuation.finish(throwing: error) }

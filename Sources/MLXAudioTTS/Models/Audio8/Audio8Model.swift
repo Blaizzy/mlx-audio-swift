@@ -173,35 +173,33 @@ public final class Audio8Model: Module, SpeechGenerationModel, @unchecked Sendab
         return (audio, prompt.shape[2], codes.shape[2])
     }
 
-    public func generate(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
-                         generationParameters: GenerateParameters) async throws -> sending MLXArray {
+    public func generate(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
+                         generationParameters: GenerateParameters) async throws -> MaterializedArray {
         try await generate(text: text, refAudio: refAudio, refText: refText,
                            generationParameters: generationParameters, options: .init())
     }
-    public func generate(text: String, refAudio: sending MLXArray? = nil, refText: String? = nil,
+    public func generate(text: String, refAudio: MaterializedArray? = nil, refText: String? = nil,
                          generationParameters: GenerateParameters? = nil,
-                         options: Audio8GenerationOptions = .init()) async throws -> sending MLXArray {
+                         options: Audio8GenerationOptions = .init()) async throws -> MaterializedArray {
         let (audio, _, _) = try run(text: text, reference: refAudio, transcript: refText,
                          parameters: generationParameters ?? defaultGenerationParameters, options: options)
-        nonisolated(unsafe) let result = audio
-        return result
+        return audio.materialized()
     }
     /// Audio8's reference generation emits one complete waveform per request.
-    public func generateStream(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
-                               generationParameters: GenerateParameters) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let reference = SendingBox(refAudio)
+    public func generateStream(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
+                               generationParameters: GenerateParameters) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let reference = refAudio
         return AsyncThrowingStream { continuation in
             let task = Task { @Sendable [self] in
                 do {
                     let start = Date()
-                    let (audio, prompt, frames) = try run(text: text, reference: reference.take(), transcript: refText,
+                    let (audio, prompt, frames) = try run(text: text, reference: reference, transcript: refText,
                                                          parameters: generationParameters, options: .init())
                     let elapsed = Date().timeIntervalSince(start)
                     let info = AudioGenerationInfo(promptTokenCount: prompt, generationTokenCount: frames,
                         prefillTime: 0, generateTime: elapsed, tokensPerSecond: Double(frames) / max(elapsed, 1e-6),
                         peakMemoryUsage: Double(Memory.peakMemory) / 1e9)
-                    nonisolated(unsafe) let output = audio
-                    if case .terminated = continuation.yield(.audio(output)) { throw CancellationError() }
+                    if case .terminated = continuation.yield(.audio(audio)) { throw CancellationError() }
                     continuation.yield(.info(info)); continuation.finish()
                 } catch { continuation.finish(throwing: error) }
             }

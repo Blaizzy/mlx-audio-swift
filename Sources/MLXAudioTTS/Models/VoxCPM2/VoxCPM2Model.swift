@@ -256,11 +256,11 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
     public func generate(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         let maxTokens = generationParameters.maxTokens ?? config.maxLength
         let minTokens = 2
         let inferenceTimesteps = config.inferenceTimesteps
@@ -411,18 +411,17 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
 
         let audio = audioVAE.decode(allFeatsFlat).flattened()
         eval(audio)
-        return audio
+        return (audio).materialized()
     }
 
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let refAudio = SendingBox(refAudio)
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
 
         let task = Task { @Sendable [weak self] in
@@ -433,7 +432,7 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
             do {
                 let startTime = Date()
                 let audio = try await self.generate(
-                    text: text, voice: voice, refAudio: refAudio.take(),
+                    text: text, voice: voice, refAudio: refAudio,
                     refText: refText, language: language,
                     generationParameters: generationParameters
                 )

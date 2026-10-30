@@ -155,20 +155,20 @@ public final class MeloTTSModel: SpeechGenerationModel, @unchecked Sendable {
         return (z, g)
     }
     public func generate(text: String, voice: String? = nil, language: String? = "EN-US", options: MeloTTSGenerationOptions,
-                         generationParameters: GenerateParameters = .init(temperature: 0)) async throws -> sending MLXArray {
+                         generationParameters: GenerateParameters = .init(temperature: 0)) async throws -> MaterializedArray {
         let (z, g) = try prepare(text: text, voice: voice, language: language, options: options, parameters: generationParameters)
         let audio = network.decode(z, g: g, config: configuration).reshaped(-1)
         eval(audio)
-        return audio
+        return audio.materialized()
     }
-    public func generate(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?, generationParameters: GenerateParameters) async throws -> sending MLXArray {
+    public func generate(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?, generationParameters: GenerateParameters) async throws -> MaterializedArray {
         guard refAudio == nil, refText == nil else { throw AudioGenerationError.invalidInput("MeloTTS uses preset voices and does not accept reference audio") }
-        return try await generate(text: text, voice: voice, language: language, options: generationOptions, generationParameters: generationParameters)
+        return (try await generate(text: text, voice: voice, language: language, options: generationOptions, generationParameters: generationParameters)).materialized()
     }
-    public func generateStream(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?, generationParameters: GenerateParameters) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    public func generateStream(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?, generationParameters: GenerateParameters) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(text: text, voice: voice, refAudio: refAudio, refText: refText, language: language, generationParameters: generationParameters, streamingInterval: 1)
     }
-    public func generateStream(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?, generationParameters: GenerateParameters, streamingInterval: Double) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    public func generateStream(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?, generationParameters: GenerateParameters, streamingInterval: Double) -> AsyncThrowingStream<AudioGeneration, Error> {
         let hasReference = refAudio != nil || refText != nil, options = generationOptions
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -183,7 +183,7 @@ public final class MeloTTSModel: SpeechGenerationModel, @unchecked Sendable {
                         let end = min(start + frames, z.dim(2)), context = max(0, start - 16)
                         let audio = self.network.decode(z[0..., 0..., context..<end], g: g, config: self.configuration).reshaped(-1)[((start - context) * hop)...]
                         eval(audio)
-                        continuation.yield(.audio(MLXArray(audio.asArray(Float.self))))
+                        continuation.yield(.audio(audio))
                     }
                     continuation.finish()
                 } catch { continuation.finish(throwing: error) }

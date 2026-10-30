@@ -17,10 +17,10 @@ public struct DiarizationSegment: Sendable {
 
 // MARK: - Diarization Output
 
-/// Owned diarization results. Async producers transfer the result with `sending`.
-public struct DiarizationOutput {
+/// Diarization results with fully evaluated, immutable speaker probabilities.
+public struct DiarizationOutput: Sendable {
     public let segments: [DiarizationSegment]
-    public let speakerProbs: MLXArray?
+    public let speakerProbs: MaterializedArray?
     public let numSpeakers: Int
     public let totalTime: Double
 
@@ -31,7 +31,7 @@ public struct DiarizationOutput {
         totalTime: Double = 0.0
     ) {
         self.segments = segments
-        self.speakerProbs = speakerProbs
+        self.speakerProbs = speakerProbs?.materialized()
         self.numSpeakers = numSpeakers
         self.totalTime = totalTime
     }

@@ -60,6 +60,28 @@ struct VoxtralTTSTests {
         #expect(throws: AudioGenerationError.self) { try processor.encode("Hi", voice: "unknown", sanitize: true) }
         #expect(throws: AudioGenerationError.self) { try processor.encode("\u{200b}", voice: "test", sanitize: true) }
     }
+
+    @Test func voiceEmbeddingCacheSharesSnapshotsAndInvalidatesReplacements() async throws {
+        let directory = try fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = VoxtralTTSModel(config())
+        model.textProcessor = try VoxtralTTSTextProcessor(directory: directory)
+        let firstFile = directory.appendingPathComponent("first.safetensors")
+        let secondFile = directory.appendingPathComponent("second.safetensors")
+        try save(arrays: ["embedding": MLXArray.ones([3, 8])], url: firstFile)
+        try save(arrays: ["embedding": MLXArray.ones([3, 8]) * 2], url: secondFile)
+        model.registerVoice("test", file: firstFile)
+        async let first = Task.detached { try model.voiceEmbedding("test") }.value
+        async let second = Task.detached { try model.voiceEmbedding("test") }.value
+        let (a, b) = try await (first, second)
+        #expect(a === b)
+        #expect(a.asArray(Float.self) == Array(repeating: 1, count: 24))
+        model.registerVoice("test", file: secondFile)
+        let replacement = try model.voiceEmbedding("test")
+        #expect(replacement !== a)
+        #expect(replacement.asArray(Float.self) == Array(repeating: 2, count: 24))
+        #expect(a.asArray(Float.self) == Array(repeating: 1, count: 24))
+    }
     @Test func textCleanup() throws {
         #expect(try VoxtralTTSText.sanitize("# Hello **world**!!!\nRead [this](https://example.com).") == "Hello **world**! Read this.")
         #expect(try VoxtralTTSText.sanitize("Pay $1.25 and $2.05 (N/A, >= 5ms).") == "Pay one dollar and twenty-five cents and two oh five—not available, greater than or equal to 5 milliseconds—.")
@@ -176,7 +198,7 @@ struct VoxtralTTSTests {
         await #expect(throws: AudioGenerationError.self) { try await model.generate(text: "Hi", options: .init(denoisingSteps: 1)) }
         await #expect(throws: AudioGenerationError.self) { try await model.generate(text: "Hi", generationParameters: .init(maxTokens: 0)) }
         await #expect(throws: AudioGenerationError.self) {
-            try await model.generate(text: "Hi", voice: nil, refAudio: .zeros([8]), refText: nil, language: nil, generationParameters: .init())
+            try await model.generate(text: "Hi", voice: nil, refAudio: MLXArray.zeros([8]).materialized(), refText: nil, language: nil, generationParameters: .init())
         }
     }
 }

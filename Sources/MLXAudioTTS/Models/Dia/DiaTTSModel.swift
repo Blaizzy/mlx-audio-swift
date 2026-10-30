@@ -156,9 +156,9 @@ public final class DiaTTSModel: SpeechGenerationModel, @unchecked Sendable {
     }
 
     public func generate(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
         language: String?, generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         let temperature = Float(generationParameters.temperature)
         let requested = generationParameters.maxTokens ?? config.data.audioLength
         let maxTokens = max(1, min(requested, config.data.audioLength))
@@ -170,26 +170,24 @@ public final class DiaTTSModel: SpeechGenerationModel, @unchecked Sendable {
             maxT: config.data.audioLength, channels: config.data.channels,
             eosValue: config.data.audioEosValue)
         eval(audio)
-        return audio.squeezed()
+        return (audio.squeezed()).materialized()
     }
 
     public func generateStream(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
         language: String?, generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text, voice: voice, refAudio: refAudio, refText: refText,
             language: language, generationParameters: generationParameters, streamingInterval: 2.0)
     }
 
     public func generateStream(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
         language: String?, generationParameters: GenerateParameters, streamingInterval: Double
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
-        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self] in
-            let refAudio = refAudio.take()
             guard let self else { continuation.finish(); return }
             do {
                 let audio = try await self.generate(

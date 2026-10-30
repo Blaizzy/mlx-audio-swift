@@ -201,21 +201,21 @@ public final class LongCatModel: Module, SpeechGenerationModel, @unchecked Senda
         return y[0..., promptFrames..., 0...]
     }
 
-    public func generate(text: String, refAudio: sending MLXArray? = nil, refText: String? = nil,
-                         options: LongCatGenerationOptions = .init()) async throws -> sending MLXArray {
+    public func generate(text: String, refAudio: MaterializedArray? = nil, refText: String? = nil,
+                         options: LongCatGenerationOptions = .init()) async throws -> MaterializedArray {
         let latent = try sampleLatents(text: text, refAudio: refAudio, refText: refText, options: options)
         let audio = vae.decode(latent).flattened()
         eval(audio)
-        return audio
+        return audio.materialized()
     }
 
-    public func generate(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
-                         generationParameters: GenerateParameters) async throws -> sending MLXArray {
+    public func generate(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
+                         generationParameters: GenerateParameters) async throws -> MaterializedArray {
         try await generate(text: text, refAudio: refAudio, refText: refText,
             options: .init(seed: generationParameters.seed ?? 1024))
     }
 
-    func decodeChunks(_ latent: MLXArray, options: LongCatGenerationOptions, emit: (sending MLXArray) throws -> Void) throws {
+    func decodeChunks(_ latent: MLXArray, options: LongCatGenerationOptions, emit: (MaterializedArray) throws -> Void) throws {
         guard options.chunkSeconds.isFinite, options.chunkSeconds > 0,
               options.overlapSeconds.isFinite, options.overlapSeconds >= 0,
               options.overlapSeconds < options.chunkSeconds else {
@@ -247,23 +247,21 @@ public final class LongCatModel: Module, SpeechGenerationModel, @unchecked Senda
                 output = output[0..<committed]
                 eval(tail!)
             }
-            eval(output)
-            // The consumer owns each chunk independently of the overlap tail.
-            try emit(MLXArray(output.asArray(Float.self)))
+            try emit(output.materialized())
             if last { break }
             start += hop
         }
     }
 
-    public func generateStream(text: String, refAudio: sending MLXArray? = nil, refText: String? = nil,
-                               options: LongCatGenerationOptions = .init()) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let reference = SendingBox(refAudio)
+    public func generateStream(text: String, refAudio: MaterializedArray? = nil, refText: String? = nil,
+                               options: LongCatGenerationOptions = .init()) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let reference = refAudio
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
         let task = Task { @Sendable [weak self] in
             guard let self else { continuation.finish(throwing: AudioGenerationError.modelNotInitialized("LongCat model was released")); return }
             do {
                 let start = Date()
-                let latents = try self.sampleLatents(text: text, refAudio: reference.take(), refText: refText, options: options)
+                let latents = try self.sampleLatents(text: text, refAudio: reference, refText: refText, options: options)
                 var samples = 0
                 try self.decodeChunks(latents, options: options) { audio in
                     samples += audio.size
@@ -280,12 +278,12 @@ public final class LongCatModel: Module, SpeechGenerationModel, @unchecked Senda
         return stream
     }
 
-    public func generateStream(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
-                               generationParameters: GenerateParameters) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    public func generateStream(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
+                               generationParameters: GenerateParameters) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(text: text, refAudio: refAudio, refText: refText, options: .init(seed: generationParameters.seed ?? 1024))
     }
-    public func generateStream(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
-                               generationParameters: GenerateParameters, streamingInterval: Double) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    public func generateStream(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
+                               generationParameters: GenerateParameters, streamingInterval: Double) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(text: text, refAudio: refAudio, refText: refText,
             options: .init(seed: generationParameters.seed ?? 1024, chunkSeconds: streamingInterval,
                 overlapSeconds: min(0.5, max(0, streamingInterval / 4))))

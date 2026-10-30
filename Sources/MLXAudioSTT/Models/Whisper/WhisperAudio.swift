@@ -14,12 +14,10 @@ enum WhisperAudio {
 
     // Whisper only uses 80 or 128 mel bins; cache the filterbank per bin count.
     private static let filterCacheLock = NSLock()
-    nonisolated(unsafe) private static var filterCache: [Int: MLXArray] = [:]
+    nonisolated(unsafe) private static var filterCache: [Int: MaterializedArray] = [:]
 
-    static func melFilters(nMels: Int) -> MLXArray {
-        filterCacheLock.lock()
-        defer { filterCacheLock.unlock() }
-        if let cached = filterCache[nMels] { return cached }
+    static func melFilters(nMels: Int) -> MaterializedArray {
+        if let cached = filterCacheLock.withLock({ filterCache[nMels] }) { return cached }
         let filters = MLXAudioCore.melFilters(
             sampleRate: WhisperAudioConfig.sampleRate,
             nFft: WhisperAudioConfig.nFft,
@@ -28,9 +26,12 @@ enum WhisperAudio {
             fMax: Float(WhisperAudioConfig.sampleRate) / 2.0,
             norm: "slaney",
             melScale: .slaney
-        )
-        filterCache[nMels] = filters
-        return filters
+        ).materialized()
+        return filterCacheLock.withLock {
+            if let cached = filterCache[nMels] { return cached }
+            filterCache[nMels] = filters
+            return filters
+        }
     }
 
     /// Compute the log-mel spectrogram for a 1D, 16 kHz, mono waveform; output

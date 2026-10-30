@@ -103,7 +103,7 @@ enum App {
         print("Generating")
         let started = CFAbsoluteTimeGetCurrent()
 
-        let refAudio: MLXArray?
+        let refAudio: MaterializedArray?
         if let refAudioPath, !refAudioPath.isEmpty {
             let refAudioURL = resovleURL(path: refAudioPath)
             (_, refAudio) = try loadAudioArray(from: refAudioURL, sampleRate: loadedModel.sampleRate)

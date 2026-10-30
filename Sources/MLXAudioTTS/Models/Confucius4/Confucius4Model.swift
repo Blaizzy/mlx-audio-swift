@@ -117,34 +117,32 @@ public final class Confucius4Model: SpeechGenerationModel, @unchecked Sendable {
         guard wav.size > 0, all(isFinite(wav)).item(Bool.self) else { throw AudioGenerationError.generationFailed("Confucius4 produced invalid audio") }
         return (wav, ids.count, codes.shape[1])
     }
-    public func generate(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
-                         generationParameters: GenerateParameters) async throws -> sending MLXArray {
+    public func generate(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
+                         generationParameters: GenerateParameters) async throws -> MaterializedArray {
         try await generate(text: text, refAudio: refAudio, language: language, generationParameters: generationParameters)
     }
-    public func generate(text: String, refAudio: sending MLXArray?, language: String? = nil,
+    public func generate(text: String, refAudio: MaterializedArray?, language: String? = nil,
                          generationParameters: GenerateParameters? = nil,
-                         options: Confucius4GenerationOptions = .init()) async throws -> sending MLXArray {
+                         options: Confucius4GenerationOptions = .init()) async throws -> MaterializedArray {
         let (audio, _, _) = try run(text: text, reference: refAudio, language: language,
                                     parameters: generationParameters ?? defaultGenerationParameters, options: options)
-        nonisolated(unsafe) let result = audio
-        return result
+        return audio.materialized()
     }
     /// Matches the reference model's full-utterance generation: one audio event.
-    public func generateStream(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
-                               generationParameters: GenerateParameters) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    public func generateStream(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
+                               generationParameters: GenerateParameters) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(text: text, refAudio: refAudio, language: language, generationParameters: generationParameters)
     }
-    public func generateStream(text: String, refAudio: sending MLXArray?, language: String? = nil,
+    public func generateStream(text: String, refAudio: MaterializedArray?, language: String? = nil,
                                generationParameters: GenerateParameters? = nil,
-                               options: Confucius4GenerationOptions = .init()) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let reference = SendingBox(refAudio), parameters = generationParameters ?? defaultGenerationParameters
+                               options: Confucius4GenerationOptions = .init()) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let reference = refAudio, parameters = generationParameters ?? defaultGenerationParameters
         return AsyncThrowingStream { continuation in
             let task = Task { @Sendable [self] in
                 do {
                     let start = Date()
-                    let (audio, prompt, tokens) = try run(text: text, reference: reference.take(), language: language, parameters: parameters, options: options)
-                    nonisolated(unsafe) let output = audio
-                    if case .terminated = continuation.yield(.audio(output)) { throw CancellationError() }
+                    let (audio, prompt, tokens) = try run(text: text, reference: reference, language: language, parameters: parameters, options: options)
+                    if case .terminated = continuation.yield(.audio(audio)) { throw CancellationError() }
                     let elapsed = Date().timeIntervalSince(start)
                     continuation.yield(.info(.init(promptTokenCount: prompt, generationTokenCount: tokens, prefillTime: 0,
                         generateTime: elapsed, tokensPerSecond: Double(tokens) / max(elapsed, 1e-6), peakMemoryUsage: Double(Memory.peakMemory) / 1e9)))

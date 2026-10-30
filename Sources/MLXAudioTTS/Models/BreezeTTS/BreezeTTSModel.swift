@@ -74,11 +74,11 @@ public final class BreezeTTSModel: Module, SpeechGenerationModel, @unchecked Sen
     public func generate(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         _ = language
         return try generateAudio(
             text: text,
@@ -86,22 +86,20 @@ public final class BreezeTTSModel: Module, SpeechGenerationModel, @unchecked Sen
             refAudio: refAudio,
             refText: refText,
             parameters: generationParameters
-        ).audio
+        ).audio.materialized()
     }
 
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         _ = language
-        let refAudio = SendingBox(refAudio)
         return AsyncThrowingStream { continuation in
             let task = Task { [weak self] in
-                let refAudio = refAudio.take()
                 guard let self else {
                     continuation.finish()
                     return

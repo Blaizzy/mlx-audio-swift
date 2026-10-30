@@ -566,13 +566,13 @@ public class SortformerModel: Module {
         minDuration: Float = 0.0,
         mergeGap: Float = 0.0,
         verbose: Bool = false
-    ) async throws -> sending DiarizationOutput {
+    ) async throws -> DiarizationOutput {
         let sendableModel = UncheckedSendableBox(self)
-        let sendableAudio = SendingBox(audio)
+        let sendableAudio = audio.materialized()
         return try await withCheckedThrowingContinuation { continuation in
             Task.detached {
                 let model = sendableModel.value
-                let audio = sendableAudio.take()
+                let audio = sendableAudio
                 let startTime = CFAbsoluteTimeGetCurrent()
                 let proc = model.config.processorConfig
 
@@ -773,7 +773,7 @@ public class SortformerModel: Module {
         mergeGap: Float = 0.0,
         spkcacheMax: Int = 188,
         fifoMax: Int = 188
-    ) async throws -> sending (DiarizationOutput, StreamingState) {
+    ) async throws -> (DiarizationOutput, StreamingState) {
         let sendableModel = UncheckedSendableBox(self)
         let sendableChunk = UncheckedSendableBox(chunk)
         return try await withCheckedThrowingContinuation { continuation in
@@ -865,13 +865,13 @@ public class SortformerModel: Module {
         spkcacheMax: Int = 188,
         fifoMax: Int = 188,
         verbose: Bool = false
-    ) -> sending AsyncThrowingStream<DiarizationOutput, Error> {
+    ) -> AsyncThrowingStream<DiarizationOutput, Error> {
         let sendableModel = UncheckedSendableBox(self)
-        let sendableAudio = SendingBox(audio)
+        let sendableAudio = audio.materialized()
         return AsyncThrowingStream { @Sendable continuation in
             let task = Task.detached {
                 let model = sendableModel.value
-                let audio = sendableAudio.take()
+                let audio = sendableAudio
                 let proc = model.config.processorConfig
                 let mc = model.config.modulesConfig
 
@@ -993,10 +993,7 @@ public class SortformerModel: Module {
                         print("  Chunk \(chunkIdx): \(String(format: "%.2f", t0))s-\(String(format: "%.2f", t1))s  \(segments.count) segments, context=\(state.spkcacheLen)+\(state.fifoLen) frames")
                     }
 
-                    // streamingStep evaluates the predictions and builds separate
-                    // state tensors. The producer no longer accesses this output;
-                    // MLX's view operations don't express that independence to Swift.
-                    nonisolated(unsafe) let output = DiarizationOutput(
+                    let output = DiarizationOutput(
                         segments: segments,
                         speakerProbs: chunkPreds,
                         numSpeakers: activeSpeakers.count

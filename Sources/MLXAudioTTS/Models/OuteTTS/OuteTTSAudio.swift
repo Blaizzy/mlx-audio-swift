@@ -5,7 +5,7 @@ import MLXAudioCore
 
 enum OuteTTSAudio {
     /// BS.1770 mono normalization used by the OuteTTS reference codec interface.
-    static func normalize(_ audio: MLXArray, sampleRate: Int = 24_000) throws -> sending MLXArray {
+    static func normalize(_ audio: MLXArray, sampleRate: Int = 24_000) throws -> MaterializedArray {
         let samples = audio.asType(.float32).asArray(Float.self)
         guard !samples.isEmpty, samples.allSatisfy(\.isFinite) else {
             throw AudioGenerationError.audioDecodingFailed("OuteTTS audio is empty or nonfinite")
@@ -42,15 +42,15 @@ enum OuteTTSAudio {
             (prefix[$0 + block] - prefix[$0]) / Double(block)
         }
         let absolute = energies.filter { -0.691 + 10 * log10($0) > -70 }
-        guard !absolute.isEmpty else { return MLXArray(samples) }
+        guard !absolute.isEmpty else { return MLXArray(samples).materialized() }
         let threshold = absolute.reduce(0, +) / Double(absolute.count) * 0.1
         let gated = absolute.filter { $0 > threshold }
-        guard !gated.isEmpty else { return MLXArray(samples) }
+        guard !gated.isEmpty else { return MLXArray(samples).materialized() }
         let loudness = -0.691 + 10 * log10(gated.reduce(0, +) / Double(gated.count))
         let gain = pow(10, (-18 - loudness) / 20)
         let peak = samples.reduce(0.0) { max($0, abs(Double($1))) }
         let scale = min(gain, peak > 0 ? pow(10, -1.0 / 20) / peak : gain)
-        return MLXArray(samples.map { Float(Double($0) * scale) })
+        return (MLXArray(samples.map { Float(Double($0) * scale) })).materialized()
     }
 
     static func features(_ audio: MLXArray, sampleRate: Int = 24_000) -> OuteTTSFeatures {
