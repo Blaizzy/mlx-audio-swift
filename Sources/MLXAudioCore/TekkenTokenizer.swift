@@ -1,6 +1,6 @@
 import Foundation
 
-struct TekkenFile: Decodable {
+private struct TekkenFile: Decodable {
     struct Config: Decodable {
         let defaultNumSpecialTokens: Int?
         let defaultVocabSize: Int?
@@ -36,17 +36,18 @@ struct TekkenFile: Decodable {
     }
 }
 
-final class TekkenTokenizer {
-    let vocab: [TekkenFile.VocabEntry]
-    let nSpecial: Int
-    let specialIds: Set<Int>
+/// Byte-level Tekken text tokenization shared by speech recognition and synthesis.
+public final class TekkenTokenizer {
+    private let vocab: [TekkenFile.VocabEntry]
+    public let nSpecial: Int
+    private let specialIds: Set<Int>
 
     private var bytesCache: [Int: [UInt8]] = [:]
     private let pattern: NSRegularExpression?
     private let encodingVocabSize: Int
     private var encodingRanks: [Data: Int]?
 
-    init(tekkenURL: URL) throws {
+    public init(tekkenURL: URL) throws {
         let data = try Data(contentsOf: tekkenURL)
         let parsed = try JSONDecoder().decode(TekkenFile.self, from: data)
         vocab = parsed.vocab
@@ -57,7 +58,7 @@ final class TekkenTokenizer {
         specialIds = Set((parsed.specialTokens ?? []).compactMap { $0.rank })
     }
 
-    static func fromModelDirectory(_ modelDir: URL) throws -> TekkenTokenizer {
+    public static func fromModelDirectory(_ modelDir: URL) throws -> TekkenTokenizer {
         let tekkenURL = modelDir.appendingPathComponent("tekken.json")
         guard FileManager.default.fileExists(atPath: tekkenURL.path) else {
             throw NSError(
@@ -70,7 +71,7 @@ final class TekkenTokenizer {
     }
 
     /// Encode ordinary text using Tekken's byte BPE; control tokens are inserted by the processor.
-    func encode(_ text: String) -> [Int] {
+    public func encode(_ text: String) -> [Int] {
         if encodingRanks == nil {
             encodingRanks = Dictionary(
                 uniqueKeysWithValues: vocab.prefix(encodingVocabSize).enumerated().compactMap {
@@ -112,7 +113,7 @@ final class TekkenTokenizer {
         }
     }
 
-    func decode(tokenIds: [Int]) -> String {
+    public func decode(tokenIds: [Int]) -> String {
         var out: [UInt8] = []
         out.reserveCapacity(tokenIds.count * 2)
 
@@ -129,7 +130,7 @@ final class TekkenTokenizer {
 
     /// The bytes `decode(tokenIds:)` emits for one token: empty for special tokens and
     /// ids outside the vocabulary.
-    func tokenBytes(for tokenId: Int) -> [UInt8] {
+    public func tokenBytes(for tokenId: Int) -> [UInt8] {
         if let cached = bytesCache[tokenId] {
             return cached
         }

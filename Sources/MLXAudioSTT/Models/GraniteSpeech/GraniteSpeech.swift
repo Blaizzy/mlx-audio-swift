@@ -955,7 +955,7 @@ public class GraniteSpeechModel: Module {
         punctuate: Bool = false,
         systemPrompt: String? = nil
     ) -> AsyncThrowingStream<STTGeneration, Error> {
-        AsyncThrowingStream { continuation in
+        makeSTTStream { [self] continuation in
             do {
                 guard let tokenizer = self.tokenizer else {
                     throw STTError.modelNotInitialized("Tokenizer not loaded")
@@ -992,6 +992,7 @@ public class GraniteSpeechModel: Module {
                 var generatedTokens: [Int] = []
 
                 for _ in 0..<maxTokens {
+                    try Task.checkCancellation()
                     let nextToken = ctx.sampleNextToken(temperature: temperature)
                     if ctx.isEOS(nextToken) { break }
                     generatedTokens.append(nextToken)
@@ -1039,7 +1040,6 @@ public class GraniteSpeechModel: Module {
                     peakMemoryUsage: peakMemory
                 )))
 
-                continuation.finish()
             } catch {
                 continuation.finish(throwing: error)
             }

@@ -27,7 +27,7 @@ public enum STT {
         cache: HubCache = .default
     ) async throws -> any STTGenerationModel {
         if localDirectory(modelRepo) != nil {
-            return try await loadModel(modelRepo: modelRepo, modelType: nil, cache: cache)
+            return try await loadModel(modelRepo: modelRepo, modelType: nil, hfToken: hfToken, cache: cache)
         }
 
         guard let repoID = Repo.ID(rawValue: modelRepo) else {
@@ -39,12 +39,13 @@ public enum STT {
             hfToken: hfToken,
             cache: cache
         )
-        return try await loadModel(modelRepo: modelRepo, modelType: modelType, cache: cache)
+        return try await loadModel(modelRepo: modelRepo, modelType: modelType, hfToken: hfToken, cache: cache)
     }
 
     public static func loadModel(
         modelRepo: String,
         modelType: String?,
+        hfToken: String? = nil,
         cache: HubCache = .default
     ) async throws -> any STTGenerationModel {
         let directory = localDirectory(modelRepo)
@@ -55,7 +56,12 @@ public enum STT {
             let configuredType = (config?["model_type"] as? String)
                 ?? (config?["architecture"] as? String)
                 ?? (config?["model_version"] as? String)
-            resolved = normalizedModelType(configuredType)
+            if let fermion = config?["fermion"] as? [String: Any],
+                fermion["container_format"] as? String == Phonon2Container.format {
+                resolved = "phonon2"
+            } else {
+                resolved = normalizedModelType(configuredType)
+            }
         }
         guard let resolved = resolved ?? inferModelType(from: modelRepo) else {
             throw STTModelError.unsupportedModelType(modelType)
@@ -64,7 +70,7 @@ public enum STT {
         switch resolved {
         case "higgs_audio_3":
             return try await HiggsAudio3Model.fromPretrained(directory?.path ?? modelRepo, cache: cache)
-        case "phonon2", "phonon_2":
+        case "phonon2", "phonon_2", "parakeet_tdt_five_value":
             return try await Phonon2Model.fromPretrained(modelRepo, cache: cache)
         case "moss_music":
             if let directory { return try await MossMusicModel.fromModelDirectory(directory) }
@@ -131,6 +137,9 @@ public enum STT {
         case "nemotron", "nemotron_asr":
             if let directory { return try NemotronASRModel.fromDirectory(directory) }
             return try await NemotronASRModel.fromPretrained(modelRepo, cache: cache)
+        case "nemotron_transcribe", "nemo_speechlm", "nemotron3_5_transcribe":
+            if let directory { return try await NemotronTranscribeModel.fromModelDirectory(directory) }
+            return try await NemotronTranscribeModel.fromPretrained(modelRepo, hfToken: hfToken, cache: cache)
         case "fireredasr2", "firered", "fire_red":
             if let directory { return try FireRedASR2Model.fromDirectory(directory) }
             return try await FireRedASR2Model.fromPretrained(modelRepo, cache: cache)
@@ -220,6 +229,9 @@ public enum STT {
         }
         if lower.contains("moonshine") {
             return "moonshine"
+        }
+        if lower.contains("nemotron") && lower.contains("transcribe") {
+            return "nemotron_transcribe"
         }
         if lower.contains("nemotron") {
             return "nemotron_asr"

@@ -62,7 +62,8 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMajor(from: "0.32.3")),
         .package(url: "https://github.com/huggingface/swift-transformers.git", .upToNextMajor(from: "1.1.6")),
-        .package(url: "https://github.com/huggingface/swift-huggingface.git", .upToNextMajor(from: "0.8.1"))
+        .package(url: "https://github.com/huggingface/swift-huggingface.git", .upToNextMajor(from: "0.8.1")),
+        .package(url: "https://github.com/facebook/zstd.git", from: "1.5.7")
     ],
     targets: [
         // MARK: - MLXAudioCore
@@ -70,6 +71,7 @@ let package = Package(
             name: "MLXAudioCore",
             dependencies: [
                 .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXFast", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
             ],
@@ -111,20 +113,40 @@ let package = Package(
             ],
             path: "Sources/MLXAudioTTS",
             exclude: [
+                "Models/KugelAudio/README.md",
+                "Models/MeloTTS/README.md",
+                "Models/Bark/README.md",
                 "Models/Chatterbox/README.md",
+                "Models/Confucius4/README.md",
                 "Models/Dia/README.md",
                 "Models/EchoTTS/README.md",
                 "Models/FishSpeech/README.md",
+                "Models/Audio8/README.md",
                 "Models/Llama/README.md",
+                "Models/LongCatAudioDiT/README.md",
+                "Models/MingTiny/README.md",
+                "Models/HiggsAudio3TTS/README.md",
+                "Models/Rumik/README.md",
+                "Models/HiggsAudioV2/README.md",
                 "Models/Marvis/README.md",
+                "Models/OuteTTS/README.md",
                 "Models/PocketTTS/README.md",
                 "Models/Qwen3/README.md",
                 "Models/Qwen3TTS/README.md",
                 "Models/Soprano/README.md",
+                "Models/TADA/README.md",
+                "Models/Ming/README.md",
+                "Models/MingOmni/README.md",
+                "Models/VibeVoice/README.md",
+                "Models/VoxCPM/README.md",
                 "Models/VoxCPM2/README.md",
+                "Models/Zonos2/README.md",
+                "Models/VibeVoiceTTS/README.md",
+                "Models/VoxtralTTS/README.md",
                 "Models/StyleTTS2/KittenTTS/README.md",
                 "Models/StyleTTS2/Kokoro/README.md",
-            ]
+            ],
+            resources: [.copy("Models/OuteTTS/outetts_default_speaker.json")]
         ),
 
         // MARK: - MLXAudioSTT
@@ -132,6 +154,7 @@ let package = Package(
             name: "MLXAudioSTT",
             dependencies: [
                 "MLXAudioCore",
+                .product(name: "libzstd", package: "zstd"),
                 "MLXAudioCodecs",
                 "MLXAudioVAD",
                 .product(name: "MLX", package: "mlx-swift"),
@@ -156,6 +179,7 @@ let package = Package(
                 "Models/MossMusic/README.md",
                 "Models/MossTranscribeDiarize/README.md",
                 "Models/NemotronASR/README.md",
+                "Models/NemotronTranscribe/README.md",
                 "Models/Parakeet/README.md",
                 "Models/Phonon2/README.md",
                 "Models/Qwen2Audio/README.md",
@@ -289,6 +313,7 @@ let package = Package(
             name: "MLXAudioTests",
             dependencies: [
                 "MLXAudioCore",
+                .product(name: "libzstd", package: "zstd"),
                 "MLXAudioCodecs",
                 "MLXAudioTTS",
                 "MLXAudioSTT",

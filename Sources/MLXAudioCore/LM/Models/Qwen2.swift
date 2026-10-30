@@ -126,9 +126,16 @@ public class Qwen2ModelInner: Module {
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding?
 
     fileprivate let layers: [Qwen2TransformerBlock]
-    let norm: RMSNorm
+    let norm: RMSNorm?
+    private let slidingWindow: Int?
+    private let slidingLayerStart: Int
 
-    public init(_ args: Qwen2Configuration, includeEmbedding: Bool = true) {
+    public init(
+        _ args: Qwen2Configuration, includeEmbedding: Bool = true, includeNorm: Bool = true,
+        slidingWindow: Int? = nil, slidingLayerStart: Int = 0
+    ) {
+        self.slidingWindow = slidingWindow
+        self.slidingLayerStart = slidingLayerStart
         precondition(args.vocabularySize > 0)
 
         if includeEmbedding {
@@ -140,7 +147,7 @@ public class Qwen2ModelInner: Module {
             .map { _ in
                 Qwen2TransformerBlock(args)
             }
-        self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        self.norm = includeNorm ? RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps) : nil
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
@@ -153,6 +160,14 @@ public class Qwen2ModelInner: Module {
             preconditionFailure("This Qwen2 stack accepts embeddings only")
         }
         return embedTokens(tokens)
+    }
+
+    /// Project hidden states with the input embedding table, including quantized embeddings.
+    public func projectToVocabulary(_ hidden: MLXArray) -> MLXArray {
+        guard let embedTokens else {
+            preconditionFailure("This Qwen2 stack has no vocabulary embedding table")
+        }
+        return embedTokens.asLinear(hidden)
     }
 
     public func callAsFunction(inputEmbeddings: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
@@ -169,10 +184,17 @@ public class Qwen2ModelInner: Module {
         var h = inputEmbeddings
 
         for (i, layer) in layers.enumerated() {
-            h = layer(h, mask: mask, cache: cache?[i])
+            let layerMask: MLXFast.ScaledDotProductAttentionMaskMode
+            if let slidingWindow, i >= slidingLayerStart {
+                layerMask = .array(createCausalMask(
+                    n: h.dim(1), offset: cache?[i].offset ?? 0, windowSize: slidingWindow))
+            } else {
+                layerMask = mask
+            }
+            h = layer(h, mask: layerMask, cache: cache?[i])
         }
 
-        return norm(h)
+        return norm?(h) ?? h
     }
 }
 
