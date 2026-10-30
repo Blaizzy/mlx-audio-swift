@@ -2957,6 +2957,54 @@ struct ParakeetSTTTests {
         #expect(mergedLCS.map(\.id) == [1, 2, 3, 4])
     }
 
+    @Test func settledTokensSurviveEveryMergeBranch() {
+        func token(_ id: Int, _ start: Double, _ duration: Double = 0.2, _ text: String = " w") -> ParakeetAlignedToken {
+            .init(id: id, text: text, start: start, duration: duration)
+        }
+        func check(_ branch: String, _ a: [ParakeetAlignedToken], _ b: [ParakeetAlignedToken], tail: [Int]) {
+            let k = ParakeetModel.settledTokens(a, before: 9.0, overlapDuration: 1.0).count
+            let merged = (try? ParakeetAlignment.mergeLongestContiguous(a, b, overlapDuration: 1.0))
+                ?? ParakeetAlignment.mergeLongestCommonSubsequence(a, b, overlapDuration: 1.0)
+            let ids = merged.map(\.id)
+            #expect(Array(ids.prefix(k)) == a.prefix(k).map(\.id), "\(branch)")
+            #expect(Array(ids.dropFirst(k)) == tail, "\(branch)")
+        }
+
+        let a = (1...20).map { token($0, Double($0 - 1) * 0.5) }
+        #expect(ParakeetModel.settledTokens(a, before: 9.0, overlapDuration: 1.0).map(\.id) == Array(1...16))
+
+        check("a + b", a, [token(21, 9.8), token(22, 10.3)], tail: [17, 18, 19, 20, 21, 22])
+        check("few overlap tokens", a, [token(19, 9.1), token(21, 11.0)], tail: [17, 18, 19, 21])
+        check(
+            "contiguous match, revised tail",
+            Array(a.prefix(19)) + [token(20, 9.5), token(50, 9.6, 0, ".")],
+            [token(19, 9.02), token(20, 9.52), token(60, 9.6, 0.2, " seven"), token(61, 9.8, 0.2, " times")],
+            tail: [17, 18, 19, 20, 60, 61]
+        )
+        check(
+            "LCS fallback",
+            a, [token(19, 9.02), token(77, 9.3), token(20, 9.52), token(21, 10.0), token(22, 10.5)],
+            tail: [17, 18, 19, 77, 20, 21, 22]
+        )
+        check("LCS without pairs", a, [token(90, 9.1), token(91, 9.4), token(92, 10.0)], tail: [17, 18, 19, 91, 92])
+
+        var a6 = a
+        a6[14] = token(15, 7.0, 1.5)
+        #expect(ParakeetModel.settledTokens(a6, before: 9.0, overlapDuration: 1.0).map(\.id) == Array(1...14))
+        check(
+            "end times out of order",
+            a6, [token(19, 9.02), token(77, 9.3), token(20, 9.52), token(21, 10.0)],
+            tail: [15, 16, 17, 18, 19, 77, 20, 21]
+        )
+        check(
+            "token ending at the next chunk start is not settled",
+            Array(a.prefix(16))
+                + [token(17, 8.0), token(18, 8.55), token(19, 8.7), token(20, 8.8, 0.2, "."), token(21, 8.95)],
+            [token(18, 9.0), token(19, 9.1), token(22, 9.5)],
+            tail: [17, 18, 19, 22]
+        )
+    }
+
     @Test func melPreprocessingProducesExpectedShape() {
         let config = ParakeetPreprocessConfig(
             sampleRate: 16000,
