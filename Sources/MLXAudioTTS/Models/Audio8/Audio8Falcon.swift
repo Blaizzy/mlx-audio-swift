@@ -6,7 +6,7 @@ import MLX
 import MLXAudioCore
 import MLXNN
 
-private let audio8FalconSwiGLU: @Sendable (MLXArray, MLXArray) -> MLXArray = compile(shapeless: true) { gate, x in
+private let audio8FalconSwiGLU: @Sendable (MLXArray, MLXArray) -> MLXArray = MLX.compile(shapeless: true) { gate, x in
     silu(gate) * x
 }
 
