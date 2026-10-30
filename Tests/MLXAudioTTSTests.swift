@@ -1034,6 +1034,29 @@ struct Qwen3TTSTests {
         #expect(first.asArray(Float.self) == originalSamples)
     }
 
+    @Test func streamingDecodeMatchesFullDecodeAcrossChunks() async throws {
+        let fixture = try await makeTinyQwen3TTSModel(
+            ttsModelType: "voice_design", includeSpeechEncoder: false)
+        defer { cleanupTemporaryArtifactDirectory(fixture.tokenizerDirectory) }
+        let decoder = try #require(fixture.model.speechTokenizer).decoder
+        let biases = decoder.parameters().flattened()
+            .filter { $0.0.hasSuffix(".bias") }
+            .map { ($0.0, MLXArray.ones($0.1.shape) * 0.01) }
+        decoder.update(parameters: ModuleParameters.unflattened(biases))
+        let codes = MLXRandom.randInt(low: 0, high: 16, [1, 2, 6], key: MLXRandom.key(0)).asType(.int32)
+
+        let full = decoder(codes)
+        decoder.resetStreamingState()
+        let streamed = concatenated(
+            stride(from: 0, to: 6, by: 2).map { decoder.streamingStep(codes[0..., 0..., $0 ..< ($0 + 2)]) },
+            axis: -1)
+        decoder.resetStreamingState()
+
+        #expect(streamed.shape == full.shape)
+        #expect(abs(full).max().item(Float.self) < 1)
+        #expect(abs(streamed - full).max().item(Float.self) < 1e-4)
+    }
+
     @Test func customVoicePromptSplitsSpeakerAndInstruction() {
         let combined = Qwen3TTSModel.parseCustomVoicePrompt("Vivian, very happy and excited.")
         #expect(combined?.speaker == "Vivian")

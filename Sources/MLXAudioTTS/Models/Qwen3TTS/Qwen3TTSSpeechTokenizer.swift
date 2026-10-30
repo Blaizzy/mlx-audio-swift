@@ -569,7 +569,8 @@ final class DecoderBlockUpsample: Module {
 
         if trimRight > 0 {
             let split = max(0, h.dim(2) - trimRight)
-            overflow = h[0..., 0..., split...]
+            let tail = h[0..., 0..., split...]
+            overflow = conv.bias.map { tail - $0.reshaped(1, -1, 1) } ?? tail
             h = h[0..., 0..., ..<split]
         } else {
             overflow = nil
