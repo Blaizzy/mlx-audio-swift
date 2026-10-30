@@ -127,6 +127,8 @@ struct MimiAttentionTests {
 
     @Test func attentionWindowHoldsAcrossChunking() {
         let context = 4
+        // Chunk sizes can select different Metal kernels, including TF32 matmuls.
+        let tolerance: Float = 2e-3
         let attn = attention(context: context)
         let xs = MLXRandom.normal([1, 12, 16])
         let oneShot = attn(xs, cache: KVCacheSimple())
@@ -134,7 +136,7 @@ struct MimiAttentionTests {
         for i in 0..<12 {
             let window = xs[0..., max(0, i - context + 1) ... i]
             let alone = attn(window, cache: KVCacheSimple())[0..., -1]
-            #expect(MLX.max(MLX.abs(alone - oneShot[0..., i])).item(Float.self) < 1e-4, "position \(i)")
+            #expect(MLX.max(MLX.abs(alone - oneShot[0..., i])).item(Float.self) < tolerance, "position \(i)")
         }
 
         for chunk in [1, 3, 5] {
@@ -143,7 +145,7 @@ struct MimiAttentionTests {
                 attn(xs[0..., start ..< min(start + chunk, 12)], cache: cache)
             }
             let streamed = concatenated(parts, axis: 1)
-            #expect(MLX.max(MLX.abs(streamed - oneShot)).item(Float.self) < 1e-4, "chunk \(chunk)")
+            #expect(MLX.max(MLX.abs(streamed - oneShot)).item(Float.self) < tolerance, "chunk \(chunk)")
         }
     }
 }
