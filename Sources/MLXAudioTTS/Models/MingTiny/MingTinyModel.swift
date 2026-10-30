@@ -199,33 +199,33 @@ public final class MingTinyModel: Module, SpeechGenerationModel, @unchecked Send
         return waveform
     }
 
-    public func generate(text: String, voice: String? = nil, refAudio: sending MLXArray? = nil,
+    public func generate(text: String, voice: String? = nil, refAudio: MaterializedArray? = nil,
                          refText: String? = nil, language: String? = nil,
-                         generationParameters: GenerateParameters) async throws -> sending MLXArray {
-        try generateWaveform(text: text, voice: voice, references: refAudio.map { [$0] } ?? [],
+                         generationParameters: GenerateParameters) async throws -> MaterializedArray {
+        try (generateWaveform(text: text, voice: voice, references: refAudio.map { [$0] } ?? [],
             transcripts: refText.map { [$0] } ?? [], language: language, speakerEmbeddings: nil,
-            options: .init(), parameters: generationParameters)
+            options: .init(), parameters: generationParameters)).materialized()
     }
 
     /// References contain mono waveforms at `sampleRate`. Podcast uses one transcript per speaker.
-    public func generate(text: String, voice: String? = nil, references: sending [MLXArray] = [],
+    public func generate(text: String, voice: String? = nil, references: [MaterializedArray] = [],
                          transcripts: [String] = [], language: String? = nil,
-                         speakerEmbeddings: sending MLXArray? = nil, options: MingTinyOptions,
-                         generationParameters: GenerateParameters? = nil) async throws -> sending MLXArray {
+                         speakerEmbeddings: MaterializedArray? = nil, options: MingTinyOptions,
+                         generationParameters: GenerateParameters? = nil) async throws -> MaterializedArray {
         try generateWaveform(text: text, voice: voice, references: references, transcripts: transcripts,
             language: language, speakerEmbeddings: speakerEmbeddings, options: options,
-            parameters: generationParameters ?? defaultGenerationParameters)
+            parameters: generationParameters ?? defaultGenerationParameters).materialized()
     }
 
     /// Ming Tiny synthesizes offline; this stream yields one completed audio event.
-    public func generateStream(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
+    public func generateStream(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
                                language: String?, generationParameters: GenerateParameters)
-        -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let box = SendingBox(refAudio)
+        -> AsyncThrowingStream<AudioGeneration, Error> {
+        let box = refAudio
         return AsyncThrowingStream { continuation in
             let task = Task { @Sendable [self] in
                 do {
-                    let waveform = try await generate(text: text, voice: voice, refAudio: box.take(),
+                    let waveform = try await generate(text: text, voice: voice, refAudio: box,
                         refText: refText, language: language, generationParameters: generationParameters)
                     continuation.yield(.audio(waveform)); continuation.finish()
                 } catch { continuation.finish(throwing: error) }

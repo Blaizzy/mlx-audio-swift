@@ -144,10 +144,10 @@ public final class Zonos2Model: Module, SpeechGenerationModel, @unchecked Sendab
     }
 
     /// Extract the 2048-dimensional speaker vector. Input can be mono or a two-dimensional channel/sample array.
-    public func extractSpeakerEmbedding(_ audio: sending MLXArray, sampleRate sourceRate: Int = 24000)
-        async throws -> sending MLXArray
+    public func extractSpeakerEmbedding(_ audio: MaterializedArray, sampleRate sourceRate: Int = 24000)
+        async throws -> MaterializedArray
     {
-        try await speakerEmbedding(audio, sampleRate: sourceRate)
+        try await speakerEmbedding(audio, sampleRate: sourceRate).materialized()
     }
     private func speakerEmbedding(_ audio: MLXArray, sampleRate sourceRate: Int) async throws
         -> MLXArray
@@ -193,23 +193,23 @@ public final class Zonos2Model: Module, SpeechGenerationModel, @unchecked Sendab
         return codec
     }
     func decode(_ state: Zonos2GenerationState, frameLimit: Int? = nil) async throws
-        -> sending MLXArray
+        -> MaterializedArray
     {
         let codes = Zonos2Prompt.codes(
             state.generated, config: config, eosFrame: state.eosFrame, frameLimit: frameLimit)
-        guard codes.size > 0 else { return MLXArray.zeros([0]) }
+        guard codes.size > 0 else { return MLXArray.zeros([0]).materialized() }
         let codec = try await loadDAC()
         let audio = codec.decodeFromCodes(codes.T.expandedDimensions(axis: 0)).asType(.float32)
             .reshaped(-1)
         let waveform = audio[0..<min(audio.size, codes.dim(0) * 512)]
         eval(waveform)
-        return waveform
+        return waveform.materialized()
     }
 
     private func run(
         text: String, reference: MLXArray?, speakerEmbedding: MLXArray?, language: String?,
         options o: Zonos2Options,
-        parameters p: GenerateParameters, interval: Double?, emit: ((sending MLXArray) -> Void)?,
+        parameters p: GenerateParameters, interval: Double?, emit: ((MLXArray) -> Void)?,
         seedStride: Int = 1, seedOffset: Int = 0
     ) async throws -> MLXArray {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -293,24 +293,24 @@ public final class Zonos2Model: Module, SpeechGenerationModel, @unchecked Sendab
     }
 
     public func generate(
-        text: String, refAudio: sending MLXArray? = nil, speakerEmbedding: sending MLXArray? = nil,
+        text: String, refAudio: MaterializedArray? = nil, speakerEmbedding: MaterializedArray? = nil,
         language: String? = nil, options: Zonos2Options = .init(),
         generationParameters: GenerateParameters? = nil
-    ) async throws -> sending MLXArray {
-        try await run(
+    ) async throws -> MaterializedArray {
+        try (await run(
             text: text, reference: refAudio, speakerEmbedding: speakerEmbedding, language: language,
             options: options,
-            parameters: generationParameters ?? defaultGenerationParameters, interval: nil, emit: nil)
+            parameters: generationParameters ?? defaultGenerationParameters, interval: nil, emit: nil)).materialized()
     }
     /// Serial batch convenience, preserving input order and per-sequence conditioning.
     /// Seed keys match the reference: `seed + step * texts.count + sequenceIndex`.
     public func generateBatch(
-        texts: [String], refAudio: sending MLXArray? = nil,
-        refAudios: sending [MLXArray]? = nil, speakerEmbedding sharedSpeaker: sending MLXArray? = nil,
-        speakerEmbeddings: sending MLXArray? = nil, referenceSampleRates: [Int]? = nil,
+        texts: [String], refAudio: MaterializedArray? = nil,
+        refAudios: [MaterializedArray]? = nil, speakerEmbedding sharedSpeaker: MaterializedArray? = nil,
+        speakerEmbeddings: MaterializedArray? = nil, referenceSampleRates: [Int]? = nil,
         language: String? = nil, options: Zonos2Options = .init(),
         generationParameters: GenerateParameters? = nil
-    ) async throws -> sending [MLXArray] {
+    ) async throws -> [MaterializedArray] {
         let supplied = [
             refAudio != nil, refAudios != nil, sharedSpeaker != nil, speakerEmbeddings != nil,
         ].filter { $0 }.count
@@ -329,7 +329,7 @@ public final class Zonos2Model: Module, SpeechGenerationModel, @unchecked Sendab
                 "Speaker embeddings must have shape [texts.count, speakerEmbeddingDim]")
         }
         guard !texts.isEmpty else { return [] }
-        var shared = sharedSpeaker
+        var shared: MLXArray? = sharedSpeaker
         if let refAudio {
             shared = try await self.speakerEmbedding(
                 refAudio, sampleRate: options.referenceSampleRate ?? sampleRate)
@@ -351,45 +351,45 @@ public final class Zonos2Model: Module, SpeechGenerationModel, @unchecked Sendab
                     parameters: generationParameters ?? defaultGenerationParameters, interval: nil, emit: nil,
                     seedStride: texts.count, seedOffset: i))
         }
-        return result
+        return materialize(result)
     }
     public func generate(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         try await generate(
             text: text, refAudio: refAudio, language: language, generationParameters: generationParameters
         )
     }
     public func generateStream(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text, refAudio: refAudio, language: language, generationParameters: generationParameters
         )
     }
     public func generateStream(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
         generationParameters: GenerateParameters, streamingInterval: Double
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text, refAudio: refAudio, language: language,
             generationParameters: generationParameters, streamingInterval: streamingInterval)
     }
     public func generateStream(
-        text: String, refAudio: sending MLXArray? = nil, speakerEmbedding: sending MLXArray? = nil,
+        text: String, refAudio: MaterializedArray? = nil, speakerEmbedding: MaterializedArray? = nil,
         language: String? = nil, options: Zonos2Options = .init(),
         generationParameters: GenerateParameters? = nil,
         streamingInterval: Double = 2
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let referenceBox = SendingBox(refAudio)
-        let speakerBox = SendingBox(speakerEmbedding)
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let referenceBox = refAudio
+        let speaker = speakerEmbedding?.materialized()
         return AsyncThrowingStream { continuation in
             let task = Task { @Sendable [self] in
                 do {
                     _ = try await run(
-                        text: text, reference: referenceBox.take(), speakerEmbedding: speakerBox.take(),
+                        text: text, reference: referenceBox, speakerEmbedding: speaker,
                         language: language, options: options,
                         parameters: generationParameters ?? defaultGenerationParameters,
                         interval: streamingInterval,

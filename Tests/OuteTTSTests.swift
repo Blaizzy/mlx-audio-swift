@@ -142,7 +142,7 @@ struct OuteTTSTests {
         #expect(samples == audio.size)
         #expect(tokens == [1, 2, 1, 2])
         await #expect(throws: (any Error).self) {
-            try await model.generate(text: "Hi", voice: nil, refAudio: MLXArray.ones([100]),
+            try await model.generate(text: "Hi", voice: nil, refAudio: MLXArray.ones([100]).materialized(),
                                      refText: "Reference", language: nil, generationParameters: parameters)
         }
     }

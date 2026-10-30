@@ -113,17 +113,17 @@ public final class VoxCPMModel: Module, SpeechGenerationModel, @unchecked Sendab
     }
 
     public func generate(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         try await generate(text: text, refAudio: refAudio, refText: refText,
             parameters: VoxCPMGenerationParameters(maxTokens: generationParameters.maxTokens ?? 4096))
     }
 
     public func generate(
-        text: String, refAudio: sending MLXArray? = nil, refText: String? = nil,
+        text: String, refAudio: MaterializedArray? = nil, refText: String? = nil,
         parameters: VoxCPMGenerationParameters = VoxCPMGenerationParameters()
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               parameters.maxTokens > 0, parameters.inferenceTimesteps > 0,
               parameters.cfgValue.isFinite else {
@@ -202,18 +202,17 @@ public final class VoxCPMModel: Module, SpeechGenerationModel, @unchecked Sendab
         }
         let audio = audioVAE.decode(MLX.concatenated(patches, axis: 1)).flattened()
         eval(audio)
-        return audio
+        return audio.materialized()
     }
 
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let refAudio = SendingBox(refAudio)
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
 
         let task = Task { @Sendable [weak self] in
@@ -224,7 +223,7 @@ public final class VoxCPMModel: Module, SpeechGenerationModel, @unchecked Sendab
             do {
                 let startTime = Date()
                 let audio = try await self.generate(
-                    text: text, voice: voice, refAudio: refAudio.take(),
+                    text: text, voice: voice, refAudio: refAudio,
                     refText: refText, language: language,
                     generationParameters: generationParameters
                 )

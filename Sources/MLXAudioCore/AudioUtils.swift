@@ -59,8 +59,8 @@ public class AudioUtils {
 }
 
 /// Load audio from a file and return the sample rate and audio data.
-/// The returned tensor is transferred to the caller and can cross an actor boundary.
-public func loadAudioArray(from url: URL, sampleRate: Int? = nil) throws -> sending (Int, MLXArray) {
+/// The returned tensor is an immutable snapshot that can be shared across actors.
+public func loadAudioArray(from url: URL, sampleRate: Int? = nil) throws -> (Int, MaterializedArray) {
     let audioFile = try AVAudioFile(forReading: url)
     let format = audioFile.processingFormat
     let frameCount = AVAudioFrameCount(audioFile.length)
@@ -100,7 +100,7 @@ public func loadAudioArray(from url: URL, sampleRate: Int? = nil) throws -> send
     }
 
     if targetSampleRate == sourceSampleRate {
-        return (sourceSampleRate, MLXArray(samples))
+        return (sourceSampleRate, MLXArray(samples).materialized())
     }
 
     let resampled = try resampleAudio(
@@ -108,7 +108,7 @@ public func loadAudioArray(from url: URL, sampleRate: Int? = nil) throws -> send
         from: sourceSampleRate,
         to: targetSampleRate
     )
-    return (targetSampleRate, MLXArray(resampled))
+    return (targetSampleRate, MLXArray(resampled).materialized())
 }
 
 /// Save audio data to a WAV file.

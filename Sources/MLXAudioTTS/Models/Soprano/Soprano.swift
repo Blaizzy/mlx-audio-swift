@@ -282,11 +282,11 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
     public func generate(
         text: String,
         voice: String?,
-        refAudio _: sending MLXArray?,
+        refAudio _: MaterializedArray?,
         refText _: String?,
         language _: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         try await generate(
             text: text,
             voice: voice,
@@ -298,11 +298,11 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio _: sending MLXArray?,
+        refAudio _: MaterializedArray?,
         refText _: String?,
         language _: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text,
             voice: voice,
@@ -572,7 +572,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
     ///   - text: Input text to synthesize
     ///   - voice: Voice name (unused in base Soprano)
     ///   - parameters: Generation parameters
-    /// - Returns: Generated audio as MLXArray
+    /// - Returns: Generated audio as an immutable MaterializedArray
     public func generate(
         text: String,
         voice: String? = nil,
@@ -584,7 +584,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
             repetitionPenalty: 1.5,
             repetitionContextSize: 30
         )
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         guard self.tokenizer != nil else {
             throw SopranoError.modelNotInitialized("Tokenizer not loaded")
         }
@@ -637,7 +637,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
                 var allHiddenStates: [MLXArray] = []
 
                 for await step in self.streamGenerate(
-                    inputIds: inputIds,
+                    inputIds: inputIds.materialized(),
                     maxTokens: maxTokens,
                     temperature: parameters.temperature,
                     topP: parameters.topP,
@@ -685,7 +685,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
             throw SopranoError.generationFailed("No audio generated")
         }
 
-        return finalAudio
+        return finalAudio.materialized()
     }
 
     /// Generate audio with streaming events.
@@ -725,7 +725,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
                     var allHiddenStates: [MLXArray] = []
                     
                     for await step in self.streamGenerate(
-                        inputIds: inputIds,
+                        inputIds: inputIds.materialized(),
                         maxTokens: maxTokens,
                         temperature: parameters.temperature,
                         topP: parameters.topP,
@@ -796,24 +796,24 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
         return stream
     }
 
-    private struct HiddenStateEvent {
+    private struct HiddenStateEvent: Sendable {
         let token: Int?
-        let hiddenState: MLXArray
+        let hiddenState: MaterializedArray
     }
 
     /// Stream generate tokens and hidden states.
     private func streamGenerate(
-        inputIds: sending MLXArray,
+        inputIds: MaterializedArray,
         maxTokens: Int,
         temperature: Float,
         topP: Float,
         repetitionPenalty: Float = 1.5,
         repetitionContextSize: Int = 30
-    ) -> sending AsyncStream<HiddenStateEvent> {
-        let input = SendingBox(inputIds)
+    ) -> AsyncStream<HiddenStateEvent> {
+        let input = inputIds
         let (stream, continuation) = AsyncStream<HiddenStateEvent>.makeStream()
         let task = Task { @Sendable in
-            var ids = input.take()
+            var ids: MLXArray = input
             if ids.ndim == 1 {
                 ids = ids.expandedDimensions(axis: 0)
             }
@@ -826,7 +826,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
             eval(logits, hiddenStates)
 
             // Yield last hidden state from prefill (last position along sequence dim)
-            let lastHiddenState = self.lastHiddenStateForTransfer(hiddenStates)
+            let lastHiddenState = self.lastHiddenStateSnapshot(hiddenStates)
             continuation.yield(HiddenStateEvent(token: nil, hiddenState: lastHiddenState))
 
             // Create sampler
@@ -876,7 +876,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
                 let nextTokenExpanded = nextToken.reshaped([1, 1])
                 let (newLogits, newHiddenStates) = self.forwardWithHiddenStates(nextTokenExpanded, cache: cache)
 
-                let newLastHiddenState = self.lastHiddenStateForTransfer(newHiddenStates)
+                let newLastHiddenState = self.lastHiddenStateSnapshot(newHiddenStates)
                 continuation.yield(HiddenStateEvent(token: tokenId, hiddenState: newLastHiddenState))
 
                 currentLogits = newLogits
@@ -888,14 +888,10 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
         return stream
     }
 
-    /// Return an evaluated view with its own tensor wrapper. The producer retains
-    /// logits and cache, but does not retain or mutate this view after transfer.
-    private func lastHiddenStateForTransfer(_ hiddenStates: MLXArray) -> sending MLXArray {
+    /// Capture the last hidden state as an immutable snapshot for the consumer.
+    private func lastHiddenStateSnapshot(_ hiddenStates: MLXArray) -> MaterializedArray {
         let last = hiddenStates[0..., (hiddenStates.dim(1) - 1)..<hiddenStates.dim(1), 0...]
-        eval(last)
-        // MLX doesn't expose the view's independence to Swift's region checker.
-        nonisolated(unsafe) let output = last
-        return output
+        return last.materialized()
     }
 
     /// Apply repetition penalty to logits

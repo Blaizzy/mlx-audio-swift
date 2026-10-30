@@ -229,7 +229,7 @@ public final class VibeVoiceRealtimeModel: Module, SpeechGenerationModel, @unche
     @discardableResult
     func run(
         text: String, voice: String?, parameters: GenerateParameters, interval: Double,
-        emit: (sending MLXArray) -> Void
+        emit: (MLXArray) -> Void
     ) throws -> (tokens: Int, prompt: Int) {
         try config.validate()
         guard let tokenizer else {
@@ -329,10 +329,10 @@ public final class VibeVoiceRealtimeModel: Module, SpeechGenerationModel, @unche
         return (count, ids.count)
     }
     public func generate(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         guard refAudio == nil else {
             throw AudioGenerationError.invalidInput(
                 "VibeVoice Realtime uses published voice caches; reference audio is supported by full VibeVoice"
@@ -342,27 +342,27 @@ public final class VibeVoiceRealtimeModel: Module, SpeechGenerationModel, @unche
         try run(text: text, voice: voice, parameters: generationParameters, interval: 2) {
             chunks.append($0)
         }
-        return chunks.isEmpty ? MLXArray.zeros([0]) : concatenated(chunks)
+        return (chunks.isEmpty ? MLXArray.zeros([0]) : concatenated(chunks)).materialized()
     }
     public func generateStream(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text, voice: voice, refAudio: refAudio, refText: refText, language: language,
             generationParameters: generationParameters, streamingInterval: 2)
     }
     public func generateStream(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
         language: String?,
         generationParameters: GenerateParameters, streamingInterval: Double
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let reference = SendingBox(refAudio)
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let reference = refAudio
         return AsyncThrowingStream { continuation in
             let task = Task { @Sendable [self] in
                 do {
-                    guard reference.take() == nil else {
+                    guard reference == nil else {
                         throw AudioGenerationError.invalidInput(
                             "VibeVoice Realtime requires a voice cache")
                     }

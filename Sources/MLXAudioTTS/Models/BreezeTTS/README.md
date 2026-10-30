@@ -37,7 +37,7 @@ Pass one reference waveform and its exact transcript:
 let cloned = try await model.generate(
     text: "This sentence uses the reference voice.",
     voice: nil,
-    refAudio: referenceAudio,
+    refAudio: referenceAudio.materialized(),
     refText: "The exact words spoken in the reference clip.",
     language: "English"
 )

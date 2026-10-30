@@ -1,11 +1,18 @@
 import Foundation
 import MLX
 
-public struct TADAReference {
+public struct TADAReference: Sendable {
     public let text: String
     public let tokens: [Int]
     public let positions: [Int]
-    public let features: MLXArray
+    public let features: MaterializedArray
+
+    public init(text: String, tokens: [Int], positions: [Int], features: MLXArray) {
+        self.text = text
+        self.tokens = tokens
+        self.positions = positions
+        self.features = features.materialized()
+    }
 }
 
 /// Hann-windowed sinc interpolation, matching the standard 6-lobe audio resampler.

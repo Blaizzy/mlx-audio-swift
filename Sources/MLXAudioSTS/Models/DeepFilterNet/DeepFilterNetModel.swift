@@ -82,13 +82,19 @@ public struct DeepFilterNetStreamingConfig: Sendable {
 }
 
 /// A chunk of enhanced audio produced by streaming inference.
-public struct DeepFilterNetStreamingChunk: @unchecked Sendable {
+public struct DeepFilterNetStreamingChunk: Sendable {
     /// Enhanced audio samples for this chunk.
-    public let audio: MLXArray
+    public let audio: MaterializedArray
     /// Sequential index of this chunk (0-based).
     public let chunkIndex: Int
     /// Whether this is the final chunk in the stream.
     public let isLastChunk: Bool
+
+    public init(audio: MLXArray, chunkIndex: Int, isLastChunk: Bool) {
+        self.audio = audio.materialized()
+        self.chunkIndex = chunkIndex
+        self.isLastChunk = isLastChunk
+    }
 }
 
 // MARK: - Model

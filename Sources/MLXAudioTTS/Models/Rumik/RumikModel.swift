@@ -152,40 +152,40 @@ public final class RumikModel: Module, SpeechGenerationModel, @unchecked Sendabl
     }
 
     public func generate(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         guard refAudio == nil, refText == nil else {
             throw AudioGenerationError.invalidInput("Rumik does not support reference-audio voice cloning")
         }
-        return try await generate(text: text, voice: voice, parameters: generationParameters)
+        return (try await generate(text: text, voice: voice, parameters: generationParameters)).materialized()
     }
 
     public func generate(
         text: String, voice: String? = nil, options: RumikGenerationOptions = .init(),
         parameters: GenerateParameters? = nil
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         let result = try await _generationCache.withCache(model: _generationOwner, makeCache: { [] }) { _ in
             let audio = try self.run(text: text, voice: voice, options: options,
                                      parameters: parameters ?? self.defaultGenerationParameters,
                                      cache: self.makeCache(), streamingInterval: nil, emit: { _ in })
-            return SendingBox(audio!)
+            return audio!.materialized()
         }
-        return result.take()
+        return result
     }
 
     public func generateStream(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(text: text, voice: voice, refAudio: refAudio, refText: refText, language: language,
                        generationParameters: generationParameters, streamingInterval: 0.5)
     }
 
     public func generateStream(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
         generationParameters: GenerateParameters, streamingInterval: Double
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         guard refAudio == nil, refText == nil else {
             return AsyncThrowingStream { $0.finish(throwing: AudioGenerationError.invalidInput("Rumik does not support reference-audio voice cloning")) }
         }
@@ -195,7 +195,7 @@ public final class RumikModel: Module, SpeechGenerationModel, @unchecked Sendabl
     public func generateStream(
         text: String, voice: String? = nil, options: RumikGenerationOptions = .init(),
         parameters: GenerateParameters? = nil, streamingInterval: Double = 0.5
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
         let task = Task { @Sendable [self] in
             do {
@@ -212,14 +212,9 @@ public final class RumikModel: Module, SpeechGenerationModel, @unchecked Sendabl
         return stream
     }
 
-    private static func transferredAudio(_ audio: MLXArray) -> sending MLXArray {
-        // Materialize and detach waveform storage from mutable codec state before transfer.
-        MLXArray(audio.asArray(Float.self))
-    }
-
     private func run(
         text: String, voice: String?, options: RumikGenerationOptions, parameters: GenerateParameters,
-        cache: [KVCache], streamingInterval: Double?, emit: (sending AudioGeneration) -> Void
+        cache: [KVCache], streamingInterval: Double?, emit: (AudioGeneration) -> Void
     ) throws -> MLXArray? {
         guard let tokenizer = _tokenizer, let mimi = _mimi else {
             throw AudioGenerationError.modelNotInitialized("Rumik tokenizer and Mimi are required")
@@ -274,7 +269,7 @@ public final class RumikModel: Module, SpeechGenerationModel, @unchecked Sendabl
                 let audio = decoder.decodeFrames(framesToCodes(frames)).reshaped(-1)
                 eval(audio)
                 frames.removeAll(keepingCapacity: true)
-                emit(.audio(Self.transferredAudio(audio)))
+                emit(.audio(audio))
             }
             if step + 1 < (parameters.maxTokens ?? 2048) {
                 hidden = model(MLXArray([Int32(token)]).reshaped(1, 1), cache: cache)[0..., -1, 0...]
@@ -290,7 +285,7 @@ public final class RumikModel: Module, SpeechGenerationModel, @unchecked Sendabl
         if streamingInterval != nil {
             if !frames.isEmpty {
                 let audio = decoder.decodeFrames(framesToCodes(frames)).reshaped(-1)
-                eval(audio); emit(.audio(Self.transferredAudio(audio)))
+                emit(.audio(audio))
             }
             return nil
         }

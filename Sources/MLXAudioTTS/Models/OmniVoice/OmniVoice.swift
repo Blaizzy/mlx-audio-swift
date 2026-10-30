@@ -16,9 +16,14 @@ import Tokenizers
 /// - **Voice Design**: Create custom voices via text instructions
 /// - **Auto Voice**: Default voice when no voice specification is provided
 public struct OmniVoiceVoicePrompt: Sendable {
-    public let codes: [Int32]
-    public let shape: [Int]
+    public let codes: MaterializedArray
+    public var shape: [Int] { codes.shape }
     public let transcript: String
+
+    public init(codes: MLXArray, transcript: String) {
+        self.codes = codes.asType(.int32).materialized()
+        self.transcript = transcript
+    }
 }
 
 public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sendable {
@@ -26,11 +31,10 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
 
     public var useTargetOnlyProjection = false
 
-    public func encodeVoicePrompt(refAudio: sending MLXArray, transcript: String) throws -> OmniVoiceVoicePrompt {
+    public func encodeVoicePrompt(refAudio: MaterializedArray, transcript: String) throws -> OmniVoiceVoicePrompt {
         guard let audioTokenizer else { throw AudioGenerationError.modelNotInitialized("Audio tokenizer not loaded") }
         let codes = try audioTokenizer.encode(refAudio)
-        eval(codes)
-        return OmniVoiceVoicePrompt(codes: codes.asArray(Int32.self), shape: codes.shape, transcript: transcript)
+        return OmniVoiceVoicePrompt(codes: codes, transcript: transcript)
     }
 
     /// Encodes a voice reference file without exposing MLXArray in the caller's
@@ -215,24 +219,24 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     public func generate(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         guard tokenizer != nil else {
             throw AudioGenerationError.modelNotInitialized("Tokenizer not loaded")
         }
         // Use OmniVoice-specific defaults internally
         let ovParams = OmniVoiceGenerateParameters()
-        return try await generateAudio(
+        return (try await generateAudio(
             text: text,
             voice: voice,
             refAudio: refAudio,
             refText: refText,
             language: language,
             ovParameters: ovParams
-        )
+        )).materialized()
     }
 
     /// Generate audio with custom OmniVoice diffusion parameters.
@@ -248,16 +252,16 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     public func generate(
         text: String,
         voice: String? = nil,
-        refAudio: sending MLXArray? = nil,
+        refAudio: MaterializedArray? = nil,
         refText: String? = nil,
         language: String? = nil,
         ovParameters: OmniVoiceGenerateParameters,
         voiceClonePrompt: OmniVoiceVoicePrompt? = nil
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         guard tokenizer != nil else {
             throw AudioGenerationError.modelNotInitialized("Tokenizer not loaded")
         }
-        return try await generateAudio(
+        return (try await generateAudio(
             text: text,
             voice: voice,
             refAudio: refAudio,
@@ -265,17 +269,17 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
             language: language,
             ovParameters: ovParameters,
             voiceClonePrompt: voiceClonePrompt
-        )
+        )).materialized()
     }
 
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text,
             voice: voice,
@@ -290,17 +294,15 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters,
         streamingInterval: Double
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let ovParams = OmniVoiceGenerateParameters()
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
-        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self] in
-            let refAudio = refAudio.take()
             guard let self else { return }
             do {
                 guard tokenizer != nil else {
@@ -341,13 +343,13 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
     private func generateAudio(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         ovParameters: OmniVoiceGenerateParameters,
         onStepProgress: (@Sendable (Int, Int) -> Void)? = nil,
         voiceClonePrompt: OmniVoiceVoicePrompt? = nil
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         guard let audioTok = audioTokenizer else {
             throw AudioGenerationError.modelNotInitialized("Audio tokenizer not loaded")
         }
@@ -361,7 +363,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         let refText = voiceClonePrompt?.transcript ?? refText
         var refAudioTokens: MLXArray?
         if let voiceClonePrompt {
-            refAudioTokens = MLXArray(voiceClonePrompt.codes, voiceClonePrompt.shape)
+            refAudioTokens = voiceClonePrompt.codes
         } else if let refAudio {
             print("[OmniVoiceDiag] reference encode begin peakMB=\(Double(Memory.peakMemory) / 1_000_000)")
             refAudioTokens = try audioTok.encode(refAudio)
@@ -559,7 +561,7 @@ public final class OmniVoiceModel: Module, SpeechGenerationModel, @unchecked Sen
         let audio = try audioTok.decode(outputTokens)
 
         // 9. Post-process
-        return postProcessAudio(audio, refRms: nil, postprocessOutput: ovParameters.postprocessOutput)
+        return (postProcessAudio(audio, refRms: nil, postprocessOutput: ovParameters.postprocessOutput)).materialized()
     }
 
     // MARK: - Token Prediction with CFG

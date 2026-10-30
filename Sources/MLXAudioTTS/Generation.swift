@@ -4,10 +4,8 @@
 @preconcurrency import AVFoundation
 #endif
 
-/// Reference tensors are transferred into generation via `sending`. After a call,
-/// the caller must not access the reference tensor or any aliases to it. Create a
-/// fresh tensor for each generation when reusing reference samples. Returned audio
-/// is transferred back to the caller. Model instances still require serialized use.
+/// Reference audio and generated waveforms are immutable, fully evaluated snapshots
+/// that can be retained and shared across tasks. Model instances require serialized use.
 public protocol SpeechGenerationModel: AnyObject {
     var sampleRate: Int { get }
     var defaultGenerationParameters: GenerateParameters { get }
@@ -15,48 +13,48 @@ public protocol SpeechGenerationModel: AnyObject {
     func generate(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray
+    ) async throws -> MaterializedArray
 
     func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error>
+    ) -> AsyncThrowingStream<AudioGeneration, Error>
 
     func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters,
         streamingInterval: Double
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error>
+    ) -> AsyncThrowingStream<AudioGeneration, Error>
 }
 
 public extension SpeechGenerationModel {
     func generate(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters? = nil
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         try await generate(text: text, voice: voice, refAudio: refAudio, refText: refText, language: language, generationParameters: generationParameters ?? defaultGenerationParameters)
     }
 
     func generateSamplesStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters? = nil,
@@ -82,7 +80,7 @@ public extension SpeechGenerationModel {
     func generatePCMBufferStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters? = nil,
@@ -122,12 +120,12 @@ public extension SpeechGenerationModel {
     func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters,
         streamingInterval: Double = 2.0
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         _ = streamingInterval
         return generateStream(
             text: text,
@@ -140,14 +138,12 @@ public extension SpeechGenerationModel {
     }
 }
 
-private func proxyAudioStream<T, U: Sendable>(
-    _ upstream: sending AsyncThrowingStream<T, Error>,
+private func proxyAudioStream<T: Sendable, U: Sendable>(
+    _ upstream: AsyncThrowingStream<T, Error>,
     extract: @Sendable @escaping (T) -> U?
 ) -> AsyncThrowingStream<U, Error> {
-    let upstream = SendingBox(upstream)
     return AsyncThrowingStream<U, Error> { continuation in
         let task = Task { @Sendable in
-            let upstream = upstream.take()
             do {
                 for try await value in upstream {
                     guard let extracted = extract(value) else { continue }

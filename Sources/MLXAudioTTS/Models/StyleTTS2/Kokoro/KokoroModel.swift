@@ -16,7 +16,7 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
     @ModuleInfo var decoder: KokoroDecoder
 
     private let modelDirectory: URL?
-    private var voiceCache: [String: MLXArray] = [:]
+    private var voiceCache: [String: MaterializedArray] = [:]
     private let voiceCacheLock = NSLock()
     private let maxTokenCount = 510
     public private(set) var textProcessor: TextProcessor?
@@ -130,11 +130,11 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
     public func generate(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         try await generateWithDurations(
             text: text, voice: voice, refAudio: refAudio, refText: refText,
             language: language, generationParameters: generationParameters
@@ -166,11 +166,11 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
     public func generateWithDurations(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending (audio: MLXArray, phonemes: String, durations: MLXArray) {
+    ) async throws -> (audio: MaterializedArray, phonemes: String, durations: MaterializedArray) {
         let voiceName = voice ?? "af_heart"
         let voiceEmb: MLXArray
         if let refAudio {
@@ -211,21 +211,20 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
         try Task.checkCancellation()
         let (audio, predDur) = self.callAsFunction(inputIds: inputIds, refS: refS, speed: speed)
         try Task.checkCancellation()
-        return (audio.reshaped([-1]), phonemized, predDur)
+        let snapshots = materialize([audio.reshaped([-1]), predDur])
+        return (snapshots[0], phonemized, snapshots[1])
     }
 
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
-        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self] in
-            let refAudio = refAudio.take()
             guard let self else {
                 continuation.finish(throwing: AudioGenerationError.modelNotInitialized("Model deallocated"))
                 return
@@ -248,7 +247,7 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
 
     // MARK: - Voice Loading
 
-    public func loadVoice(named name: String) throws -> MLXArray {
+    public func loadVoice(named name: String) throws -> MaterializedArray {
         if let cached = voiceCacheLock.withLock({ voiceCache[name] }) { return cached }
 
         guard let dir = modelDirectory else {
@@ -269,8 +268,12 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
 
         var voice = voiceArray.asType(.float32)
         if voice.ndim == 3 { voice = voice.squeezed(axis: 1) }
-        voiceCacheLock.withLock { voiceCache[name] = voice }
-        return voice
+        let snapshot = voice.materialized()
+        return voiceCacheLock.withLock {
+            if let cached = voiceCache[name] { return cached }
+            voiceCache[name] = snapshot
+            return snapshot
+        }
     }
 
     public func availableVoices() -> [String] {

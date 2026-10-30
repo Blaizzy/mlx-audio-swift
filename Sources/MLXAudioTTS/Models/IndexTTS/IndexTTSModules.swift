@@ -4,21 +4,27 @@ import MLXFast
 @preconcurrency import MLXAudioCore
 import MLXNN
 
-/// Prepared tensors owned by the caller, transferred from the preparation step.
-public struct IndexTTSPreparedEmbedding {
-    public let embeddings: MLXArray
+/// Fully evaluated, immutable embeddings from the preparation step.
+public struct IndexTTSPreparedEmbedding: Sendable {
+    public let embeddings: MaterializedArray
     public let textTokenCount: Int
     public let conditioningTokenCount: Int
+
+    init(embeddings: MLXArray, textTokenCount: Int, conditioningTokenCount: Int) {
+        self.embeddings = embeddings.materialized()
+        self.textTokenCount = textTokenCount
+        self.conditioningTokenCount = conditioningTokenCount
+    }
 }
 
-/// Generated tensors owned by the caller, transferred from the generation step.
-public struct IndexTTSMelGeneration {
+/// Generated tokens and fully evaluated, immutable latent states.
+public struct IndexTTSMelGeneration: Sendable {
     public let tokenIDs: [Int]
-    public let latentStates: MLXArray
+    public let latentStates: MaterializedArray
 
-    init(tokenIDs: [Int], latentStates: sending MLXArray) {
+    init(tokenIDs: [Int], latentStates: MLXArray) {
         self.tokenIDs = tokenIDs
-        self.latentStates = latentStates
+        self.latentStates = latentStates.materialized()
     }
 }
 
@@ -683,7 +689,7 @@ public final class IndexTTSCore: Module {
     public func prepareInputEmbedding(
         textTokenIDs rawTextTokenIDs: [Int],
         conditioningLatents: MLXArray
-    ) throws -> sending IndexTTSPreparedEmbedding {
+    ) throws -> IndexTTSPreparedEmbedding {
         let gptConfig = config.gpt
         guard conditioningLatents.ndim == 3, conditioningLatents.dim(2) == gptConfig.modelDim else {
             throw IndexTTSError.invalidInput(
@@ -706,7 +712,6 @@ public final class IndexTTSCore: Module {
         let startMel = MLXArray([Int32(gptConfig.startMelToken)]).reshaped(1, 1)
         let startMelEmbed = melEmbedding(startMel) + melPositionEmbedding(sequenceLength: 1)
         let embeddings = concatenated([conditioningLatents, textEmbeds, startMelEmbed], axis: 1)
-        eval(embeddings)
         return IndexTTSPreparedEmbedding(
             embeddings: embeddings,
             textTokenCount: tokens.count + 1, // + the start mel token
@@ -717,7 +722,7 @@ public final class IndexTTSCore: Module {
     public func prepareInputEmbedding(
         textTokenIDs: [Int],
         referenceFeatures: MLXArray
-    ) throws -> sending IndexTTSPreparedEmbedding {
+    ) throws -> IndexTTSPreparedEmbedding {
         try prepareInputEmbedding(
             textTokenIDs: textTokenIDs,
             conditioningLatents: getConditioning(referenceFeatures: referenceFeatures)
@@ -736,7 +741,7 @@ public final class IndexTTSCore: Module {
         topP: Float = 1.0,
         topK: Int = 0,
         minP: Float = 0
-    ) throws -> sending IndexTTSMelGeneration {
+    ) throws -> IndexTTSMelGeneration {
         guard maxTokens > 0 else {
             return IndexTTSMelGeneration(
                 tokenIDs: [],
@@ -746,7 +751,7 @@ public final class IndexTTSCore: Module {
 
         let prepared = try prepareInputEmbedding(textTokenIDs: textTokenIDs, conditioningLatents: conditioningLatents)
         let cache = gpt.makeCache()
-        var input = prepared.embeddings
+        var input: MLXArray = prepared.embeddings
         var tokenIDs: [Int] = []
         var latents: [MLXArray] = []
         let sampler = temperature > 0
@@ -776,11 +781,6 @@ public final class IndexTTSCore: Module {
         let latentStates = latents.isEmpty
             ? MLXArray.zeros([1, 0, config.gpt.modelDim])
             : concatenated(latents, axis: 1)
-        eval(latentStates)
-        // Concatenation creates the output tensor; the model/cache does not retain
-        // it. Evaluate before transfer so subsequent model work cannot race its
-        // lazy graph. MLX does not express this independence to Swift's checker.
-        nonisolated(unsafe) let outputLatents = latentStates
-        return IndexTTSMelGeneration(tokenIDs: tokenIDs, latentStates: outputLatents)
+        return IndexTTSMelGeneration(tokenIDs: tokenIDs, latentStates: latentStates)
     }
 }

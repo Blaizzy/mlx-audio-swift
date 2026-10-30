@@ -175,7 +175,7 @@ struct MingOmniTests {
         let stream = concatenated(chunks)
         #expect(stream.shape == full.shape)
         #expect(max(abs(full - stream)).item(Float.self) < 1e-6)
-        let reference = MLXArray(full.asArray(Float.self))
+        let reference = full
         let cloned = try await model.generate(text: "Hello world.", voice: nil, refAudio: reference,
             refText: "Hello world.", language: "en", generationParameters: parameters)
         #expect(cloned.size > model.sampleRate / 4)

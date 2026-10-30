@@ -190,25 +190,25 @@ public final class VibeVoiceTTSModel: Module, SpeechGenerationModel, @unchecked 
         return audio
     }
     /// References follow first speaker appearance in the script. Samples may be mono or (samples, channels).
-    public func generate(text: String, referenceAudio: sending [MLXArray] = [], referenceSampleRate: Int = 24000,
+    public func generate(text: String, referenceAudio: [MaterializedArray] = [], referenceSampleRate: Int = 24000,
                          options: VibeVoiceTTSGenerationOptions = .init(),
-                         generationParameters: GenerateParameters = .init(temperature: 0.7)) async throws -> sending MLXArray {
-        try synthesize(text: text, references: referenceAudio, referenceSampleRate: referenceSampleRate,
-            parameters: generationParameters, options: options)
+                         generationParameters: GenerateParameters = .init(temperature: 0.7)) async throws -> MaterializedArray {
+        try (synthesize(text: text, references: referenceAudio, referenceSampleRate: referenceSampleRate,
+            parameters: generationParameters, options: options)).materialized()
     }
-    public func generate(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
-                         language: String?, generationParameters: GenerateParameters) async throws -> sending MLXArray {
+    public func generate(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
+                         language: String?, generationParameters: GenerateParameters) async throws -> MaterializedArray {
         try synthesize(text: text, references: refAudio.map { [$0] } ?? [], referenceSampleRate: sampleRate,
-            parameters: generationParameters, options: generationOptions)
+            parameters: generationParameters, options: generationOptions).materialized()
     }
     /// The full-model reference returns one completed waveform; this adapter has the same behavior.
-    public func generateStream(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?,
-                               language: String?, generationParameters: GenerateParameters) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let reference = SendingBox(refAudio), options = generationOptions
+    public func generateStream(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?,
+                               language: String?, generationParameters: GenerateParameters) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let reference = refAudio, options = generationOptions
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let audio = try self.synthesize(text: text, references: reference.take().map { [$0] } ?? [],
+                    let audio = try self.synthesize(text: text, references: reference.map { [$0] } ?? [],
                         referenceSampleRate: self.sampleRate, parameters: generationParameters, options: options)
                     continuation.yield(.audio(audio)); continuation.finish()
                 } catch { continuation.finish(throwing: error) }

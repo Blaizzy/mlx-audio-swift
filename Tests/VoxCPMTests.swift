@@ -157,7 +157,7 @@ struct VoxCPMTests {
             #expect(model.sampleRate == 8000)
             #expect((model.baseLM.embedTokens is QuantizedEmbedding) == quantized)
             let audio = try await loaded.generate(text: "Hi", voice: nil,
-                refAudio: MLXArray.ones([5]) * 0.01, refText: "Hi", language: nil,
+                refAudio: (MLXArray.ones([5]) * 0.01).materialized(), refText: "Hi", language: nil,
                 generationParameters: GenerateParameters(maxTokens: 2))
             #expect(audio.shape == [8])
             #expect(audio.asArray(Float.self).allSatisfy { $0.isFinite })

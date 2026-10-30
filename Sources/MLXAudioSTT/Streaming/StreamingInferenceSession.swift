@@ -29,7 +29,7 @@ private struct SessionSharedState: Sendable {
 // MARK: - Decode Pass Parameters
 
 private struct DecodePassParams: Sendable {
-    let audioFeatures: UncheckedSendableBox<MLXArray>
+    let audioFeatures: MaterializedArray
     let model: UncheckedSendableBox<Qwen3ASRModel>
     let config: StreamingConfig
     let confirmedTokenIds: [Int]
@@ -42,7 +42,7 @@ private struct DecodePassParams: Sendable {
 }
 
 private struct FinalizeWindowsParams: Sendable {
-    let windows: UncheckedSendableBox<[MLXArray]>
+    let windows: [MaterializedArray]
     let model: UncheckedSendableBox<Qwen3ASRModel>
     let config: StreamingConfig
     let totalSamples: Int
@@ -51,8 +51,8 @@ private struct FinalizeWindowsParams: Sendable {
 
 private struct StopSnapshot: Sendable {
     let continuation: AsyncStream<TranscriptionEvent>.Continuation?
-    let completedWindows: UncheckedSendableBox<[MLXArray]>?
-    let pendingAudioFeatures: UncheckedSendableBox<MLXArray>?
+    let completedWindows: [MaterializedArray]?
+    let pendingAudioFeatures: MaterializedArray?
     let confirmedCount: Int
     let totalSamples: Int
     let encodedWindowCount: Int
@@ -73,7 +73,7 @@ private enum CohereDecodePassKind: Sendable {
 }
 
 private struct CohereDecodePassParams: Sendable {
-    let audio: UncheckedSendableBox<MLXArray>
+    let audio: MaterializedArray
     let model: UncheckedSendableBox<CohereTranscribeModel>
     let config: StreamingConfig
     let kind: CohereDecodePassKind
@@ -113,7 +113,7 @@ private enum MossDecodePassKind: Sendable {
 }
 
 private struct MossDecodePassParams: Sendable {
-    let audio: UncheckedSendableBox<MLXArray>
+    let audio: MaterializedArray
     let model: UncheckedSendableBox<MossTranscribeDiarizeModel>
     let config: StreamingConfig
     let kind: MossDecodePassKind
@@ -282,7 +282,7 @@ private final class MossStreamingInferenceSessionCore: @unchecked Sendable, Stre
 
     private func launchDecodePass(_ launch: MossDecodeLaunch) {
         let params = MossDecodePassParams(
-            audio: UncheckedSendableBox(MLXArray(launch.samples)),
+            audio: MLXArray(launch.samples).materialized(),
             model: UncheckedSendableBox(model),
             config: config,
             kind: launch.kind,
@@ -317,7 +317,7 @@ private final class MossStreamingInferenceSessionCore: @unchecked Sendable, Stre
         let decodeStart = Date()
         let output: STTOutput
         var liveText = ""
-        let currentWindowSeconds = Double(params.audio.value.dim(0)) / Double(params.model.value.sampleRate)
+        let currentWindowSeconds = Double(params.audio.dim(0)) / Double(params.model.value.sampleRate)
         let maxTokens: Int?
         switch params.kind {
         case .partial:
@@ -343,7 +343,7 @@ private final class MossStreamingInferenceSessionCore: @unchecked Sendable, Stre
 
         do {
             output = try params.model.value.streamingTranscribeWindow(
-                audio: params.audio.value,
+                audio: params.audio,
                 offsetSeconds: params.offsetSeconds,
                 config: params.config,
                 maxTokens: maxTokens,
@@ -490,7 +490,7 @@ private final class MossStreamingInferenceSessionCore: @unchecked Sendable, Stre
 
         if !pendingSamples.isEmpty {
             let params = MossDecodePassParams(
-                audio: UncheckedSendableBox(MLXArray(pendingSamples)),
+                audio: MLXArray(pendingSamples).materialized(),
                 model: UncheckedSendableBox(model),
                 config: config,
                 kind: .finalWindow,
@@ -648,7 +648,7 @@ private final class CohereStreamingInferenceSessionCore: @unchecked Sendable, St
         }
         let (confirmedTokenIds, displayPrefix, prevProvisional, prevFirstSeen, prevAgreementCounts) = snapshot
         let params = CohereDecodePassParams(
-            audio: UncheckedSendableBox(MLXArray(launch.samples)),
+            audio: MLXArray(launch.samples).materialized(),
             model: UncheckedSendableBox(model),
             config: config,
             kind: launch.kind,
@@ -689,7 +689,7 @@ private final class CohereStreamingInferenceSessionCore: @unchecked Sendable, St
         if Task.isCancelled { return }
 
         let result = params.model.value.streamingDecodeTokenIds(
-            audio: params.audio.value,
+            audio: params.audio,
             config: params.config,
             confirmedTokenIds: params.confirmedTokenIds
         )
@@ -896,7 +896,7 @@ private final class CohereStreamingInferenceSessionCore: @unchecked Sendable, St
 
         if !pendingSamples.isEmpty {
             let params = CohereDecodePassParams(
-                audio: UncheckedSendableBox(MLXArray(pendingSamples)),
+                audio: MLXArray(pendingSamples).materialized(),
                 model: UncheckedSendableBox(model),
                 config: config,
                 kind: .finalWindow,
@@ -1105,7 +1105,7 @@ private final class QwenStreamingInferenceSessionCore: @unchecked Sendable, Stre
                 frozenWindowCount = encoder.encodedWindowCount
 
                 let params = FinalizeWindowsParams(
-                    windows: UncheckedSendableBox(windowsToFinalize),
+                    windows: materialize(windowsToFinalize),
                     model: UncheckedSendableBox(self.model),
                     config: self.config,
                     totalSamples: totalSamplesFed,
@@ -1157,7 +1157,7 @@ private final class QwenStreamingInferenceSessionCore: @unchecked Sendable, Stre
         }
 
         let params = DecodePassParams(
-            audioFeatures: UncheckedSendableBox(audioFeatures),
+            audioFeatures: audioFeatures.materialized(),
             model: UncheckedSendableBox(self.model),
             config: self.config,
             confirmedTokenIds: confirmedTokenIds,
@@ -1356,7 +1356,7 @@ private final class QwenStreamingInferenceSessionCore: @unchecked Sendable, Stre
         if Task.isCancelled { return }
 
         let model = params.model.value
-        let audioFeatures = params.audioFeatures.value
+        let audioFeatures = params.audioFeatures
         guard let tokenizer = model.tokenizer else { return }
 
         let numAudioTokens = audioFeatures.dim(0)
@@ -1560,7 +1560,7 @@ private final class QwenStreamingInferenceSessionCore: @unchecked Sendable, Stre
         let model = params.model.value
         guard let tokenizer = model.tokenizer else { return }
 
-        let windows = params.windows.value
+        let windows = params.windows
         guard !windows.isEmpty else { return }
 
         var totalDecodeTime: Double = 0
@@ -1673,8 +1673,8 @@ private final class QwenStreamingInferenceSessionCore: @unchecked Sendable, Stre
                 let confirmedCount = shared.withLock { $0.confirmedTokenIds.count }
                 return StopSnapshot(
                     continuation: continuation,
-                    completedWindows: completedWindows.isEmpty ? nil : UncheckedSendableBox(completedWindows),
-                    pendingAudioFeatures: UncheckedSendableBox(audioFeatures),
+                    completedWindows: completedWindows.isEmpty ? nil : materialize(completedWindows),
+                    pendingAudioFeatures: audioFeatures.materialized(),
                     confirmedCount: confirmedCount,
                     totalSamples: totalSamples,
                     encodedWindowCount: encodedWindowCount,
@@ -1697,7 +1697,7 @@ private final class QwenStreamingInferenceSessionCore: @unchecked Sendable, Stre
 
             return StopSnapshot(
                 continuation: continuation,
-                completedWindows: completedWindows.isEmpty ? nil : UncheckedSendableBox(completedWindows),
+                completedWindows: completedWindows.isEmpty ? nil : materialize(completedWindows),
                 pendingAudioFeatures: nil,
                 confirmedCount: 0,
                 totalSamples: totalSamples,
@@ -1710,7 +1710,7 @@ private final class QwenStreamingInferenceSessionCore: @unchecked Sendable, Stre
             return
         }
 
-        if let completedWindows = snapshot.completedWindows?.value,
+        if let completedWindows = snapshot.completedWindows,
            !completedWindows.isEmpty,
            let tokenizer = model.tokenizer
         {
@@ -1743,7 +1743,7 @@ private final class QwenStreamingInferenceSessionCore: @unchecked Sendable, Stre
         }
 
         let finalText: String
-        if let audioFeatures = snapshot.pendingAudioFeatures?.value,
+        if let audioFeatures = snapshot.pendingAudioFeatures,
            let tokenizer = model.tokenizer
         {
             let startTime = Date()

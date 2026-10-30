@@ -327,7 +327,7 @@ struct PocketTTSTests {
         #expect(model.temp == 0.8)
         do {
             _ = try await model.generate(
-                text: "Hello", voice: nil, refAudio: MLXArray.zeros([16]), generationParameters: parameters)
+                text: "Hello", voice: nil, refAudio: MLXArray.zeros([16]).materialized(), generationParameters: parameters)
             Issue.record("Reference audio requires the speaker encoder")
         } catch {
             #expect(error.localizedDescription.contains("omits the speaker encoder"))

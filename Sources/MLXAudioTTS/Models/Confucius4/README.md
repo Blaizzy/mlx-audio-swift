@@ -21,7 +21,7 @@ let model = try await Confucius4Model.fromPretrained()
 // reference16k contains a mono Float waveform sampled at 16,000 Hz.
 let audio = try await model.generate(
     text: "Hello, welcome to our demonstration.",
-    refAudio: MLXArray(reference16k),
+    refAudio: MLXArray(reference16k).materialized(),
     language: "en",
     generationParameters: .init(
         maxTokens: 512, temperature: 0.8, topP: 0.8, topK: 30,

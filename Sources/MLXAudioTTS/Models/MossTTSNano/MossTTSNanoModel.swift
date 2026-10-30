@@ -455,11 +455,11 @@ public final class MossTTSNanoModel: Module, SpeechGenerationModel, @unchecked S
     public func generate(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         _ = voice
         _ = refText
         _ = language
@@ -507,21 +507,19 @@ public final class MossTTSNanoModel: Module, SpeechGenerationModel, @unchecked S
         let audioTokenIDs = allAudioTokens.isEmpty
             ? MLXArray.zeros([1, 0, config.nVQ], type: Int32.self)
             : MLX.concatenated(allAudioTokens, axis: 1).asType(.int32)
-        return try decodeAudioTokenIDs(audioTokenIDs, numQuantizers: config.nVQ)
+        return (try decodeAudioTokenIDs(audioTokenIDs, numQuantizers: config.nVQ)).materialized()
     }
 
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let refAudio = SendingBox(refAudio)
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         return AsyncThrowingStream { continuation in
             let task = Task { @Sendable in
-                let refAudio = refAudio.take()
                 do {
                     let audio = try await self.generate(
                         text: text,

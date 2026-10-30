@@ -197,7 +197,7 @@ public final class TADAModel: Module, SpeechGenerationModel, @unchecked Sendable
     }
 
     private func synthesize(text: String, reference: TADAReference?, parameters: GenerateParameters,
-        options: TADAGenerationOptions, emit: ((sending AudioGeneration) -> Void)?, interval: Double) throws -> SendingBox<MLXArray> {
+        options: TADAGenerationOptions, emit: ((AudioGeneration) -> Void)?, interval: Double) throws -> MaterializedArray {
         let maxTokens = parameters.maxTokens ?? 1024
         try validate(options, maxTokens: maxTokens)
         let random = parameters.seed.map { MLXRandom.RandomState(seed: $0) } ?? MLXRandom.RandomState()
@@ -289,7 +289,7 @@ public final class TADAModel: Module, SpeechGenerationModel, @unchecked Sendable
                     if pass == passes - 1, let emit, frames - lastEmitFrames >= Int(interval * 50), frames > 32 {
                         let partial = try decode(features, durations + [before], skip: p.skip)
                         let safe = max(0, partial.size - (32 + before) * (sampleRate / 50))
-                        if safe > emitted { emit(.audio(MLXArray(partial[emitted ..< safe].asArray(Float.self)))); emitted = safe }
+                        if safe > emitted { emit(.audio(partial[emitted ..< safe])); emitted = safe }
                         lastEmitFrames = frames
                     }
                 }
@@ -302,9 +302,9 @@ public final class TADAModel: Module, SpeechGenerationModel, @unchecked Sendable
                 continue
             }
             result = try decode(features, durations, skip: p.skip)
-            if let emit, result.size > emitted { emit(.audio(MLXArray(result[emitted...].asArray(Float.self)))) }
+            if let emit, result.size > emitted { emit(.audio(result[emitted...])) }
         }
-        return SendingBox(emit == nil ? MLXArray(result.asArray(Float.self)) : MLXArray.zeros([0]))
+        return (emit == nil ? result : MLXArray.zeros([0])).materialized()
     }
 
     private func acquireGeneration() throws {
@@ -322,27 +322,27 @@ public final class TADAModel: Module, SpeechGenerationModel, @unchecked Sendable
             peakMemoryUsage: Double(Memory.peakMemory) / 1e9)
     }
 
-    public func generate(text: String, reference: TADAReference? = nil, parameters: GenerateParameters = .init(maxTokens: 1024, temperature: 0.6, topP: 0.9, repetitionPenalty: 1.1), options: TADAGenerationOptions = .init()) async throws -> sending MLXArray {
+    public func generate(text: String, reference: TADAReference? = nil, parameters: GenerateParameters = .init(maxTokens: 1024, temperature: 0.6, topP: 0.9, repetitionPenalty: 1.1), options: TADAGenerationOptions = .init()) async throws -> MaterializedArray {
         try acquireGeneration()
         defer { releaseGeneration() }
-        return try synthesize(text: text, reference: reference, parameters: parameters, options: options, emit: nil, interval: 2).take()
+        return (try synthesize(text: text, reference: reference, parameters: parameters, options: options, emit: nil, interval: 2)).materialized()
     }
-    public func generate(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?, generationParameters: GenerateParameters) async throws -> sending MLXArray {
+    public func generate(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?, generationParameters: GenerateParameters) async throws -> MaterializedArray {
         guard refAudio != nil, refText != nil else { throw TADAError.invalidInput("Reference audio and a matching transcript are required for TADA") }
         try acquireGeneration()
         defer { releaseGeneration() }
         let reference = try refAudio.map { try encodeReferenceImpl(audio: $0, text: refText!, seed: generationParameters.seed) }
-        return try synthesize(text: text, reference: reference, parameters: generationParameters, options: .init(), emit: nil, interval: 2).take()
+        return (try synthesize(text: text, reference: reference, parameters: generationParameters, options: .init(), emit: nil, interval: 2)).materialized()
     }
-    public func generateStream(text: String, reference: sending TADAReference? = nil, parameters: GenerateParameters = .init(maxTokens: 1024, temperature: 0.6, topP: 0.9, repetitionPenalty: 1.1), options: TADAGenerationOptions = .init(), streamingInterval: Double = 2) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let prompt = SendingBox(reference)
+    public func generateStream(text: String, reference: TADAReference? = nil, parameters: GenerateParameters = .init(maxTokens: 1024, temperature: 0.6, topP: 0.9, repetitionPenalty: 1.1), options: TADAGenerationOptions = .init(), streamingInterval: Double = 2) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let prompt = reference
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
         let task = Task { @Sendable [self] in
             do {
                 try acquireGeneration()
                 defer { releaseGeneration() }
                 guard streamingInterval.isFinite, streamingInterval > 0 else { throw TADAError.invalidInput("Streaming interval must be positive") }
-                let reference = prompt.take()
+                let reference = prompt
                 let start = Date()
                 _ = try synthesize(text: text, reference: reference, parameters: parameters, options: options,
                     emit: { continuation.yield($0) }, interval: streamingInterval)
@@ -354,17 +354,17 @@ public final class TADAModel: Module, SpeechGenerationModel, @unchecked Sendable
         continuation.onTermination = { @Sendable _ in task.cancel() }
         return stream
     }
-    public func generateStream(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?, generationParameters: GenerateParameters) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    public func generateStream(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?, generationParameters: GenerateParameters) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(text: text, voice: voice, refAudio: refAudio, refText: refText, language: language, generationParameters: generationParameters, streamingInterval: 2)
     }
-    public func generateStream(text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?, generationParameters: GenerateParameters, streamingInterval: Double) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let referenceAudio = SendingBox(refAudio)
+    public func generateStream(text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?, generationParameters: GenerateParameters, streamingInterval: Double) -> AsyncThrowingStream<AudioGeneration, Error> {
+        let referenceAudio = refAudio
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
         let task = Task { @Sendable [self] in
             do {
                 try acquireGeneration()
                 defer { releaseGeneration() }
-                let audio = referenceAudio.take()
+                let audio = referenceAudio
                 guard audio != nil, refText != nil else { throw TADAError.invalidInput("Reference audio and a matching transcript are required for TADA") }
                 guard streamingInterval.isFinite, streamingInterval > 0 else { throw TADAError.invalidInput("Streaming interval must be positive") }
                 let reference = try audio.map { try encodeReferenceImpl(audio: $0, text: refText!, seed: generationParameters.seed) }

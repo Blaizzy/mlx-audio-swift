@@ -362,7 +362,7 @@ public final class IndexTTSModel: SpeechGenerationModel, @unchecked Sendable {
     public func prepareInputEmbedding(
         textTokenIDs: [Int],
         conditioningLatents: MLXArray
-    ) throws -> sending IndexTTSPreparedEmbedding {
+    ) throws -> IndexTTSPreparedEmbedding {
         try core.prepareInputEmbedding(textTokenIDs: textTokenIDs, conditioningLatents: conditioningLatents)
     }
 
@@ -402,7 +402,7 @@ public final class IndexTTSModel: SpeechGenerationModel, @unchecked Sendable {
         topP: Float = 1.0,
         topK: Int = 0,
         minP: Float = 0
-    ) throws -> sending IndexTTSMelGeneration {
+    ) throws -> IndexTTSMelGeneration {
         try core.generateMelTokens(
             textTokenIDs: textTokenIDs,
             conditioningLatents: conditioningLatents,
@@ -469,11 +469,11 @@ public final class IndexTTSModel: SpeechGenerationModel, @unchecked Sendable {
     public func generate(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         _ = voice
         _ = refText
         _ = language
@@ -488,7 +488,7 @@ public final class IndexTTSModel: SpeechGenerationModel, @unchecked Sendable {
             from: refAudio,
             sampleRate: config.sampleRate
         )
-        return try generateWaveform(
+        return (try generateWaveform(
             textTokenIDs: textTokenIDs,
             referenceFeatures: features,
             maxTokens: maxTokens,
@@ -496,21 +496,19 @@ public final class IndexTTSModel: SpeechGenerationModel, @unchecked Sendable {
             topP: generationParameters.topP,
             topK: generationParameters.topK,
             minP: generationParameters.minP
-        )
+        )).materialized()
     }
 
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
-        let refAudio = SendingBox(refAudio)
         let task = Task { @Sendable [weak self] in
-            let refAudio = refAudio.take()
             guard let self else {
                 continuation.finish(throwing: AudioGenerationError.modelNotInitialized("IndexTTS model deallocated"))
                 return
@@ -537,12 +535,12 @@ public final class IndexTTSModel: SpeechGenerationModel, @unchecked Sendable {
     public func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters,
         streamingInterval: Double
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         _ = streamingInterval
         return generateStream(
             text: text,

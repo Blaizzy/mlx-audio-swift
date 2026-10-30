@@ -182,7 +182,7 @@ enum App {
         let collectText = (lfmMode == .t2t || lfmMode == .stt || lfmMode == .sts)
         let collectAudio = (lfmMode == .tts || lfmMode == .sts)
 
-        let stream: AsyncThrowingStream<(MLXArray, LFMModality), Error>
+        let stream: AsyncThrowingStream<(MaterializedArray, LFMModality), Error>
 
         if useSequential {
             stream = model.generateSequential(

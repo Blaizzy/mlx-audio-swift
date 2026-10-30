@@ -133,7 +133,7 @@ struct MingDenseTests {
         #expect(model.sampleRate == 44100)
         let file = try #require(Bundle.module.url(forResource: "conversational_a", withExtension: "wav", subdirectory: "media"))
         let (_, human) = try loadAudioArray(from: file, sampleRate: model.sampleRate)
-        let reference = MLXArray(Array(human.asArray(Float.self).prefix(model.sampleRate * 2)))
+        let reference = human[0..<min(human.size, model.sampleRate * 2)].materialized()
         let cloned = try await model.generate(text: "Hello world.", voice: nil, refAudio: reference,
             refText: model.configuration.isMing3 ? "Coffee's story likely begins in Ethiopia." : nil, language: "en",
             generationParameters: GenerateParameters(maxTokens: 60, temperature: 0, seed: 42))

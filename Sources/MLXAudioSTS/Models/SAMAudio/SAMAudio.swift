@@ -597,7 +597,13 @@ public final class SAMAudio: Module, STSModel, @unchecked Sendable {
         _textFeatures: MLXArray? = nil,
         _textMask: MLXArray? = nil
     ) -> AsyncThrowingStream<SAMAudioStreamingChunk, Error> {
-        AsyncThrowingStream { continuation in
+        // Capture immutable tensor snapshots before sharing inputs with the worker.
+        let audios = audios.materialized()
+        let anchorIDs = anchorIDs?.materialized()
+        let anchorAlignment = anchorAlignment?.materialized()
+        let _textFeatures = _textFeatures?.materialized()
+        let _textMask = _textMask?.materialized()
+        return AsyncThrowingStream { continuation in
             Task {
                 do {
                     guard audios.ndim == 3, audios.shape[1] == 1 else {

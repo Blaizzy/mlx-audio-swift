@@ -35,7 +35,7 @@ private let metalAvailable: Bool = {
 @testable import MLXAudioTTS
 @testable import MLXAudioCodecs
 
-private func loadTTSNetworkFixture(sampleRate: Int, maxSamples: Int) throws -> MLXArray {
+private func loadTTSNetworkFixture(sampleRate: Int, maxSamples: Int) throws -> MaterializedArray {
     let audioURL = Bundle.module.url(
         forResource: "intention",
         withExtension: "wav",
@@ -43,7 +43,7 @@ private func loadTTSNetworkFixture(sampleRate: Int, maxSamples: Int) throws -> M
     )!
     let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: sampleRate)
     let sampleCount = min(audio.shape[0], maxSamples)
-    return audio[0..<sampleCount]
+    return audio[0..<sampleCount].materialized()
 }
 
 private func writeTestFile(_ url: URL, contents: String) throws {
@@ -693,7 +693,7 @@ private func makeTinyQwen3TTSModel(
 }
 
 private func collectQwen3TTSStream(
-    _ stream: sending AsyncThrowingStream<AudioGeneration, Error>
+    _ stream: AsyncThrowingStream<AudioGeneration, Error>
 ) async throws -> sending (tokenCount: Int, infoCount: Int, lastAudio: MLXArray?) {
     var tokenCount = 0
     var infoCount = 0
@@ -841,22 +841,22 @@ private final class ProxyCancellationProbeModel: SpeechGenerationModel, @uncheck
     func generate(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
-        MLXArray.zeros([0], dtype: .float32)
+    ) async throws -> MaterializedArray {
+        MLXArray.zeros([0], dtype: .float32).materialized()
     }
 
     func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
         let task = Task {
             do {
@@ -881,12 +881,12 @@ private final class ProxyCancellationProbeModel: SpeechGenerationModel, @uncheck
     func generateStream(
         text: String,
         voice: String?,
-        refAudio: sending MLXArray?,
+        refAudio: MaterializedArray?,
         refText: String?,
         language: String?,
         generationParameters: GenerateParameters,
         streamingInterval: Double
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text,
             voice: voice,
@@ -1187,7 +1187,7 @@ struct Qwen3TTSTests {
         let rawAudio = try await fixture.model.generate(
             text: "target voice prompt one two three four five",
             voice: nil,
-            refAudio: MLXArray(refSamples),
+            refAudio: (MLXArray(refSamples)).materialized(),
             refText: "one two three four five one two three four five",
             language: "English",
             generationParameters: parameters
@@ -1200,7 +1200,7 @@ struct Qwen3TTSTests {
             fixture.model.generateStream(
                 text: "target voice prompt one two three four five",
                 voice: nil,
-                refAudio: MLXArray(refSamples),
+                refAudio: (MLXArray(refSamples)).materialized(),
                 refText: "one two three four five one two three four five",
                 language: "English",
                 generationParameters: parameters,
@@ -3088,7 +3088,7 @@ struct IndexTTSTests {
         let generated = try await model.generate(
             text: "a",
             voice: nil,
-            refAudio: MLXArray(referenceSamples),
+            refAudio: (MLXArray(referenceSamples)).materialized(),
             refText: nil,
             language: nil,
             generationParameters: GenerateParameters(maxTokens: 2, temperature: 0)
@@ -3099,7 +3099,7 @@ struct IndexTTSTests {
         let stream = model.generateStream(
             text: "a",
             voice: nil,
-            refAudio: MLXArray(referenceSamples),
+            refAudio: (MLXArray(referenceSamples)).materialized(),
             refText: nil,
             language: nil,
             generationParameters: GenerateParameters(maxTokens: 2),

@@ -46,20 +46,24 @@ public struct AudioGenerationInfo: Sendable {
 
 // MARK: - Generation Events
 
-/// Events transferred from the producer to the consumer during audio generation.
-/// Yielding an event transfers its tensor too; the producer must not subsequently
-/// access that tensor or any aliases to it.
-public enum AudioGeneration {
+/// Events shared between the producer and consumer during audio generation.
+/// Audio chunks are fully evaluated, immutable snapshots.
+public enum AudioGeneration: Sendable {
     /// A generated token ID
     case token(Int)
     /// Generation statistics
     case info(AudioGenerationInfo)
     /// Generated audio chunk. Concatenate repeated values for the complete waveform.
-    case audio(MLXArray)
+    case audio(MaterializedArray)
     /// Fractional progress through generation (0-1). Emitted by models with a
     /// deterministic step count (e.g. diffusion denoise steps), where the
     /// fraction is exact rather than an estimate.
     case progress(Double)
+
+    /// Evaluate an audio chunk and capture an immutable snapshot for the consumer.
+    public static func audio(_ audio: MLXArray) -> AudioGeneration {
+        .audio(audio.materialized())
+    }
 }
 
 // MARK: - Generation Errors

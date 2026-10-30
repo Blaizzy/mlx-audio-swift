@@ -115,7 +115,7 @@ public final class HiggsAudio3TTSModel: Module, SpeechGenerationModel, @unchecke
     public func generate(
         text: String, references: [HiggsV3Reference],
         generationParameters: GenerateParameters? = nil
-    ) async throws -> MLXArray {
+    ) async throws -> MaterializedArray {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw AudioGenerationError.invalidInput("Text must not be empty")
         }
@@ -150,26 +150,25 @@ public final class HiggsAudio3TTSModel: Module, SpeechGenerationModel, @unchecke
         if nIn > 0 && audio.size > nIn { audio[0..<nIn] = audio[0..<nIn] * MLXArray.linspace(0, 1, count: nIn) }
         if nOut > 0 && audio.size > nOut { audio[(audio.size - nOut)...] = audio[(audio.size - nOut)...] * MLXArray.linspace(1, 0, count: nOut) }
         eval(audio)
-        return audio
+        return audio.materialized()
     }
 
     public func generate(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
         generationParameters: GenerateParameters
-    ) async throws -> sending MLXArray {
+    ) async throws -> MaterializedArray {
         let references = try refAudio.map { [HiggsV3Reference(codes: try encodeReferenceAudio($0), text: refText)] } ?? []
-        return try await generate(text: text, references: references, generationParameters: generationParameters)
+        return (try await generate(text: text, references: references, generationParameters: generationParameters)).materialized()
     }
 
     public func generateStream(
-        text: String, voice: String?, refAudio: sending MLXArray?, refText: String?, language: String?,
+        text: String, voice: String?, refAudio: MaterializedArray?, refText: String?, language: String?,
         generationParameters: GenerateParameters
-    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
-        let refAudio = SendingBox(refAudio)
+    ) -> AsyncThrowingStream<AudioGeneration, Error> {
         return AsyncThrowingStream { continuation in
             let task = Task { @Sendable in
                 do {
-                    let audio = try await self.generate(text: text, voice: voice, refAudio: refAudio.take(),
+                    let audio = try await self.generate(text: text, voice: voice, refAudio: refAudio,
                         refText: refText, language: language, generationParameters: generationParameters)
                     continuation.yield(.audio(audio))
                     continuation.finish()
