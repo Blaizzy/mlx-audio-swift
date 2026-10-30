@@ -158,7 +158,7 @@ public final class Attention: Module {
         (k, v) = cache.update(keys: k, values: v)
 
         let kLen = k.shape[2]
-        let kTargetLen = t + min(cfg.context, kLen - t)
+        let kTargetLen = cfg.context > 0 ? min(kLen, t - 1 + cfg.context) : t
         if kTargetLen < kLen {
             let start = kLen - kTargetLen
             k = split(k, indices: [start], axis: 2)[1]
@@ -167,7 +167,13 @@ public final class Attention: Module {
 
         let maskMode: MLXFast.ScaledDotProductAttentionMaskMode = {
             if let mask { return .array(mask) }
-            return cfg.causal ? createAttentionMask(h: xs, cache: cache) : .none
+            guard cfg.causal else { return .none }
+            guard t > 1, cfg.context > 0, kTargetLen > cfg.context else {
+                return createAttentionMask(h: xs, cache: cache)
+            }
+            let queries = MLXArray(Int32(kTargetLen - t) ..< Int32(kTargetLen))[0..., .newAxis]
+            let keys = MLXArray(Int32(0) ..< Int32(kTargetLen))[.newAxis]
+            return .array((queries .>= keys) .&& (queries .< keys + Int32(cfg.context)))
         }()
 
         var out = MLXFast.scaledDotProductAttention(
