@@ -93,7 +93,7 @@ public final class WhisperModel: Module, STTGenerationModel {
         audio: MLXArray,
         generationParameters: STTGenerateParameters
     ) -> AsyncThrowingStream<STTGeneration, Error> {
-        AsyncThrowingStream { continuation in
+        makeSTTStream { [self] continuation in
             let startTime = Date()
             let mono = audio.ndim > 1 ? audio.mean(axis: -1) : audio
             let chunks = chunkAudioFor30sWindows(mono)
@@ -105,6 +105,7 @@ public final class WhisperModel: Module, STTGenerationModel {
             var detectedLanguage: String? = nil
 
             for (index, chunk) in chunks.enumerated() {
+                try Task.checkCancellation()
                 if generationParameters.verbose {
                     let endSeconds = chunk.offsetSeconds + Float(chunk.audio.dim(0)) / Float(WhisperAudioConfig.sampleRate)
                     print("[Whisper] chunk \(index + 1)/\(chunks.count) \(String(format: "%.1f", chunk.offsetSeconds))s..\(String(format: "%.1f", endSeconds))s")
@@ -151,7 +152,6 @@ public final class WhisperModel: Module, STTGenerationModel {
                 peakMemoryUsage: Double(Memory.peakMemory) / 1e9
             )
             continuation.yield(.result(output))
-            continuation.finish()
         }
     }
 
@@ -226,6 +226,7 @@ public final class WhisperModel: Module, STTGenerationModel {
         )
 
         for step in 0..<maxTokens {
+            if Task.isCancelled { break }
             var stepLogits = logits
             if step == 0, !beginSuppress.isEmpty {
                 stepLogits = suppressLogits(stepLogits, ids: beginSuppress)

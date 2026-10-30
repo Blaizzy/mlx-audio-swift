@@ -85,6 +85,7 @@ extension NemotronASRModel {
         var spec: [Int] = []
         var specStart = 0
         while time < chunkLen {
+            if Task.isCancelled { break }
             let frame = prompted[0..., time..<(time + 1), 0...]
             let prediction: (predProjected: MLXArray, proposedState: NemoLSTMState)
             if let cached = state.cachedPrediction {

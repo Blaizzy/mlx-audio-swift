@@ -1,5 +1,28 @@
 import MLX
 
+/// Runs synchronous inference without blocking the thread creating the stream.
+/// The producer owns its captured model/audio for the duration of generation;
+/// callers must not mutate them or run another generation on the same model.
+func makeSTTStream(
+    _ produce: @escaping (AsyncThrowingStream<STTGeneration, Error>.Continuation) throws -> Void
+) -> AsyncThrowingStream<STTGeneration, Error> {
+    // MLX models and arrays are not Sendable. Transfer the producer to one worker,
+    // as the other asynchronous STT implementations do with their model/audio.
+    let producer = UncheckedSendableBox(produce)
+    return AsyncThrowingStream { continuation in
+        let task = Task.detached {
+            do {
+                try Task.checkCancellation()
+                try producer.value(continuation)
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
+            }
+        }
+        continuation.onTermination = { @Sendable _ in task.cancel() }
+    }
+}
+
 public struct STTGenerateParameters: Sendable {
     public let maxTokens: Int
     public let temperature: Float

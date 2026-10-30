@@ -2315,7 +2315,7 @@ struct CohereTranscribeSTTTests {
         )
     }
 
-    @Test func fromDirectoryFixtureSmokeTest() throws {
+    @Test func fromDirectoryFixtureSmokeTest() async throws {
         let fixtureDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("cohere-fixture-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
@@ -2383,6 +2383,23 @@ struct CohereTranscribeSTTTests {
         #expect(output.promptTokens == 9)
         #expect(output.generationTokens == 0)
         #expect(output.totalTokens == 9)
+
+        // Exercise both stream branches on the same deterministic checkpoint.
+        for chunkDuration: Float in [1200, 0.5] {
+            let audio = MLXArray.zeros([16_000])
+            let parameters = STTGenerateParameters(
+                language: "en", chunkDuration: chunkDuration, minChunkDuration: 0.1
+            )
+            let expected = model.generate(audio: audio, generationParameters: parameters)
+            var results: [STTOutput] = []
+            for try await event in model.generateStream(audio: audio, generationParameters: parameters) {
+                if case .result(let output) = event { results.append(output) }
+            }
+            #expect(results.count == 1)
+            #expect(results.first?.text == expected.text)
+            #expect(results.first?.promptTokens == expected.promptTokens)
+            #expect(results.first?.generationTokens == expected.generationTokens)
+        }
     }
 }
 

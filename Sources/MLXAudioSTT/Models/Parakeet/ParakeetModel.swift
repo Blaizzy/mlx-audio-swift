@@ -202,7 +202,7 @@ public final class ParakeetModel: Module, STTGenerationModel {
         audio: MLXArray,
         generationParameters: STTGenerateParameters
     ) -> AsyncThrowingStream<STTGeneration, Error> {
-        AsyncThrowingStream { continuation in
+        makeSTTStream { [self] continuation in
             let audio1D = self.normalizeAudioToMono(audio)
             let sampleRate = self.preprocessConfig.sampleRate
             let totalSamples = audio1D.shape[0]
@@ -221,6 +221,7 @@ public final class ParakeetModel: Module, STTGenerationModel {
             var start = 0
 
             while start < totalSamples {
+                try Task.checkCancellation()
                 let end = min(start + chunkSamples, totalSamples)
                 let isLast = end >= totalSamples
                 let chunkAudio = audio1D[start..<end]
@@ -262,7 +263,6 @@ public final class ParakeetModel: Module, STTGenerationModel {
                         totalTime: audioDuration
                     )
                     continuation.yield(.result(output))
-                    continuation.finish()
                     return
                 }
 
@@ -276,7 +276,6 @@ public final class ParakeetModel: Module, STTGenerationModel {
                 totalTime: audioDuration
             )
             continuation.yield(.result(finalOutput))
-            continuation.finish()
         }
     }
 
