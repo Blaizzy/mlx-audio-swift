@@ -206,7 +206,7 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
         audio: MLXArray,
         generationParameters: STTGenerateParameters
     ) -> AsyncThrowingStream<STTGeneration, Error> {
-        AsyncThrowingStream { continuation in
+        makeSTTStream { [self] continuation in
             let audio1D = audio.ndim > 1 ? audio.mean(axis: -1) : audio
             var context = encodeAndPrefill(
                 audio: audio1D,
@@ -224,6 +224,7 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
             )
 
             for pos in context.promptLength..<context.nAudioTotal {
+                try Task.checkCancellation()
                 let token = readToken(prediction, temperature: generationParameters.temperature)
                 generated.append(token)
 
@@ -285,7 +286,6 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
             )
 
             continuation.yield(.result(output))
-            continuation.finish()
         }
     }
 }

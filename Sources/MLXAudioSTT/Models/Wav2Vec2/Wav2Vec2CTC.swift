@@ -489,13 +489,12 @@ public final class Wav2Vec2CTCModel: Module, STTGenerationModel {
         audio: MLXArray,
         generationParameters: STTGenerateParameters
     ) -> AsyncThrowingStream<STTGeneration, Error> {
-        AsyncThrowingStream { continuation in
+        makeSTTStream { [self] continuation in
             let output = self.generate(audio: audio, generationParameters: generationParameters)
             if !output.text.isEmpty {
                 continuation.yield(.token(output.text))
             }
             continuation.yield(.result(output))
-            continuation.finish()
         }
     }
 

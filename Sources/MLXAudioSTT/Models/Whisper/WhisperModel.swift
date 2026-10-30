@@ -64,7 +64,7 @@ public final class WhisperModel: Module, STTGenerationModel {
         audio: MLXArray,
         generationParameters: STTGenerateParameters
     ) -> AsyncThrowingStream<STTGeneration, Error> {
-        AsyncThrowingStream { continuation in
+        makeSTTStream { [self] continuation in
             let startTime = Date()
             let mono = audio.ndim > 1 ? audio.mean(axis: -1) : audio
             let transcript = transcribe(
@@ -95,7 +95,6 @@ public final class WhisperModel: Module, STTGenerationModel {
                 peakMemoryUsage: Double(Memory.peakMemory) / 1e9
             )
             continuation.yield(.result(output))
-            continuation.finish()
         }
     }
 
@@ -167,6 +166,7 @@ public final class WhisperModel: Module, STTGenerationModel {
         let contentFrames = totalSamples / hop
         var seek = 0
         while seek < contentFrames {
+            if Task.isCancelled { break }
             let segmentFrames = min(WhisperAudioConfig.nFrames, contentFrames - seek)
             let start = seek * hop
             let offset = Double(start) / Double(sampleRate)
@@ -292,6 +292,7 @@ public final class WhisperModel: Module, STTGenerationModel {
         )
 
         for step in 0..<maxTokens {
+            if Task.isCancelled { break }
             var stepLogits = logits
             if step == 0, !beginSuppress.isEmpty {
                 stepLogits = suppressLogits(stepLogits, ids: beginSuppress)

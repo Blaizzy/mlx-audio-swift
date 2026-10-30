@@ -448,6 +448,58 @@ struct NemotronTranscribeTests {
         #expect(NemotronTranscribeModel.speakerSegments("no speaker markup") == nil)
     }
 
+    @Test @MainActor func streamOverloadsPreserveTokensAndResult() async throws {
+        let m = try model()
+        // A zero output projection emits token 0 rather than EOS (11).
+        try m.llm.head.update(parameters: ModuleParameters.unflattened([
+            "weight": MLXArray.zeros(m.llm.head.weight.shape)
+        ]), verify: .all)
+        let vocabulary = Dictionary(
+            uniqueKeysWithValues: (0 ..< 64).map { ($0 == 0 ? "<unk>" : "t\($0)", $0) })
+        m._tokenizer = UncheckedSendableBox(try AutoTokenizer.from(
+            tokenizerConfig: ["tokenizer_class": "TokenizersBackend", "unk_token": "<unk>"],
+            tokenizerData: [
+                "model": ["type": "BPE", "vocab": Config(vocabulary.mapValues { Config($0) }), "merges": [], "unk_token": "<unk>"],
+                "added_tokens": [[
+                    "id": 64, "content": "<|audio|>", "special": true, "single_word": false,
+                    "lstrip": false, "rstrip": false, "normalized": false,
+                ]],
+            ]))
+        let waveform = audio()
+        let parameters = STTGenerateParameters(maxTokens: 3)
+        let expected = m.generate(audio: waveform, generationParameters: parameters)
+        #expect(expected.generationTokens == 3)
+
+        // Cover both the shared STT interface and the Nemotron-specific options.
+        for useOptions in [false, true] {
+            let stream: AsyncThrowingStream<STTGeneration, Error>
+            if useOptions {
+                stream = m.generateStream(
+                    audio: waveform, generationParameters: parameters,
+                    options: .init(prefillStepSize: 8))
+            } else {
+                let shared: any STTGenerationModel = m
+                stream = shared.generateStream(audio: waveform, generationParameters: parameters)
+            }
+            var tokens = ""
+            var results: [STTOutput] = []
+            for try await event in stream {
+                switch event {
+                case .token(let delta):
+                    #expect(results.isEmpty)
+                    tokens += delta
+                case .result(let output): results.append(output)
+                case .info: break
+                }
+            }
+            #expect(results.count == 1)
+            #expect(tokens.trimmingCharacters(in: .whitespacesAndNewlines) == expected.text)
+            #expect(results.first?.text == expected.text)
+            #expect(results.first?.generationTokens == expected.generationTokens)
+            #expect(results.first?.promptTokens == expected.promptTokens)
+        }
+    }
+
     @Test func localCheckpointAliasesUseTheSharedFactory() async throws {
         for alias in ["nemotron_transcribe", "nemo_speechlm", "nemotron3_5_transcribe"] {
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
