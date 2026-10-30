@@ -2417,6 +2417,25 @@ struct KokoroTTSTests {
     }
 }
 
+struct KokoroLexiconTests {
+
+    @Test func accentedWordsUseTheirASCIIEntry() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data(#"{"cafe": "kæfˈA", "naive": "nɑˈiv"}"#.utf8).write(to: dir.appendingPathComponent("us_gold.json"))
+        try Data("{}".utf8).write(to: dir.appendingPathComponent("us_silver.json"))
+        let lexicon = Lexicon(british: false, directory: dir)
+
+        func phonemes(_ word: String) -> String? {
+            lexicon.transcribe(MToken(text: word, tokenRange: word.startIndex..<word.endIndex, whitespace: ""), ctx: TokenContext()).0
+        }
+        #expect(phonemes("café") == phonemes("cafe"))
+        #expect(phonemes("naïve") == phonemes("naive"))
+        #expect(phonemes("café") != nil)
+    }
+}
+
 // MARK: - Kokoro Multilingual Processor Tests
 
 @Suite("KokoroMultilingualProcessor")
