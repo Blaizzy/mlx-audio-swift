@@ -33,3 +33,11 @@ func loadSTTTokenizer(from directory: URL, tokenizerClass: String? = nil) async 
     dictionary["added_tokens"] = Config(tokens.keys.sorted().compactMap { tokens[$0] })
     return try AutoTokenizer.from(tokenizerConfig: config, tokenizerData: Config(dictionary))
 }
+
+func transcriptDelta(from previous: String, to current: String, complete: Bool = false) -> String? {
+    let sent = previous.unicodeScalars, text = current.unicodeScalars
+    guard !text.elementsEqual(sent) else { return nil }
+    guard complete || (text.last != "\u{FFFD}" && !sent.starts(with: text)) else { return nil }
+    guard text.starts(with: sent) else { return current }
+    return String(String.UnicodeScalarView(text.dropFirst(sent.count)))
+}
