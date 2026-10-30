@@ -17,7 +17,8 @@ public struct STTGenerateParameters: Sendable {
     public let kvGroupSize: Int
     /// Cache offset that must be exceeded before the KV cache is quantized.
     public let quantizedKVStart: Int
-    /// "transcribe" or "translate" (into English). Only Whisper reads it today.
+    /// "transcribe" or "translate". Whisper translates into English; Nemotron
+    /// Transcribe uses `language` as the target language for translation.
     public let task: String
 
     public init(

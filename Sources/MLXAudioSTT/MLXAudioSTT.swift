@@ -27,7 +27,7 @@ public enum STT {
         cache: HubCache = .default
     ) async throws -> any STTGenerationModel {
         if localDirectory(modelRepo) != nil {
-            return try await loadModel(modelRepo: modelRepo, modelType: nil, cache: cache)
+            return try await loadModel(modelRepo: modelRepo, modelType: nil, hfToken: hfToken, cache: cache)
         }
 
         guard let repoID = Repo.ID(rawValue: modelRepo) else {
@@ -39,12 +39,13 @@ public enum STT {
             hfToken: hfToken,
             cache: cache
         )
-        return try await loadModel(modelRepo: modelRepo, modelType: modelType, cache: cache)
+        return try await loadModel(modelRepo: modelRepo, modelType: modelType, hfToken: hfToken, cache: cache)
     }
 
     public static func loadModel(
         modelRepo: String,
         modelType: String?,
+        hfToken: String? = nil,
         cache: HubCache = .default
     ) async throws -> any STTGenerationModel {
         let directory = localDirectory(modelRepo)
@@ -136,6 +137,9 @@ public enum STT {
         case "nemotron", "nemotron_asr":
             if let directory { return try NemotronASRModel.fromDirectory(directory) }
             return try await NemotronASRModel.fromPretrained(modelRepo, cache: cache)
+        case "nemotron_transcribe", "nemo_speechlm", "nemotron3_5_transcribe":
+            if let directory { return try await NemotronTranscribeModel.fromModelDirectory(directory) }
+            return try await NemotronTranscribeModel.fromPretrained(modelRepo, hfToken: hfToken, cache: cache)
         case "fireredasr2", "firered", "fire_red":
             if let directory { return try FireRedASR2Model.fromDirectory(directory) }
             return try await FireRedASR2Model.fromPretrained(modelRepo, cache: cache)
@@ -225,6 +229,9 @@ public enum STT {
         }
         if lower.contains("moonshine") {
             return "moonshine"
+        }
+        if lower.contains("nemotron") && lower.contains("transcribe") {
+            return "nemotron_transcribe"
         }
         if lower.contains("nemotron") {
             return "nemotron_asr"

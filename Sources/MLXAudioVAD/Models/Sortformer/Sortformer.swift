@@ -1128,6 +1128,16 @@ public class SortformerModel: Module {
 
     // MARK: - AOSC Compression
 
+    /// Retain representative speaker frames using adaptive online speaker clustering.
+    public static func compressSpeakerCache(
+        embeddings: MLXArray, probabilities: MLXArray, silenceEmbedding: MLXArray,
+        configuration: ModulesConfig
+    ) -> (embeddings: MLXArray, probabilities: MLXArray) {
+        compressSpkcacheAosc(
+            embs: embeddings, preds: probabilities,
+            meanSilEmb: silenceEmbedding, modulesCfg: configuration)
+    }
+
     private static func getSilenceProfile(
         meanSilEmb: MLXArray, nSilFrames: MLXArray,
         embs: MLXArray, preds: MLXArray, silThreshold: Float
