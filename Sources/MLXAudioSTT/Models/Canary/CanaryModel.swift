@@ -384,7 +384,7 @@ public final class CanaryModel: Module, STTGenerationModel {
 
     public func generate(audio: MLXArray, generationParameters: STTGenerateParameters) -> STTOutput {
         let start = CFAbsoluteTimeGetCurrent()
-        let language = generationParameters.language ?? "en"
+        let language = config.languageCode(for: generationParameters.language ?? "en")
         let mel = preprocessAudio(audio).asType(.float32)
         let encoded = encode(mel: mel)
 

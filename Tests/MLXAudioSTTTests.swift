@@ -944,6 +944,17 @@ struct CanarySTTTests {
         #expect(config.supportedLanguages == ["en", "de"])
     }
 
+    @Test func languageNamesResolveToPromptCodes() {
+        let config = Self.tinyConfig()
+        #expect(config.languageCode(for: "en") == "en")
+        #expect(config.languageCode(for: "English") == "en")
+        #expect(config.languageCode(for: "german") == "de")
+        #expect(config.languageCode(for: "en-US") == "en")
+        #expect(config.languageCode(for: "de_AT") == "de")
+        #expect(config.languageCode(for: "French") == "French")
+        #expect(config.languageCode(for: "xx") == "xx")
+    }
+
     @Test func tokenizerBuildsPromptFromTokensFile() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("canary-tokenizer-\(UUID().uuidString)")
