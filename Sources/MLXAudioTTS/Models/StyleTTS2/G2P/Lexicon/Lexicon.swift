@@ -198,7 +198,8 @@ final class Lexicon {
       return lookup(target, tag: nil, stress: -0.5, ctx: ctx)
     } else if let sym = Lexicon.symbolSet[word] {
       return lookup(sym, tag: nil, stress: nil, ctx: ctx)
-    } else if word.trimmingCharacters(in: CharacterSet(charactersIn: ".")).contains(".") {
+    } else if word.trimmingCharacters(in: CharacterSet(charactersIn: ".")).contains("."),
+              word.replacingOccurrences(of: ".", with: "").allSatisfy({ $0.isLetter }) {
       let parts = word.split(separator: ".")
       if parts.map({ $0.count }).max() ?? 0 < 3 {
         return getNNP(word)
@@ -466,7 +467,7 @@ final class Lexicon {
         splits = num.split(whereSeparator: { !$0.isLetter }).map(String.init)
       } else {
         if let val = Decimal(string: num) {
-          splits = num2Words.convert(val).split(separator: " ").map(String.init)
+          splits = num2Words.convert(val).split(whereSeparator: { !$0.isLetter }).map(String.init)
         } else {
           splits = num.split(whereSeparator: { !$0.isLetter }).map(String.init)
         }
@@ -570,7 +571,7 @@ final class Lexicon {
                 let tail = num.dropFirst().compactMap { Int(String($0)) }.map { num2Words.convert(Decimal($0)) }.joined(separator: " ")
                 word = "point " + tail
             } else {
-              if let d = Double(num) { word = num2Words.convert(Decimal(d)) }
+              if let d = Decimal(string: num) { word = num2Words.convert(d) }
             }
         }
         

@@ -353,7 +353,7 @@ final class EnglishG2P {
         } else if token.tag == .dash || (token.tag == .punctuation && token.text == "–") {
           token.phonemes = "—"
           token.`_`.rating = 3
-        } else if let tag = token.tag, EnglishG2P.punctuationTags.contains(tag), !token.text.lowercased().unicodeScalars.allSatisfy({ (97...122).contains(Int($0.value)) }) {
+        } else if let tag = token.tag, EnglishG2P.punctuationTags.contains(tag), Lexicon.symbolSet[token.text] == nil, !token.text.lowercased().unicodeScalars.allSatisfy({ (97...122).contains(Int($0.value)) }) {
           if let val = EnglishG2P.punctuationTagPhonemes[token.text] {
             token.phonemes = val
           } else {
@@ -361,7 +361,7 @@ final class EnglishG2P {
           }
           token.`_`.rating = 4
         } else if currency != nil {
-          if token.tag != .number {
+          if token.tag != .number && token.text.range(of: #"^\d[\d,]*\.\d+$"#, options: .regularExpression) == nil {
             currency = nil
           } else if j + 1 == subtokens.count && (i + 1 == tokens.count || tokens[i + 1].tag != .number) {
             token.`_`.currency = currency

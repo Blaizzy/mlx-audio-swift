@@ -17,7 +17,7 @@ struct EnglishNum2Word {
     (1000, "thousand"), (100, "hundred"),
     (90, "ninety"), (80, "eighty"), (70, "seventy"),
     (60, "sixty"), (50, "fifty"), (40, "forty"),
-    (30, "thirty")
+    (30, "thirty"), (20, "twenty")
   ]
   
   private let lowNumWords = [
@@ -137,8 +137,8 @@ struct EnglishNum2Word {
       }
     }
     
-    // Handle thousands and higher
-    for (value, word) in midNumWords.sorted(by: { $0.0 > $1.0 }) {
+    // Handle very large numbers using cards
+    for (value, word) in cards.sorted(by: { $0.key > $1.key }) {
       if number >= value {
         let quotient = number / value
         let remainder = number % value
@@ -151,8 +151,8 @@ struct EnglishNum2Word {
       }
     }
     
-    // Handle very large numbers using cards
-    for (value, word) in cards.sorted(by: { $0.key > $1.key }) {
+    // Handle thousands and higher
+    for (value, word) in midNumWords.sorted(by: { $0.0 > $1.0 }) {
       if number >= value {
         let quotient = number / value
         let remainder = number % value
