@@ -65,7 +65,8 @@ public class EcapaTdnnBackbone: Module {
         _asp.wrappedValue = AttentiveStatisticsPooling(
             channels: channels * 3,
             attentionChannels: config.attentionChannels,
-            globalContext: config.globalContext
+            globalContext: config.globalContext,
+            centeredStatistics: config.centeredStatistics
         )
         _aspBn.wrappedValue = BatchNorm(featureCount: channels * 6)
         _fc.wrappedValue = MLXNN.Conv1d(
@@ -240,11 +241,13 @@ class SERes2NetBlock: Module {
 
 class AttentiveStatisticsPooling: Module {
     let globalContext: Bool
+    let centeredStatistics: Bool
     @ModuleInfo var tdnn: TDNNBlock
     @ModuleInfo var conv: MLXNN.Conv1d
 
-    init(channels: Int, attentionChannels: Int = 128, globalContext: Bool = false) {
+    init(channels: Int, attentionChannels: Int = 128, globalContext: Bool = false, centeredStatistics: Bool = false) {
         self.globalContext = globalContext
+        self.centeredStatistics = centeredStatistics
         let tdnnInput = globalContext ? channels * 3 : channels
         _tdnn.wrappedValue = TDNNBlock(
             inputChannels: tdnnInput,
@@ -258,8 +261,10 @@ class AttentiveStatisticsPooling: Module {
         let attentionInput: MLXArray
         if globalContext {
             let meanTensor = mean(x, axis: 1, keepDims: true)
-            let varianceTensor = variance(x, axis: 1, keepDims: true)
-            let stdTensor = sqrt(varianceTensor + 1e-9)
+            let varianceTensor = centeredStatistics
+                ? mean((x - meanTensor) * (x - meanTensor), axis: 1, keepDims: true)
+                : variance(x, axis: 1, keepDims: true)
+            let stdTensor = centeredStatistics ? sqrt(maximum(varianceTensor, 1e-12)) : sqrt(varianceTensor + 1e-9)
             attentionInput = concatenated([
                 x,
                 broadcast(meanTensor, to: x.shape),
@@ -275,8 +280,11 @@ class AttentiveStatisticsPooling: Module {
         attention = softmax(attention, axis: 1)
 
         let weightedMean = sum(attention * x, axis: 1)
-        let weightedVariance = sum(attention * (x * x), axis: 1) - weightedMean * weightedMean
-        let weightedStd = sqrt(maximum(weightedVariance, 1e-9))
+        let centered = x - weightedMean.expandedDimensions(axis: 1)
+        let weightedVariance = centeredStatistics
+            ? sum(attention * centered * centered, axis: 1)
+            : sum(attention * (x * x), axis: 1) - weightedMean * weightedMean
+        let weightedStd = sqrt(maximum(weightedVariance, centeredStatistics ? 1e-12 : 1e-9))
         return concatenated([weightedMean, weightedStd], axis: -1)
     }
 }
