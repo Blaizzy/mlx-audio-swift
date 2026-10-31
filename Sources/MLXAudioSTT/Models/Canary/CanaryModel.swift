@@ -365,7 +365,7 @@ public final class CanaryModel: Module, STTGenerationModel {
             topP: 1,
             topK: 0,
             language: "en",
-            chunkDuration: 1200,
+            chunkDuration: 30,
             minChunkDuration: 1
         )
     }
@@ -385,6 +385,52 @@ public final class CanaryModel: Module, STTGenerationModel {
     public func generate(audio: MLXArray, generationParameters: STTGenerateParameters) -> STTOutput {
         let start = CFAbsoluteTimeGetCurrent()
         let language = config.languageCode(for: generationParameters.language ?? "en")
+        let sampleRate = config.preprocessor.sampleRate
+        let chunks: [(MLXArray, Float)] =
+            audio.ndim == 1 && Float(audio.dim(0)) > generationParameters.chunkDuration * Float(sampleRate)
+            ? splitAudioIntoChunks(
+                audio,
+                sampleRate: sampleRate,
+                chunkDuration: generationParameters.chunkDuration,
+                minChunkDuration: generationParameters.minChunkDuration
+            )
+            : [(audio, Float(0))]
+
+        var texts: [String] = []
+        var segments: [[String: Any]] = []
+        var promptCount = 0
+        var generatedCount = 0
+        for (chunk, offset) in chunks {
+            let (generated, prompt) = decodeChunk(chunk, language: language, generationParameters: generationParameters)
+            promptCount += prompt
+            generatedCount += generated.count
+            let text = decode(tokens: generated).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            texts.append(text)
+            let end = min(Double(offset) + Double(chunk.dim(0)) / Double(sampleRate), Double(audio.dim(0)) / Double(sampleRate))
+            segments.append(["text": text, "start": Double(offset), "end": chunks.count > 1 ? end : 0.0])
+        }
+
+        let text = texts.joined(separator: " ")
+        let totalTime = CFAbsoluteTimeGetCurrent() - start
+        return STTOutput(
+            text: text,
+            segments: segments.isEmpty ? [["text": text, "start": 0.0, "end": 0.0]] : segments,
+            language: language,
+            promptTokens: promptCount,
+            generationTokens: generatedCount,
+            totalTokens: promptCount + generatedCount,
+            promptTps: Double(promptCount) / max(totalTime, 0.001),
+            generationTps: Double(generatedCount) / max(totalTime, 0.001),
+            totalTime: totalTime
+        )
+    }
+
+    private func decodeChunk(
+        _ audio: MLXArray,
+        language: String,
+        generationParameters: STTGenerateParameters
+    ) -> (generated: [Int], promptTokens: Int) {
         let mel = preprocessAudio(audio).asType(.float32)
         let encoded = encode(mel: mel)
 
@@ -415,20 +461,7 @@ public final class CanaryModel: Module, STTGenerationModel {
             tokens.append(nextToken)
             generated.append(nextToken)
         }
-
-        let text = decode(tokens: generated).trimmingCharacters(in: .whitespacesAndNewlines)
-        let totalTime = CFAbsoluteTimeGetCurrent() - start
-        return STTOutput(
-            text: text,
-            segments: [["text": text, "start": 0.0, "end": 0.0]],
-            language: language,
-            promptTokens: promptTokens.count,
-            generationTokens: generated.count,
-            totalTokens: tokens.count,
-            promptTps: Double(promptTokens.count) / max(totalTime, 0.001),
-            generationTps: Double(generated.count) / max(totalTime, 0.001),
-            totalTime: totalTime
-        )
+        return (generated, promptTokens.count)
     }
 
     public func generateStream(
