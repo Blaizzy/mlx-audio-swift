@@ -4634,6 +4634,63 @@ struct GraniteSpeechModuleTests {
 @Suite("Whisper Tests", .serialized)
 struct WhisperTests {
 
+    @Test func transcriptDeltasWaitForACharacterSplitAcrossTokens() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let data =
+            #"{"model":{"type":"BPE","vocab":{"<unk>":0,"C":1,"a":2,"f":3,"Ã":4,"©":5},"merges":[],"unk_token":"<unk>"},"decoder":{"type":"ByteLevel"}}"#
+        try Data(data.utf8).write(to: directory.appendingPathComponent("tokenizer.json"))
+        try Data(#"{"tokenizer_class":"GPT2Tokenizer","unk_token":"<unk>"}"#.utf8).write(
+            to: directory.appendingPathComponent("tokenizer_config.json"))
+        let tokenizer = try await loadSTTTokenizer(from: directory)
+        let tokens = [1, 2, 3, 4, 5, 1]
+        #expect(tokenizer.decode(tokens: Array(tokens.prefix(4))) == "Caf\u{FFFD}")
+
+        var sent = ""
+        var stream = ""
+        for count in 1 ... tokens.count {
+            let text = tokenizer.decode(tokens: Array(tokens.prefix(count)))
+            if let delta = transcriptDelta(from: sent, to: text) {
+                stream += delta
+                sent = text
+            }
+        }
+        #expect(stream == "CaféC")
+
+        sent = ""
+        stream = ""
+        for text in ["नम", "नमस", "नमस्", "नमस्त", "नमस्ते"] {
+            if let delta = transcriptDelta(from: sent, to: text) {
+                stream += delta
+                sent = text
+            }
+        }
+        #expect(stream == "नमस्ते")
+
+        let pieces = ["E4", "B8", "AD", "E6", "96", "87"].map { "[\"<0x\($0)>\",0]" }
+        let json =
+            #"{"model":{"type":"Unigram","unk_id":0,"vocab":[["<unk>",0],"#
+            + pieces.joined(separator: ",") + "]}}"
+        let sentencePiece = try SentencePieceTokenizer(tokenizerJSONData: Data(json.utf8))
+        #expect(sentencePiece.decode([1, 2, 3, 4]) == "")
+        sent = ""
+        stream = ""
+        for count in 1 ... pieces.count {
+            let text = sentencePiece.decode(Array(1 ... count))
+            if let delta = transcriptDelta(from: sent, to: text) {
+                stream += delta
+                sent = text
+            }
+        }
+        #expect(stream == "中文")
+
+        #expect(transcriptDelta(from: "Caf", to: "Caf\u{FFFD}") == nil)
+        #expect(transcriptDelta(from: "Caf", to: "Caf\u{FFFD}", complete: true) == "\u{FFFD}")
+        #expect(transcriptDelta(from: "Café", to: "Café", complete: true) == nil)
+    }
+
     @Test func configDefaultsMatchOpenAIWhisperTiny() {
         let defaults = WhisperConfig()
         #expect(defaults.modelType == "whisper")

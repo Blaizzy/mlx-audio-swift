@@ -565,13 +565,7 @@ public final class CohereTranscribeModel: Module, STTGenerationModel {
                 generated.append(token)
 
                 let textSoFar = tokenizer?.decode(tokens: generated) ?? ""
-                if textSoFar != previousText {
-                    let delta: String
-                    if textSoFar.hasPrefix(previousText) {
-                        delta = String(textSoFar.dropFirst(previousText.count))
-                    } else {
-                        delta = textSoFar
-                    }
+                if let delta = transcriptDelta(from: previousText, to: textSoFar) {
                     if !delta.isEmpty {
                         continuation.yield(STTGeneration.token(delta))
                     }
@@ -601,6 +595,10 @@ public final class CohereTranscribeModel: Module, STTGenerationModel {
                 if generated.count % 256 == 0 {
                     Memory.clearCache()
                 }
+            }
+            let heldText = tokenizer?.decode(tokens: generated) ?? ""
+            if let delta = transcriptDelta(from: previousText, to: heldText, complete: true), !delta.isEmpty {
+                continuation.yield(STTGeneration.token(delta))
             }
 
             if generated.last == eosTokenId {
