@@ -622,9 +622,11 @@ private func makeTinyQwen3TTSModel(
     ttsModelType: String,
     includeSpeechEncoder: Bool,
     speakerIDEntries: String = "",
-    dialectEntries: String = ""
+    dialectEntries: String = "",
+    speakerEncoderConfig: String = ""
 ) async throws -> (model: Qwen3TTSModel, tokenizerDirectory: URL) {
     let tokenizerDirectory = try makeTinyQwenTokenizerDirectory()
+    let speakerEncoderJSON = speakerEncoderConfig.isEmpty ? "" : #""speaker_encoder_config": "# + speakerEncoderConfig + ","
     let encoderConfigJSON = includeSpeechEncoder ? #""encoder_config": {},"# : ""
     let spkIdJSON = speakerIDEntries.isEmpty ? "" : #""spk_id": {"# + speakerIDEntries + "},"
     let spkDialectJSON = dialectEntries.isEmpty ? "" : #""spk_is_dialect": {"# + dialectEntries + "},"
@@ -640,6 +642,7 @@ private func makeTinyQwen3TTSModel(
       "tts_bos_token_id": 22,
       "tts_eos_token_id": 23,
       "sample_rate": 24000,
+      \(speakerEncoderJSON)
       "talker_config": {
         "vocab_size": 3072,
         "hidden_size": 16,
@@ -996,6 +999,56 @@ struct Qwen3TTSTests {
             try #require(trailingText.shape == [1, 1, 16])
             #expect(allClose(trailingText, expectedPad, atol: 1e-5).item(Bool.self))
             #expect(allClose(textPad, expectedPad, atol: 1e-5).item(Bool.self))
+        }
+    }
+
+    @Test func baseModelUsesReferenceAudioSpeakerEmbeddingWithoutTranscript() async throws {
+        let fixture = try await makeTinyQwen3TTSModel(
+            ttsModelType: "base",
+            includeSpeechEncoder: false,
+            speakerEncoderConfig: """
+            {"enc_dim": 16, "enc_channels": [16, 16, 16, 16, 48], "enc_attention_channels": 8,
+             "enc_res2net_scale": 2, "enc_se_channels": 8}
+            """
+        )
+        defer { cleanupTemporaryArtifactDirectory(fixture.tokenizerDirectory) }
+        let model = fixture.model
+        let refAudio = MLXArray((0 ..< 6000).map { i in 0.5 * sin(2 * Float.pi * 440.0 * Float(i) / 24000.0) })
+        let textEmbeddings = model.talker.textProjection(model.talker.getTextEmbeddings()(
+            MLXArray(0 ..< 64).reshaped(1, -1)))
+
+        let (plain, _, _) = model.prepareGenerationInputs(text: "one", language: "auto", instruct: nil)
+        let (prefill, _, _) = model.prepareGenerationInputs(
+            text: "one", language: "auto", instruct: nil, refAudio: refAudio)
+        let embedding = try #require(model.extractSpeakerEmbedding(refAudio))
+
+        try #require(prefill.shape == [1, plain.dim(1) + 1, 16])
+        let expectedSlot = textEmbeddings[0..., 21 ..< 22, 0...] + embedding.reshaped(1, 1, -1)
+        #expect(allClose(prefill[0..., 6 ..< 7, 0...], expectedSlot, atol: 1e-5).item(Bool.self))
+        #expect(allClose(prefill[0..., 7..., 0...], plain[0..., 6..., 0...], atol: 1e-5).item(Bool.self))
+    }
+
+    @Test func speakerEncoderMelMatchesReference() {
+        let samples: [Float] = (0 ..< 6000).map { i in
+            let phase = 2 * Double.pi * Double(i) / 24000.0
+            let value: Double = 0.5 * sin(440.0 * phase) + 0.25 * sin(3000.0 * phase)
+            return Float(value)
+        }
+        let signal = MLXArray(samples)
+        let mel = speakerEncoderMelSpectrogram(signal, sampleRate: 24000)
+        #expect(mel.shape == [23, 128])
+
+        let reference: [Int: [Float]] = [
+            0: [-1.092172, 1.015472, -3.563627, 0.260005],
+            11: [-9.130633, 1.482101, -11.512925, 0.213109],
+            22: [-1.559293, 1.320042, -4.581027, 0.291832],
+        ]
+        let values = mel.asArray(Float.self)
+        for (frame, expected) in reference {
+            for (bin, value) in zip([0, 16, 64, 77], expected) {
+                let actual = values[frame * 128 + bin]
+                #expect(abs(actual - value) < 2e-3, "frame \(frame) bin \(bin): \(actual)")
+            }
         }
     }
 
