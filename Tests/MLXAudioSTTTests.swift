@@ -983,6 +983,20 @@ struct CanarySTTTests {
         #expect(config.languageCode(for: "xx") == "xx")
     }
 
+    @Test func longAudioIsDecodedInChunks() {
+        let model = CanaryModel(config: Self.tinyConfig())
+        let audio = MLXRandom.normal([640_000]) * 0.1
+        func promptTokens(chunkDuration: Float) -> Int {
+            model.generate(
+                audio: audio,
+                generationParameters: STTGenerateParameters(
+                    maxTokens: 1, temperature: 0, chunkDuration: chunkDuration, minChunkDuration: 0.1)
+            ).promptTokens
+        }
+        let single = promptTokens(chunkDuration: 1200)
+        #expect(promptTokens(chunkDuration: 10) >= 3 * single)
+    }
+
     @Test func tokenizerBuildsPromptFromTokensFile() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("canary-tokenizer-\(UUID().uuidString)")
