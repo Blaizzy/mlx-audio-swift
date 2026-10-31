@@ -4102,6 +4102,26 @@ struct FireRedASR2Tests {
         #expect(cache[0]?.shape == [1, 2, 16])
     }
 
+    @Test func longAudioIsDecodedInChunks() {
+        let config = FireRedASR2Config(
+            odim: 16,
+            dModel: 16,
+            eosID: 99,
+            encoder: FireRedASR2EncoderConfig(nLayers: 1, nHead: 4, dModel: 16, kernelSize: 15),
+            decoder: FireRedASR2DecoderConfig(nLayers: 1, nHead: 4, dModel: 16)
+        )
+        let model = FireRedASR2Model(config)
+        let audio = MLXRandom.normal([640_000]) * 0.1
+        func passes(chunkDuration: Float) -> Int {
+            model.generate(
+                audio: audio,
+                generationParameters: STTGenerateParameters(maxTokens: 1, chunkDuration: chunkDuration)
+            ).generationTokens
+        }
+        #expect(passes(chunkDuration: 1200) == 1)
+        #expect(passes(chunkDuration: 10) >= 3)
+    }
+
     @Test func sanitizeRemapsAndTransposesWeights() {
         let weights: [String: MLXArray] = [
             "encoder.input_preprocessor.conv.0.weight": MLXArray.zeros([8, 1, 3, 3], type: Float.self),
