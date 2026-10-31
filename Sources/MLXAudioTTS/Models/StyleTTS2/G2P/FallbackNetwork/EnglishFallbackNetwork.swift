@@ -54,7 +54,7 @@ final class EnglishFallbackNetwork {
     private func graphemesToTokens(_ graphemes: String) -> [Int] {
         var tokens: [Int] = [configuration.bosTokenId]
 
-        for char in graphemes {
+        for char in graphemes.folding(options: .diacriticInsensitive, locale: nil) {
             if let tokenId = graphemeToToken[char] {
                 tokens.append(Int(tokenId))
             } else {

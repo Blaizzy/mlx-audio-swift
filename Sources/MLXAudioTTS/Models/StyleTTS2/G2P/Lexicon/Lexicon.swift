@@ -127,6 +127,7 @@ final class Lexicon {
     word = word.replacingOccurrences(of: String(UnicodeScalar(8216)!), with: "'")
                .replacingOccurrences(of: String(UnicodeScalar(8217)!), with: "'")
     word = word.precomposedStringWithCompatibilityMapping
+    word = word.folding(options: .diacriticInsensitive, locale: nil)
     
     word = String(word.map { unicodeNumericIfNeeded($0) } )
     
