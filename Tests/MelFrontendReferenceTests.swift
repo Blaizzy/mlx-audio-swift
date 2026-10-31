@@ -42,7 +42,8 @@ final class MelFrontendReferenceTests: XCTestCase {
         XCTAssertEqual(mel.dim(1), 128)
         let features = mel.transposed(1, 0).asArray(Float.self)
         let frames = mel.dim(0)
-        XCTAssertGreaterThanOrEqual(frames, 10)
+        // WhisperFeatureExtractor returns samples / hop frames (1600 / 160).
+        XCTAssertEqual(frames, 10)
 
         let reference: [Int: [Float]] = [
             0: [0.907520, 0.395512, -0.514646, -0.514646],
