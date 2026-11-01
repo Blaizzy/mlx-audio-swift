@@ -150,6 +150,37 @@ struct MimiAttentionTests {
     }
 }
 
+struct MimiEncodeStepTests {
+
+    @Test func stepsShorterThanAFrameReturnNoCodes() {
+        let seanet = SeanetConfig(
+            dimension: 8, channels: 1, causal: true, nfilters: 2, nresidualLayers: 1, ratios: [2, 2],
+            ksize: 3, residualKsize: 3, lastKsize: 3, dilationBase: 2, padMode: .constant, trueSkip: true, compress: 2
+        )
+        let transformer = TransformerConfig(
+            dModel: 8, numHeads: 2, numLayers: 1, causal: true, normFirst: true, biasFF: false, biasAttn: false,
+            layerScale: 0.01, positionalEmbedding: "rope", useConvBlock: false, crossAttention: false,
+            convKernelSize: 3, useConvBias: true, gating: false, norm: "layer_norm", context: 16, maxPeriod: 10_000,
+            maxSeqLen: 64, kvRepeat: 1, dimFeedforward: 16, convLayout: true
+        )
+        let mimi = Mimi(cfg: MimiConfig(
+            channels: 1, sampleRate: 80, frameRate: 10, renormalize: true, seanet: seanet,
+            transformer: transformer, quantizerNQ: 2, quantizerBins: 8, quantizerDim: 4
+        ))
+        let frameSize = 8
+        let audio = MLXRandom.uniform(low: -1, high: 1, [1, 1, 4 * frameSize + 3])
+
+        #expect(mimi.encodeStep(audio[.ellipsis, ..<3]).shape == [1, 2, 0])
+
+        mimi.resetState()
+        let codes = stride(from: 0, to: audio.dim(2), by: 2 * frameSize).map {
+            mimi.encodeStep(audio[.ellipsis, $0 ..< min(audio.dim(2), $0 + 2 * frameSize)])
+        }
+        #expect(codes.last?.shape == [1, 2, 0])
+        #expect(MLX.concatenated(codes, axis: 2).shape == [1, 2, 4])
+    }
+}
+
 struct SharedDSPTests {
 
     @Test func hammingWindowSupportsPeriodicAndSymmetricVariants() {
