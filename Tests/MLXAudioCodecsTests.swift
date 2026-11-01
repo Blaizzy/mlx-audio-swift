@@ -1321,3 +1321,49 @@ struct CodecNetworkTests {
         #expect(decoded.shape == waveform.shape)
     }
 }
+
+struct MimiStreamingTests {
+
+    private func makeTinyMimi() throws -> Mimi {
+        let seanet = SeanetConfig(
+            dimension: 8, channels: 1, causal: true, nfilters: 2, nresidualLayers: 1, ratios: [2, 2],
+            ksize: 3, residualKsize: 3, lastKsize: 3, dilationBase: 2, padMode: .constant, trueSkip: true, compress: 2
+        )
+        let transformer = TransformerConfig(
+            dModel: 8, numHeads: 2, numLayers: 1, causal: true, normFirst: true, biasFF: false, biasAttn: false,
+            layerScale: 0.01, positionalEmbedding: "rope", useConvBlock: false, crossAttention: false,
+            convKernelSize: 3, useConvBias: true, gating: false, norm: "layer_norm", context: 16, maxPeriod: 10_000,
+            maxSeqLen: 64, kvRepeat: 1, dimFeedforward: 16, convLayout: true
+        )
+        return try withRandomState(MLXRandom.RandomState(seed: 0)) {
+            let mimi = Mimi(cfg: MimiConfig(
+                channels: 1, sampleRate: 80, frameRate: 10, renormalize: true, seanet: seanet,
+                transformer: transformer, quantizerNQ: 2, quantizerBins: 8, quantizerDim: 4
+            ))
+            let codebooks = mimi.parameters().flattened().compactMap { key, value -> (String, MLXArray)? in
+                if key.hasSuffix("embedding_sum") { return (key, MLXRandom.normal(value.shape)) }
+                if key.hasSuffix("cluster_usage") { return (key, MLXArray.ones(value.shape)) }
+                return nil
+            }
+            try mimi.update(parameters: ModuleParameters.unflattened(codebooks), verify: .none)
+            return mimi
+        }
+    }
+
+    @Test func resetStateStartsTheNextStreamFresh() throws {
+        let (first, second) = withRandomState(MLXRandom.RandomState(seed: 1)) {
+            (MLXRandom.uniform(low: -1, high: 1, [1, 1, 36]), MLXRandom.uniform(low: -1, high: 1, [1, 1, 64]))
+        }
+
+        let mimi = try makeTinyMimi()
+        eval(mimi.encodeStep(first))
+        mimi.resetState()
+        let codes = mimi.encodeStep(second)
+        let expected = try makeTinyMimi().encodeStep(second)
+        eval(codes, expected)
+
+        #expect(codes.shape == [1, 2, 8])
+        #expect(codes.shape == expected.shape)
+        #expect(MLX.all(codes .== expected).item(Bool.self))
+    }
+}
