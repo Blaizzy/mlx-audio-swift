@@ -482,13 +482,12 @@ final class DecoderTransformer: Module {
         let posEmb = rotaryEmb(x, positionIds: posIds)
 
         var causalMask = mask
-        if causalMask == nil, seqLen > 1 {
-            let totalLen = offset + seqLen
-            var fullMask = MultiHeadAttention.createAdditiveCausalMask(totalLen).asType(x.dtype)
-            if totalLen > seqLen {
-                fullMask = fullMask[(totalLen - seqLen) ..< totalLen, 0...]
-            }
-            causalMask = fullMask
+        if causalMask == nil, seqLen > 1,
+           case .array(let windowMask) = createAttentionMask(
+               h: x, cache: cache?.first, windowSize: config.slidingWindow, returnArray: true
+           )
+        {
+            causalMask = windowMask
         }
 
         for (i, layer) in layers.enumerated() {
@@ -498,7 +497,7 @@ final class DecoderTransformer: Module {
     }
 
     func makeCache() -> [any KVCache] {
-        layers.map { _ in KVCacheSimple() }
+        layers.map { _ in RotatingKVCache(maxSize: config.slidingWindow) }
     }
 }
 
