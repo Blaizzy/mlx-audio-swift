@@ -104,6 +104,9 @@ public final class MarvisTTSModel: Module {
         var codes: MLXArray
         let x = audio.reshaped([1, 1, audio.shape[0]])
         let encoded = encodeChunked(x) // [1, K, Tq]
+        guard encoded.shape[2] > 0 else {
+            throw MarvisTTSModelError.invalidRefAudio("Reference audio is shorter than one Mimi frame.")
+        }
         codes = split(encoded, indices: [1], axis: 0)[0].reshaped([K, encoded.shape[2]])
         
         let frameW = K + 1
