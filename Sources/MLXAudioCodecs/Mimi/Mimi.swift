@@ -157,6 +157,8 @@ public final class Mimi: Module {
     public func resetState() {
         encoder.resetState()
         decoder.resetState()
+        downsample.resetState()
+        upsample.resetState()
         for c in decoderCache { c.trim(c.offset)}
         for c in encoderCache { c.trim(c.offset) }
     }
