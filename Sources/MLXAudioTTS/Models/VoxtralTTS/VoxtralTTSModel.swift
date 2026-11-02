@@ -124,7 +124,7 @@ public final class VoxtralTTSModel: Module, SpeechGenerationModel, @unchecked Se
         return decodeChunk(frames, from: yielded)
     }
     func decodeChunk(_ frames: [MLXArray], from start: Int) -> MaterializedArray {
-        let contextStart = max(0, start - 16)
+        let contextStart = max(0, start - 25)
         let codes = concatenated(Array(frames[contextStart...]), axis: 1)
         let audio = audioDecoder.decode(codes).reshaped(-1)
         let trim = (start - contextStart) * configuration.samplesPerFrame
