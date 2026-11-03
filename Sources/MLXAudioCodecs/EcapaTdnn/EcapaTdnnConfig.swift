@@ -13,6 +13,7 @@ public struct EcapaTdnnConfig: Codable, Sendable {
     public var res2netScale: Int
     public var seChannels: Int
     public var globalContext: Bool
+    public var centeredStatistics: Bool
     public var reflectPadding: Bool
 
     public init(
@@ -25,7 +26,8 @@ public struct EcapaTdnnConfig: Codable, Sendable {
         res2netScale: Int = 8,
         seChannels: Int = 128,
         globalContext: Bool = false,
-        reflectPadding: Bool = false
+        reflectPadding: Bool = false,
+        centeredStatistics: Bool = false
     ) {
         self.inputSize = inputSize
         self.channels = channels
@@ -37,6 +39,7 @@ public struct EcapaTdnnConfig: Codable, Sendable {
         self.seChannels = seChannels
         self.globalContext = globalContext
         self.reflectPadding = reflectPadding
+        self.centeredStatistics = centeredStatistics
     }
 
     enum CodingKeys: String, CodingKey {
@@ -50,6 +53,7 @@ public struct EcapaTdnnConfig: Codable, Sendable {
         case seChannels
         case globalContext
         case reflectPadding
+        case centeredStatistics
     }
 
     public init(from decoder: any Swift.Decoder) throws {
@@ -66,7 +70,8 @@ public struct EcapaTdnnConfig: Codable, Sendable {
             res2netScale: container.decodeIfPresent(Int.self, forKey: .res2netScale) ?? 8,
             seChannels: container.decodeIfPresent(Int.self, forKey: .seChannels) ?? 128,
             globalContext: container.decodeIfPresent(Bool.self, forKey: .globalContext) ?? false,
-            reflectPadding: container.decodeIfPresent(Bool.self, forKey: .reflectPadding) ?? false
+            reflectPadding: container.decodeIfPresent(Bool.self, forKey: .reflectPadding) ?? false,
+            centeredStatistics: container.decodeIfPresent(Bool.self, forKey: .centeredStatistics) ?? false
         )
     }
 

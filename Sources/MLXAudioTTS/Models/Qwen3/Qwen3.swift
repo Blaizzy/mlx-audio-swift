@@ -289,8 +289,11 @@ public class Qwen3ModelInner: Module {
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
-        var h = embedTokens(inputs)
+        callAsFunction(inputEmbeddings: embedTokens(inputs), cache: cache)
+    }
 
+    public func callAsFunction(inputEmbeddings: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
+        var h = inputEmbeddings
         let mask = createAttentionMask(h: h, cache: cache?.first)
 
         for (i, layer) in layers.enumerated() {
