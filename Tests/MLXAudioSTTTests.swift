@@ -3816,6 +3816,125 @@ struct NemotronASRTests {
         #expect(!offlineIds.isEmpty)
         #expect(streamIds == offlineIds)
     }
+
+    // MARK: Nemotron Unified (buffered streaming)
+
+    private func unifiedConfigJSON() -> String {
+        tinyConfigJSON()
+            .replacingOccurrences(of: "\"normalize\": \"NA\"", with: "\"normalize\": \"per_feature\"")
+            .replacingOccurrences(of: "\"causal_downsampling\": true", with: "\"causal_downsampling\": false")
+            .replacingOccurrences(of: "\"conv_context_size\": \"causal\"", with: "\"conv_context_size\": [1, 1]")
+            .replacingOccurrences(of: "\"conv_norm_type\": \"layer_norm\"", with: "\"conv_norm_type\": \"batch_norm\"")
+            .replacingOccurrences(of: "\"att_context_style\": \"chunked_limited\"", with: "\"att_context_style\": \"chunked_limited_with_rc\"")
+            .replacingOccurrences(of: "\"att_context_size\": [[4, 1]]", with: "\"att_context_size\": [[-1, -1, -1]]")
+            .replacingOccurrences(of: "\"use_bias\": false", with: "\"use_bias\": true")
+            .replacingOccurrences(of: "\"xscaling\": false", with: "\"xscaling\": true")
+            .replacingOccurrences(of: "\"default_att_context_size\": [4, 1]", with: "\"default_att_context_size\": [4, 1, 2]")
+    }
+
+    private func unifiedModel() throws -> NemotronASRModel {
+        let config = try JSONDecoder().decode(NemotronASRConfig.self, from: Data(unifiedConfigJSON().utf8))
+        let model = NemotronASRModel(config)
+        eval(model.parameters())
+        model.train(false)
+        return model
+    }
+
+    @Test func unifiedConfigSelectsBufferedStreaming() throws {
+        let config = try JSONDecoder().decode(NemotronASRConfig.self, from: Data(unifiedConfigJSON().utf8))
+        #expect(config.encoder.attContextStyle == "chunked_limited_with_rc")
+        #expect(config.encoder.convContextSize == .explicit(left: 1, right: 1))
+        #expect(config.defaultAttContextSize == [4, 1, 2])
+        #expect(NemotronASRBufferedContext.forLatency(320) == NemotronASRBufferedContext(left: 70, chunk: 1, right: 3))
+        #expect(NemotronASRBufferedContext.forLatency(400) == NemotronASRBufferedContext(left: 70, chunk: 1, right: 3))
+        #expect(NemotronASRBufferedContext.forLatency(80) == NemotronASRBufferedContext(left: 70, chunk: 1, right: 1))
+        #expect(NemotronASRBufferedContext.forLatency(1120, left: 25) == NemotronASRBufferedContext(left: 25, chunk: 7, right: 7))
+    }
+
+    @Test func chunkedRCVisibilityMatchesNeMo() {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        // left 2, chunk 2, right 1: frame i sees [chunkStart - 2, chunkStart + 2].
+        let visible = NemotronASRAttentionMask.chunkedRCVisibility(seqLen: 7, left: 2, chunk: 2, right: 1)
+        let rows = visible.asType(.int32).asArray(Int32.self)
+        func row(_ i: Int) -> [Int32] { Array(rows[(i * 7)..<(i * 7 + 7)]) }
+        #expect(row(0) == [1, 1, 1, 0, 0, 0, 0])
+        #expect(row(3) == [1, 1, 1, 1, 1, 0, 0])
+        #expect(row(6) == [0, 0, 0, 0, 1, 1, 1])
+    }
+
+    /// NeMo masks padding in the subsampling, the attention keys and the conv, so
+    /// frames past the valid length cannot change the valid frames' output.
+    @Test func unifiedEncoderIgnoresPaddedFrames() throws {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        let model = try unifiedModel()
+        let mel = MLXRandom.normal([1, 40, 16], key: MLXRandom.key(3))
+        let noise = MLXRandom.normal([1, 12, 16], key: MLXRandom.key(4))
+        let padded = MLX.concatenated([mel, noise], axis: 1)
+        let lengths = MLXArray([Int32(40)])
+        for context in [[-1, -1, -1], [4, 1, 2]] {
+            let (a, la) = model.encoder(mel, lengths: lengths, attContextSize: context)
+            let (b, lb) = model.encoder(padded, lengths: lengths, attContextSize: context)
+            let valid = Int(la[0].item(Int32.self))
+            #expect(valid == Int(lb[0].item(Int32.self)))
+            let diff = MLX.abs(a[0..., ..<valid, 0...] - b[0..., ..<valid, 0...]).max().item(Float.self)
+            #expect(diff < 1e-4)
+        }
+    }
+
+    @Test func perFeatureMelNormalizesValidFramesAndZeroesTheTail() throws {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        let config = try JSONDecoder().decode(NemotronASRConfig.self, from: Data(unifiedConfigJSON().utf8)).preprocessor
+        let samples = 40 * config.hopLength + 7
+        let mel = NemotronASRAudio.logMelSpectrogram(syntheticAudio(samples: samples), config: config)[0]
+        #expect(mel.shape[0] == 41)  // centered STFT: samples / hop + 1 frames
+        #expect(MLX.abs(mel[40]).max().item(Float.self) == 0)
+        let mean = MLX.abs(MLX.mean(mel[..<40], axis: 0)).max().item(Float.self)
+        #expect(mean < 1e-4)
+    }
+
+    private func unifiedSessionText(_ model: NemotronASRModel, _ audio: MLXArray, feed: Int) -> (String, [Int]) {
+        let samples = audio.asArray(Float.self)
+        let session = model.makeStreamSession(language: "en-US")
+        var i = 0
+        while i < samples.count {
+            let e = min(i + feed, samples.count)
+            _ = session.step(Array(samples[i..<e]))
+            i = e
+        }
+        _ = session.finish()
+        return (session.text, session.tokens)
+    }
+
+    /// The buffered session segments a live stream as NeMo segments the whole file,
+    /// whatever the feed size, so it matches `generateStream` token for token.
+    @Test func unifiedSessionMatchesGenerateStreamAtAnyFeedSize() async throws {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        let model = try unifiedModel()
+        let frame = model.encoderConfig.subsamplingFactor * model.preprocessConfig.hopLength
+        // Lengths ending mid-frame, on a chunk boundary, and on chunk + right context.
+        for length in [9 * frame + 37, 12 * frame, 15 * frame, 2 * frame + 1] {
+            let audio = syntheticAudio(samples: length)
+            let whole = try await wholeStreamText(model, audio)
+            let (fine, fineTokens) = unifiedSessionText(model, audio, feed: 61)
+            let (coarse, coarseTokens) = unifiedSessionText(model, audio, feed: 5 * frame)
+            #expect(fine == whole)
+            #expect(fineTokens == coarseTokens)
+            #expect(coarse == whole)
+        }
+    }
+
 }
 
 struct VoxtralRealtimeSTTTests {

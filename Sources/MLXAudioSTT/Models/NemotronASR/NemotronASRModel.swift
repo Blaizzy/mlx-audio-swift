@@ -92,7 +92,9 @@ public final class NemotronASRModel: Module, STTGenerationModel {
         let chunkDuration = Double(generationParameters.chunkDuration)
         let result: NemoAlignedResult
 
-        if chunkDuration <= 0 || audioDuration <= chunkDuration {
+        if isBuffered {
+            result = generateBuffered(audio1D, language: generationParameters.language)
+        } else if chunkDuration <= 0 || audioDuration <= chunkDuration {
             result = decodeChunk(audio1D, language: generationParameters.language)
         } else {
             let chunkSamples = max(1, Int(chunkDuration * Double(sampleRate)))
@@ -138,17 +140,11 @@ public final class NemotronASRModel: Module, STTGenerationModel {
             let audio1D = self.normalizeAudioToMono(audio).asType(.float32)
             let sampleRate = self.preprocessConfig.sampleRate
             let audioDuration = Double(audio1D.shape[0]) / Double(sampleRate)
-            let mel = NemotronASRAudio.logMelSpectrogram(audio1D, config: self.preprocessConfig)
-            let frameSeconds = Double(self.encoderConfig.subsamplingFactor * self.preprocessConfig.hopLength)
-                / Double(sampleRate)
+            let frameSeconds = self.encoderFrameSeconds
 
             let rnntState = NemotronASRStreamRNNTState(blankToken: self.blankTokenID)
             var previousText = ""
-
-            // Cache-aware streaming: incremental subsampling + per-layer attn/conv
-            // caches, greedy RNN-T per chunk. Token-identical to decode() at the
-            // native chunk size; shares both loops with NemotronASRStreamSession.
-            self.cacheAwareStreamEncode(mel, language: generationParameters.language) { prompted in
+            func decodeAndEmit(_ prompted: MLXArray) {
                 let before = rnntState.results.count
                 self.streamRNNTDecode(prompted, state: rnntState, frameSeconds: frameSeconds)
                 // No new token: the rebuilt text would equal previousText.
@@ -164,6 +160,26 @@ public final class NemotronASRModel: Module, STTGenerationModel {
                 if !nextText.isEmpty {
                     continuation.yield(.token(nextText))
                 }
+            }
+
+            if self.isBuffered {
+                // Buffered streaming at the model's default context, one chunk per push.
+                let encoder = NemotronASRBufferedEncoder(
+                    model: self, context: self.defaultBufferedContext, language: generationParameters.language
+                )
+                let samples = audio1D.asArray(Float.self)
+                var start = 0
+                repeat {
+                    let end = min(start + encoder.chunkSamples, samples.count)
+                    encoder.push(Array(samples[start..<end]), final: end == samples.count).forEach(decodeAndEmit)
+                    start = end
+                } while start < samples.count
+            } else {
+                // Cache-aware streaming: incremental subsampling + per-layer attn/conv
+                // caches, greedy RNN-T per chunk. Token-identical to decode() at the
+                // native chunk size; shares both loops with NemotronASRStreamSession.
+                let mel = NemotronASRAudio.logMelSpectrogram(audio1D, config: self.preprocessConfig)
+                self.cacheAwareStreamEncode(mel, language: generationParameters.language, onChunk: decodeAndEmit)
             }
 
             let finalResult = NemoAlignment.sentencesToResult(
@@ -185,7 +201,8 @@ public final class NemotronASRModel: Module, STTGenerationModel {
     func decode(
         mel: MLXArray,
         language: String? = nil,
-        attContextSize: [Int]? = nil
+        attContextSize: [Int]? = nil,
+        validMelFrames: Int? = nil
     ) -> NemoAlignedResult {
         var features = mel
         if features.ndim == 2 {
@@ -198,7 +215,8 @@ public final class NemotronASRModel: Module, STTGenerationModel {
         )
 
         features = features.asType(computeDType)
-        let encoded = encoder(features, attContextSize: attContextSize ?? defaultAttContextSize)
+        let lengths = validMelFrames.map { MLXArray([Int32($0)]) }
+        let encoded = encoder(features, lengths: lengths, attContextSize: attContextSize ?? defaultAttContextSize)
         let prompted = applyPrompt(encoded.0, language: language)
         eval(prompted, encoded.1)
 
@@ -269,6 +287,14 @@ public final class NemotronASRModel: Module, STTGenerationModel {
             return aligned
         }
         return aligned
+    }
+
+    /// Buffered context from `default_att_context_size` ([left, chunk, right]).
+    var defaultBufferedContext: NemotronASRBufferedContext {
+        let c = defaultAttContextSize
+        return c.count == 3
+            ? NemotronASRBufferedContext(left: c[0], chunk: c[1], right: c[2])
+            : NemotronASRBufferedContext.forLatency(320)
     }
 
     func applyPrompt(_ encoded: MLXArray, language: String? = nil) -> MLXArray {

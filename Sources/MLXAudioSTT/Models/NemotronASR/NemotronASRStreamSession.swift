@@ -170,6 +170,8 @@ public final class NemotronASRStreamSession {
     private var aligned = NemoAlignment.sentencesToResult([])
     private var cachedSegments: [[String: Any]]?
     private var done = false
+    /// Set for Unified checkpoints, which stream buffered instead of cache-aware.
+    private let buffered: NemotronASRBufferedEncoder?
 
     init(model: NemotronASRModel, language: String?, chunkFrames: Int?) {
         self.model = model
@@ -178,8 +180,18 @@ public final class NemotronASRStreamSession {
         self.encState = NemotronASRStreamEncoderState(layers: model.encoder.layers.count)
         self.rnntState = NemotronASRStreamRNNTState(blankToken: model.blankTokenID)
         self.melBasis = NemotronASRAudio.MelBasis(config: model.preprocessConfig)
-        self.frameSeconds = Double(model.encoderConfig.subsamplingFactor * model.preprocessConfig.hopLength)
-            / Double(model.preprocessConfig.sampleRate)
+        self.frameSeconds = model.encoderFrameSeconds
+        if model.isBuffered {
+            let frameMs = model.encoderFrameSeconds * 1000
+            let context = chunkFrames.map {
+                NemotronASRBufferedContext.forLatency(
+                    Int((Double($0) * frameMs).rounded()), left: model.defaultBufferedContext.left
+                )
+            } ?? model.defaultBufferedContext
+            self.buffered = NemotronASRBufferedEncoder(model: model, context: context, language: language)
+            return
+        }
+        self.buffered = nil
         let norm = model.preprocessConfig.normalize.lowercased()
         precondition(
             norm == "na" || norm == "none",
@@ -207,6 +219,7 @@ public final class NemotronASRStreamSession {
     /// Ingest a chunk of 16 kHz mono samples; returns the text decoded by this call.
     @discardableResult
     public func step(_ samples: [Float]) -> Delta {
+        if let buffered { return advanceBuffered(buffered, samples, final: false) }
         rawBuffer.append(contentsOf: samples)
         return advance(final: false)
     }
@@ -221,7 +234,17 @@ public final class NemotronASRStreamSession {
     /// `generateStream(wholeAudio)`. Call once after the last `step`.
     @discardableResult
     public func finish() -> Delta {
-        advance(final: true)
+        if let buffered { return advanceBuffered(buffered, [], final: true) }
+        return advance(final: true)
+    }
+
+    private func advanceBuffered(_ encoder: NemotronASRBufferedEncoder, _ samples: [Float], final: Bool) -> Delta {
+        guard !done else { return Delta(text: "", tokenIds: []) }
+        let firstNew = rnntState.results.count
+        for prompted in encoder.push(samples, final: final) {
+            model.streamRNNTDecode(prompted, state: rnntState, frameSeconds: frameSeconds)
+        }
+        return delta(since: firstNew, final: final)
     }
 
     private func advance(final: Bool) -> Delta {
@@ -300,6 +323,11 @@ public final class NemotronASRStreamSession {
         for c in encState.convCache where c != nil { live.append(c!) }
         if !live.isEmpty { MLX.asyncEval(live) }
 
+        return delta(since: firstNew, final: final)
+    }
+
+    /// Text and ids of the tokens decoded since `firstNew`; on `final`, ends the session.
+    private func delta(since firstNew: Int, final: Bool) -> Delta {
         // Rebuilding the alignment walks every token so far; with no new token it
         // would be unchanged and the text delta empty.
         var deltaText = ""
@@ -348,6 +376,8 @@ public extension NemotronASRModel {
     ///     (80→[56,0], 160→[56,1], 320→[56,3], 560→[56,6], 1120→[56,13]). `nil` uses
     ///     the model's native chunk (`default_att_context_size`). Smaller chunks cut
     ///     latency at a modest WER cost — see the model card's chunk-size table.
+    ///     For a Unified checkpoint it is the latency (chunk + right context), snapped
+    ///     to the nearest of 160, 240, 320, 560, 1120 or 2080 ms.
     func makeStreamSession(
         language: String? = nil,
         chunkMs: Int? = nil
