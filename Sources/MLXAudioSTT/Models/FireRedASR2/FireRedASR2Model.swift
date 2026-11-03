@@ -783,7 +783,8 @@ public final class FireRedASR2Model: Module, STTGenerationModel {
             topP: 0.95,
             topK: 0,
             verbose: false,
-            language: "English"
+            language: "English",
+            chunkDuration: 30
         )
     }
 
@@ -817,14 +818,52 @@ public final class FireRedASR2Model: Module, STTGenerationModel {
         audio: MLXArray,
         generationParameters: STTGenerateParameters
     ) -> STTOutput {
-        generate(
-            audio: audio,
-            beamSize: 3,
-            softmaxSmoothing: 1.25,
-            lengthPenalty: 0.6,
-            eosPenalty: 1.0,
-            maxLen: max(generationParameters.maxTokens, 0),
-            language: generationParameters.language
+        func decode(_ audio: MLXArray) -> STTOutput {
+            generate(
+                audio: audio,
+                beamSize: 3,
+                softmaxSmoothing: 1.25,
+                lengthPenalty: 0.6,
+                eosPenalty: 1.0,
+                maxLen: max(generationParameters.maxTokens, 0),
+                language: generationParameters.language
+            )
+        }
+        let sampleRate = FireRedASR2Audio.sampleRate
+        guard audio.ndim == 1,
+            Float(audio.dim(0)) > generationParameters.chunkDuration * Float(sampleRate)
+        else {
+            return decode(audio)
+        }
+
+        let startTime = CFAbsoluteTimeGetCurrent()
+        var texts: [String] = []
+        var segments: [[String: Any]] = []
+        var generationTokens = 0
+        for (chunk, offset) in splitAudioIntoChunks(
+            audio,
+            sampleRate: sampleRate,
+            chunkDuration: generationParameters.chunkDuration,
+            minChunkDuration: generationParameters.minChunkDuration
+        ) {
+            let output = decode(chunk)
+            generationTokens += output.generationTokens
+            guard !output.text.isEmpty else { continue }
+            texts.append(output.text)
+            var segment = output.segments?.first ?? ["text": output.text]
+            segment["start"] = Double(offset)
+            segment["end"] = min(
+                Double(offset) + Double(chunk.dim(0)) / Double(sampleRate), Double(audio.dim(0)) / Double(sampleRate))
+            segments.append(segment)
+        }
+        let text = texts.joined(separator: " ")
+        return STTOutput(
+            text: text,
+            segments: segments.isEmpty ? nil : segments,
+            language: generationParameters.language,
+            generationTokens: generationTokens,
+            totalTokens: generationTokens,
+            totalTime: CFAbsoluteTimeGetCurrent() - startTime
         )
     }
 

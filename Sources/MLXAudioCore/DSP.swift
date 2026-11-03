@@ -250,8 +250,12 @@ public func computeMelSpectrogram(
         // Compute STFT
         let freqs = stft(audio: audio, window: window, nFft: nFft, hopLength: hopLength)
 
-        // Compute magnitude squared (power spectrum)
-        let magnitudes = MLX.abs(freqs).square()
+        // Compute magnitude squared (power spectrum). Drop the last centred
+        // frame, as WhisperFeatureExtractor and Python mlx-audio do, so the
+        // frame count (and the max used by the -8 clamp below) matches theirs.
+        let numFrames = freqs.dim(0)
+        let kept = numFrames > 1 ? freqs[0..<(numFrames - 1)] : freqs
+        let magnitudes = MLX.abs(kept).square()
         eval(magnitudes)  // Allow MLX to free STFT complex output
 
         // Create mel filterbank [nFreqs, nMels]

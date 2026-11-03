@@ -40,25 +40,96 @@ extension GLMASRModel: STTGenerationModel {
     }
 
     public func generate(audio: MLXArray, generationParameters: STTGenerateParameters) -> STTOutput {
-        generate(
-            audio: audio,
-            maxTokens: generationParameters.maxTokens,
-            temperature: generationParameters.temperature,
-            topP: generationParameters.topP,
-            topK: generationParameters.topK,
-            verbose: generationParameters.verbose
-        )
+        guard let chunks = audioChunks(audio, chunkDuration: generationParameters.chunkDuration) else {
+            return generate(
+                audio: audio,
+                maxTokens: generationParameters.maxTokens,
+                temperature: generationParameters.temperature,
+                topP: generationParameters.topP,
+                topK: generationParameters.topK,
+                verbose: generationParameters.verbose
+            )
+        }
+        return generate(chunks: chunks, generationParameters: generationParameters) { _ in }
     }
 
     public func generateStream(
         audio: MLXArray,
         generationParameters: STTGenerateParameters
     ) -> AsyncThrowingStream<STTGeneration, Error> {
-        generateStream(
-            audio: audio,
-            maxTokens: generationParameters.maxTokens,
-            temperature: generationParameters.temperature,
-            topP: generationParameters.topP
+        guard let chunks = audioChunks(audio, chunkDuration: generationParameters.chunkDuration) else {
+            return generateStream(
+                audio: audio,
+                maxTokens: generationParameters.maxTokens,
+                temperature: generationParameters.temperature,
+                topP: generationParameters.topP
+            )
+        }
+        return makeSTTStream { [self] continuation in
+            let output = try generate(chunks: chunks, generationParameters: generationParameters) { text in
+                try Task.checkCancellation()
+                continuation.yield(.token(text))
+            }
+            continuation.yield(.result(output))
+        }
+    }
+
+    var maxChunkDuration: Float {
+        Float(config.maxWhisperLength * 2 * AudioConstants.hopLength) / Float(AudioConstants.sampleRate)
+    }
+
+    func audioChunks(_ audio: MLXArray, chunkDuration: Float) -> [(audio: MLXArray, start: Float, end: Float)]? {
+        let sampleRate = Float(AudioConstants.sampleRate)
+        let searchExpandSec: Float = 2.0
+        guard audio.ndim == 1, Float(audio.dim(0)) / sampleRate > min(chunkDuration, maxChunkDuration) else {
+            return nil
+        }
+        let duration = Float(audio.dim(0)) / sampleRate
+        return splitAudioIntoChunks(
+            audio,
+            sampleRate: AudioConstants.sampleRate,
+            chunkDuration: min(chunkDuration, maxChunkDuration - searchExpandSec),
+            searchExpandSec: searchExpandSec
+        ).map { chunk, offset in (chunk, offset, min(offset + Float(chunk.dim(0)) / sampleRate, duration)) }
+    }
+
+    private func generate(
+        chunks: [(audio: MLXArray, start: Float, end: Float)],
+        generationParameters: STTGenerateParameters,
+        onText: (String) throws -> Void
+    ) rethrows -> STTOutput {
+        let startTime = Date()
+        var texts: [String] = []
+        var segments: [[String: Any]] = []
+        var promptTokens = 0
+        var generationTokens = 0
+        for (chunk, start, end) in chunks {
+            let output = generate(
+                audio: chunk,
+                maxTokens: generationParameters.maxTokens,
+                temperature: generationParameters.temperature,
+                topP: generationParameters.topP,
+                topK: generationParameters.topK,
+                verbose: generationParameters.verbose
+            )
+            promptTokens += output.promptTokens
+            generationTokens += output.generationTokens
+            guard !output.text.isEmpty else { continue }
+            try onText(texts.isEmpty ? output.text : " " + output.text)
+            texts.append(output.text)
+            segments.append(["text": output.text, "start": Double(start), "end": Double(end)])
+        }
+        let totalTime = Date().timeIntervalSince(startTime)
+        return STTOutput(
+            text: texts.joined(separator: " "),
+            segments: segments,
+            promptTokens: promptTokens,
+            generationTokens: generationTokens,
+            totalTokens: promptTokens + generationTokens,
+            promptTps: Double(promptTokens) / totalTime,
+            generationTps: Double(generationTokens) / totalTime,
+            totalTime: totalTime,
+            peakMemoryUsage: Double(Memory.peakMemory) / 1e9
         )
     }
 }

@@ -349,6 +349,34 @@ struct GLMASRModuleSetupTests {
         #expect(eoa.shape == [1, llamaConfig.hiddenSize])
     }
 
+    @Test func longAudioChunksFitTheEncoderWindow() {
+        let whisperConfig = GLMASRWhisperConfig(dModel: 64, encoderAttentionHeads: 2, encoderFfnDim: 128, encoderLayers: 1)
+        let llamaConfig = LlamaConfig(vocabSize: 32, hiddenSize: 64, intermediateSize: 128, numHiddenLayers: 1,
+                                      numAttentionHeads: 2, numKeyValueHeads: 1)
+        let model = GLMASRModel(config: GLMASRModelConfig(whisperConfig: whisperConfig, lmConfig: llamaConfig))
+        #expect(model.maxChunkDuration == 30)
+
+        let sampleRate = 16000
+        var samples = (0..<(70 * sampleRate)).map { Float(0.5 * sin(Double($0) * 2 * .pi * 220 / 16000)) }
+        for dip in [31, 62] {
+            for i in (dip * sampleRate)..<(dip * sampleRate + sampleRate / 5) { samples[i] = 0 }
+        }
+        let audio = MLXArray(samples)
+
+        let unbounded = splitAudioIntoChunks(audio, sampleRate: sampleRate, chunkDuration: 30)
+        #expect(Float(unbounded[0].0.dim(0)) / Float(sampleRate) > 30)
+
+        let chunks = model.audioChunks(audio, chunkDuration: 30) ?? []
+        #expect(chunks.count == 3)
+        #expect(chunks.allSatisfy { $0.end - $0.start <= model.maxChunkDuration })
+        #expect(chunks.first?.start == 0)
+        #expect(chunks.last?.end == 70)
+        #expect(chunks.map(\.audio).reduce(0) { $0 + $1.dim(0) } == 70 * sampleRate)
+
+        #expect(model.audioChunks(audio[..<(30 * sampleRate)], chunkDuration: 30) == nil)
+        #expect(model.audioChunks(MLXArray.zeros([3000, 128]), chunkDuration: 30) == nil)
+    }
+
     // MARK: - STTOutput Tests
 
     @Test func sttOutputDescription() {
@@ -942,6 +970,31 @@ struct CanarySTTTests {
         #expect(config.decoder.numLayers == 3)
         #expect(config.decoder.numAttentionHeads == 8)
         #expect(config.supportedLanguages == ["en", "de"])
+    }
+
+    @Test func languageNamesResolveToPromptCodes() {
+        let config = Self.tinyConfig()
+        #expect(config.languageCode(for: "en") == "en")
+        #expect(config.languageCode(for: "English") == "en")
+        #expect(config.languageCode(for: "german") == "de")
+        #expect(config.languageCode(for: "en-US") == "en")
+        #expect(config.languageCode(for: "de_AT") == "de")
+        #expect(config.languageCode(for: "French") == "French")
+        #expect(config.languageCode(for: "xx") == "xx")
+    }
+
+    @Test func longAudioIsDecodedInChunks() {
+        let model = CanaryModel(config: Self.tinyConfig())
+        let audio = MLXRandom.normal([640_000]) * 0.1
+        func promptTokens(chunkDuration: Float) -> Int {
+            model.generate(
+                audio: audio,
+                generationParameters: STTGenerateParameters(
+                    maxTokens: 1, temperature: 0, chunkDuration: chunkDuration, minChunkDuration: 0.1)
+            ).promptTokens
+        }
+        let single = promptTokens(chunkDuration: 1200)
+        #expect(promptTokens(chunkDuration: 10) >= 3 * single)
     }
 
     @Test func tokenizerBuildsPromptFromTokensFile() throws {
@@ -4165,6 +4218,26 @@ struct FireRedASR2Tests {
         #expect(logits.shape == [1, config.odim])
         #expect(cache.count == config.decoder.nLayers)
         #expect(cache[0]?.shape == [1, 2, 16])
+    }
+
+    @Test func longAudioIsDecodedInChunks() {
+        let config = FireRedASR2Config(
+            odim: 16,
+            dModel: 16,
+            eosID: 99,
+            encoder: FireRedASR2EncoderConfig(nLayers: 1, nHead: 4, dModel: 16, kernelSize: 15),
+            decoder: FireRedASR2DecoderConfig(nLayers: 1, nHead: 4, dModel: 16)
+        )
+        let model = FireRedASR2Model(config)
+        let audio = MLXRandom.normal([640_000]) * 0.1
+        func passes(chunkDuration: Float) -> Int {
+            model.generate(
+                audio: audio,
+                generationParameters: STTGenerateParameters(maxTokens: 1, chunkDuration: chunkDuration)
+            ).generationTokens
+        }
+        #expect(passes(chunkDuration: 1200) == 1)
+        #expect(passes(chunkDuration: 10) >= 3)
     }
 
     @Test func sanitizeRemapsAndTransposesWeights() {

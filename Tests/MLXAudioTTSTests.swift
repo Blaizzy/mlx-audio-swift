@@ -1110,6 +1110,70 @@ struct Qwen3TTSTests {
         #expect(abs(streamed - full).max().item(Float.self) < 1e-4)
     }
 
+    @Test func primedStreamingDecodeMatchesDecodingAfterTheReferenceTail() async throws {
+        let fixture = try await makeTinyQwen3TTSModel(
+            ttsModelType: "voice_design", includeSpeechEncoder: false)
+        defer { cleanupTemporaryArtifactDirectory(fixture.tokenizerDirectory) }
+        let decoder = try #require(fixture.model.speechTokenizer).decoder
+        let biases = decoder.parameters().flattened()
+            .filter { $0.0.hasSuffix(".bias") }
+            .map { ($0.0, MLXArray.ones($0.1.shape) * 0.01) }
+        decoder.update(parameters: ModuleParameters.unflattened(biases))
+        let reference = MLXRandom.randInt(low: 0, high: 16, [1, 2, 30], key: MLXRandom.key(1)).asType(.int32)
+        let generated = MLXRandom.randInt(low: 0, high: 16, [1, 2, 6], key: MLXRandom.key(2)).asType(.int32)
+
+        // Non-streaming ICL decodes the reference and the generated codes together, then trims the reference.
+        let tail = reference[0..., 0..., 5...]
+        let joint = decoder(concatenated([tail, generated], axis: -1))
+        let samplesPerCode = joint.dim(-1) / 31
+        let expected = joint[0..., 0..., (25 * samplesPerCode)...]
+
+        decoder.resetStreamingState()
+        let unprimed = concatenated(
+            stride(from: 0, to: 6, by: 2).map { decoder.streamingStep(generated[0..., 0..., $0 ..< ($0 + 2)]) },
+            axis: -1)
+        decoder.resetStreamingState()
+        decoder.primeStreamingState(referenceCodes: reference)
+        let primed = concatenated(
+            stride(from: 0, to: 6, by: 2).map { decoder.streamingStep(generated[0..., 0..., $0 ..< ($0 + 2)]) },
+            axis: -1)
+        decoder.resetStreamingState()
+
+        #expect(primed.shape == expected.shape)
+        #expect(abs(primed - expected).max().item(Float.self) < 1e-4)
+        #expect(abs(unprimed - expected).max().item(Float.self) > 1e-3)
+    }
+
+    @Test func decoderTransformerAttendsWithinSlidingWindow() throws {
+        MLXRandom.seed(0)
+        let json = """
+            {"latent_dim": 8, "hidden_size": 16, "intermediate_size": 32, "head_dim": 4,
+             "num_attention_heads": 4, "num_key_value_heads": 4, "num_hidden_layers": 2,
+             "layer_scale_initial_scale": 1.0, "sliding_window": 16}
+            """
+        let config = try JSONDecoder().decode(Qwen3TTSTokenizerDecoderConfig.self, from: Data(json.utf8))
+        let transformer = DecoderTransformer(config: config)
+        let x = MLXRandom.normal([1, 100, 8], key: MLXRandom.key(0))
+
+        let query = MLXArray(Int32(0) ..< 100).reshaped(-1, 1)
+        let key = MLXArray(Int32(0) ..< 100).reshaped(1, -1)
+        let allowed = (key .<= query) .&& (key .> query - 16)
+        let reference = transformer(x, mask: which(allowed, Float(0), -Float.infinity))
+
+        let cache = transformer.makeCache()
+        var chunks = [MLXArray]()
+        var start = 0
+        for size in [25, 1, 1, 10, 25, 1, 30, 7] {
+            chunks.append(transformer(x[0..., start ..< (start + size)], cache: cache))
+            start += size
+        }
+
+        #expect(abs(transformer(x) - reference).max().item(Float.self) < 1e-5)
+        // Chunked matmuls can use different TF32 kernels on M5 and later,
+        // so allow their rounding differences from full-sequence execution.
+        #expect(abs(concatenated(chunks, axis: 1) - reference).max().item(Float.self) < 5e-3)
+    }
+
     @Test func customVoicePromptSplitsSpeakerAndInstruction() {
         let combined = Qwen3TTSModel.parseCustomVoicePrompt("Vivian, very happy and excited.")
         #expect(combined?.speaker == "Vivian")

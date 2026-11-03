@@ -144,6 +144,28 @@ struct VoxtralTTSTests {
         #expect(abs(waveform[0...,0..<prefix.dim(1)] - prefix).max().item(Float.self) < 1e-6)
         }
     }
+    @Test func streamedChunksMatchOfflineDecode() throws {
+        try Device.withDefaultDevice(.cpu) {
+        // The shipped decoder depth: the two-stage test config reaches back too few frames to need the streaming context.
+        var c = config(); c.decoderLengths = [2,2,2,2]; c.decoderKernels = [3,4,4,4]; c.decoderStrides = [1,2,2,2]
+        let model = VoxtralTTSModel(c)
+        MLXRandom.seed(1)
+        let weights = Dictionary(uniqueKeysWithValues: model.audioDecoder.parameters().flattened().map { key,value in
+            let tensor: MLXArray
+            if key.hasSuffix("norm.weight") || key.hasSuffix("cluster_usage") { tensor = .ones(value.shape) }
+            else if key.hasSuffix("scale") { tensor = .ones(value.shape) * 0.5 }
+            else { tensor = MLXRandom.normal(value.shape) / sqrt(Float(value.size / value.dim(0))) }
+            return (key,tensor)
+        })
+        try model.audioDecoder.update(parameters: ModuleParameters.unflattened(weights), verify: .all)
+        let codes = concatenated([MLXRandom.randInt(2..<6, [1,80,1]), MLXRandom.randInt(2..<7, [1,80,2])], axis: -1).asType(.int32)
+        let frames = (0..<80).map { codes[0...,$0..<($0 + 1),0...] }
+        let offline = model.audioDecoder.decode(codes).reshaped(-1)
+        let streamed = concatenated(stride(from: 0, to: 80, by: 25).map { model.decodeChunk(Array(frames[0..<min($0 + 25, 80)]), from: $0) }, axis: 0)
+        #expect(streamed.shape == offline.shape)
+        #expect(abs(streamed - offline).max().item(Float.self) < 1e-4)
+        }
+    }
     @Test func quantizedProjectionRestoresPublishedLayout() throws {
         try Device.withDefaultDevice(.cpu) {
             let source = VoxtralTTSAttention(dim: 64, heads: 2, kvHeads: 1, headDim: 32)

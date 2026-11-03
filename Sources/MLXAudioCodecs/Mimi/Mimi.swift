@@ -157,6 +157,8 @@ public final class Mimi: Module {
     public func resetState() {
         encoder.resetState()
         decoder.resetState()
+        downsample.resetState()
+        upsample.resetState()
         for c in decoderCache { c.trim(c.offset)}
         for c in encoderCache { c.trim(c.offset) }
     }
@@ -185,9 +187,12 @@ public final class Mimi: Module {
     }
 
     public func encodeStep(_ xs: MLXArray) -> MLXArray {
+        let noFrames = MLXArray.zeros([xs.dim(0), cfg.quantizerNQ, 0], type: UInt32.self)
         var z = encoder.step(xs)
+        if z.dim(-1) == 0 { return noFrames }
         z = encoder_transformer(z, cache: encoderCache)[0]
         z = downsample.step(z)
+        if z.dim(-1) == 0 { return noFrames }
         z = quantizer.encode(z)
         return z
     }

@@ -482,13 +482,12 @@ final class DecoderTransformer: Module {
         let posEmb = rotaryEmb(x, positionIds: posIds)
 
         var causalMask = mask
-        if causalMask == nil, seqLen > 1 {
-            let totalLen = offset + seqLen
-            var fullMask = MultiHeadAttention.createAdditiveCausalMask(totalLen).asType(x.dtype)
-            if totalLen > seqLen {
-                fullMask = fullMask[(totalLen - seqLen) ..< totalLen, 0...]
-            }
-            causalMask = fullMask
+        if causalMask == nil, seqLen > 1,
+           case .array(let windowMask) = createAttentionMask(
+               h: x, cache: cache?.first, windowSize: config.slidingWindow, returnArray: true
+           )
+        {
+            causalMask = windowMask
         }
 
         for (i, layer) in layers.enumerated() {
@@ -498,7 +497,7 @@ final class DecoderTransformer: Module {
     }
 
     func makeCache() -> [any KVCache] {
-        layers.map { _ in KVCacheSimple() }
+        layers.map { _ in RotatingKVCache(maxSize: config.slidingWindow) }
     }
 }
 
@@ -968,6 +967,15 @@ final class Qwen3TTSSpeechTokenizerDecoder: Module {
         if let outConv = decoder.last as? DecoderOutputConv {
             outConv.resetState()
         }
+    }
+
+    /// Primes the streaming state with the tail of the reference codes ([batch, quantizers, time]), so the
+    /// next streamed codes are decoded with the reference as left context, like the non-streaming ICL path.
+    /// The decoded reference audio is discarded.
+    func primeStreamingState(referenceCodes: MLXArray, contextSize: Int = 25) {
+        let time = referenceCodes.dim(2)
+        guard contextSize > 0, time > 0 else { return }
+        _ = streamingStep(referenceCodes[0..., 0..., max(0, time - contextSize)...])
     }
 
     /// Incrementally decode only new codec tokens.

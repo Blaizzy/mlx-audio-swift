@@ -294,6 +294,20 @@ public struct CanaryConfig: Decodable, Sendable {
         "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk",
     ]
 
+    public func languageCode(for language: String) -> String {
+        let lowered = language.lowercased()
+        if supportedLanguages.contains(lowered) { return lowered }
+        if let base = lowered.split(whereSeparator: { $0 == "-" || $0 == "_" }).first,
+            supportedLanguages.contains(String(base))
+        {
+            return String(base)
+        }
+        let english = Locale(identifier: "en")
+        return supportedLanguages.first {
+            english.localizedString(forLanguageCode: $0)?.lowercased() == lowered
+        } ?? language
+    }
+
     public init(
         modelType: String = "canary",
         preprocessor: CanaryPreprocessConfig = CanaryPreprocessConfig(),
