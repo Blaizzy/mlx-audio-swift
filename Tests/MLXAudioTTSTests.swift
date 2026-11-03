@@ -1110,6 +1110,36 @@ struct Qwen3TTSTests {
         #expect(abs(streamed - full).max().item(Float.self) < 1e-4)
     }
 
+    @Test func decoderTransformerAttendsWithinSlidingWindow() throws {
+        MLXRandom.seed(0)
+        let json = """
+            {"latent_dim": 8, "hidden_size": 16, "intermediate_size": 32, "head_dim": 4,
+             "num_attention_heads": 4, "num_key_value_heads": 4, "num_hidden_layers": 2,
+             "layer_scale_initial_scale": 1.0, "sliding_window": 16}
+            """
+        let config = try JSONDecoder().decode(Qwen3TTSTokenizerDecoderConfig.self, from: Data(json.utf8))
+        let transformer = DecoderTransformer(config: config)
+        let x = MLXRandom.normal([1, 100, 8], key: MLXRandom.key(0))
+
+        let query = MLXArray(Int32(0) ..< 100).reshaped(-1, 1)
+        let key = MLXArray(Int32(0) ..< 100).reshaped(1, -1)
+        let allowed = (key .<= query) .&& (key .> query - 16)
+        let reference = transformer(x, mask: which(allowed, Float(0), -Float.infinity))
+
+        let cache = transformer.makeCache()
+        var chunks = [MLXArray]()
+        var start = 0
+        for size in [25, 1, 1, 10, 25, 1, 30, 7] {
+            chunks.append(transformer(x[0..., start ..< (start + size)], cache: cache))
+            start += size
+        }
+
+        #expect(abs(transformer(x) - reference).max().item(Float.self) < 1e-5)
+        // Chunked matmuls can use different TF32 kernels on M5 and later,
+        // so allow their rounding differences from full-sequence execution.
+        #expect(abs(concatenated(chunks, axis: 1) - reference).max().item(Float.self) < 5e-3)
+    }
+
     @Test func customVoicePromptSplitsSpeakerAndInstruction() {
         let combined = Qwen3TTSModel.parseCustomVoicePrompt("Vivian, very happy and excited.")
         #expect(combined?.speaker == "Vivian")
