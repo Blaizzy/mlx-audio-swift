@@ -1135,7 +1135,9 @@ struct Qwen3TTSTests {
         }
 
         #expect(abs(transformer(x) - reference).max().item(Float.self) < 1e-5)
-        #expect(abs(concatenated(chunks, axis: 1) - reference).max().item(Float.self) < 1e-5)
+        // Chunked matmuls can use different TF32 kernels on M5 and later,
+        // so allow their rounding differences from full-sequence execution.
+        #expect(abs(concatenated(chunks, axis: 1) - reference).max().item(Float.self) < 5e-3)
     }
 
     @Test func customVoicePromptSplitsSpeakerAndInstruction() {
