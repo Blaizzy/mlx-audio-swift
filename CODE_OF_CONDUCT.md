@@ -22,4 +22,4 @@ Maintainers may edit, remove, or reject content that does not meet these
 standards, and may restrict participation when necessary.
 
 If you need to report a serious issue privately, use
-[GitHub Security Advisories](https://github.com/Blaizzy/mlx-audio-swift/security/advisories/new).
+[GitHub Security Advisories](https://github.com/Neywa-Labs/mlx-audio-swift/security/advisories/new).

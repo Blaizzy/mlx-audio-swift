@@ -1,4 +1,4 @@
-<a href="https://trendshift.io/repositories/20684" target="_blank"><img src="https://trendshift.io/api/badge/repositories/20684" alt="Blaizzy%2Fmlx-audio-swift | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+<a href="https://trendshift.io/repositories/20684" target="_blank"><img src="https://trendshift.io/api/badge/repositories/20684" alt="Neywa-Labs%2Fmlx-audio-swift | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
 # MLX Audio Swift
 
@@ -26,7 +26,7 @@ Add MLXAudio to your project using Swift Package Manager:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Blaizzy/mlx-audio-swift.git", branch: "main")
+    .package(url: "https://github.com/Neywa-Labs/mlx-audio-swift.git", branch: "main")
 ]
 
 // Import only what you need

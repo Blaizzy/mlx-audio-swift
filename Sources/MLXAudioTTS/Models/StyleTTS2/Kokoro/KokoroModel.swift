@@ -121,7 +121,7 @@ public final class KokoroModel: Module, SpeechGenerationModel, @unchecked Sendab
         // — so `compactMap` silently drops the entire nasal vowel and
         // "bonjour" comes out as "bjour". Iterating scalars preserves the
         // base + combining pair as two separate tokens, both of which exist
-        // in the vocab. See https://github.com/Blaizzy/mlx-audio-swift/issues/187
+        // in the vocab. See https://github.com/Neywa-Labs/mlx-audio-swift/issues/187
         text.unicodeScalars.compactMap { config.vocab[String($0)] }
     }
 
