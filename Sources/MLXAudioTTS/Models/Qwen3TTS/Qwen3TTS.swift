@@ -408,6 +408,9 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
         if onAudioChunk != nil {
             speechTokenizer.decoder.resetStreamingState()
+            if let refCodes {
+                speechTokenizer.decoder.primeStreamingState(referenceCodes: refCodes)
+            }
         }
         defer {
             if onAudioChunk != nil {
