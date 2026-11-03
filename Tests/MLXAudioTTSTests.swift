@@ -1110,6 +1110,40 @@ struct Qwen3TTSTests {
         #expect(abs(streamed - full).max().item(Float.self) < 1e-4)
     }
 
+    @Test func primedStreamingDecodeMatchesDecodingAfterTheReferenceTail() async throws {
+        let fixture = try await makeTinyQwen3TTSModel(
+            ttsModelType: "voice_design", includeSpeechEncoder: false)
+        defer { cleanupTemporaryArtifactDirectory(fixture.tokenizerDirectory) }
+        let decoder = try #require(fixture.model.speechTokenizer).decoder
+        let biases = decoder.parameters().flattened()
+            .filter { $0.0.hasSuffix(".bias") }
+            .map { ($0.0, MLXArray.ones($0.1.shape) * 0.01) }
+        decoder.update(parameters: ModuleParameters.unflattened(biases))
+        let reference = MLXRandom.randInt(low: 0, high: 16, [1, 2, 30], key: MLXRandom.key(1)).asType(.int32)
+        let generated = MLXRandom.randInt(low: 0, high: 16, [1, 2, 6], key: MLXRandom.key(2)).asType(.int32)
+
+        // Non-streaming ICL decodes the reference and the generated codes together, then trims the reference.
+        let tail = reference[0..., 0..., 5...]
+        let joint = decoder(concatenated([tail, generated], axis: -1))
+        let samplesPerCode = joint.dim(-1) / 31
+        let expected = joint[0..., 0..., (25 * samplesPerCode)...]
+
+        decoder.resetStreamingState()
+        let unprimed = concatenated(
+            stride(from: 0, to: 6, by: 2).map { decoder.streamingStep(generated[0..., 0..., $0 ..< ($0 + 2)]) },
+            axis: -1)
+        decoder.resetStreamingState()
+        decoder.primeStreamingState(referenceCodes: reference)
+        let primed = concatenated(
+            stride(from: 0, to: 6, by: 2).map { decoder.streamingStep(generated[0..., 0..., $0 ..< ($0 + 2)]) },
+            axis: -1)
+        decoder.resetStreamingState()
+
+        #expect(primed.shape == expected.shape)
+        #expect(abs(primed - expected).max().item(Float.self) < 1e-4)
+        #expect(abs(unprimed - expected).max().item(Float.self) > 1e-3)
+    }
+
     @Test func decoderTransformerAttendsWithinSlidingWindow() throws {
         MLXRandom.seed(0)
         let json = """
