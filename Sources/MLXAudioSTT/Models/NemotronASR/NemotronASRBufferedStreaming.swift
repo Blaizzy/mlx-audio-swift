@@ -63,6 +63,7 @@ final class NemotronASRBufferedEncoder {
     private(set) var total = 0
     private var next = 0  // stream sample where the next chunk starts
     private var previousStart = 0  // buffer start of the previous step
+    private var reachedFullWindow = false
     private(set) var done = false
 
     init(model: NemotronASRModel, context: NemotronASRBufferedContext, language: String?) {
@@ -104,6 +105,15 @@ final class NemotronASRBufferedEncoder {
             next += chunkSamples
         }
         var outputs = encode(ready)
+        if !reachedFullWindow, let last = ready.last,
+           last.end - last.start == leftSamples + chunkSamples + rightSamples {
+            // Until the left context fills, every step's window is a new size, and
+            // MLX's buffer cache keeps each size's buffers. From here on every
+            // window has one size, so drop the ramp's buffers once.
+            reachedFullWindow = true
+            eval(outputs)
+            Memory.clearCache()
+        }
         if final {
             if total > next {
                 // NeMo caps the last buffer at left + chunk + right samples.
