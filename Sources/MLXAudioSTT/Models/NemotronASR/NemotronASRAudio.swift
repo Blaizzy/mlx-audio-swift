@@ -34,8 +34,8 @@ enum NemotronASRAudio {
         )
 
         let perFeature = config.normalize.lowercased() == "per_feature"
-        // NeMo normalizes over `samples / hop` frames; the centered STFT adds one more,
-        // which it zeroes. Statistics run in float32.
+        // Statistics cover `samples / hop` frames; the centered STFT adds one more,
+        // which is zeroed. They run in float32.
         let validFrames = x.shape[0] / config.hopLength
         let power = MLX.abs(stftOutput).square().asType(perFeature ? .float32 : originalDType)
         let filters = basis?.filters ?? melFilters(
@@ -53,17 +53,12 @@ enum NemotronASRAudio {
         case "na", "none":
             return mel.expandedDimensions(axis: 0).asType(originalDType)
         case "per_feature":
-            let frames = min(validFrames, mel.dim(0))
-            let valid = mel[..<frames]
+            let valid = mel[..<validFrames]
             let mean = MLX.mean(valid, axis: 0, keepDims: true)
-            let std = frames > 1
-                ? MLX.sqrt(MLX.sum((valid - mean).square(), axis: 0, keepDims: true) / Float(frames - 1))
-                : MLX.zeros(like: mean)
-            mel = (mel - mean) / (std + MLXArray(1e-5, dtype: mel.dtype))
-            if frames < mel.dim(0) {
-                let keep = MLXArray(0..<mel.dim(0)).expandedDimensions(axis: 1) .< MLXArray(Int32(frames))
-                mel = MLX.where(keep, mel, MLXArray(Float(0)))
-            }
+            let variance = MLX.sum((valid - mean).square(), axis: 0, keepDims: true) / Float(max(validFrames - 1, 1))
+            mel = (mel - mean) / (MLX.sqrt(variance) + MLXArray(1e-5, dtype: mel.dtype))
+            let keep = MLXArray(0..<mel.dim(0)).expandedDimensions(axis: 1) .< MLXArray(Int32(validFrames))
+            mel = MLX.where(keep, mel, MLXArray(Float(0)))
         default:
             let mean = MLX.mean(mel)
             let std = MLX.std(mel)

@@ -4,13 +4,13 @@ import MLX
 // Buffered streaming for Nemotron Unified (`chunked_limited_with_rc`) checkpoints.
 //
 // The Unified encoder has non-causal convolutions and a right context, so it cannot
-// carry per-layer caches. As in NeMo's `speech_to_text_streaming_infer_rnnt.py`, each
-// step re-runs the mel and the encoder on a sliding buffer of left context + chunk +
-// right context and keeps the chunk's frames; greedy RNN-T continues across steps.
+// carry per-layer caches. Each step re-runs the mel and the encoder on a sliding
+// buffer of left context + chunk + right context and keeps the chunk's frames;
+// greedy RNN-T continues across steps.
 // Step k covers audio [k*C, (k+1)*C). It is the last step once (k+1)*C + R reaches
 // the end of the audio, and then runs to the end with no right context. A live
 // stream runs a non-last step only once it holds more than (k+1)*C + R samples, so
-// it segments audio exactly as NeMo segments the finished file.
+// it segments audio exactly as the finished file would be segmented.
 
 /// What a caller can get wrong about buffered (Nemotron Unified) streaming.
 public enum NemotronASRStreamingError: Error, Equatable, CustomStringConvertible {
@@ -63,8 +63,8 @@ public struct NemotronASRBufferedContext: Equatable, Sendable {
     /// A negative `left` counts as 0.
     public static func forLatency(_ latencyMs: Int, left: Int = defaultLeft) -> NemotronASRBufferedContext {
         let frames = min(max(Int((Double(latencyMs) / 80).rounded()), 2), 26)
-        let row = latencies.keys.filter { $0 <= frames * 80 }.max()!
-        let chunk = latencies[row]!.chunk
+        let chunk = latencies.sorted { $0.key < $1.key }
+            .reduce(1) { $1.key <= frames * 80 ? $1.value.chunk : $0 }
         return NemotronASRBufferedContext(uncheckedLeft: max(left, 0), chunk: chunk, right: frames - chunk)
     }
 
@@ -83,7 +83,7 @@ final class NemotronASRBufferedEncoder {
     private let rightSamples: Int
 
     // `samples[0]` is stream sample `start`.
-    private var samples: [Float] = []
+    private var samples = MLXArray.zeros([0])
     private var start = 0
     private(set) var total = 0
     private var next = 0  // stream sample where the next chunk starts
@@ -121,9 +121,13 @@ final class NemotronASRBufferedEncoder {
     /// that become ready together (a step after a slow one, a whole file) encode
     /// their equal-length windows as one batch.
     func push(_ newSamples: [Float], final: Bool) -> [MLXArray] {
+        push(MLXArray(newSamples), final: final)
+    }
+
+    func push(_ newSamples: MLXArray, final: Bool) -> [MLXArray] {
         guard !done else { return [] }
-        samples.append(contentsOf: newSamples)
-        total += newSamples.count
+        samples = MLX.concatenated([samples, newSamples], axis: 0)
+        total += newSamples.shape[0]
 
         var ready: [Window] = []
         while total > next + chunkSamples + rightSamples {
@@ -148,7 +152,7 @@ final class NemotronASRBufferedEncoder {
         }
         if final {
             if total > next {
-                // NeMo caps the last buffer at left + chunk + right samples.
+                // The last buffer is capped at left + chunk + right samples.
                 let bufferStart = max(previousStart, total - (leftSamples + chunkSamples + rightSamples))
                 let window = Window(start: bufferStart, end: total, left: (next - bufferStart) / frameSamples)
                 outputs.append(encodeLast(window))
@@ -158,7 +162,7 @@ final class NemotronASRBufferedEncoder {
         // The next buffer starts at or after the previous step's start.
         let keep = max(0, next - chunkSamples - leftSamples)
         if keep > start {
-            samples.removeFirst(keep - start)
+            samples = samples[(keep - start)...]
             start = keep
         }
         // A last window under one hop (10 ms) of new audio has no frame to decode.
@@ -166,8 +170,10 @@ final class NemotronASRBufferedEncoder {
     }
 
     private func mel(_ window: Window) -> MLXArray {
-        let audio = Array(samples[(window.start - start)..<(window.end - start)])
-        return NemotronASRAudio.logMelSpectrogram(MLXArray(audio), config: model.preprocessConfig, basis: melBasis)
+        NemotronASRAudio.logMelSpectrogram(
+            samples[(window.start - start)..<(window.end - start)],
+            config: model.preprocessConfig, basis: melBasis
+        )
     }
 
     private func encode(_ windows: [Window]) -> [MLXArray] {
@@ -244,8 +250,8 @@ extension NemotronASRModel {
     /// Unified checkpoints stream buffered; 3.5 checkpoints are cache-aware.
     public var isBuffered: Bool { encoderConfig.attContextStyle == "chunked_limited_with_rc" }
 
-    /// Offline, Unified runs one full-context pass up to this length, then NeMo's
-    /// long-form buffered setting (10 s left, 10 s chunk, 5 s right).
+    /// Offline, Unified runs one full-context pass up to this length, then a
+    /// long-form buffered layout (10 s left, 10 s chunk, 5 s right).
     static let bufferedOfflineMaxSeconds = 60.0
     static let bufferedLongForm = NemotronASRBufferedContext(uncheckedLeft: 125, chunk: 125, right: 62)
 
@@ -262,7 +268,7 @@ extension NemotronASRModel {
         }
         let state = NemotronASRStreamRNNTState(blankToken: blankTokenID)
         let encoder = NemotronASRBufferedEncoder(model: self, context: Self.bufferedLongForm, language: language)
-        for prompted in encoder.push(audio.asArray(Float.self), final: true) {
+        for prompted in encoder.push(audio, final: true) {
             streamRNNTDecode(prompted, state: state, frameSeconds: encoderFrameSeconds)
         }
         return NemoAlignment.sentencesToResult(NemoAlignment.tokensToSentences(state.results))

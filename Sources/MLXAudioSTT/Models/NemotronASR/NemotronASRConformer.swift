@@ -3,8 +3,8 @@ import MLX
 import MLXNN
 
 private let nemotronASRNegInf: Float = -1e9
-// NeMo's masking value (INF_VAL). Unlike -1e9 it stays finite in float16, where a
-// query row with every key masked would otherwise turn NaN.
+// Unlike -1e9, this stays finite in float16, where a query row with every key masked
+// would otherwise turn NaN.
 private let nemotronASRMaskValue: Float = -1e4
 
 enum NemotronASRAttentionMask {
@@ -22,8 +22,8 @@ enum NemotronASRAttentionMask {
         return mask.expandedDimensions(axis: 0).expandedDimensions(axis: 0)
     }
 
-    /// `(T, T)` visibility for NeMo's `chunked_limited_with_rc`: frame i, in chunk
-    /// i / chunk, sees `left` frames before its chunk through `right` frames after it.
+    /// `(T, T)` visibility: frame i, in chunk i / chunk, sees `left` frames before its
+    /// chunk through `right` frames after it.
     static func chunkedRCVisibility(seqLen: Int, left: Int, chunk: Int, right: Int) -> MLXArray {
         let frames = MLXArray(0..<seqLen).asType(.int32)
         // floorDivide: MLX's `/` on integers is true division in float32.
@@ -52,8 +52,8 @@ final class NemotronASRFeedForward: Module {
 final class NemotronASRConvolution: Module {
     @ModuleInfo(key: "pointwise_conv1") var pointwiseConv1: Conv1d
     @ModuleInfo(key: "depthwise_conv") var depthwiseConv: Conv1d
-    // NeMo keys the conv norm `batch_norm` whether it is a LayerNorm (3.5) or a
-    // BatchNorm (Unified).
+    // The checkpoint keys the conv norm `batch_norm` whether it is a LayerNorm (3.5)
+    // or a BatchNorm (Unified).
     @ModuleInfo(key: "batch_norm") var batchNorm: UnaryLayer
     @ModuleInfo(key: "pointwise_conv2") var pointwiseConv2: Conv1d
 
@@ -117,9 +117,9 @@ final class NemotronASRConvolution: Module {
 }
 
 /// `dw_striding` subsampling. Causal checkpoints (3.5) pad each strided conv by
-/// (k-1, stride-1); non-causal ones (Unified) pad (1, 1) and, like NeMo's
-/// `MaskedConvSequential`, zero time steps past the valid length before every
-/// layer and after the last, so padding never mixes into valid frames.
+/// (k-1, stride-1); non-causal ones (Unified) pad (1, 1) and zero time steps past the
+/// valid length before every layer and after the last, so padding never mixes into
+/// valid frames.
 final class NemotronASRCausalDwStridingSubsampling: Module {
     let subsamplingFactor: Int
     let samplingNum: Int
@@ -332,14 +332,14 @@ final class NemotronASRConformer: Module {
                 .createChunkedLimitedMask(seqLen: h.shape[1], leftContext: leftContext, rightContext: rightContext)
                 .asType(h.dtype)
         } else if args.attContextStyle == "chunked_limited_with_rc" {
-            // Padded frames are never keys and the depthwise conv sees zeros there,
-            // as in NeMo. `[-1, -1, -1]` is full context (offline).
+            // Padded frames are never keys, and the depthwise conv sees zeros there.
+            // `[-1, -1, -1]` is full context (offline).
             let seqLen = h.shape[1]
             let frameValid = MLXArray(0..<seqLen).asType(.int32).expandedDimensions(axis: 0)
                 .< outLengths.asType(.int32).expandedDimensions(axis: 1)
             valid = frameValid
             var visible = frameValid.expandedDimensions(axes: [1, 2])
-            if context.count == 3, context[1] > 0 {
+            if context != [-1, -1, -1] {
                 visible = logicalAnd(
                     visible,
                     NemotronASRAttentionMask.chunkedRCVisibility(

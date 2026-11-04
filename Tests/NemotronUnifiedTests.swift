@@ -213,10 +213,8 @@ struct NemotronUnifiedTests {
         #expect(model.resolvePromptIndex("en-US") == 0)
         #expect(model.resolvePromptIndex("en") == 0)
         #expect(model.resolvePromptIndex("EN") == 0)
-        #expect(model.resolvePromptIndex("fr") == 1)  // unsupported: default, with a warning
+        #expect(model.resolvePromptIndex("fr") == 1)  // unsupported: the default language
     }
-
-    /// Full-size windows run a compiled encoder; it must agree with the plain one.
 
     /// Every prompt_dictionary key of nvidia/nemotron-labs-unified-asr-0.6b@023ce907, its
     /// bare code and case variants resolve to the index NeMo's `resolve_prompt_index`
@@ -237,6 +235,7 @@ struct NemotronUnifiedTests {
         #expect(["es", "es-ES", "pt", "pt-BR", "en", "en-GB"].map { model.resolvePromptIndex($0) } == [3, 2, 13, 12, 0, 1])
     }
 
+    /// Full-size windows run a compiled encoder; it must agree with the plain one.
     @Test func unifiedCompiledFullWindowsMatchUncompiled() throws {
         let model = try unifiedModel()
         let samples = syntheticAudio(samples: 30 * 128 + 50).asArray(Float.self)

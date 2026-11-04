@@ -169,13 +169,13 @@ public final class NemotronASRModel: Module, STTGenerationModel {
                 let encoder = NemotronASRBufferedEncoder(
                     model: self, context: self.defaultBufferedContext, language: generationParameters.language
                 )
-                let samples = audio1D.asArray(Float.self)
+                let count = audio1D.shape[0]
                 var start = 0
                 repeat {
-                    let end = min(start + encoder.chunkSamples, samples.count)
-                    encoder.push(Array(samples[start..<end]), final: end == samples.count).forEach(decodeAndEmit)
+                    let end = min(start + encoder.chunkSamples, count)
+                    encoder.push(audio1D[start..<end], final: end == count).forEach(decodeAndEmit)
                     start = end
-                } while start < samples.count
+                } while start < count
             } else {
                 // Cache-aware streaming: incremental subsampling + per-layer attn/conv
                 // caches, greedy RNN-T per chunk. Token-identical to decode() at the
@@ -294,10 +294,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
     /// Buffered context from `default_att_context_size` ([left, chunk, right]).
     var defaultBufferedContext: NemotronASRBufferedContext {
         let c = defaultAttContextSize
-        if c.count == 3, let context = try? NemotronASRBufferedContext(left: c[0], chunk: c[1], right: c[2]) {
-            return context
-        }
-        return NemotronASRBufferedContext.forLatency(320)
+        return NemotronASRBufferedContext(uncheckedLeft: c[0], chunk: c[1], right: c[2])
     }
 
     func applyPrompt(_ encoded: MLXArray, language: String? = nil) -> MLXArray {
@@ -325,9 +322,8 @@ public final class NemotronASRModel: Module, STTGenerationModel {
         return MLX.where(promptRange .== promptIDs, MLXArray(Float(1)), MLXArray(Float(0))).asType(dtype)
     }
 
-    /// NeMo's rule: an exact key, else a bare code that matches exactly one locale
-    /// key ("de" -> "de-DE"). NeMo raises for anything else; this API cannot throw,
-    /// so it warns once on stderr and uses the default language's prompt.
+    /// An exact key, else a bare code that matches exactly one locale key ("de" ->
+    /// "de-DE"), else the default language's prompt.
     func resolvePromptIndex(_ language: String?) -> Int {
         let resolvedLanguage = language ?? defaultLanguage
         if let index = promptDictionary[resolvedLanguage] {
@@ -338,29 +334,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
         if matches.count == 1, let index = promptDictionary[matches[0]] {
             return index
         }
-        if !promptDictionary.isEmpty {
-            Self.warnOnce(
-                "NemotronASR: language '\(resolvedLanguage)' is "
-                    + (matches.isEmpty ? "not supported" : "ambiguous (\(matches.sorted()))")
-                    + "; using '\(defaultLanguage)'\n"
-            )
-        }
-        if let index = promptDictionary[defaultLanguage] {
-            return index
-        }
-        return 0
-    }
-
-    private static let warnedLanguages = NSLock()
-    /// Only read and written while holding `warnedLanguages`, so concurrent sessions
-    /// cannot race on it.
-    nonisolated(unsafe) private static var warned: Set<String> = []
-    private static func warnOnce(_ message: String) {
-        warnedLanguages.lock()
-        defer { warnedLanguages.unlock() }
-        if warned.insert(message).inserted {
-            FileHandle.standardError.write(Data(message.utf8))
-        }
+        return promptDictionary[defaultLanguage] ?? 0
     }
 
     private func normalizeAudioToMono(_ audio: MLXArray) -> MLXArray {
