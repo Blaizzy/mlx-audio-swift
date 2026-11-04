@@ -4021,6 +4021,85 @@ struct NemotronASRTests {
         }
     }
 
+
+    /// Steps `samples` through `session`, `feed` samples at a time. After every step the
+    /// text only grows, by exactly the returned delta, as a realtime server relies on.
+    private func appendOnlyTokens(
+        _ session: NemotronASRStreamSession, _ samples: [Float], feed: Int
+    ) -> [Int] {
+        var joined = ""
+        var i = 0
+        while i < samples.count {
+            let e = min(i + feed, samples.count)
+            let before = session.text
+            joined += session.step(Array(samples[i..<e])).text
+            #expect(session.text.hasPrefix(before))
+            #expect(joined == session.text)
+            i = e
+        }
+        joined += session.finish().text
+        #expect(joined == session.text)
+        return session.tokens
+    }
+
+    /// Chunks of 1, 2 and 7 frames, past the startup ramp into full (compiled) windows.
+    @Test func unifiedSessionTextOnlyGrowsAtEveryChunkSize() throws {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        let model = try unifiedModel()
+        let frame = model.encoderConfig.subsamplingFactor * model.preprocessConfig.hopLength
+        let samples = syntheticAudio(samples: 40 * frame + 77).asArray(Float.self)
+        for latency in [160, 320, 560, 1120] {
+            let runs = [61, frame, 23 * frame].map { feed in
+                appendOnlyTokens(
+                    model.makeStreamSession(language: "en-US", chunkMs: latency), samples, feed: feed
+                )
+            }
+            #expect(runs[1] == runs[0], "latency \(latency) ms")
+            #expect(runs[2] == runs[0], "latency \(latency) ms")
+        }
+    }
+
+    /// The compiled encoders are cached on the model by shape. Encoders with different
+    /// layouts and languages, pushed alternately, must each give what they give alone.
+    @Test func interleavedUnifiedEncodersDoNotShareState() throws {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        let model = try unifiedModel()
+        let frame = model.encoderConfig.subsamplingFactor * model.preprocessConfig.hopLength
+        let a = syntheticAudio(samples: 40 * frame + 50).asArray(Float.self)
+        let streams: [(context: NemotronASRBufferedContext, language: String, samples: [Float])] = [
+            (NemotronASRBufferedContext(left: 4, chunk: 2, right: 2), "en-US", a),
+            (NemotronASRBufferedContext(left: 4, chunk: 7, right: 7), "auto", Array(a.reversed())),
+        ]
+        func encoder(_ s: Int) -> NemotronASRBufferedEncoder {
+            NemotronASRBufferedEncoder(model: model, context: streams[s].context, language: streams[s].language)
+        }
+        func push(_ e: NemotronASRBufferedEncoder, _ s: Int, at i: Int) -> [MLXArray] {
+            let end = min(i + frame, streams[s].samples.count)
+            return e.push(Array(streams[s].samples[i..<end]), final: end == streams[s].samples.count)
+        }
+        let alone = (0..<2).map { s -> [MLXArray] in
+            let e = encoder(s)
+            return stride(from: 0, to: a.count, by: frame).flatMap { push(e, s, at: $0) }
+        }
+        let encoders = [encoder(0), encoder(1)]
+        var together: [[MLXArray]] = [[], []]
+        for i in stride(from: 0, to: a.count, by: frame) {
+            for s in 0..<2 { together[s] += push(encoders[s], s, at: i) }
+        }
+        for s in 0..<2 {
+            #expect(!alone[s].isEmpty)
+            #expect(together[s].count == alone[s].count)
+            for (x, y) in zip(together[s], alone[s]) {
+                #expect(MLX.abs(x - y).max().item(Float.self) < 1e-5)
+            }
+        }
+    }
 }
 
 struct VoxtralRealtimeSTTTests {
