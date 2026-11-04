@@ -12,14 +12,40 @@ import MLX
 // stream runs a non-last step only once it holds more than (k+1)*C + R samples, so
 // it segments audio exactly as NeMo segments the finished file.
 
+/// What a caller can get wrong about buffered (Nemotron Unified) streaming.
+public enum NemotronASRStreamingError: Error, Equatable, CustomStringConvertible {
+    /// A layout needs left >= 0, chunk >= 1 and right >= 0 encoder frames.
+    case invalidBufferedContext(left: Int, chunk: Int, right: Int)
+    /// An explicit buffer layout needs a buffered (Nemotron Unified) checkpoint.
+    case notBuffered
+
+    public var description: String {
+        switch self {
+        case let .invalidBufferedContext(left, chunk, right):
+            return "invalid buffered context [\(left), \(chunk), \(right)]: "
+                + "needs left >= 0, chunk >= 1 and right >= 0 frames"
+        case .notBuffered:
+            return "bufferedContext needs a buffered (Nemotron Unified) checkpoint; "
+                + "this one streams cache-aware, so pass chunkMs instead"
+        }
+    }
+}
+
 /// Buffer layout in encoder frames (80 ms each).
 public struct NemotronASRBufferedContext: Equatable, Sendable {
     public let left: Int
     public let chunk: Int
     public let right: Int
 
-    public init(left: Int, chunk: Int, right: Int) {
-        precondition(left >= 0 && chunk >= 1 && right >= 0, "invalid buffered context")
+    public init(left: Int, chunk: Int, right: Int) throws {
+        guard left >= 0, chunk >= 1, right >= 0 else {
+            throw NemotronASRStreamingError.invalidBufferedContext(left: left, chunk: chunk, right: right)
+        }
+        self.init(uncheckedLeft: left, chunk: chunk, right: right)
+    }
+
+    /// For layouts built here from the latency table, which are valid by construction.
+    init(uncheckedLeft left: Int, chunk: Int, right: Int) {
         self.left = left
         self.chunk = chunk
         self.right = right
@@ -34,11 +60,12 @@ public struct NemotronASRBufferedContext: Equatable, Sendable {
 
     /// Context for a latency, rounded to whole 80 ms frames within 160-2080 ms. The
     /// chunk comes from the `latencies` row at or below it, the rest is right context.
+    /// A negative `left` counts as 0.
     public static func forLatency(_ latencyMs: Int, left: Int = defaultLeft) -> NemotronASRBufferedContext {
         let frames = min(max(Int((Double(latencyMs) / 80).rounded()), 2), 26)
         let row = latencies.keys.filter { $0 <= frames * 80 }.max()!
         let chunk = latencies[row]!.chunk
-        return NemotronASRBufferedContext(left: left, chunk: chunk, right: frames - chunk)
+        return NemotronASRBufferedContext(uncheckedLeft: max(left, 0), chunk: chunk, right: frames - chunk)
     }
 
     var asArray: [Int] { [left, chunk, right] }
@@ -188,7 +215,8 @@ final class NemotronASRBufferedEncoder {
     }
 }
 
-/// Holder for compiled encoders, outside the module tree.
+/// Holder for compiled encoders, outside the module tree. `@unchecked Sendable` is
+/// safe because every read and write of `byShape` holds `lock`.
 final class NemotronASRCompiledEncoders: @unchecked Sendable {
     let lock = NSLock()
     var byShape: [String: ([MLXArray]) -> [MLXArray]] = [:]

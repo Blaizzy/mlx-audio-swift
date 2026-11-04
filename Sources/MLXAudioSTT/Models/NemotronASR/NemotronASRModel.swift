@@ -294,9 +294,10 @@ public final class NemotronASRModel: Module, STTGenerationModel {
     /// Buffered context from `default_att_context_size` ([left, chunk, right]).
     var defaultBufferedContext: NemotronASRBufferedContext {
         let c = defaultAttContextSize
-        return c.count == 3
-            ? NemotronASRBufferedContext(left: c[0], chunk: c[1], right: c[2])
-            : NemotronASRBufferedContext.forLatency(320)
+        if c.count == 3, let context = try? NemotronASRBufferedContext(left: c[0], chunk: c[1], right: c[2]) {
+            return context
+        }
+        return NemotronASRBufferedContext.forLatency(320)
     }
 
     func applyPrompt(_ encoded: MLXArray, language: String? = nil) -> MLXArray {
@@ -351,6 +352,8 @@ public final class NemotronASRModel: Module, STTGenerationModel {
     }
 
     private static let warnedLanguages = NSLock()
+    /// Only read and written while holding `warnedLanguages`, so concurrent sessions
+    /// cannot race on it.
     nonisolated(unsafe) private static var warned: Set<String> = []
     private static func warnOnce(_ message: String) {
         warnedLanguages.lock()

@@ -401,11 +401,12 @@ public extension NemotronASRModel {
     /// Unified checkpoints only: stream with an explicit buffer layout in 80 ms encoder
     /// frames, e.g. a shorter left context or a longer chunk than NVIDIA's table, to
     /// trade accuracy for GPU time (each step re-encodes left + chunk + right frames).
+    /// Throws `NemotronASRStreamingError.notBuffered` for a cache-aware checkpoint.
     func makeStreamSession(
         language: String? = nil,
         bufferedContext: NemotronASRBufferedContext
-    ) -> NemotronASRStreamSession {
-        precondition(isBuffered, "bufferedContext needs a buffered (Unified) checkpoint")
+    ) throws -> NemotronASRStreamSession {
+        guard isBuffered else { throw NemotronASRStreamingError.notBuffered }
         return NemotronASRStreamSession(
             model: self, language: language, chunkFrames: nil, bufferedContext: bufferedContext
         )
