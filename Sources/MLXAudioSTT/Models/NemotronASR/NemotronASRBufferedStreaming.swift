@@ -64,6 +64,10 @@ final class NemotronASRBufferedEncoder {
     private var next = 0  // stream sample where the next chunk starts
     private var previousStart = 0  // buffer start of the previous step
     private var reachedFullWindow = false
+    /// The encoder compiled for full-size windows, by batch size. Ramp and last
+    /// windows run uncompiled: each has its own size and would trace once.
+    private var compiledEncoders: [Int: ([MLXArray]) -> [MLXArray]] = [:]
+    var compilesFullWindows = true
     private(set) var done = false
 
     init(model: NemotronASRModel, context: NemotronASRBufferedContext, language: String?) {
@@ -150,12 +154,15 @@ final class NemotronASRBufferedEncoder {
             }
             let group = windows[i..<j]
             let mels = MLX.concatenated(group.map(mel), axis: 0)
-            let frames = Int32((windows[i].end - windows[i].start) / hop)
-            let (encoded, _) = model.encoder(
-                mels.asType(model.computeDType),
-                lengths: MLXArray(Array(repeating: frames, count: group.count)),
-                attContextSize: context.asArray
-            )
+            let length = windows[i].end - windows[i].start
+            let lengths = MLXArray(Array(repeating: Int32(length / hop), count: group.count))
+            let features = mels.asType(model.computeDType)
+            let encoded: MLXArray
+            if compilesFullWindows, length == leftSamples + chunkSamples + rightSamples {
+                encoded = compiledEncoder(batch: group.count)([features, lengths])[0]
+            } else {
+                encoded = model.encoder(features, lengths: lengths, attContextSize: context.asArray).0
+            }
             let left = windows[i].left
             let prompted = model.applyPrompt(encoded[0..., left..<(left + context.chunk), 0...], language: language)
             for b in 0..<group.count {
@@ -164,6 +171,18 @@ final class NemotronASRBufferedEncoder {
             i = j
         }
         return outputs
+    }
+
+    private func compiledEncoder(batch: Int) -> ([MLXArray]) -> [MLXArray] {
+        if let compiled = compiledEncoders[batch] { return compiled }
+        // Weights are compile inputs, so the traced graph reads the live parameters.
+        let encoder = model.encoder
+        let attContextSize = context.asArray
+        let compiled = MLX.compile(inputs: [encoder]) { (arrays: [MLXArray]) -> [MLXArray] in
+            [encoder(arrays[0], lengths: arrays[1], attContextSize: attContextSize).0]
+        }
+        compiledEncoders[batch] = compiled
+        return compiled
     }
 
     private func encodeLast(_ window: Window) -> MLXArray {

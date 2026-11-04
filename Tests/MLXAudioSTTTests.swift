@@ -3901,6 +3901,36 @@ struct NemotronASRTests {
         #expect(mean < 1e-4)
     }
 
+    /// Full-size windows run a compiled encoder; it must agree with the plain one.
+    @Test func unifiedCompiledFullWindowsMatchUncompiled() throws {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        let model = try unifiedModel()
+        let samples = syntheticAudio(samples: 30 * 128 + 50).asArray(Float.self)
+        func chunks(compiled: Bool) -> [MLXArray] {
+            let encoder = NemotronASRBufferedEncoder(
+                model: model, context: model.defaultBufferedContext, language: "en-US"
+            )
+            encoder.compilesFullWindows = compiled
+            var out: [MLXArray] = []
+            var i = 0
+            while i < samples.count {
+                let e = min(i + 300, samples.count)
+                out += encoder.push(Array(samples[i..<e]), final: e == samples.count)
+                i = e
+            }
+            return out
+        }
+        let plain = chunks(compiled: false)
+        let compiled = chunks(compiled: true)
+        #expect(plain.count == compiled.count)
+        for (a, b) in zip(plain, compiled) {
+            #expect(MLX.abs(a - b).max().item(Float.self) < 1e-4)
+        }
+    }
+
     private func unifiedSessionText(_ model: NemotronASRModel, _ audio: MLXArray, feed: Int) -> (String, [Int]) {
         let samples = audio.asArray(Float.self)
         let session = model.makeStreamSession(language: "en-US")
