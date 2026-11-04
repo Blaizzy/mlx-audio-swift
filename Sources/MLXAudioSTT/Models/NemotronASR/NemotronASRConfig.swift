@@ -390,9 +390,11 @@ public struct NemotronASRConfig: Codable, Sendable {
             ?? []
         self.defaultLanguage = try container.decodeIfPresent(String.self, forKey: .defaultLanguage)
             ?? (self.hasPromptConditioning ? "auto" : "en")
+        // Unified trains with full context ([-1, -1, -1]), which cannot stream, so its
+        // default is the converter's 320 ms layout.
+        let unified = self.encoder.attContextStyle == "chunked_limited_with_rc"
         self.defaultAttContextSize = try container.decodeIfPresent([Int].self, forKey: .defaultAttContextSize)
-            ?? self.encoder.attContextSize.first
-            ?? [56, 13]
+            ?? (unified ? [70, 1, 3] : self.encoder.attContextSize.first ?? [56, 13])
         self.maxSymbols = try container.decodeIfPresent(Int.self, forKey: .maxSymbols)
     }
 }

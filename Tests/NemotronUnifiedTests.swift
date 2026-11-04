@@ -104,6 +104,15 @@ struct NemotronUnifiedTests {
         #expect(try NemotronASRBufferedContext(left: 0, chunk: 1, right: 0).asArray == [0, 1, 0])
     }
 
+    /// A Unified config without `default_att_context_size` streams at 320 ms, not at
+    /// its full-context training layout.
+    @Test func aUnifiedConfigWithoutADefaultLayoutStreamsAt320Ms() throws {
+        let json = unifiedConfigJSON()
+            .replacingOccurrences(of: "\"default_att_context_size\": [4, 1, 2],", with: "")
+        let config = try JSONDecoder().decode(NemotronASRConfig.self, from: Data(json.utf8))
+        #expect(config.defaultAttContextSize == [70, 1, 3])
+    }
+
     /// An explicit layout on a cache-aware (3.5-style) checkpoint is an error.
     @Test func anExplicitLayoutOnACacheAwareCheckpointThrows() throws {
         let json = unifiedConfigJSON()
