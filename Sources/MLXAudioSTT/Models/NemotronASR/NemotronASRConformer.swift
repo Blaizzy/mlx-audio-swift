@@ -3,6 +3,9 @@ import MLX
 import MLXNN
 
 private let nemotronASRNegInf: Float = -1e9
+// NeMo's masking value (INF_VAL). Unlike -1e9 it stays finite in float16, where a
+// query row with every key masked would otherwise turn NaN.
+private let nemotronASRMaskValue: Float = -1e4
 
 enum NemotronASRAttentionMask {
     static func createChunkedLimitedMask(seqLen: Int, leftContext: Int, rightContext: Int) -> MLXArray {
@@ -344,7 +347,7 @@ final class NemotronASRConformer: Module {
                     ).expandedDimensions(axes: [0, 1])
                 )
             }
-            mask = MLX.where(visible, MLXArray(Float(0)), MLXArray(nemotronASRNegInf)).asType(h.dtype)
+            mask = MLX.where(visible, MLXArray(Float(0)), MLXArray(nemotronASRMaskValue)).asType(h.dtype)
         } else {
             mask = nil
         }

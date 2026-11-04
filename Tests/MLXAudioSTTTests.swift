@@ -3891,6 +3891,32 @@ struct NemotronASRTests {
         }
     }
 
+    /// A left-0 layout leaves a padded chunk with every key masked. A mask value that
+    /// overflows to -inf in float16 turns such rows NaN, and later layers spread the
+    /// NaN to valid frames (0 x NaN).
+    @Test func float16MaskStaysFiniteWhenAChunkIsAllPadding() throws {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        let model = try unifiedModel()
+        let half = Dictionary(
+            uniqueKeysWithValues: model.parameters().flattened().map { key, value in
+                (key, value.dtype.isFloatingPoint ? value.asType(.float16) : value)
+            }
+        )
+        try model.update(parameters: ModuleParameters.unflattened(half), verify: .noUnusedKeys)
+        let mel = MLXRandom.normal([1, 40, 16], key: MLXRandom.key(3))
+        let noise = MLXRandom.normal([1, 12, 16], key: MLXRandom.key(4))
+        let padded = MLX.concatenated([mel, noise], axis: 1).asType(.float16)
+        let (out, lengths) = model.encoder(padded, lengths: MLXArray([Int32(40)]), attContextSize: [0, 2, 0])
+        let valid = Int(lengths[0].item(Int32.self))
+        #expect(valid > 0)
+        // x - x is 0 for finite values and NaN for NaN or infinity.
+        let frames = out[0..., ..<valid, 0...].asType(.float32)
+        #expect(MLX.abs(frames - frames).sum().item(Float.self) == 0)
+    }
+
     @Test func perFeatureMelNormalizesValidFramesAndZeroesTheTail() throws {
         guard mlxRuntimeEnabled else {
             print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
