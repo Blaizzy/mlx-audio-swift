@@ -173,7 +173,12 @@ public final class NemotronASRStreamSession {
     /// Set for Unified checkpoints, which stream buffered instead of cache-aware.
     private let buffered: NemotronASRBufferedEncoder?
 
-    init(model: NemotronASRModel, language: String?, chunkFrames: Int?) {
+    init(
+        model: NemotronASRModel,
+        language: String?,
+        chunkFrames: Int?,
+        bufferedContext: NemotronASRBufferedContext? = nil
+    ) {
         self.model = model
         self.language = language
         self.chunkFrames = chunkFrames
@@ -183,7 +188,7 @@ public final class NemotronASRStreamSession {
         self.frameSeconds = model.encoderFrameSeconds
         if model.isBuffered {
             let frameMs = model.encoderFrameSeconds * 1000
-            let context = chunkFrames.map {
+            let context = bufferedContext ?? chunkFrames.map {
                 NemotronASRBufferedContext.forLatency(
                     Int((Double($0) * frameMs).rounded()), left: model.defaultBufferedContext.left
                 )
@@ -391,6 +396,19 @@ public extension NemotronASRModel {
             chunkFrames = nil
         }
         return NemotronASRStreamSession(model: self, language: language, chunkFrames: chunkFrames)
+    }
+
+    /// Unified checkpoints only: stream with an explicit buffer layout in 80 ms encoder
+    /// frames, e.g. a shorter left context or a longer chunk than NVIDIA's table, to
+    /// trade accuracy for GPU time (each step re-encodes left + chunk + right frames).
+    func makeStreamSession(
+        language: String? = nil,
+        bufferedContext: NemotronASRBufferedContext
+    ) -> NemotronASRStreamSession {
+        precondition(isBuffered, "bufferedContext needs a buffered (Unified) checkpoint")
+        return NemotronASRStreamSession(
+            model: self, language: language, chunkFrames: nil, bufferedContext: bufferedContext
+        )
     }
 
     /// Transcribe a whole audio buffer through the online streaming session, feeding

@@ -3921,6 +3921,29 @@ struct NemotronASRTests {
         }
     }
 
+    @Test func unifiedSessionTakesAnExplicitContext() throws {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        let model = try unifiedModel()
+        let samples = syntheticAudio(samples: 20 * 128 + 70).asArray(Float.self)
+        func tokens(feed: Int) -> [Int] {
+            let session = model.makeStreamSession(
+                language: "en-US", bufferedContext: NemotronASRBufferedContext(left: 2, chunk: 2, right: 1)
+            )
+            var i = 0
+            while i < samples.count {
+                let e = min(i + feed, samples.count)
+                _ = session.step(Array(samples[i..<e]))
+                i = e
+            }
+            _ = session.finish()
+            return session.tokens
+        }
+        #expect(tokens(feed: 61) == tokens(feed: 1000))
+    }
+
     @Test func promptLanguageResolvesLikeNeMo() throws {
         guard mlxRuntimeEnabled else {
             print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
