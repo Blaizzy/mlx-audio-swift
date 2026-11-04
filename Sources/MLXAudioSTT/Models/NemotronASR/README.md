@@ -30,10 +30,12 @@ The same model type loads [`nvidia/nemotron-labs-unified-asr-0.6b`](https://hugg
 let model = try NemotronASRModel.fromDirectory(url)
 let offline = model.generate(audio: audio, generationParameters: .init(language: "fr"))
 
-// chunkMs is the latency (chunk + right context): 160, 240, 320 (default), 560, 1120 or 2080 ms.
+// chunkMs is the latency (chunk + right context), 160-2080 ms; 320 by default.
 let session = model.makeStreamSession(language: "fr", chunkMs: 320)
 let delta = session.step(samples)
 let tail = session.finish()
 ```
 
-Offline, `generate` runs one full-context pass up to 60 s and 10/10/5 s windows beyond. Pass the spoken language: at low latency `auto` can emit a few first tokens in the wrong language.
+`chunkMs` is rounded to whole 80 ms frames and clamped to 160-2080 ms. NVIDIA's recommended contexts give the chunk (160/240/320 ms: 80 ms; 560 ms: 160 ms; 1120 ms: 560 ms; 2080 ms: 1040 ms); a latency between two rows takes the lower row's chunk and the rest as right context.
+
+Offline, `generate` runs one full-context pass up to 60 s and 10/10/5 s windows beyond. Pass the spoken language: at low latency `auto` can emit a few first tokens in the wrong language. A bare code matches a unique locale key, as in NeMo; an unknown or ambiguous language falls back to the default with a warning on stderr.

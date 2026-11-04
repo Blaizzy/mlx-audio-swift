@@ -376,8 +376,8 @@ public extension NemotronASRModel {
     ///     (80→[56,0], 160→[56,1], 320→[56,3], 560→[56,6], 1120→[56,13]). `nil` uses
     ///     the model's native chunk (`default_att_context_size`). Smaller chunks cut
     ///     latency at a modest WER cost — see the model card's chunk-size table.
-    ///     For a Unified checkpoint it is the latency (chunk + right context), snapped
-    ///     to the nearest of 160, 240, 320, 560, 1120 or 2080 ms.
+    ///     For a Unified checkpoint it is the latency (chunk + right context), 160-2080
+    ///     ms; see `NemotronASRBufferedContext.forLatency`.
     func makeStreamSession(
         language: String? = nil,
         chunkMs: Int? = nil
