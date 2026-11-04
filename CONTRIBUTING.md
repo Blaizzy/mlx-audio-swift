@@ -10,7 +10,7 @@ be discussed before implementation starts.
 
 ## Reporting Bugs
 
-Search [existing issues](https://github.com/Blaizzy/mlx-audio-swift/issues) before
+Search [existing issues](https://github.com/Neywa-Labs/mlx-audio-swift/issues) before
 opening a new one. When reporting a bug, include:
 
 - macOS version and Apple Silicon chip (e.g., macOS 15.3, M3 Pro)
@@ -21,7 +21,7 @@ opening a new one. When reporting a bug, include:
 ## Security Vulnerabilities
 
 Do **not** open a public issue for security vulnerabilities. Use
-[GitHub Security Advisories](https://github.com/Blaizzy/mlx-audio-swift/security/advisories/new)
+[GitHub Security Advisories](https://github.com/Neywa-Labs/mlx-audio-swift/security/advisories/new)
 to report privately.
 
 ## Development Setup
@@ -34,9 +34,9 @@ open Package.swift
 
 ## Pull Requests
 
-- Open pull requests against `Blaizzy/mlx-audio-swift:main`.
+- Open pull requests against `Neywa-Labs/mlx-audio-swift:main`.
 - If you are contributing from a fork, make sure the base repo is
-  `Blaizzy/mlx-audio-swift` and the base branch is `main`.
+  `Neywa-Labs/mlx-audio-swift` and the base branch is `main`.
 - Keep pull requests focused. Include tests and documentation updates when
   behavior changes.
 - Keep PRs atomic and touch the smallest possible amount of code. This helps
@@ -82,7 +82,7 @@ diff does not include:
 
 ## Good First Issues
 
-Issues labeled [`good first issue`](https://github.com/Blaizzy/mlx-audio-swift/contribute)
+Issues labeled [`good first issue`](https://github.com/Neywa-Labs/mlx-audio-swift/contribute)
 are a good starting point if you are new to the codebase.
 
 ## Code of Conduct

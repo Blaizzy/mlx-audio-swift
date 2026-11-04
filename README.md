@@ -1,4 +1,4 @@
-<a href="https://trendshift.io/repositories/20684" target="_blank"><img src="https://trendshift.io/api/badge/repositories/20684" alt="Blaizzy%2Fmlx-audio-swift | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+<a href="https://trendshift.io/repositories/20684" target="_blank"><img src="https://trendshift.io/api/badge/repositories/20684" alt="Neywa-Labs%2Fmlx-audio-swift | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
 # MLX Audio Swift
 
@@ -26,7 +26,7 @@ Add MLXAudio to your project using Swift Package Manager:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Blaizzy/mlx-audio-swift.git", branch: "main")
+    .package(url: "https://github.com/Neywa-Labs/mlx-audio-swift.git", branch: "main")
 ]
 
 // Import only what you need
@@ -120,6 +120,7 @@ for try await event in model.generateStream(text: text, parameters: parameters) 
 |-------|--------------|------------------|
 | VibeVoice TTS | [VibeVoice TTS README](Sources/MLXAudioTTS/Models/VibeVoiceTTS/README.md) | [microsoft/VibeVoice-1.5B](https://huggingface.co/microsoft/VibeVoice-1.5B) |
 | Voxtral TTS | [Voxtral TTS README](Sources/MLXAudioTTS/Models/VoxtralTTS/README.md) | [mlx-community/Voxtral-4B-TTS-2603-mlx-4bit](https://huggingface.co/mlx-community/Voxtral-4B-TTS-2603-mlx-4bit), [BF16](https://huggingface.co/mlx-community/Voxtral-4B-TTS-2603-mlx-bf16) |
+| Maya-2 Native | [Maya-2 README](Sources/MLXAudioTTS/Models/Maya2/README.md) | [maya-research/maya2-native](https://huggingface.co/maya-research/maya2-native) |
 | MeloTTS English | [MeloTTS README](Sources/MLXAudioTTS/Models/MeloTTS/README.md) | [mlx-community/MeloTTS-English-MLX](https://huggingface.co/mlx-community/MeloTTS-English-MLX) |
 | Ming-3.0 TTS Tiny | [Ming Tiny README](Sources/MLXAudioTTS/Models/MingTiny/README.md) | [mlx-community/Ming-3.0-tts-tiny-4bit](https://huggingface.co/mlx-community/Ming-3.0-tts-tiny-4bit) |
 | Ming dense TTS | [Ming dense README](Sources/MLXAudioTTS/Models/Ming/README.md) | [mlx-community/Ming-3.0-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-3.0-tts-0.5B-bf16), [inclusionAI/Ming-omni-tts-0.5B](https://huggingface.co/inclusionAI/Ming-omni-tts-0.5B) |

@@ -969,6 +969,15 @@ final class Qwen3TTSSpeechTokenizerDecoder: Module {
         }
     }
 
+    /// Primes the streaming state with the tail of the reference codes ([batch, quantizers, time]), so the
+    /// next streamed codes are decoded with the reference as left context, like the non-streaming ICL path.
+    /// The decoded reference audio is discarded.
+    func primeStreamingState(referenceCodes: MLXArray, contextSize: Int = 25) {
+        let time = referenceCodes.dim(2)
+        guard contextSize > 0, time > 0 else { return }
+        _ = streamingStep(referenceCodes[0..., 0..., max(0, time - contextSize)...])
+    }
+
     /// Incrementally decode only new codec tokens.
     func streamingStep(_ codes: MLXArray) -> MaterializedArray {
         if transformerCache == nil {
