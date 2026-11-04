@@ -76,30 +76,42 @@ final class NemotronASRBufferedEncoder {
         self.rightSamples = context.right * frameSamples
     }
 
-    /// Prompted `(1, frames, d)` chunks this push completes, in audio order.
+    /// Most windows encoded in one batched pass.
+    static let maxBatch = 16
+
+    private struct Window {
+        let start: Int
+        let end: Int
+        let left: Int  // encoder frames before the chunk
+    }
+
+    /// Prompted `(1, frames, d)` chunks this push completes, in audio order. Chunks
+    /// that become ready together (a step after a slow one, a whole file) encode
+    /// their equal-length windows as one batch.
     func push(_ newSamples: [Float], final: Bool) -> [MLXArray] {
         guard !done else { return [] }
         samples.append(contentsOf: newSamples)
         total += newSamples.count
 
-        var outputs: [MLXArray] = []
-        while !done {
-            let chunkEnd = next + chunkSamples
-            if total > chunkEnd + rightSamples {
-                let bufferStart = max(0, next - leftSamples)
-                outputs.append(encode(from: bufferStart, to: chunkEnd + rightSamples, last: false))
-                previousStart = bufferStart
-                next = chunkEnd
-            } else if final {
-                if total > next {
-                    // NeMo caps the last buffer at left + chunk + right samples.
-                    let bufferStart = max(previousStart, total - (leftSamples + chunkSamples + rightSamples))
-                    outputs.append(encode(from: bufferStart, to: total, last: true))
-                }
-                done = true
-            } else {
-                break
+        var ready: [Window] = []
+        while total > next + chunkSamples + rightSamples {
+            let bufferStart = max(0, next - leftSamples)
+            ready.append(Window(
+                start: bufferStart, end: next + chunkSamples + rightSamples,
+                left: (next - bufferStart) / frameSamples
+            ))
+            previousStart = bufferStart
+            next += chunkSamples
+        }
+        var outputs = encode(ready)
+        if final {
+            if total > next {
+                // NeMo caps the last buffer at left + chunk + right samples.
+                let bufferStart = max(previousStart, total - (leftSamples + chunkSamples + rightSamples))
+                let window = Window(start: bufferStart, end: total, left: (next - bufferStart) / frameSamples)
+                outputs.append(encodeLast(window))
             }
+            done = true
         }
         // The next buffer starts at or after the previous step's start.
         let keep = max(0, next - chunkSamples - leftSamples)
@@ -110,16 +122,48 @@ final class NemotronASRBufferedEncoder {
         return outputs
     }
 
-    private func encode(from bufferStart: Int, to bufferEnd: Int, last: Bool) -> MLXArray {
-        let audio = Array(samples[(bufferStart - start)..<(bufferEnd - start)])
-        let mel = NemotronASRAudio.logMelSpectrogram(MLXArray(audio), config: model.preprocessConfig)
-        let lengths = MLXArray([Int32(audio.count / hop)])
+    private func mel(_ window: Window) -> MLXArray {
+        let audio = Array(samples[(window.start - start)..<(window.end - start)])
+        return NemotronASRAudio.logMelSpectrogram(MLXArray(audio), config: model.preprocessConfig)
+    }
+
+    private func encode(_ windows: [Window]) -> [MLXArray] {
+        var outputs: [MLXArray] = []
+        var i = 0
+        while i < windows.count {
+            // Windows of equal length and left context share every shape and mask.
+            var j = i + 1
+            while j < windows.count, j - i < Self.maxBatch,
+                  windows[j].end - windows[j].start == windows[i].end - windows[i].start,
+                  windows[j].left == windows[i].left {
+                j += 1
+            }
+            let group = windows[i..<j]
+            let mels = MLX.concatenated(group.map(mel), axis: 0)
+            let frames = Int32((windows[i].end - windows[i].start) / hop)
+            let (encoded, _) = model.encoder(
+                mels.asType(model.computeDType),
+                lengths: MLXArray(Array(repeating: frames, count: group.count)),
+                attContextSize: context.asArray
+            )
+            let left = windows[i].left
+            let prompted = model.applyPrompt(encoded[0..., left..<(left + context.chunk), 0...], language: language)
+            for b in 0..<group.count {
+                outputs.append(prompted[b..<(b + 1)])
+            }
+            i = j
+        }
+        return outputs
+    }
+
+    private func encodeLast(_ window: Window) -> MLXArray {
         let (encoded, encodedLengths) = model.encoder(
-            mel.asType(model.computeDType), lengths: lengths, attContextSize: context.asArray
+            mel(window).asType(model.computeDType),
+            lengths: MLXArray([Int32((window.end - window.start) / hop)]),
+            attContextSize: context.asArray
         )
-        let left = (next - bufferStart) / frameSamples
-        let count = last ? Int(encodedLengths[0].item(Int32.self)) - left : context.chunk
-        return model.applyPrompt(encoded[0..., left..<(left + count), 0...], language: language)
+        let count = Int(encodedLengths[0].item(Int32.self)) - window.left
+        return model.applyPrompt(encoded[0..., window.left..<(window.left + count), 0...], language: language)
     }
 }
 
