@@ -70,8 +70,11 @@ final class NemotronASRBufferedEncoder {
     var compilesFullWindows = true
     private(set) var done = false
 
+    private let melBasis: NemotronASRAudio.MelBasis
+
     init(model: NemotronASRModel, context: NemotronASRBufferedContext, language: String?) {
         self.model = model
+        self.melBasis = NemotronASRAudio.MelBasis(config: model.preprocessConfig)
         self.context = context
         self.language = language
         self.hop = model.preprocessConfig.hopLength
@@ -138,7 +141,7 @@ final class NemotronASRBufferedEncoder {
 
     private func mel(_ window: Window) -> MLXArray {
         let audio = Array(samples[(window.start - start)..<(window.end - start)])
-        return NemotronASRAudio.logMelSpectrogram(MLXArray(audio), config: model.preprocessConfig)
+        return NemotronASRAudio.logMelSpectrogram(MLXArray(audio), config: model.preprocessConfig, basis: melBasis)
     }
 
     private func encode(_ windows: [Window]) -> [MLXArray] {

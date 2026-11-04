@@ -5,7 +5,8 @@ import MLXAudioCore
 enum NemotronASRAudio {
     static func logMelSpectrogram(
         _ audio: MLXArray,
-        config: NemotronASRPreprocessConfig
+        config: NemotronASRPreprocessConfig,
+        basis: MelBasis? = nil
     ) -> MLXArray {
         let originalDType = audio.dtype
         var x = audio
@@ -22,7 +23,8 @@ enum NemotronASRAudio {
             x = MLX.concatenated([first, rest], axis: 0)
         }
 
-        let window = makeWindow(name: config.window, winLength: config.winLength, fftLength: config.nFft)
+        let window = basis?.window
+            ?? makeWindow(name: config.window, winLength: config.winLength, fftLength: config.nFft)
         let stftOutput = stft(
             audio: x,
             window: window,
@@ -36,7 +38,7 @@ enum NemotronASRAudio {
         // which it zeroes. Statistics run in float32.
         let validFrames = x.shape[0] / config.hopLength
         let power = MLX.abs(stftOutput).square().asType(perFeature ? .float32 : originalDType)
-        let filters = melFilters(
+        let filters = basis?.filters ?? melFilters(
             sampleRate: config.sampleRate,
             nFft: config.nFft,
             nMels: config.features,
