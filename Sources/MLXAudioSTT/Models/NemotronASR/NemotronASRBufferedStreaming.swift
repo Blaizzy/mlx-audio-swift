@@ -109,12 +109,13 @@ final class NemotronASRBufferedEncoder {
             next += chunkSamples
         }
         var outputs = encode(ready)
-        if !reachedFullWindow, let last = ready.last,
-           last.end - last.start == leftSamples + chunkSamples + rightSamples {
+        if !reachedFullWindow, !ready.isEmpty {
             // Until the left context fills, every step's window is a new size, and
-            // MLX's buffer cache keeps each size's buffers. From here on every
-            // window has one size, so drop the ramp's buffers once.
-            reachedFullWindow = true
+            // MLX's buffer cache would keep each size's buffers (2 GB on a MacBook
+            // within 5.6 s). Drop them after each such step; from the first full
+            // window on, every window has one size and the cache reuses it.
+            reachedFullWindow = ready.last!.end - ready.last!.start
+                == leftSamples + chunkSamples + rightSamples
             eval(outputs)
             Memory.clearCache()
         }
