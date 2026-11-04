@@ -62,9 +62,8 @@ final class NemotronASRBufferedEncoder {
     private var next = 0  // stream sample where the next chunk starts
     private var previousStart = 0  // buffer start of the previous step
     private var reachedFullWindow = false
-    /// The encoder compiled for full-size windows, by batch size. Ramp and last
-    /// windows run uncompiled: each has its own size and would trace once.
-    private var compiledEncoders: [Int: ([MLXArray]) -> [MLXArray]] = [:]
+    /// Full-size windows run the model's compiled encoder (`compiledBufferedEncoder`).
+    /// Ramp and last windows run uncompiled: each has its own size and would trace once.
     var compilesFullWindows = true
     private(set) var done = false
 
@@ -161,7 +160,9 @@ final class NemotronASRBufferedEncoder {
             let features = mels.asType(model.computeDType)
             let encoded: MLXArray
             if compilesFullWindows, length == leftSamples + chunkSamples + rightSamples {
-                encoded = compiledEncoder(batch: group.count)([features, lengths])[0]
+                encoded = model.compiledBufferedEncoder(
+                    batch: group.count, frames: Int(length / hop), context: context
+                )([features, lengths])[0]
             } else {
                 encoded = model.encoder(features, lengths: lengths, attContextSize: context.asArray).0
             }
@@ -175,18 +176,6 @@ final class NemotronASRBufferedEncoder {
         return outputs
     }
 
-    private func compiledEncoder(batch: Int) -> ([MLXArray]) -> [MLXArray] {
-        if let compiled = compiledEncoders[batch] { return compiled }
-        // Weights are compile inputs, so the traced graph reads the live parameters.
-        let encoder = model.encoder
-        let attContextSize = context.asArray
-        let compiled = MLX.compile(inputs: [encoder]) { (arrays: [MLXArray]) -> [MLXArray] in
-            [encoder(arrays[0], lengths: arrays[1], attContextSize: attContextSize).0]
-        }
-        compiledEncoders[batch] = compiled
-        return compiled
-    }
-
     private func encodeLast(_ window: Window) -> MLXArray {
         let (encoded, encodedLengths) = model.encoder(
             mel(window).asType(model.computeDType),
@@ -198,7 +187,31 @@ final class NemotronASRBufferedEncoder {
     }
 }
 
+/// Holder for compiled encoders, outside the module tree.
+final class NemotronASRCompiledEncoders: @unchecked Sendable {
+    let lock = NSLock()
+    var byShape: [String: ([MLXArray]) -> [MLXArray]] = [:]
+}
+
 extension NemotronASRModel {
+    /// The encoder compiled for one window shape, traced once per model and shape, so
+    /// later sessions reuse it. Weights are compile inputs: the trace reads live ones.
+    func compiledBufferedEncoder(
+        batch: Int, frames: Int, context: NemotronASRBufferedContext
+    ) -> ([MLXArray]) -> [MLXArray] {
+        let key = "\(batch)-\(frames)-\(context.asArray)"
+        compiledEncoders.lock.lock()
+        defer { compiledEncoders.lock.unlock() }
+        if let compiled = compiledEncoders.byShape[key] { return compiled }
+        let encoder = self.encoder
+        let attContextSize = context.asArray
+        let compiled = MLX.compile(inputs: [encoder]) { (arrays: [MLXArray]) -> [MLXArray] in
+            [encoder(arrays[0], lengths: arrays[1], attContextSize: attContextSize).0]
+        }
+        compiledEncoders.byShape[key] = compiled
+        return compiled
+    }
+
     /// Unified checkpoints stream buffered; 3.5 checkpoints are cache-aware.
     public var isBuffered: Bool { encoderConfig.attContextStyle == "chunked_limited_with_rc" }
 

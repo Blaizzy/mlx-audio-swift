@@ -17,6 +17,8 @@ public final class NemotronASRModel: Module, STTGenerationModel {
     public let maxSymbols: Int?
 
     public var computeDType: DType = .bfloat16
+    /// Buffered (Unified) encoders compiled per window shape; see `compiledBufferedEncoder`.
+    let compiledEncoders = NemotronASRCompiledEncoders()
 
     @ModuleInfo(key: "encoder") var encoder: NemotronASRConformer
     @ModuleInfo(key: "prompt_kernel") var promptKernel: NemotronASRPromptKernel?
