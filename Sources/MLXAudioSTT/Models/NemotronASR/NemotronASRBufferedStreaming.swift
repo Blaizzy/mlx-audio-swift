@@ -247,7 +247,7 @@ extension NemotronASRModel {
     /// Offline, Unified runs one full-context pass up to this length, then NeMo's
     /// long-form buffered setting (10 s left, 10 s chunk, 5 s right).
     static let bufferedOfflineMaxSeconds = 60.0
-    static let bufferedLongForm = NemotronASRBufferedContext(left: 125, chunk: 125, right: 62)
+    static let bufferedLongForm = NemotronASRBufferedContext(uncheckedLeft: 125, chunk: 125, right: 62)
 
     func generateBuffered(_ audio: MLXArray, language: String?) -> NemoAlignedResult {
         let sampleRate = preprocessConfig.sampleRate
