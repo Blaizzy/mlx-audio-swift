@@ -24,10 +24,10 @@ The implementation supports the NeMo prompt-conditioned and English-only RNN-T l
 
 ## Nemotron Unified
 
-The same model type loads [`nvidia/nemotron-labs-unified-asr-0.6b`](https://huggingface.co/nvidia/nemotron-labs-unified-asr-0.6b) converted with mlx-audio's `nemotron_asr.convert`. Its encoder is non-causal, so it streams buffered: each step re-encodes left context + chunk + right context and keeps the chunk's frames, as NeMo's buffered streaming does.
+The same model type loads [`nvidia/nemotron-labs-unified-asr-0.6b`](https://huggingface.co/nvidia/nemotron-labs-unified-asr-0.6b) converted with mlx-audio's `nemotron_asr.convert` ([8-bit](https://huggingface.co/T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit)). Its encoder is non-causal, so it streams buffered: each step re-encodes left context + chunk + right context and keeps the chunk's frames, as NeMo's buffered streaming does.
 
 ```swift
-let model = try NemotronASRModel.fromDirectory(url)
+let model = try await NemotronASRModel.fromPretrained("T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit")
 let offline = model.generate(audio: audio, generationParameters: .init(language: "fr"))
 
 // chunkMs is the latency (chunk + right context), 160-2080 ms; 320 by default.
