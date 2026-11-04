@@ -19,7 +19,7 @@ Supported repositories:
 | `animaslabs/nemotron-speech-streaming-en-0.6b-mlx-8bit` | English-only 8-bit quantized checkpoint |
 | `mlx-community/nemotron-3.5-asr-streaming-0.6b` | bf16 checkpoint |
 | `mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit` | 8-bit quantized checkpoint |
-| `mlx-community/nemotron-labs-unified-asr-0.6b` | Nemotron Unified, bf16 checkpoint (~1.25 GB) |
+| `mlx-community/nemotron-labs-unified-asr-0.6b-bf16` | Nemotron Unified, bf16 checkpoint (~1.25 GB) |
 | `mlx-community/nemotron-labs-unified-asr-0.6b-8bit` | Nemotron Unified, 8-bit quantized checkpoint |
 | `mlx-community/nemotron-labs-unified-asr-0.6b-4bit` | Nemotron Unified, 4-bit quantized checkpoint (~472 MB) |
 
@@ -27,7 +27,7 @@ The implementation supports the NeMo prompt-conditioned and English-only RNN-T l
 
 ## Nemotron Unified
 
-The same model type loads [`nvidia/nemotron-labs-unified-asr-0.6b`](https://huggingface.co/nvidia/nemotron-labs-unified-asr-0.6b) converted with mlx-audio's `nemotron_asr.convert` ([bf16](https://huggingface.co/mlx-community/nemotron-labs-unified-asr-0.6b), [8-bit](https://huggingface.co/mlx-community/nemotron-labs-unified-asr-0.6b-8bit), [4-bit](https://huggingface.co/mlx-community/nemotron-labs-unified-asr-0.6b-4bit)). Its encoder is non-causal, so it streams buffered: each step re-encodes left context + chunk + right context and keeps the chunk's frames, as NeMo's buffered streaming does.
+The same model type loads [`nvidia/nemotron-labs-unified-asr-0.6b`](https://huggingface.co/nvidia/nemotron-labs-unified-asr-0.6b) converted with mlx-audio's `nemotron_asr.convert` ([bf16](https://huggingface.co/mlx-community/nemotron-labs-unified-asr-0.6b-bf16), [8-bit](https://huggingface.co/mlx-community/nemotron-labs-unified-asr-0.6b-8bit), [4-bit](https://huggingface.co/mlx-community/nemotron-labs-unified-asr-0.6b-4bit)). Its encoder is non-causal, so it streams buffered: each step re-encodes left context + chunk + right context and keeps the chunk's frames, as NeMo's buffered streaming does.
 
 ```swift
 let model = try await NemotronASRModel.fromPretrained("mlx-community/nemotron-labs-unified-asr-0.6b-8bit")
