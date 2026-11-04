@@ -23,7 +23,8 @@ enum NemotronASRAttentionMask {
     /// i / chunk, sees `left` frames before its chunk through `right` frames after it.
     static func chunkedRCVisibility(seqLen: Int, left: Int, chunk: Int, right: Int) -> MLXArray {
         let frames = MLXArray(0..<seqLen).asType(.int32)
-        let chunkStart = (frames / Int32(chunk)) * Int32(chunk)
+        // floorDivide: MLX's `/` on integers is true division in float32.
+        let chunkStart = frames.floorDivide(Int32(chunk)) * Int32(chunk)
         let start = chunkStart - Int32(left)
         let end = chunkStart + Int32(chunk - 1 + right)
         let keys = frames.expandedDimensions(axis: 0)
@@ -211,7 +212,7 @@ final class NemotronASRCausalDwStridingSubsampling: Module {
             }
             func strided(_ conv: Conv2d, _ v: MLXArray) -> MLXArray {
                 let out = conv(causalPad2D(masked(v)))
-                valid = (valid + Int32(padLeft + padRight - kernelSize)) / Int32(stride) + 1
+                valid = (valid + Int32(padLeft + padRight - kernelSize)).floorDivide(Int32(stride)) + 1
                 return out
             }
             y = relu(masked(strided(conv0, y)))
