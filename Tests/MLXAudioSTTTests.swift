@@ -3845,9 +3845,13 @@ struct NemotronASRTests {
         #expect(config.encoder.attContextStyle == "chunked_limited_with_rc")
         #expect(config.encoder.convContextSize == .explicit(left: 1, right: 1))
         #expect(config.defaultAttContextSize == [4, 1, 2])
-        #expect(NemotronASRBufferedContext.forLatency(320) == NemotronASRBufferedContext(left: 70, chunk: 1, right: 3))
-        #expect(NemotronASRBufferedContext.forLatency(400) == NemotronASRBufferedContext(left: 70, chunk: 1, right: 3))
-        #expect(NemotronASRBufferedContext.forLatency(80) == NemotronASRBufferedContext(left: 70, chunk: 1, right: 1))
+        let cases: [(Int, Int, Int)] = [
+            (80, 1, 1), (160, 1, 1), (200, 1, 2), (320, 1, 3), (400, 1, 4), (480, 1, 5),
+            (560, 2, 5), (1040, 2, 11), (1120, 7, 7), (1200, 7, 8), (2080, 13, 13), (5000, 13, 13),
+        ]
+        for (latency, chunk, right) in cases {
+            #expect(NemotronASRBufferedContext.forLatency(latency) == NemotronASRBufferedContext(left: 70, chunk: chunk, right: right))
+        }
         #expect(NemotronASRBufferedContext.forLatency(1120, left: 25) == NemotronASRBufferedContext(left: 25, chunk: 7, right: 7))
     }
 
@@ -3899,6 +3903,35 @@ struct NemotronASRTests {
         #expect(MLX.abs(mel[40]).max().item(Float.self) == 0)
         let mean = MLX.abs(MLX.mean(mel[..<40], axis: 0)).max().item(Float.self)
         #expect(mean < 1e-4)
+    }
+
+    /// A stop with under one hop of new audio leaves no frame to decode.
+    @Test func unifiedSessionStopsCleanlyOnTinyInput() async throws {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        let model = try unifiedModel()
+        let frame = model.encoderConfig.subsamplingFactor * model.preprocessConfig.hopLength
+        for length in [1, 16, 31, 32, 33, 7 * frame + 5] {
+            let audio = syntheticAudio(samples: length)
+            let whole = try await wholeStreamText(model, audio)
+            let (text, _) = unifiedSessionText(model, audio, feed: 61)
+            #expect(text == whole)
+        }
+    }
+
+    @Test func promptLanguageResolvesLikeNeMo() throws {
+        guard mlxRuntimeEnabled else {
+            print("Skipping Nemotron ASR MLX runtime test. Set MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 to enable.")
+            return
+        }
+        let model = try unifiedModel()  // prompts: en-US 0, auto 1; default auto
+        #expect(model.resolvePromptIndex(nil) == 1)
+        #expect(model.resolvePromptIndex("en-US") == 0)
+        #expect(model.resolvePromptIndex("en") == 0)
+        #expect(model.resolvePromptIndex("EN") == 0)
+        #expect(model.resolvePromptIndex("fr") == 1)  // unsupported: default, with a warning
     }
 
     /// Full-size windows run a compiled encoder; it must agree with the plain one.

@@ -322,15 +322,40 @@ public final class NemotronASRModel: Module, STTGenerationModel {
         return MLX.where(promptRange .== promptIDs, MLXArray(Float(1)), MLXArray(Float(0))).asType(dtype)
     }
 
+    /// NeMo's rule: an exact key, else a bare code that matches exactly one locale
+    /// key ("de" -> "de-DE"). NeMo raises for anything else; this API cannot throw,
+    /// so it warns once on stderr and uses the default language's prompt.
     func resolvePromptIndex(_ language: String?) -> Int {
         let resolvedLanguage = language ?? defaultLanguage
         if let index = promptDictionary[resolvedLanguage] {
             return index
         }
+        let prefix = resolvedLanguage.lowercased() + "-"
+        let matches = promptDictionary.keys.filter { $0.lowercased().hasPrefix(prefix) }
+        if matches.count == 1, let index = promptDictionary[matches[0]] {
+            return index
+        }
+        if !promptDictionary.isEmpty {
+            Self.warnOnce(
+                "NemotronASR: language '\(resolvedLanguage)' is "
+                    + (matches.isEmpty ? "not supported" : "ambiguous (\(matches.sorted()))")
+                    + "; using '\(defaultLanguage)'\n"
+            )
+        }
         if let index = promptDictionary[defaultLanguage] {
             return index
         }
         return 0
+    }
+
+    private static let warnedLanguages = NSLock()
+    nonisolated(unsafe) private static var warned: Set<String> = []
+    private static func warnOnce(_ message: String) {
+        warnedLanguages.lock()
+        defer { warnedLanguages.unlock() }
+        if warned.insert(message).inserted {
+            FileHandle.standardError.write(Data(message.utf8))
+        }
     }
 
     private func normalizeAudioToMono(_ audio: MLXArray) -> MLXArray {

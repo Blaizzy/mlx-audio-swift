@@ -32,15 +32,13 @@ public struct NemotronASRBufferedContext: Equatable, Sendable {
     /// 5.6 s, the left context the model was trained with.
     public static let defaultLeft = 70
 
-    /// The recommended context for the supported latency nearest `latencyMs`
-    /// (ties go to the lower latency).
+    /// Context for a latency, rounded to whole 80 ms frames within 160-2080 ms. The
+    /// chunk comes from the `latencies` row at or below it, the rest is right context.
     public static func forLatency(_ latencyMs: Int, left: Int = defaultLeft) -> NemotronASRBufferedContext {
-        let best = latencies.keys.min { a, b in
-            let da = abs(a - latencyMs), db = abs(b - latencyMs)
-            return da == db ? a < b : da < db
-        }!
-        let (chunk, right) = latencies[best]!
-        return NemotronASRBufferedContext(left: left, chunk: chunk, right: right)
+        let frames = min(max(Int((Double(latencyMs) / 80).rounded()), 2), 26)
+        let row = latencies.keys.filter { $0 <= frames * 80 }.max()!
+        let chunk = latencies[row]!.chunk
+        return NemotronASRBufferedContext(left: left, chunk: chunk, right: frames - chunk)
     }
 
     var asArray: [Int] { [left, chunk, right] }
@@ -136,7 +134,8 @@ final class NemotronASRBufferedEncoder {
             samples.removeFirst(keep - start)
             start = keep
         }
-        return outputs
+        // A last window under one hop (10 ms) of new audio has no frame to decode.
+        return outputs.filter { $0.shape[1] > 0 }
     }
 
     private func mel(_ window: Window) -> MLXArray {
