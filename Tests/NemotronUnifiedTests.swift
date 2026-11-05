@@ -7,8 +7,7 @@ import Testing
 @testable import MLXAudioSTT
 
 /// Nemotron Unified (buffered streaming) on tiny random models, small enough to run
-/// on any Metal device, so CI runs them without the MLX runtime-test opt-in. The NeMo
-/// token-parity test on real weights is `NemotronUnifiedNeMoParityTests`.
+/// on any Metal device, so CI runs them without the MLX runtime-test opt-in.
 struct NemotronUnifiedTests {
     private func unifiedConfigJSON() -> String {
         """

@@ -44,12 +44,3 @@ let tail = session.finish()
 Offline, `generate` runs one full-context pass up to 60 s and 10/10/5 s windows beyond. Pass the spoken language: at low latency `auto` can emit a few first tokens in the wrong language. A bare code matches a unique locale key, as in NeMo; an unknown or ambiguous language falls back to the default with a warning on stderr.
 
 `makeStreamSession(language:bufferedContext:)` takes an explicit layout in 80 ms frames (`NemotronASRBufferedContext(left:chunk:right:)`). Both throw `NemotronASRStreamingError` for an invalid layout or a cache-aware checkpoint.
-
-`NemotronUnifiedNeMoParityTests` checks NeMo's token ids for `media/false-turn.wav` at five latencies. Point it at an fp32 conversion (`nemotron_asr.convert --dtype float32` in mlx-audio) to rerun it:
-
-```bash
-TEST_RUNNER_MLXAUDIO_ENABLE_MLX_RUNTIME_TESTS=1 \
-TEST_RUNNER_NEMOTRON_UNIFIED_MLX_PATH=/path/to/nemotron-labs-unified-asr-0.6b-fp32 \
-xcodebuild test -scheme MLXAudio-Package -destination 'platform=macOS' \
-  -only-testing:MLXAudioTests/NemotronUnifiedNeMoParityTests
-```
