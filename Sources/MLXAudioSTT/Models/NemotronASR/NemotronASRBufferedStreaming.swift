@@ -89,9 +89,6 @@ final class NemotronASRBufferedEncoder {
     private var next = 0  // stream sample where the next chunk starts
     private var previousStart = 0  // buffer start of the previous step
     private var reachedFullWindow = false
-    /// Full-size windows run the model's compiled encoder (`compiledBufferedEncoder`).
-    /// Ramp and last windows run uncompiled: each has its own size and would trace once.
-    var compilesFullWindows = true
     private(set) var done = false
 
     private let melBasis: NemotronASRAudio.MelBasis
@@ -192,14 +189,7 @@ final class NemotronASRBufferedEncoder {
             let length = windows[i].end - windows[i].start
             let lengths = MLXArray(Array(repeating: Int32(length / hop), count: group.count))
             let features = mels.asType(model.computeDType)
-            let encoded: MLXArray
-            if compilesFullWindows, length == leftSamples + chunkSamples + rightSamples {
-                encoded = model.compiledBufferedEncoder(
-                    batch: group.count, frames: Int(length / hop), context: context
-                )([features, lengths])[0]
-            } else {
-                encoded = model.encoder(features, lengths: lengths, attContextSize: context.asArray).0
-            }
+            let encoded = model.encoder(features, lengths: lengths, attContextSize: context.asArray).0
             let left = windows[i].left
             let prompted = model.applyPrompt(encoded[0..., left..<(left + context.chunk), 0...], language: language)
             for b in 0..<group.count {
@@ -221,32 +211,7 @@ final class NemotronASRBufferedEncoder {
     }
 }
 
-/// Holder for compiled encoders, outside the module tree. `@unchecked Sendable` is
-/// safe because every read and write of `byShape` holds `lock`.
-final class NemotronASRCompiledEncoders: @unchecked Sendable {
-    let lock = NSLock()
-    var byShape: [String: ([MLXArray]) -> [MLXArray]] = [:]
-}
-
 extension NemotronASRModel {
-    /// The encoder compiled for one window shape, traced once per model and shape, so
-    /// later sessions reuse it. Weights are compile inputs: the trace reads live ones.
-    func compiledBufferedEncoder(
-        batch: Int, frames: Int, context: NemotronASRBufferedContext
-    ) -> ([MLXArray]) -> [MLXArray] {
-        let key = "\(batch)-\(frames)-\(context.asArray)"
-        compiledEncoders.lock.lock()
-        defer { compiledEncoders.lock.unlock() }
-        if let compiled = compiledEncoders.byShape[key] { return compiled }
-        let encoder = self.encoder
-        let attContextSize = context.asArray
-        let compiled = MLX.compile(inputs: [encoder]) { (arrays: [MLXArray]) -> [MLXArray] in
-            [encoder(arrays[0], lengths: arrays[1], attContextSize: attContextSize).0]
-        }
-        compiledEncoders.byShape[key] = compiled
-        return compiled
-    }
-
     /// Unified checkpoints stream buffered; 3.5 checkpoints are cache-aware.
     public var isBuffered: Bool { encoderConfig.attContextStyle == "chunked_limited_with_rc" }
 

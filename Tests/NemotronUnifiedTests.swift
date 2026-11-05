@@ -244,32 +244,6 @@ struct NemotronUnifiedTests {
         #expect(["es", "es-ES", "pt", "pt-BR", "en", "en-GB"].map { model.resolvePromptIndex($0) } == [3, 2, 13, 12, 0, 1])
     }
 
-    /// Full-size windows run a compiled encoder; it must agree with the plain one.
-    @Test func unifiedCompiledFullWindowsMatchUncompiled() throws {
-        let model = try unifiedModel()
-        let samples = syntheticAudio(samples: 30 * 128 + 50).asArray(Float.self)
-        func chunks(compiled: Bool) -> [MLXArray] {
-            let encoder = NemotronASRBufferedEncoder(
-                model: model, context: model.defaultBufferedContext, language: "en-US"
-            )
-            encoder.compilesFullWindows = compiled
-            var out: [MLXArray] = []
-            var i = 0
-            while i < samples.count {
-                let e = min(i + 300, samples.count)
-                out += encoder.push(Array(samples[i..<e]), final: e == samples.count)
-                i = e
-            }
-            return out
-        }
-        let plain = chunks(compiled: false)
-        let compiled = chunks(compiled: true)
-        #expect(plain.count == compiled.count)
-        for (a, b) in zip(plain, compiled) {
-            #expect(MLX.abs(a - b).max().item(Float.self) < 1e-4)
-        }
-    }
-
     private func unifiedSessionText(_ model: NemotronASRModel, _ audio: MLXArray, feed: Int) -> (String, [Int]) {
         let samples = audio.asArray(Float.self)
         let session = model.makeStreamSession(language: "en-US")
@@ -321,7 +295,7 @@ struct NemotronUnifiedTests {
         return session.tokens
     }
 
-    /// Chunks of 1, 2 and 7 frames, past the startup ramp into full (compiled) windows.
+    /// Chunks of 1, 2 and 7 frames, past the startup ramp into full windows.
     @Test func unifiedSessionTextOnlyGrowsAtEveryChunkSize() throws {
         let model = try unifiedModel()
         let frame = model.encoderConfig.subsamplingFactor * model.preprocessConfig.hopLength
@@ -337,8 +311,8 @@ struct NemotronUnifiedTests {
         }
     }
 
-    /// The compiled encoders are cached on the model by shape. Encoders with different
-    /// layouts and languages, pushed alternately, must each give what they give alone.
+    /// Encoders with different layouts and languages, pushed alternately on one model,
+    /// must each give what they give alone.
     @Test func interleavedUnifiedEncodersDoNotShareState() throws {
         let model = try unifiedModel()
         let frame = model.encoderConfig.subsamplingFactor * model.preprocessConfig.hopLength
