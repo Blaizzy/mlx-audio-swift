@@ -199,7 +199,7 @@ enum Zonos2Text {
         text = replace(
             text,
             pattern:
-                #"(?<!\w)(?<symbol>[$€£])\s*(?<amount>-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?:\s*(?<quantity>k|K|m|M|b|B|bn|BN|thousand|million|billion|trillion))?"#,
+                #"(?<!\w)(?<symbol>[$€£])\s*(?<amount>-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?:\s*(?<quantity>thousand|million|billion|trillion|bn|BN|k|K|m|M|b|B)\b)?"#,
             insensitive: false
         ) { m in
             {
