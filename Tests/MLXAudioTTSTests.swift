@@ -1428,6 +1428,14 @@ struct SopranoTextCleaningTests {
         #expect(cleanTextForSoprano("10K") == "ten thousand")
         #expect(cleanTextForSoprano("25M") == "twenty five million")
     }
+
+    @Test func decimalNumbersReadWithPoint() {
+        #expect(cleanTextForSoprano("It is 3.14 approx.") == "it is three point fourteen approx.")
+        #expect(cleanTextForSoprano("I have 2.5 liters") == "i have two point five liters")
+        #expect(cleanTextForSoprano("version 2.0") == "version two point zero")
+        #expect(cleanTextForSoprano("It costs $3.50 today.") == "it costs three dollars, fifty cents today.")
+        #expect(cleanTextForSoprano("I have 5 cats") == "i have five cats")
+    }
 }
 
 struct EchoTTSTests {

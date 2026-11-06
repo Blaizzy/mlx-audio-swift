@@ -286,6 +286,18 @@ private func normalizeNumbers(_ text: String) -> String {
         }
     }
 
+    // Decimal numbers: read the point, then each side as a number
+    if let regex = try? NSRegularExpression(pattern: "\\d+\\.\\d+", options: []) {
+        let range = NSRange(result.startIndex..., in: result)
+        let matches = regex.matches(in: result, range: range).reversed()
+        for match in matches {
+            if let matchRange = Range(match.range, in: result) {
+                let matchStr = String(result[matchRange])
+                result.replaceSubrange(matchRange, with: matchStr.replacingOccurrences(of: ".", with: " point "))
+            }
+        }
+    }
+
     // Ordinals (1st, 2nd, 3rd, etc.)
     if let regex = try? NSRegularExpression(pattern: "\\d+(st|nd|rd|th)", options: []) {
         let range = NSRange(result.startIndex..., in: result)
