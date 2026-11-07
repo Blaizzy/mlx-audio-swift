@@ -1993,6 +1993,22 @@ struct MossTranscribeDiarizeModuleSetupTests {
 
 struct CohereTranscribeModuleSetupTests {
 
+    @Test func encoderRunsInTheWeightsDtypeWithFloat32Features() throws {
+        let json = """
+        {"d_model": 16, "ff_expansion_factor": 2, "n_heads": 2, "conv_kernel_size": 3, "n_layers": 1,
+         "pos_emb_max_len": 64, "subsampling_conv_channels": 4, "subsampling_factor": 8, "feat_in": 16}
+        """
+        let config = try JSONDecoder().decode(CohereTranscribeAudioEncoderConfig.self, from: Data(json.utf8))
+        let encoder = ConformerEncoder(config)
+        encoder.train(false)
+        let fp16 = encoder.parameters().flattened().map { ($0.0, $0.1.asType(.float16)) }
+        encoder.update(parameters: ModuleParameters.unflattened(fp16))
+
+        let features = MLXRandom.normal([1, config.featIn, 40])
+        let (out, _) = encoder(features)
+        #expect(out.dtype == .float16)
+    }
+
     @Test func cohereConfigDecoding() throws {
         let json = """
         {

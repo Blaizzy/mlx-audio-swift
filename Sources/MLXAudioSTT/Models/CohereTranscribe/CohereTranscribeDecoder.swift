@@ -284,7 +284,8 @@ final class TransformerDecoderEmbedding: Module {
     }
 
     func callAsFunction(_ inputIds: MLXArray, positions: MLXArray) -> MLXArray {
-        layerNorm(tokenEmbedding(inputIds) + positionEmbedding(positions))
+        let tokens = tokenEmbedding(inputIds)
+        return layerNorm(tokens + positionEmbedding(positions).asType(tokens.dtype))
     }
 }
 

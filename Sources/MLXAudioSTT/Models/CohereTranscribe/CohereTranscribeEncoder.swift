@@ -75,7 +75,7 @@ final class ConvSubsampling: Module {
     }
 
     func callAsFunction(_ x: MLXArray, lengths: MLXArray) -> (MLXArray, MLXArray) {
-        var h = x.transposed(0, 2, 1).expandedDimensions(axis: -1)
+        var h = x.asType(conv0.weight.dtype).transposed(0, 2, 1).expandedDimensions(axis: -1)
         var outLengths = lengths
 
         var mask = createMaskLike(h, lengths: outLengths)
@@ -299,7 +299,7 @@ final class RelPositionMultiHeadAttention: Module {
         matrixBD = relShift(matrixBD)
         matrixBD = matrixBD[0..., 0..., 0..., ..<matrixAC.shape[3]]
 
-        var scores = (matrixAC + matrixBD) * MLXArray(scale)
+        var scores = (matrixAC + matrixBD) * scale
         if let mask {
             let expandedMask = mask.expandedDimensions(axis: 1)
             let additive = MLX.where(expandedMask, MLXArray(Float(-1e9)), MLXArray(Float(0))).asType(scores.dtype)
