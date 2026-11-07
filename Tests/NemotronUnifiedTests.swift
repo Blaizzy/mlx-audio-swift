@@ -77,6 +77,73 @@ struct NemotronUnifiedTests {
         return model
     }
 
+    /// Pause the first encoder window so the consumer can cancel before it finishes.
+    /// Report the window count when the producer releases the model.
+    private final class CancellationProbeNorm: Module, UnaryLayer {
+        let norm: UnaryLayer
+        let entered: AsyncStream<Void>.Continuation
+        let release: DispatchSemaphore
+        let finished: AsyncStream<Int>.Continuation
+        private var calls = 0
+
+        init(
+            norm: UnaryLayer, entered: AsyncStream<Void>.Continuation,
+            release: DispatchSemaphore, finished: AsyncStream<Int>.Continuation
+        ) {
+            self.norm = norm
+            self.entered = entered
+            self.release = release
+            self.finished = finished
+        }
+
+        func callAsFunction(_ x: MLXArray) -> MLXArray {
+            calls += 1
+            if calls == 1 {
+                entered.finish()
+                release.wait()
+            }
+            return norm(x)
+        }
+
+        deinit {
+            finished.yield(calls)
+            finished.finish()
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1))) @MainActor
+    func cancellingUnifiedStreamStopsBeforeTheNextWindow() async throws {
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let (entered, enteredContinuation) = AsyncStream<Void>.makeStream()
+        let (finished, finishedContinuation) = AsyncStream<Int>.makeStream()
+        let stream: AsyncThrowingStream<STTGeneration, Error>
+        do {
+            let model = try unifiedModel()
+            let conv = model.encoder.layers[0].conv
+            let probe = CancellationProbeNorm(
+                norm: conv.batchNorm, entered: enteredContinuation,
+                release: release, finished: finishedContinuation
+            )
+            try conv.update(modules: ModuleChildren.unflattened(["batch_norm": probe]), verify: .all)
+            let frame = model.encoderConfig.subsamplingFactor * model.preprocessConfig.hopLength
+            stream = model.generateStream(
+                audio: syntheticAudio(samples: 100 * frame), generationParameters: .init()
+            )
+        }
+        let consumer = Task {
+            for try await _ in stream {}
+        }
+        defer { consumer.cancel() }
+        for await _ in entered {}
+        consumer.cancel()
+        _ = await consumer.result
+        release.signal()
+        var windows: [Int] = []
+        for await count in finished { windows.append(count) }
+        #expect(windows == [1])
+    }
+
     @Test func unifiedConfigSelectsBufferedStreaming() throws {
         let config = try JSONDecoder().decode(NemotronASRConfig.self, from: Data(unifiedConfigJSON().utf8))
         #expect(config.encoder.attContextStyle == "chunked_limited_with_rc")

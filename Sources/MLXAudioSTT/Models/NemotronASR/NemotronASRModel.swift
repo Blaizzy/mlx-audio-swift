@@ -170,6 +170,7 @@ public final class NemotronASRModel: Module, STTGenerationModel {
                 let count = audio1D.shape[0]
                 var start = 0
                 repeat {
+                    try Task.checkCancellation()
                     let end = min(start + encoder.chunkSamples, count)
                     encoder.push(audio1D[start..<end], final: end == count).forEach(decodeAndEmit)
                     start = end
