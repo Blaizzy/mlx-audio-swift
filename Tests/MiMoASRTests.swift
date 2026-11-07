@@ -297,6 +297,20 @@ struct MiMoASRTests {
         #expect(result.shape == [1, 2, 2])
         #expect((result .== 0).all().item(Bool.self))
     }
+    @Test func speechEmbeddingsKeepTheLanguageModelDtype() throws {
+        let c = tinyMiMoASRConfig()
+        let model = MiMoASRModel(c)
+        let bf16 = model.parameters().flattened().map {
+            ($0.0, $0.1.dtype.isFloatingPoint ? $0.1.asType(.bfloat16) : $0.1)
+        }
+        try model.update(parameters: ModuleParameters.unflattened(bf16), verify: .all)
+        let ids = MLXArray([
+            Int32(c.emptyId), Int32(c.emptyId), 97, 97,
+            1, 2, Int32(c.speechEmptyIds[0]), Int32(c.speechEmptyIds[0]),
+            3, 0, Int32(c.speechEmptyIds[1]), Int32(c.speechEmptyIds[1]),
+        ]).reshaped(1, c.audioChannels + 1, 2 * c.groupSize)
+        #expect(model.prepareEmbeddings(ids).dtype == .bfloat16)
+    }
     @Test func missingManifestAndMismatchedCodebooksFailAtLoadTime() async throws {
         let dir = try directory()
         defer { try? FileManager.default.removeItem(at: dir) }

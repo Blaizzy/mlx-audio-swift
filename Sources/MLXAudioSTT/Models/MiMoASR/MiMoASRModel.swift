@@ -68,7 +68,8 @@ public final class MiMoASRModel: Module, STTGenerationModel {
         let groups = ids.dim(2) / config.groupSize
         let textIds = ids[0..., 0, .stride(by: c.groupSize)]
         let isSpeech = textIds .== c.emptyId
-        var speech = MLXArray.zeros([batch, groups, c.groupSize, c.inputLocalDim], dtype: .float32)
+        let text = languageModel.embed(textIds)
+        var speech = MLXArray.zeros([batch, groups, c.groupSize, c.inputLocalDim], dtype: text.dtype)
         for i in 0 ..< c.audioChannels {
             let codes = ids[0..., i + 1, 0...].reshaped(batch, groups, c.groupSize)
             let embeddings = speechEmbeddings[i](codes)
@@ -78,7 +79,7 @@ public final class MiMoASRModel: Module, STTGenerationModel {
                     (codes .== c.speechEmptyIds[i]).expandedDimensions(axis: -1),
                     MLXArray.zeros(like: embeddings), embeddings)
         }
-        let mask = isSpeech.expandedDimensions(axes: [-1, -2]).asType(.float32)
+        let mask = isSpeech.expandedDimensions(axes: [-1, -2]).asType(text.dtype)
         speech = speech * mask
         speech =
             inputLocal(
@@ -87,7 +88,6 @@ public final class MiMoASRModel: Module, STTGenerationModel {
             )
             .reshaped(batch, groups, c.groupSize, c.inputLocalDim) * mask
         let acoustic = speechGroupDowncast(speech.reshaped(batch, groups, -1))
-        let text = languageModel.embed(textIds)
         return MLX.where(isSpeech.expandedDimensions(axis: -1), MLXArray.zeros(like: text), text)
             + acoustic
     }
