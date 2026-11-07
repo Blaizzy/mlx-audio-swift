@@ -1144,6 +1144,56 @@ struct Qwen3TTSTests {
         #expect(abs(unprimed - expected).max().item(Float.self) > 1e-3)
     }
 
+    @Test func decodeKeepsFramesWhoseFirstCodebookIdIsZero() async throws {
+        let fixture = try await makeTinyQwen3TTSModel(
+            ttsModelType: "voice_design", includeSpeechEncoder: false)
+        defer { cleanupTemporaryArtifactDirectory(fixture.tokenizerDirectory) }
+        let speechTokenizer = try #require(fixture.model.speechTokenizer)
+        for dtype in [DType.int32, .uint32] {
+            let codes = MLXArray([3, 1, 0, 5, 7, 2, 0, 0, 2, 4] as [Int32])
+                .asType(dtype).reshaped(1, 5, 2)
+
+            let (_, lengths) = speechTokenizer.decode(codes)
+
+            #expect(lengths.asArray(Int32.self) == [Int32(5 * speechTokenizer.decodeUpsampleRate)])
+        }
+    }
+
+    @Test func decodeExcludesNegativeRightPaddingAndDecodesItAsZero() async throws {
+        let fixture = try await makeTinyQwen3TTSModel(
+            ttsModelType: "voice_design", includeSpeechEncoder: false)
+        defer { cleanupTemporaryArtifactDirectory(fixture.tokenizerDirectory) }
+        let speechTokenizer = try #require(fixture.model.speechTokenizer)
+        let codebooks = speechTokenizer.decoder.parameters().flattened()
+            .filter { $0.0.hasSuffix("embedding_sum") }
+            .map { ($0.0, MLXRandom.normal($0.1.shape, key: MLXRandom.key(0))) }
+        speechTokenizer.decoder.update(parameters: ModuleParameters.unflattened(codebooks))
+        let padded = MLXArray([3, 1, 0, 2, -1, -1, -1, -1] as [Int32]).reshaped(1, 4, 2)
+        let zeroPadded = MLXArray([3, 1, 0, 2, 0, 0, 0, 0] as [Int32]).reshaped(1, 4, 2)
+
+        let (wav, lengths) = speechTokenizer.decode(padded)
+        let (zeroWav, _) = speechTokenizer.decode(zeroPadded)
+
+        #expect(lengths.asArray(Int32.self) == [Int32(2 * speechTokenizer.decodeUpsampleRate)])
+        #expect(wav.shape == zeroWav.shape)
+        #expect(abs(wav - zeroWav).max().item(Float.self) == 0)
+    }
+
+    @Test func decodeChunkKeepsFramesWhoseFirstCodebookIdIsZero() async throws {
+        let fixture = try await makeTinyQwen3TTSModel(
+            ttsModelType: "voice_design", includeSpeechEncoder: false)
+        defer { cleanupTemporaryArtifactDirectory(fixture.tokenizerDirectory) }
+        let speechTokenizer = try #require(fixture.model.speechTokenizer)
+        for dtype in [DType.int32, .uint32] {
+            let codes = MLXArray([3, 1, 0, 5, 7, 2, 0, 0] as [Int32])
+                .asType(dtype).reshaped(1, 4, 2)
+
+            let audio = fixture.model.decodeChunk(codes)
+
+            #expect(audio.dim(0) == 4 * speechTokenizer.decodeUpsampleRate)
+        }
+    }
+
     @Test func decoderTransformerAttendsWithinSlidingWindow() throws {
         MLXRandom.seed(0)
         let json = """
