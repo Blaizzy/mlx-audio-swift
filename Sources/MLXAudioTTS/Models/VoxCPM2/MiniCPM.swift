@@ -98,7 +98,7 @@ private func applyRotaryPosEmb(
 
     let qEmb = (q * cosE) + (rotateHalf(q) * sinE)
     let kEmb = (k * cosE) + (rotateHalf(k) * sinE)
-    return (qEmb, kEmb)
+    return (qEmb.asType(q.dtype), kEmb.asType(k.dtype))
 }
 
 // MARK: - Attention
@@ -299,7 +299,7 @@ class VoxMiniCPMModel: Module {
         if attnMask == nil && isCausal && L > 1 {
             let ones = MLXArray.ones([L, L])
             let causalMask = triu(ones, k: 1) * Float(-1e9)
-            attnMask = causalMask.expandedDimensions(axes: [0, 1])
+            attnMask = causalMask.expandedDimensions(axes: [0, 1]).asType(h.dtype)
         }
 
         var newCaches: [(MLXArray, MLXArray)] = []
