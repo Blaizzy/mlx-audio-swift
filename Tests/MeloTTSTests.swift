@@ -23,7 +23,8 @@ struct MeloTTSTests {
         #expect(abs(a.reshaped(-1) - MLXArray(expected)).max().item(Float.self) < tolerance)
     }
     @Test func normalizationAndAlignment() throws {
-        #expect(MeloEnglishFrontend.normalize("Dr. Smith has 1,234.05 apples!") == "doctor smith has one thousand two hundred thirty four point  five apples!")
+        #expect(MeloEnglishFrontend.normalize("Dr. Smith has 1,234.05 apples!") == "doctor smith has one thousand two hundred thirty four point zero five apples!")
+        #expect(MeloEnglishFrontend.normalize("It costs 2.50 now.") == "it costs two point five zero now.")
         let durations = MLXArray([Float(2), 1, 3]).reshaped(1, 1, 3)
         let path = MeloTTSModel.path(durations, frames: 6)
         #expect(path.shape == [1, 3, 6])

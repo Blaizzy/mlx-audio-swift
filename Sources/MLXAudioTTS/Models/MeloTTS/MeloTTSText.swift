@@ -163,7 +163,7 @@ struct MeloEnglishFrontend {
         text = replacing(text, pattern: #"\d+\.\d+"#) { value in
             let p = value.split(separator: ".")
             guard let n = Int(p[0]) else { return value }
-            return number(n) + " point " + p[1].map { ones[$0.wholeNumberValue ?? 0] }.joined(separator: " ")
+            return number(n) + " point " + p[1].map { number($0.wholeNumberValue ?? 0) }.joined(separator: " ")
         }
         return replacing(text, pattern: #"\d+"#) { Int($0).map(number) ?? $0 }
     }
