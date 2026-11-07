@@ -655,7 +655,10 @@ public extension VoxtralRealtimeModel {
             }
         }
 
-        return newWeights
+        guard let dtype = newWeights["encoder.conv_layers_0_conv.conv.weight"]?.dtype else {
+            return newWeights
+        }
+        return newWeights.mapValues { $0.dtype == .float32 ? $0.asType(dtype) : $0 }
     }
 
     func shouldQuantize(path: String) -> Bool {
