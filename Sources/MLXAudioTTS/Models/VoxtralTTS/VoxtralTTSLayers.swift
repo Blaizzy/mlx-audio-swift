@@ -158,7 +158,7 @@ final class VoxtralTTSAcousticHead: Module {
     }
     func velocity(_ noise: MLXArray, time: Float, hidden: MLXArray) -> MLXArray {
         let phase = _frequencies * time
-        let timeEmbedding = concatenated([cos(phase), sin(phase)]).reshaped(1,-1)
+        let timeEmbedding = concatenated([cos(phase), sin(phase)]).reshaped(1,-1).asType(noise.dtype)
         let timeFeatures = broadcast(timeProjection(timeEmbedding), to: [noise.dim(0), configuration.acousticDim])
         var h = stacked([inputProjection(noise), timeFeatures, llmProjection(hidden)], axis: 1)
         for layer in layers { h = layer(h) }
@@ -173,7 +173,7 @@ final class VoxtralTTSAcousticHead: Module {
     func decodeFrame(_ hidden: MLXArray, options: VoxtralTTSGenerationOptions, noise: MLXArray? = nil) -> MLXArray {
         let c = configuration, b = hidden.dim(0)
         let semanticCode = semantic(hidden)
-        var x = noise ?? MLXRandom.normal([b,c.acousticCodebooks]) * c.sigmaMax
+        var x = (noise ?? MLXRandom.normal([b,c.acousticCodebooks]) * c.sigmaMax).asType(hidden.dtype)
         let conditioned = concatenated([hidden, .zeros(like: hidden)], axis: 0)
         let dt = 1 / Float(options.denoisingSteps - 1)
         for i in 0..<(options.denoisingSteps - 1) {
