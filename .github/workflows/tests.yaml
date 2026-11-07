@@ -57,10 +57,13 @@ jobs:
           CODE_SIGNING_ALLOWED=NO
           COMPILER_INDEX_STORE_ENABLE=NO
       - name: Run tests
+        # MLX tests share the GPU and allocate model weights. Run them sequentially
+        # to keep concurrent model allocations within the macOS runner's memory.
         run: >-
           xcodebuild test-without-building
           -scheme MLXAudio-Package
           -destination 'platform=macOS'
+          -parallel-testing-enabled NO
           -derivedDataPath "$DERIVED_DATA_PATH"
           -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_PATH"
           -skip-testing:'MLXAudioTests/SmokeTests'
