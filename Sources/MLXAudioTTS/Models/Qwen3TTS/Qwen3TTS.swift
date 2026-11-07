@@ -221,7 +221,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     ///   - codes: Codec codes [1, time, numCodeGroups]
     ///   - chunkTokens: Tokens per decode chunk (controls decode granularity)
     /// - Returns: Decoded audio waveform (1D)
-    private func decodeChunk(_ codes: MLXArray, chunkTokens: Int = 300) -> MLXArray {
+    func decodeChunk(_ codes: MLXArray, chunkTokens: Int = 300) -> MLXArray {
         guard let speechTokenizer else { return MLXArray.zeros([1]) }
 
         var audioChunks = [MLXArray]()
@@ -230,7 +230,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         }
         var audio = concatenated(audioChunks, axis: -1)[0]
 
-        let validLen = Int((codes[0..., 0..., 0] .> 0).sum().item(Int32.self))
+        let validLen = Int((codes[0..., 0..., 0] .>= 0).sum().item(Int32.self))
             * speechTokenizer.decodeUpsampleRate
         if validLen > 0, validLen < audio.dim(0) {
             audio = audio[..<validLen]
