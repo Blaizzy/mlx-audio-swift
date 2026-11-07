@@ -215,6 +215,26 @@ struct VoxtralTTSTests {
         #expect(chunks == 2)
         #expect(samples == audio.size)
     }
+    final class DtypeProbe: Linear {
+        var seen: [DType] = []
+        override func callAsFunction(_ x: MLXArray) -> MLXArray {
+            seen.append(x.dtype)
+            return super.callAsFunction(x)
+        }
+    }
+    @Test func bfloat16HeadStaysBfloat16ThroughDecodeFrame() throws {
+        let c = config()
+        let head = VoxtralTTSAcousticHead(c)
+        let probe = DtypeProbe(c.acousticDim, c.acousticCodebooks, bias: false)
+        try head.update(modules: ModuleChildren.unflattened(["acoustic_codebook_output": probe]), verify: .all)
+        let bf16 = head.parameters().flattened().map { ($0.0, $0.1.asType(.bfloat16)) }
+        try head.update(parameters: ModuleParameters.unflattened(bf16), verify: .all)
+
+        let codes = head.decodeFrame(MLXRandom.normal([1, c.dim]).asType(.bfloat16), options: .init(denoisingSteps: 3))
+
+        #expect(codes.shape == [1, 3])
+        #expect(probe.seen == [.bfloat16, .bfloat16])
+    }
     @Test func invalidGenerationFails() async throws {
         let model = VoxtralTTSModel(config())
         await #expect(throws: AudioGenerationError.self) { try await model.generate(text: "Hi", options: .init(denoisingSteps: 1)) }
