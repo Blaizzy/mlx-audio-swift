@@ -144,7 +144,7 @@ final class WhisperEncoder: Module {
     }
 
     func callAsFunction(_ inputFeatures: MLXArray) -> MLXArray {
-        var h = gelu(conv1(inputFeatures))
+        var h = gelu(conv1(inputFeatures.asType(conv1.weight.dtype)))
         h = gelu(conv2(h))
         let seqLen = h.shape[1]
         h = h + embedPositions.weight[0..<seqLen]

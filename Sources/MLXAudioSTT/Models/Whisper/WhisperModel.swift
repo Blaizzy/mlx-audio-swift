@@ -509,6 +509,7 @@ public final class WhisperModel: Module, STTGenerationModel {
         let encPosKey = "model.encoder.embed_positions.weight"
         if sanitized[encPosKey] == nil, let conv2 = sanitized["model.encoder.conv2.weight"] {
             sanitized[encPosKey] = whisperSinusoids(length: 1500, channels: conv2.shape[0])
+                .asType(conv2.dtype)
         }
 
         return sanitized
