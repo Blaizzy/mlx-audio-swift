@@ -115,8 +115,8 @@ class VoxCPMLocDiT: Module {
         let condProjVal = condProj(condT)
         let prefix = condT.dim(1)
 
-        let tEmb = timeMlp(timeEmbeddings(t))
-        let dtEmb = deltaTimeMlp(timeEmbeddings(dt))
+        let tEmb = timeMlp(timeEmbeddings(t).asType(xProj.dtype))
+        let dtEmb = deltaTimeMlp(timeEmbeddings(dt).asType(xProj.dtype))
         let tComb = tEmb + dtEmb // (N, H)
 
         let startTokens: MLXArray
@@ -198,7 +198,7 @@ class VoxUnifiedCFM: Module {
                     dtValIn = MLXArray.zeros([n])
                 }
 
-                let condIn = MLX.concatenated([cond, cond], axis: 0)
+                let condIn = MLX.concatenated([cond, cond], axis: 0).asType(currentX.dtype)
 
                 let out = estimator(xIn, mu: muIn, t: tVal, cond: condIn, dt: dtValIn)
 
@@ -212,19 +212,19 @@ class VoxUnifiedCFM: Module {
                     let negFlat = cfgOut.reshaped(chunkSize, -1)
 
                     let dotProd = MLX.sum(posFlatOrig * negFlat, axis: 1, keepDims: true)
-                    let sqNorm = MLX.sum(negFlat * negFlat, axis: 1, keepDims: true) + MLXArray(Float(1e-8))
+                    let sqNorm = MLX.sum(negFlat * negFlat, axis: 1, keepDims: true) + 1e-8
                     var stStar = dotProd / sqNorm
                     stStar = stStar.reshaped(chunkSize, 1, 1)
 
-                    guided = cfgOut * stStar + MLXArray(cfgValue) * (posOut - cfgOut * stStar)
+                    guided = cfgOut * stStar + cfgValue * (posOut - cfgOut * stStar)
                 } else {
-                    guided = cfgOut + MLXArray(cfgValue) * (posOut - cfgOut)
+                    guided = cfgOut + cfgValue * (posOut - cfgOut)
                 }
 
                 dphiDt = guided
             }
 
-            currentX = currentX - MLXArray(dt) * dphiDt
+            currentX = currentX - dt * dphiDt
             t = t - dt
 
             if step < nSteps - 1 {
@@ -246,7 +246,7 @@ class VoxUnifiedCFM: Module {
         let B = mu.dim(0)
         let T = patchSize
 
-        let z = MLXRandom.normal([B, inChannels, T]) * MLXArray(temperature)
+        let z = MLXRandom.normal([B, inChannels, T]).asType(mu.dtype) * temperature
 
         var tSpan = MLX.linspace(Float(1), Float(0), count: nTimesteps + 1)
         // Sway scheduling: t + cos(pi/2 * t) - 1 + t = 2t + cos(pi/2 * t) - 1

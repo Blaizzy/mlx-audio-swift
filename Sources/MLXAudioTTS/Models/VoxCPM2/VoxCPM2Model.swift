@@ -329,15 +329,17 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
         // Add batch dimension
         let bTextToken = textToken.expandedDimensions(axis: 0)
         let bAudioFeat = audioFeat.expandedDimensions(axis: 0)
-        let bTextMask = textMask.expandedDimensions(axis: 0)
-        let bAudioMask = audioMask.expandedDimensions(axis: 0)
-
-        // Encode audio features
-        var featEmbed = featEncoder(bAudioFeat)
-        featEmbed = encToLmProj(featEmbed)
 
         // Text embedding with scale
         let textEmbed = baseLM.embedTokens!(bTextToken) * scaleEmb
+
+        let dtype = textEmbed.dtype
+        let bTextMask = textMask.expandedDimensions(axis: 0).asType(dtype)
+        let bAudioMask = audioMask.expandedDimensions(axis: 0).asType(dtype)
+
+        // Encode audio features
+        var featEmbed = featEncoder(bAudioFeat.asType(dtype))
+        featEmbed = encToLmProj(featEmbed)
 
         // Combine text and audio embeddings
         let combinedEmbed = bTextMask[0..., 0..., .newAxis] * textEmbed
@@ -387,7 +389,7 @@ public final class VoxCPM2Model: Module, SpeechGenerationModel, @unchecked Senda
 
             predFeatSeq.append(predFeat[0..., .newAxis, 0..., 0...]) // (B, 1, P, D)
 
-            let currEmbed = featEncoder(predFeat[0..., .newAxis, 0..., 0...])
+            let currEmbed = featEncoder(predFeat[0..., .newAxis, 0..., 0...].asType(dtype))
             let currEmbedProj = encToLmProj(currEmbed)
 
             // Stop prediction
