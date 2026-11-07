@@ -3,6 +3,9 @@ import MLX
 import MLXNN
 
 private let nemotronASRNegInf: Float = -1e9
+// Unlike -1e9, this stays finite in float16, where a query row with every key masked
+// would otherwise turn NaN.
+private let nemotronASRMaskValue: Float = -1e4
 
 enum NemotronASRAttentionMask {
     static func createChunkedLimitedMask(seqLen: Int, leftContext: Int, rightContext: Int) -> MLXArray {
@@ -17,6 +20,18 @@ enum NemotronASRAttentionMask {
         let visible = logicalAnd(diff .>= MLXArray(Int32(0)), diff .<= MLXArray(Int32(leftChunks)))
         let mask = MLX.where(visible, MLXArray(Float(0)), MLXArray(nemotronASRNegInf)).asType(.float32)
         return mask.expandedDimensions(axis: 0).expandedDimensions(axis: 0)
+    }
+
+    /// `(T, T)` visibility: frame i, in chunk i / chunk, sees `left` frames before its
+    /// chunk through `right` frames after it.
+    static func chunkedRCVisibility(seqLen: Int, left: Int, chunk: Int, right: Int) -> MLXArray {
+        let frames = MLXArray(0..<seqLen).asType(.int32)
+        // floorDivide: MLX's `/` on integers is true division in float32.
+        let chunkStart = frames.floorDivide(Int32(chunk)) * Int32(chunk)
+        let start = chunkStart - Int32(left)
+        let end = chunkStart + Int32(chunk - 1 + right)
+        let keys = frames.expandedDimensions(axis: 0)
+        return logicalAnd(keys .>= start.expandedDimensions(axis: 1), keys .<= end.expandedDimensions(axis: 1))
     }
 }
 
@@ -37,7 +52,9 @@ final class NemotronASRFeedForward: Module {
 final class NemotronASRConvolution: Module {
     @ModuleInfo(key: "pointwise_conv1") var pointwiseConv1: Conv1d
     @ModuleInfo(key: "depthwise_conv") var depthwiseConv: Conv1d
-    @ModuleInfo(key: "batch_norm") var batchNorm: LayerNorm
+    // The checkpoint keys the conv norm `batch_norm` whether it is a LayerNorm (3.5)
+    // or a BatchNorm (Unified).
+    @ModuleInfo(key: "batch_norm") var batchNorm: UnaryLayer
     @ModuleInfo(key: "pointwise_conv2") var pointwiseConv2: Conv1d
 
     let padLeft: Int
@@ -71,7 +88,9 @@ final class NemotronASRConvolution: Module {
             groups: args.dModel,
             bias: args.useBias
         )
-        self._batchNorm.wrappedValue = LayerNorm(dimensions: args.dModel)
+        self._batchNorm.wrappedValue = args.convNormType == "batch_norm"
+            ? BatchNorm(featureCount: args.dModel)
+            : LayerNorm(dimensions: args.dModel)
         self._pointwiseConv2.wrappedValue = Conv1d(
             inputChannels: args.dModel,
             outputChannels: args.dModel,
@@ -82,10 +101,13 @@ final class NemotronASRConvolution: Module {
         )
     }
 
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
+    func callAsFunction(_ x: MLXArray, valid: MLXArray? = nil) -> MLXArray {
         let pw = pointwiseConv1(x)
         let split = pw.split(parts: 2, axis: 2)
         var y = split[0] * sigmoid(split[1])
+        if let valid {
+            y = MLX.where(valid.expandedDimensions(axis: 2), y, MLXArray(Float(0)).asType(y.dtype))
+        }
         y = MLX.padded(y, widths: [.init(0), .init((padLeft, padRight)), .init(0)])
         y = depthwiseConv(y)
         y = batchNorm(y)
@@ -94,13 +116,18 @@ final class NemotronASRConvolution: Module {
     }
 }
 
+/// `dw_striding` subsampling. Causal checkpoints (3.5) pad each strided conv by
+/// (k-1, stride-1); non-causal ones (Unified) pad (1, 1) and zero time steps past the
+/// valid length before every layer and after the last, so padding never mixes into
+/// valid frames.
 final class NemotronASRCausalDwStridingSubsampling: Module {
     let subsamplingFactor: Int
     let samplingNum: Int
     let stride: Int = 2
     let kernelSize: Int = 3
-    let padLeft: Int = 2
-    let padRight: Int = 1
+    let causal: Bool
+    let padLeft: Int
+    let padRight: Int
     let convChannels: Int
 
     @ModuleInfo(key: "conv0") var conv0: Conv2d
@@ -112,6 +139,9 @@ final class NemotronASRCausalDwStridingSubsampling: Module {
         self.subsamplingFactor = args.subsamplingFactor
         self.samplingNum = Int(log2(Double(args.subsamplingFactor)))
         self.convChannels = args.subsamplingConvChannels
+        self.causal = args.causalDownsampling
+        self.padLeft = args.causalDownsampling ? 2 : 1
+        self.padRight = 1
 
         var finalFreqDim = args.featIn
         for _ in 0..<samplingNum {
@@ -168,15 +198,32 @@ final class NemotronASRCausalDwStridingSubsampling: Module {
         }
 
         var y = x.expandedDimensions(axis: 3)
-        y = causalPad2D(y)
-        y = relu(conv0(y))
-
-        if !depthwiseLayers.isEmpty {
+        if causal {
+            y = causalPad2D(y)
+            y = relu(conv0(y))
             for i in depthwiseLayers.indices {
                 y = causalPad2D(y)
                 y = pointwiseLayers[i](depthwiseLayers[i](y))
                 y = relu(y)
             }
+        } else {
+            var valid = lengths.asType(.int32)
+            func masked(_ v: MLXArray) -> MLXArray {
+                let keep = MLXArray(0..<v.dim(1)).asType(.int32).expandedDimensions(axis: 0)
+                    .< valid.expandedDimensions(axis: 1)
+                return MLX.where(keep.expandedDimensions(axes: [2, 3]), v, MLXArray(Float(0)).asType(v.dtype))
+            }
+            func strided(_ conv: Conv2d, _ v: MLXArray) -> MLXArray {
+                let out = conv(causalPad2D(masked(v)))
+                valid = (valid + Int32(padLeft + padRight - kernelSize)).floorDivide(Int32(stride)) + 1
+                return out
+            }
+            y = relu(masked(strided(conv0, y)))
+            for i in depthwiseLayers.indices {
+                y = pointwiseLayers[i](masked(strided(depthwiseLayers[i], y)))
+                y = relu(masked(y))
+            }
+            y = masked(y)
         }
 
         let batch = y.shape[0]
@@ -232,11 +279,11 @@ final class NemotronASRConformerBlock: Module {
         self._normOut.wrappedValue = LayerNorm(dimensions: args.dModel)
     }
 
-    func callAsFunction(_ x: MLXArray, posEmb: MLXArray, mask: MLXArray? = nil) -> MLXArray {
+    func callAsFunction(_ x: MLXArray, posEmb: MLXArray, mask: MLXArray? = nil, valid: MLXArray? = nil) -> MLXArray {
         var y = x + MLXArray(Float(0.5)).asType(x.dtype) * feedForward1(normFeedForward1(x))
         let yNorm = normSelfAtt(y)
         y = y + selfAttn(yNorm, yNorm, yNorm, posEmb: posEmb, mask: mask)
-        y = y + conv(normConv(y))
+        y = y + conv(normConv(y), valid: valid)
         y = y + MLXArray(Float(0.5)).asType(y.dtype) * feedForward2(normFeedForward2(y))
         return normOut(y)
     }
@@ -276,19 +323,37 @@ final class NemotronASRConformer: Module {
         let posEmb = positional.1
 
         let context = attContextSize ?? args.attContextSize.first ?? [56, 13]
-        let leftContext = context.first ?? 56
-        let rightContext = context.dropFirst().first ?? 13
         let mask: MLXArray?
+        var valid: MLXArray?
         if args.attContextStyle == "chunked_limited" {
+            let leftContext = context.first ?? 56
+            let rightContext = context.dropFirst().first ?? 13
             mask = NemotronASRAttentionMask
                 .createChunkedLimitedMask(seqLen: h.shape[1], leftContext: leftContext, rightContext: rightContext)
                 .asType(h.dtype)
+        } else if args.attContextStyle == "chunked_limited_with_rc" {
+            // Padded frames are never keys, and the depthwise conv sees zeros there.
+            // `[-1, -1, -1]` is full context (offline).
+            let seqLen = h.shape[1]
+            let frameValid = MLXArray(0..<seqLen).asType(.int32).expandedDimensions(axis: 0)
+                .< outLengths.asType(.int32).expandedDimensions(axis: 1)
+            valid = frameValid
+            var visible = frameValid.expandedDimensions(axes: [1, 2])
+            if context != [-1, -1, -1] {
+                visible = logicalAnd(
+                    visible,
+                    NemotronASRAttentionMask.chunkedRCVisibility(
+                        seqLen: seqLen, left: context[0], chunk: context[1], right: context[2]
+                    ).expandedDimensions(axes: [0, 1])
+                )
+            }
+            mask = MLX.where(visible, MLXArray(Float(0)), MLXArray(nemotronASRMaskValue)).asType(h.dtype)
         } else {
             mask = nil
         }
 
         for layer in layers {
-            h = layer(h, posEmb: posEmb, mask: mask)
+            h = layer(h, posEmb: posEmb, mask: mask, valid: valid)
         }
 
         return (h, outLengths)

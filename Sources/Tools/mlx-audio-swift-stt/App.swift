@@ -376,12 +376,13 @@ enum App {
             return runVoxtralStreaming(model: voxtral, audio: audio, parameters: parameters)
         }
         // Nemotron has a true online session — feed audio as it arrives instead of the
-        // whole-buffer generateStream. The chunked-feed logic lives in the model. The
-        // session needs NA (frozen) mel normalization; for per-utterance normalization
-        // fall through to the generic stream instead of aborting on its precondition.
+        // whole-buffer generateStream. The chunked-feed logic lives in the model. A
+        // cache-aware session needs NA (frozen) mel normalization; for per-utterance
+        // normalization fall through to the generic stream instead of aborting on its
+        // precondition. Buffered (Unified) sessions normalize each buffer themselves.
         if let nemotron = model as? NemotronASRModel {
             let norm = nemotron.preprocessConfig.normalize.lowercased()
-            if norm == "na" || norm == "none" {
+            if nemotron.isBuffered || norm == "na" || norm == "none" {
                 return runNemotronStreaming(model: nemotron, audio: audio, parameters: parameters)
             }
         }

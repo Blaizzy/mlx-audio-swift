@@ -5,7 +5,8 @@ import MLXAudioCore
 enum NemotronASRAudio {
     static func logMelSpectrogram(
         _ audio: MLXArray,
-        config: NemotronASRPreprocessConfig
+        config: NemotronASRPreprocessConfig,
+        basis: MelBasis? = nil
     ) -> MLXArray {
         let originalDType = audio.dtype
         var x = audio
@@ -22,7 +23,8 @@ enum NemotronASRAudio {
             x = MLX.concatenated([first, rest], axis: 0)
         }
 
-        let window = makeWindow(name: config.window, winLength: config.winLength, fftLength: config.nFft)
+        let window = basis?.window
+            ?? makeWindow(name: config.window, winLength: config.winLength, fftLength: config.nFft)
         let stftOutput = stft(
             audio: x,
             window: window,
@@ -31,8 +33,12 @@ enum NemotronASRAudio {
             padMode: .constant
         )
 
-        let power = MLX.abs(stftOutput).square().asType(originalDType)
-        let filters = melFilters(
+        let perFeature = config.normalize.lowercased() == "per_feature"
+        // Statistics cover `samples / hop` frames; the centered STFT adds one more,
+        // which is zeroed. They run in float32.
+        let validFrames = x.shape[0] / config.hopLength
+        let power = MLX.abs(stftOutput).square().asType(perFeature ? .float32 : originalDType)
+        let filters = basis?.filters ?? melFilters(
             sampleRate: config.sampleRate,
             nFft: config.nFft,
             nMels: config.features,
@@ -47,11 +53,12 @@ enum NemotronASRAudio {
         case "na", "none":
             return mel.expandedDimensions(axis: 0).asType(originalDType)
         case "per_feature":
-            let mean = MLX.mean(mel, axis: 0, keepDims: true)
-            let denominator = max(mel.dim(0) - 1, 1)
-            let variance = MLX.sum((mel - mean).square(), axis: 0, keepDims: true) / Float(denominator)
-            let std = MLX.sqrt(variance)
-            mel = (mel - mean) / (std + MLXArray(1e-5, dtype: mel.dtype))
+            let valid = mel[..<validFrames]
+            let mean = MLX.mean(valid, axis: 0, keepDims: true)
+            let variance = MLX.sum((valid - mean).square(), axis: 0, keepDims: true) / Float(max(validFrames - 1, 1))
+            mel = (mel - mean) / (MLX.sqrt(variance) + MLXArray(1e-5, dtype: mel.dtype))
+            let keep = MLXArray(0..<mel.dim(0)).expandedDimensions(axis: 1) .< MLXArray(Int32(validFrames))
+            mel = MLX.where(keep, mel, MLXArray(Float(0)))
         default:
             let mean = MLX.mean(mel)
             let std = MLX.std(mel)
